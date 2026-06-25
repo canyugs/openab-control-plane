@@ -70,7 +70,10 @@ fn reply(session: &str, content: &str, command: Option<&str>, quote: Option<&str
         "content": { "type": "text", "text": content },
     });
     if let Some(c) = command { r["command"] = json!(c); }
-    if let Some(q) = quote { r["quote_message_id"] = json!(q); }
+    // A stock OAB gateway adapter carries the edit/reaction target in `reply_to`,
+    // not `quote_message_id` (openab-core gateway.rs). Mirror that so this spike
+    // exercises the real wire shape.
+    if let Some(q) = quote { r["reply_to"] = json!(q); }
     if let Some(rq) = req { r["request_id"] = json!(rq); }
     Message::Text(r.to_string())
 }

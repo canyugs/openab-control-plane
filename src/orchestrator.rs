@@ -10,6 +10,16 @@ use anyhow::Result;
 use serde_json::json;
 use std::sync::Arc;
 
+/// The edit/reaction target message id. A stock OAB gateway adapter carries it
+/// in `reply_to` (it sets `quote_message_id: None` except for explicit
+/// reply-quotes — see openab-core gateway.rs edit_message/add_reaction). Prefer
+/// reply_to; fall back to quote_message_id for clients that use it instead.
+fn target_msg(reply: &GatewayReply) -> Option<&str> {
+    Some(reply.reply_to.as_str())
+        .filter(|s| !s.is_empty())
+        .or(reply.quote_message_id.as_deref())
+}
+
 fn bot_sender(id: &str, name: &str) -> SenderInfo {
     SenderInfo {
         id: id.into(),
@@ -137,9 +147,8 @@ fn on_create_topic(state: &Arc<AppState>, session: &Session, bot_id: &str, reply
 }
 
 fn on_reaction(state: &Arc<AppState>, session: &Session, bot_id: &str, reply: &GatewayReply, add: bool) -> Result<()> {
-    let target = reply
-        .quote_message_id
-        .clone()
+    let target = target_msg(reply)
+        .map(String::from)
         .unwrap_or_else(|| session.id.clone());
     let emoji = &reply.content.text;
     if add {
@@ -157,7 +166,7 @@ fn on_reaction(state: &Arc<AppState>, session: &Session, bot_id: &str, reply: &G
 }
 
 fn on_edit(state: &Arc<AppState>, session: &Session, bot_id: &str, reply: &GatewayReply) -> Result<()> {
-    if let Some(target) = &reply.quote_message_id {
+    if let Some(target) = target_msg(reply) {
         state.store.edit_message(target, &reply.content.text)?;
         state.emit_north("message_edit", &session.id, json!({ "message_id": target, "content": reply.content.text }));
         ack(state, bot_id, reply, None, Some(target));
