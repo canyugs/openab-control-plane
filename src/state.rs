@@ -3,7 +3,7 @@
 use crate::protocol::{
     ChannelInfo, Content, GatewayEvent, SenderInfo, EVENT_SCHEMA,
 };
-use crate::store::{now_ms, new_id, Store};
+use crate::store::{now_ms, new_id, SessionState, Store};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -74,6 +74,17 @@ impl AppState {
         mentions: Vec<String>,
         message_id: &str,
     ) -> bool {
+        // Don't deliver to bots once the session is closed/aborted — otherwise
+        // late relays/fanout keep live OAB bots chatting past the verdict.
+        // ponytail: one extra store read per delivery; fine at council scale.
+        if let Ok(Some(s)) = self.store.session(session_id) {
+            if matches!(
+                SessionState::from_str(&s.state),
+                SessionState::Closed | SessionState::Aborted
+            ) {
+                return false;
+            }
+        }
         let event = GatewayEvent {
             schema: EVENT_SCHEMA.into(),
             event_id: new_id("evt"),
