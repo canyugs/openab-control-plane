@@ -85,9 +85,12 @@ pub struct Message {
 
 /// Backing-service seam (design §6c). All callers depend on this, not on SQLite.
 pub trait Store: Send + Sync {
-    fn register_bot(&self, name: &str, role: &str, token_hash: &str) -> Result<Bot>;
+    fn register_bot(&self, name: &str, role: &str, token_hash: &str, token_plain: &str) -> Result<Bot>;
     fn bot_by_token_hash(&self, token_hash: &str) -> Result<Option<Bot>>;
     fn bot(&self, id: &str) -> Result<Option<Bot>>;
+    /// Plaintext token, for serving /bot-config to a stock OAB pod (spike
+    /// convenience; production injects the token via pre_seed/env, §6c).
+    fn bot_token_plain(&self, id: &str) -> Result<Option<String>>;
     fn set_connected(&self, bot_id: &str, connected: bool) -> Result<()>;
 
     #[allow(clippy::too_many_arguments)]
@@ -131,7 +134,8 @@ pub trait Store: Send + Sync {
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS bots (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
-    token_hash TEXT NOT NULL, connected INTEGER NOT NULL DEFAULT 0, last_seen INTEGER
+    token_hash TEXT NOT NULL, token_plain TEXT,
+    connected INTEGER NOT NULL DEFAULT 0, last_seen INTEGER
 );
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY, title TEXT NOT NULL, state TEXT NOT NULL,
@@ -191,14 +195,25 @@ impl SqliteStore {
 }
 
 impl Store for SqliteStore {
-    fn register_bot(&self, name: &str, role: &str, token_hash: &str) -> Result<Bot> {
+    fn register_bot(&self, name: &str, role: &str, token_hash: &str, token_plain: &str) -> Result<Bot> {
         let id = new_id("bot");
         let c = self.conn.lock().unwrap();
         c.execute(
-            "INSERT INTO bots (id, name, role, token_hash) VALUES (?1, ?2, ?3, ?4)",
-            params![id, name, role, token_hash],
+            "INSERT INTO bots (id, name, role, token_hash, token_plain) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, name, role, token_hash, token_plain],
         )?;
         Ok(Bot { id, name: name.to_string(), role: role.to_string() })
+    }
+
+    fn bot_token_plain(&self, id: &str) -> Result<Option<String>> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT token_plain FROM bots WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten())
     }
 
     fn bot_by_token_hash(&self, token_hash: &str) -> Result<Option<Bot>> {

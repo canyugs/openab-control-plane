@@ -16,7 +16,7 @@ pub fn hash_token(token: &str) -> String {
 /// only its hash is stored.
 pub fn issue(store: &dyn Store, name: &str, role: &str) -> Result<(Bot, String)> {
     let token = format!("oabct_{}", uuid::Uuid::new_v4().simple());
-    let bot = store.register_bot(name, role, &hash_token(&token))?;
+    let bot = store.register_bot(name, role, &hash_token(&token), &token)?;
     Ok((bot, token))
 }
 

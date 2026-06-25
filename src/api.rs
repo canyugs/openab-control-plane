@@ -26,6 +26,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/v1/sessions/:id", get(get_session))
         .route("/v1/sessions/:id/messages", post(post_message))
         .route("/v1/sessions/:id/stream", get(stream_session))
+        // served on the internal network to stock OAB pods (like openab-hub's
+        // /bot-config); no client auth — the token IS the bot's credential.
+        .route("/bot-config/:id", get(bot_config))
 }
 
 fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
@@ -119,6 +122,49 @@ async fn get_session(
         .ok_or(StatusCode::NOT_FOUND)?;
     let messages = state.store.messages(&id).unwrap_or_default();
     Ok(Json(json!({ "session": session, "messages": messages })))
+}
+
+/// Serves a stock OAB pod its full config.toml with `[gateway]` pointing back at
+/// this plane. Mirrors openab-hub's `/bot-config/{id}`. The chair's "open a
+/// thread + @mention reviewers" behavior comes from the trigger message, not
+/// steering — so the config stays minimal.
+async fn bot_config(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let bot = state
+        .store
+        .bot(&id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let token = state
+        .store
+        .bot_token_plain(&id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let ws_url = std::env::var("OABCP_WS_URL")
+        .unwrap_or_else(|_| "ws://openab-control-plane.zeabur.internal:8080/ws".into());
+    let toml = format!(
+        r#"[gateway]
+url = "{ws_url}"
+platform = "feishu"
+token = "{token}"
+allow_bot_messages = true
+bot_username = "{name}"
+streaming = true
+
+[agent]
+command = "claude-agent-acp"
+working_dir = "/home/node"
+inherit_env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
+
+[pool]
+max_sessions = 4
+session_ttl_hours = 2
+"#,
+        name = bot.name,
+    );
+    Ok(([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], toml))
 }
 
 async fn stream_session(
