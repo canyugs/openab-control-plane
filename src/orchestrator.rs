@@ -31,6 +31,16 @@ fn bot_sender(id: &str, name: &str) -> SenderInfo {
 
 /// Fan a stored message out to every roster bot except its author (§10).
 fn fanout(state: &AppState, session: &Session, msg: &Message, sender: SenderInfo, mentions: Vec<String>) -> Result<()> {
+    // Don't fan a streaming stub to peers: OAB sends a placeholder first
+    // ("…"/empty) then fills it via edit_message (which doesn't re-fan), so a
+    // peer bot would only ever see the stub and reply "your message got cut
+    // off". ponytail: peers reviewing the same trigger don't need each other's
+    // stream; the chair's verdict still reads the stored final via GET. Upgrade
+    // path: fan the final content on the author's done-signal (🆗).
+    let stub = msg.content.trim();
+    if stub.is_empty() || stub == "…" {
+        return Ok(());
+    }
     let roster = state.store.roster(&session.id)?;
     let thread = state.store.thread_for_session(&session.id)?;
     let author = msg.author_id.as_deref();
