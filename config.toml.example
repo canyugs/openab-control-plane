@@ -1,0 +1,19 @@
+# Stock OpenAB bot pointed at the control plane (design §15).
+# No proxy patch, no Discord — just the gateway adapter dialing the plane's /ws.
+#
+# 1. Register the bot:  POST /v1/bots {"name":"gandalf","role":"chair"}  -> {token}
+# 2. Put that token below.  3. Run a stock image: ghcr.io/openabdev/openab:<ver>-claude
+
+[gateway]
+url = "ws://control-plane.zeabur.internal:8090/ws"
+platform = "feishu"            # "feishu" unlocks streaming-edit acks (design §2)
+token = "oabct_xxxxxxxx"       # the per-bot token from /v1/bots
+allow_bot_messages = true      # trust is decided by the PLANE's routing, not here
+streaming = true               # typewriter edits
+
+[agent]
+command = "claude-agent-acp"
+inherit_env = ["CLAUDE_CODE_OAUTH_TOKEN"]   # agent auth stays pod-local (env_clear)
+
+[pool]
+max_sessions = 4               # parallel councils this bot can join (design §6b)

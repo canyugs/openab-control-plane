@@ -1,0 +1,26 @@
+//! openab-control-plane — a gateway-native conversation control plane.
+//! See docs/control-plane-design.md (in the ops repo).
+
+pub mod api;
+pub mod identity;
+pub mod orchestrator;
+pub mod output;
+pub mod protocol;
+pub mod routing;
+pub mod session;
+pub mod state;
+pub mod store;
+pub mod ws;
+
+use axum::routing::get;
+use axum::Router;
+use state::AppState;
+use std::sync::Arc;
+
+/// Full router: north REST/SSE + south `/ws`.
+pub fn build_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/ws", get(ws::ws_handler))
+        .merge(api::router())
+        .with_state(state)
+}
