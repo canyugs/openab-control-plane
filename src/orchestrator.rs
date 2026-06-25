@@ -106,6 +106,14 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
             return Ok(());
         }
     };
+    // Roster authorization (plane-level isolation). The /ws token proves *who*
+    // the bot is; this proves it *belongs to this session*. Without it any valid
+    // bot could act in any session. This is orthogonal to OAB's own bot-side
+    // `allow_*` filters (which decide what a bot responds to) — both layers apply.
+    if !state.store.roster(&session_id)?.iter().any(|b| b == bot_id) {
+        tracing::warn!("bot {bot_id} not in roster of session {session_id}; dropping reply");
+        return Ok(());
+    }
     let bot = state.store.bot(bot_id)?;
     let bot_name = bot.as_ref().map(|b| b.name.clone()).unwrap_or_default();
 
@@ -295,4 +303,50 @@ fn ack(state: &AppState, bot_id: &str, reply: &GatewayReply, thread_id: Option<&
         error: None,
     };
     state.send_to_bot(bot_id, serde_json::to_string(&resp).unwrap());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::ReplyChannel;
+    use crate::state::AppState;
+    use crate::store::{SqliteStore, Store};
+
+    fn msg_reply(session: &str, text: &str) -> GatewayReply {
+        GatewayReply {
+            schema: String::new(),
+            reply_to: String::new(),
+            platform: String::new(),
+            channel: ReplyChannel { id: session.into(), thread_id: None },
+            content: Content::text(text),
+            command: None,
+            request_id: None,
+            quote_message_id: None,
+        }
+    }
+
+    #[test]
+    fn roster_authorization_gates_non_members() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let member = store.register_bot("member", "chair", "h1", "t1").unwrap();
+        let outsider = store.register_bot("outsider", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session("t", None, 0, Some(&member.id), &[member.id.clone()])
+            .unwrap();
+
+        // outsider holds a valid token but is not in the roster → reply dropped
+        handle_reply(&state, &outsider.id, msg_reply(&session.id, "sneaky")).unwrap();
+        assert!(
+            store.messages(&session.id).unwrap().iter().all(|m| m.content != "sneaky"),
+            "non-roster bot's message must not be stored"
+        );
+
+        // roster member → accepted
+        handle_reply(&state, &member.id, msg_reply(&session.id, "legit")).unwrap();
+        assert!(
+            store.messages(&session.id).unwrap().iter().any(|m| m.content == "legit"),
+            "roster member's message must be stored"
+        );
+    }
 }
