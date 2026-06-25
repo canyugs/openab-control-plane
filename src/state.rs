@@ -82,7 +82,11 @@ impl AppState {
             event_type: "message".into(),
             channel: ChannelInfo {
                 id: session_id.to_string(),
-                channel_type: "group".into(),
+                // "supergroup" (not "group") so a stock OAB bot opens a forum
+                // topic on the trigger (openab-core gateway.rs only threads for
+                // supergroup). Both are `is_group` in OAB, so gating is identical;
+                // this just unlocks create_topic → one-thread-per-session (§9).
+                channel_type: "supergroup".into(),
                 thread_id: thread_id.map(String::from),
             },
             sender,
