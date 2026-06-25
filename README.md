@@ -47,6 +47,19 @@ GET  /v1/sessions/:id/stream       (SSE: message|reaction|state|verdict)
 Register a bot to get its token, then point an OpenAB pod's `[gateway]` at the
 plane — no proxy patch, stock image. See `config.toml.example`.
 
+## Simple vs Scale (everything scale-side is opt-in)
+
+Defaults work out of the box; you only reach for the right column when you need
+it. Nothing here forces Postgres or pre_seed on a small setup. See design §6c.
+
+| Concern | Default (simple) | Opt-in (scale) |
+|---|---|---|
+| Store | local SQLite `plane.db` | networked `Store` impl (Postgres/libSQL) — swap one line in `main.rs`, no caller changes |
+| Bot token/config | inline in `config.toml` | pre_seed layer from S3/R2/MinIO (one stock image for many bots) |
+| North auth | open (`OABCP_API_KEY` unset) | bearer key via `OABCP_API_KEY` |
+| Verdict output | logged | real GitHub PR comment via `GH_OUTPUT=1` |
+| Disposability | `/healthz` + graceful shutdown (always on) | k8s liveness/readiness probes |
+
 ## Test
 
 ```sh
