@@ -129,6 +129,13 @@ pub trait Store: Send + Sync {
 
     fn add_output(&self, session_id: &str, kind: &str, target: &str) -> Result<String>;
     fn set_output_status(&self, output_id: &str, status: &str) -> Result<()>;
+
+    /// Durable per-bot outbox (offline delivery). Frames queued here are flushed
+    /// in `seq` order when the bot is connected; a disconnected bot keeps them
+    /// and gets them on reconnect. `ack_outbox` removes a delivered frame.
+    fn enqueue_outbox(&self, bot_id: &str, frame: &str) -> Result<()>;
+    fn pending_outbox(&self, bot_id: &str) -> Result<Vec<(i64, String)>>;
+    fn ack_outbox(&self, seq: i64) -> Result<()>;
 }
 
 const SCHEMA: &str = r#"
@@ -162,6 +169,11 @@ CREATE TABLE IF NOT EXISTS outputs (
     id TEXT PRIMARY KEY, session_id TEXT NOT NULL, kind TEXT NOT NULL,
     target TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS outbox (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id TEXT NOT NULL, frame TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_bot ON outbox(bot_id, seq);
 "#;
 
 /// SQLite-backed `Store`. ponytail: one process-wide Mutex<Connection>. Fine at
@@ -473,6 +485,29 @@ impl Store for SqliteStore {
             "UPDATE outputs SET status = ?2 WHERE id = ?1",
             params![output_id, status],
         )?;
+        Ok(())
+    }
+
+    fn enqueue_outbox(&self, bot_id: &str, frame: &str) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO outbox (bot_id, frame, created_at) VALUES (?1, ?2, ?3)",
+            params![bot_id, frame, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    fn pending_outbox(&self, bot_id: &str) -> Result<Vec<(i64, String)>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt =
+            c.prepare("SELECT seq, frame FROM outbox WHERE bot_id = ?1 ORDER BY seq ASC")?;
+        let rows = stmt.query_map(params![bot_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    fn ack_outbox(&self, seq: i64) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute("DELETE FROM outbox WHERE seq = ?1", params![seq])?;
         Ok(())
     }
 }

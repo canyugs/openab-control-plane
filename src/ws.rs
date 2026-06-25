@@ -32,6 +32,8 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
 
     let conn_gen = state.register_conn(&bot_id, tx);
     let _ = state.store.set_connected(&bot_id, true);
+    // Replay anything queued while this bot was offline (durable outbox).
+    state.flush_outbox(&bot_id);
     tracing::info!("bot {bot_id} connected");
 
     // outbound pump: plane → bot

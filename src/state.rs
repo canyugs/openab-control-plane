@@ -62,6 +62,24 @@ impl AppState {
         }
     }
 
+    /// Flush a bot's durable outbox in order: send each queued frame and ack it.
+    /// Stops at the first frame that can't be sent (bot offline) so order holds
+    /// and the rest waits for the next connect. Call on reconnect and after each
+    /// enqueue. Returns true if anything was delivered.
+    pub fn flush_outbox(&self, bot_id: &str) -> bool {
+        let pending = self.store.pending_outbox(bot_id).unwrap_or_default();
+        let mut delivered = false;
+        for (seq, frame) in pending {
+            if self.send_to_bot(bot_id, frame) {
+                let _ = self.store.ack_outbox(seq);
+                delivered = true;
+            } else {
+                break;
+            }
+        }
+        delivered
+    }
+
     /// Build + deliver a GatewayEvent carrying `message` to one bot.
     #[allow(clippy::too_many_arguments)]
     pub fn deliver_event(
@@ -105,7 +123,13 @@ impl AppState {
             mentions,
             message_id: message_id.to_string(),
         };
-        self.send_to_bot(bot_id, serde_json::to_string(&event).unwrap())
+        // Durable path: queue then flush. A disconnected bot keeps the frame and
+        // gets it on reconnect (flush_outbox) instead of losing it.
+        let frame = serde_json::to_string(&event).unwrap();
+        if self.store.enqueue_outbox(bot_id, &frame).is_err() {
+            return self.send_to_bot(bot_id, frame); // fall back to best-effort
+        }
+        self.flush_outbox(bot_id)
     }
 
     #[cfg(test)]
@@ -127,7 +151,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::SqliteStore;
+    use crate::store::{SqliteStore, Store};
     use tokio::sync::mpsc;
 
     #[test]
@@ -142,5 +166,32 @@ mod tests {
         assert!(state.is_connected("bot_a"), "newer connection wrongly evicted");
         state.unregister_conn("bot_a", gen1); // current connection drops
         assert!(!state.is_connected("bot_a"));
+    }
+
+    #[test]
+    fn offline_bot_gets_queued_frames_on_reconnect() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let sender = SenderInfo {
+            id: "client".into(),
+            name: "client".into(),
+            display_name: "client".into(),
+            is_bot: false,
+        };
+        // deliver to a bot that is NOT connected → queued durably, not delivered
+        let sent = state.deliver_event(
+            "bot_x", "ses_1", None, sender,
+            Content::text("hello while offline"), vec![], "msg_1",
+        );
+        assert!(!sent, "no live connection → nothing delivered yet");
+        assert_eq!(store.pending_outbox("bot_x").unwrap().len(), 1, "frame queued");
+
+        // bot connects → flush replays the missed frame, outbox drains
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        state.register_conn("bot_x", tx);
+        assert!(state.flush_outbox("bot_x"));
+        assert_eq!(store.pending_outbox("bot_x").unwrap().len(), 0, "outbox drained");
+        let frame = rx.try_recv().expect("frame delivered on reconnect");
+        assert!(frame.contains("hello while offline"));
     }
 }
