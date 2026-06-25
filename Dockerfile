@@ -11,6 +11,8 @@ RUN cargo build --release --bin openab-control-plane
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/target/release/openab-control-plane /usr/local/bin/openab-control-plane
-ENV OABCP_ADDR=0.0.0.0:8090 OABCP_DB=/tmp/plane.db
+# Persistent volume for the SQLite DB so the bot registry survives redeploys.
+VOLUME /data
+ENV OABCP_ADDR=0.0.0.0:8090 OABCP_DB=/data/plane.db
 EXPOSE 8090
 CMD ["openab-control-plane"]
