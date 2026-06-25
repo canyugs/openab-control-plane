@@ -17,10 +17,11 @@ use axum::Router;
 use state::AppState;
 use std::sync::Arc;
 
-/// Full router: north REST/SSE + south `/ws`.
+/// Full router: north REST/SSE + south `/ws` + liveness/readiness probe.
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/ws", get(ws::ws_handler))
+        .route("/healthz", get(|| async { "ok" }))
         .merge(api::router())
         .with_state(state)
 }

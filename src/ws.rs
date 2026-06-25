@@ -20,7 +20,7 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     let token = q.get("token").cloned().unwrap_or_default();
-    match identity::verify(&state.store, &token) {
+    match identity::verify(state.store.as_ref(), &token) {
         Ok(bot) => ws.on_upgrade(move |socket| handle_conn(state, socket, bot.id)),
         Err(_) => axum::http::StatusCode::UNAUTHORIZED.into_response(),
     }

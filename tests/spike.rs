@@ -4,7 +4,8 @@
 //! closed verdict (3 and 5 bots), incl. one-thread-per-session convergence.
 
 use futures_util::{SinkExt, StreamExt};
-use openab_control_plane::{build_router, state::AppState, store::Store};
+use openab_control_plane::store::{SqliteStore, Store};
+use openab_control_plane::{build_router, state::AppState};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -13,7 +14,7 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 async fn spawn_server() -> SocketAddr {
-    let store = Arc::new(Store::memory().unwrap());
+    let store: Arc<dyn Store> = Arc::new(SqliteStore::memory().unwrap());
     let state = AppState::new(store);
     let app = build_router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

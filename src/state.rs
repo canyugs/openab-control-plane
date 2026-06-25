@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
 
 pub struct AppState {
-    pub store: Arc<Store>,
+    pub store: Arc<dyn Store>,
     /// bot_id -> outbound text frames (serialized GatewayEvent / GatewayResponse).
     hub: Mutex<HashMap<String, mpsc::UnboundedSender<String>>>,
     /// north SSE fanout (serialized NorthEvent JSON).
@@ -22,7 +22,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(store: Arc<Store>) -> Arc<AppState> {
+    pub fn new(store: Arc<dyn Store>) -> Arc<AppState> {
         let (north_tx, _) = broadcast::channel(1024);
         Arc::new(AppState {
             store,

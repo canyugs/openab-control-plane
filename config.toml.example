@@ -17,3 +17,17 @@ inherit_env = ["CLAUDE_CODE_OAUTH_TOKEN"]   # agent auth stays pod-local (env_cl
 
 [pool]
 max_sessions = 4               # parallel councils this bot can join (design §6b)
+
+# --- OPTIONAL: stateless / pre_seed deployment (design §6c) -------------------
+# The simple path above (inline token, baked config) is fine for most setups.
+# At fleet scale — one stock image for 50 bots, no per-bot image — don't bake the
+# token: pull it as a pre_seed layer from any S3-compatible store (S3/R2/MinIO),
+# and point [gateway].token at the seeded file. Opt-in, not required.
+#
+# [hooks]
+# pre_seed = [
+#   "s3://corp/base-policies.zip",     # layer 1: org compliance/policies
+#   "s3://corp/team-backend.zip",      # layer 2: shared team memory
+#   "s3://corp/agent-gandalf.zip",     # layer 3: this bot's token + gateway config
+# ]
+# Then in [gateway]: token = "${file:~/.openab/gateway-token}"  (seeded by layer 3)

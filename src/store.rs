@@ -1,6 +1,9 @@
-//! SQLite store + domain types (design §8).
-//! ponytail: one process-wide Mutex<Connection>. Fine at council scale (router +
-//! light writes). Swap to a pool if write contention ever shows up.
+//! Store trait + SQLite impl + domain types (design §8, §6c).
+//!
+//! The `Store` trait is the backing-service seam: SQLite today (spike), a
+//! networked DB (Postgres/libSQL) for production — callers depend on the trait,
+//! so the swap touches only this file. ponytail: one impl for now, but the seam
+//! is deliberate (see design §6c "12-factor posture").
 
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -80,8 +83,49 @@ pub struct Message {
     pub created_at: i64,
 }
 
-pub struct Store {
-    conn: Mutex<Connection>,
+/// Backing-service seam (design §6c). All callers depend on this, not on SQLite.
+pub trait Store: Send + Sync {
+    fn register_bot(&self, name: &str, role: &str, token_hash: &str) -> Result<Bot>;
+    fn bot_by_token_hash(&self, token_hash: &str) -> Result<Option<Bot>>;
+    fn bot(&self, id: &str) -> Result<Option<Bot>>;
+    fn set_connected(&self, bot_id: &str, connected: bool) -> Result<()>;
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_session(
+        &self,
+        title: &str,
+        trigger_ref: Option<&str>,
+        quorum_n: i64,
+        chair_bot: Option<&str>,
+        roster: &[String],
+    ) -> Result<Session>;
+    fn session(&self, id: &str) -> Result<Option<Session>>;
+    fn set_state(&self, session_id: &str, state: SessionState) -> Result<()>;
+    fn advance_state(&self, session_id: &str, from: SessionState, to: SessionState) -> Result<bool>;
+    fn roster(&self, session_id: &str) -> Result<Vec<String>>;
+
+    fn upsert_thread(&self, session_id: &str, root_message_id: Option<&str>) -> Result<String>;
+    fn thread_for_session(&self, session_id: &str) -> Result<Option<String>>;
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_message(
+        &self,
+        session_id: &str,
+        thread_id: Option<&str>,
+        author_kind: &str,
+        author_id: Option<&str>,
+        content: &str,
+        reply_to: Option<&str>,
+    ) -> Result<Message>;
+    fn edit_message(&self, message_id: &str, content: &str) -> Result<()>;
+    fn messages(&self, session_id: &str) -> Result<Vec<Message>>;
+
+    fn add_reaction(&self, message_id: &str, bot_id: &str, emoji: &str) -> Result<()>;
+    fn remove_reaction(&self, message_id: &str, bot_id: &str, emoji: &str) -> Result<()>;
+    fn reactors_in_session(&self, session_id: &str, emoji: &str) -> Result<Vec<String>>;
+
+    fn add_output(&self, session_id: &str, kind: &str, target: &str) -> Result<String>;
+    fn set_output_status(&self, output_id: &str, status: &str) -> Result<()>;
 }
 
 const SCHEMA: &str = r#"
@@ -116,22 +160,38 @@ CREATE TABLE IF NOT EXISTS outputs (
 );
 "#;
 
-impl Store {
-    pub fn open(path: &str) -> Result<Store> {
+/// SQLite-backed `Store`. ponytail: one process-wide Mutex<Connection>. Fine at
+/// council scale (router + light writes). Swap the whole type for a networked
+/// `Store` impl in production (design §6c).
+pub struct SqliteStore {
+    conn: Mutex<Connection>,
+}
+
+impl SqliteStore {
+    pub fn open(path: &str) -> Result<SqliteStore> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Store { conn: Mutex::new(conn) })
+        Ok(SqliteStore { conn: Mutex::new(conn) })
     }
 
-    pub fn memory() -> Result<Store> {
+    pub fn memory() -> Result<SqliteStore> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Store { conn: Mutex::new(conn) })
+        Ok(SqliteStore { conn: Mutex::new(conn) })
     }
 
-    // --- bots / identity ---
+    fn thread_locked(&self, c: &Connection, session_id: &str) -> Result<Option<String>> {
+        Ok(c.query_row(
+            "SELECT id FROM threads WHERE session_id = ?1",
+            params![session_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?)
+    }
+}
 
-    pub fn register_bot(&self, name: &str, role: &str, token_hash: &str) -> Result<Bot> {
+impl Store for SqliteStore {
+    fn register_bot(&self, name: &str, role: &str, token_hash: &str) -> Result<Bot> {
         let id = new_id("bot");
         let c = self.conn.lock().unwrap();
         c.execute(
@@ -141,7 +201,7 @@ impl Store {
         Ok(Bot { id, name: name.to_string(), role: role.to_string() })
     }
 
-    pub fn bot_by_token_hash(&self, token_hash: &str) -> Result<Option<Bot>> {
+    fn bot_by_token_hash(&self, token_hash: &str) -> Result<Option<Bot>> {
         let c = self.conn.lock().unwrap();
         let bot = c
             .query_row(
@@ -153,7 +213,7 @@ impl Store {
         Ok(bot)
     }
 
-    pub fn bot(&self, id: &str) -> Result<Option<Bot>> {
+    fn bot(&self, id: &str) -> Result<Option<Bot>> {
         let c = self.conn.lock().unwrap();
         let bot = c
             .query_row(
@@ -165,7 +225,7 @@ impl Store {
         Ok(bot)
     }
 
-    pub fn set_connected(&self, bot_id: &str, connected: bool) -> Result<()> {
+    fn set_connected(&self, bot_id: &str, connected: bool) -> Result<()> {
         let c = self.conn.lock().unwrap();
         c.execute(
             "UPDATE bots SET connected = ?2, last_seen = ?3 WHERE id = ?1",
@@ -174,9 +234,7 @@ impl Store {
         Ok(())
     }
 
-    // --- sessions ---
-
-    pub fn create_session(
+    fn create_session(
         &self,
         title: &str,
         trigger_ref: Option<&str>,
@@ -212,7 +270,7 @@ impl Store {
         })
     }
 
-    pub fn session(&self, id: &str) -> Result<Option<Session>> {
+    fn session(&self, id: &str) -> Result<Option<Session>> {
         let c = self.conn.lock().unwrap();
         let s = c
             .query_row(
@@ -236,7 +294,7 @@ impl Store {
         Ok(s)
     }
 
-    pub fn set_state(&self, session_id: &str, state: SessionState) -> Result<()> {
+    fn set_state(&self, session_id: &str, state: SessionState) -> Result<()> {
         let closed_at = if matches!(state, SessionState::Closed | SessionState::Aborted) {
             Some(now_ms())
         } else {
@@ -250,10 +308,7 @@ impl Store {
         Ok(())
     }
 
-    /// Atomic guarded transition. Returns true iff this call performed it
-    /// (state was `from`). Lets concurrent repliers fire one-shot transitions
-    /// (deliberating→quorum, quorum→closed) exactly once.
-    pub fn advance_state(
+    fn advance_state(
         &self,
         session_id: &str,
         from: SessionState,
@@ -273,19 +328,14 @@ impl Store {
         Ok(n == 1)
     }
 
-    pub fn roster(&self, session_id: &str) -> Result<Vec<String>> {
+    fn roster(&self, session_id: &str) -> Result<Vec<String>> {
         let c = self.conn.lock().unwrap();
-        let mut stmt =
-            c.prepare("SELECT bot_id FROM session_bots WHERE session_id = ?1")?;
+        let mut stmt = c.prepare("SELECT bot_id FROM session_bots WHERE session_id = ?1")?;
         let rows = stmt.query_map(params![session_id], |r| r.get::<_, String>(0))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    // --- threads (convergence invariant §6a) ---
-
-    /// One thread per session (convergence invariant §6a). First create wins;
-    /// concurrent callers get the same thread_id.
-    pub fn upsert_thread(&self, session_id: &str, root_message_id: Option<&str>) -> Result<String> {
+    fn upsert_thread(&self, session_id: &str, root_message_id: Option<&str>) -> Result<String> {
         let c = self.conn.lock().unwrap();
         if let Some(existing) = self.thread_locked(&c, session_id)? {
             return Ok(existing);
@@ -298,24 +348,12 @@ impl Store {
         Ok(id)
     }
 
-    pub fn thread_for_session(&self, session_id: &str) -> Result<Option<String>> {
+    fn thread_for_session(&self, session_id: &str) -> Result<Option<String>> {
         let c = self.conn.lock().unwrap();
         self.thread_locked(&c, session_id)
     }
 
-    fn thread_locked(&self, c: &Connection, session_id: &str) -> Result<Option<String>> {
-        Ok(c.query_row(
-            "SELECT id FROM threads WHERE session_id = ?1",
-            params![session_id],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?)
-    }
-
-    // --- messages ---
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_message(
+    fn add_message(
         &self,
         session_id: &str,
         thread_id: Option<&str>,
@@ -344,7 +382,7 @@ impl Store {
         })
     }
 
-    pub fn edit_message(&self, message_id: &str, content: &str) -> Result<()> {
+    fn edit_message(&self, message_id: &str, content: &str) -> Result<()> {
         let c = self.conn.lock().unwrap();
         c.execute(
             "UPDATE messages SET content = ?2 WHERE id = ?1",
@@ -353,7 +391,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn messages(&self, session_id: &str) -> Result<Vec<Message>> {
+    fn messages(&self, session_id: &str) -> Result<Vec<Message>> {
         let c = self.conn.lock().unwrap();
         let mut stmt = c.prepare(
             "SELECT id, session_id, thread_id, author_kind, author_id, content, reply_to, created_at
@@ -374,9 +412,7 @@ impl Store {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    // --- reactions (quorum signal) ---
-
-    pub fn add_reaction(&self, message_id: &str, bot_id: &str, emoji: &str) -> Result<()> {
+    fn add_reaction(&self, message_id: &str, bot_id: &str, emoji: &str) -> Result<()> {
         let c = self.conn.lock().unwrap();
         c.execute(
             "INSERT OR IGNORE INTO reactions (message_id, bot_id, emoji) VALUES (?1, ?2, ?3)",
@@ -385,7 +421,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn remove_reaction(&self, message_id: &str, bot_id: &str, emoji: &str) -> Result<()> {
+    fn remove_reaction(&self, message_id: &str, bot_id: &str, emoji: &str) -> Result<()> {
         let c = self.conn.lock().unwrap();
         c.execute(
             "DELETE FROM reactions WHERE message_id = ?1 AND bot_id = ?2 AND emoji = ?3",
@@ -394,8 +430,7 @@ impl Store {
         Ok(())
     }
 
-    /// Distinct bots that have reacted with `emoji` anywhere in this session.
-    pub fn reactors_in_session(&self, session_id: &str, emoji: &str) -> Result<Vec<String>> {
+    fn reactors_in_session(&self, session_id: &str, emoji: &str) -> Result<Vec<String>> {
         let c = self.conn.lock().unwrap();
         let mut stmt = c.prepare(
             "SELECT DISTINCT r.bot_id FROM reactions r
@@ -406,9 +441,7 @@ impl Store {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    // --- outputs ---
-
-    pub fn add_output(&self, session_id: &str, kind: &str, target: &str) -> Result<String> {
+    fn add_output(&self, session_id: &str, kind: &str, target: &str) -> Result<String> {
         let id = new_id("out");
         let c = self.conn.lock().unwrap();
         c.execute(
@@ -419,7 +452,7 @@ impl Store {
         Ok(id)
     }
 
-    pub fn set_output_status(&self, output_id: &str, status: &str) -> Result<()> {
+    fn set_output_status(&self, output_id: &str, status: &str) -> Result<()> {
         let c = self.conn.lock().unwrap();
         c.execute(
             "UPDATE outputs SET status = ?2 WHERE id = ?1",

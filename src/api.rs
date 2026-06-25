@@ -53,7 +53,7 @@ async fn register_bot(
     Json(req): Json<RegisterBot>,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
-    let (bot, token) = identity::issue(&state.store, &req.name, &req.role)
+    let (bot, token) = identity::issue(state.store.as_ref(), &req.name, &req.role)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(json!({ "bot_id": bot.id, "token": token, "role": bot.role })))
 }
