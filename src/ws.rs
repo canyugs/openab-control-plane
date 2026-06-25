@@ -30,7 +30,7 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
-    state.register_conn(&bot_id, tx);
+    let conn_gen = state.register_conn(&bot_id, tx);
     let _ = state.store.set_connected(&bot_id, true);
     tracing::info!("bot {bot_id} connected");
 
@@ -59,7 +59,7 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
         }
     }
 
-    state.unregister_conn(&bot_id);
+    state.unregister_conn(&bot_id, conn_gen);
     let _ = state.store.set_connected(&bot_id, false);
     send_task.abort();
     tracing::info!("bot {bot_id} disconnected");
