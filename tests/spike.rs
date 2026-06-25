@@ -116,6 +116,9 @@ fn spawn_panel_bot(addr: SocketAddr, token: String, session: String, name: Strin
                 }
                 Role::Chair if sender == "system" => {
                     w.send(reply(&session, "VERDICT: approved", None, None, None)).await.ok();
+                    // done-signal after the verdict turn (real OAB set_done → 🆗);
+                    // the plane closes the session on the chair's done, not its send.
+                    w.send(reply(&session, "🆗", Some("add_reaction"), Some(&msg_id), None)).await.ok();
                 }
                 _ => {}
             }

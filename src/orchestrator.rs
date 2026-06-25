@@ -138,15 +138,9 @@ fn on_send(state: &Arc<AppState>, session: &Session, bot_id: &str, bot_name: &st
     fanout(state, session, &msg, bot_sender(bot_id, bot_name), vec![])?;
     state.emit_north("message", &session.id, json!({ "message_id": msg.id, "author": bot_name, "content": reply.content.text }));
     ack(state, bot_id, reply, None, Some(&msg.id));
-
-    // Chair's message while in quorum = the verdict → close.
-    if session.chair_bot.as_deref() == Some(bot_id)
-        && state.store.advance_state(&session.id, SessionState::Quorum, SessionState::Closed)?
-    {
-        state.emit_north("verdict", &session.id, json!({ "text": reply.content.text }));
-        state.emit_north("state", &session.id, json!({ "state": "closed" }));
-        output::fire(state, session, &reply.content.text)?;
-    }
+    // The chair's verdict is closed out on its done-signal (see
+    // `maybe_close_verdict`), not here — on_send only ever sees the streaming
+    // stub, so closing here would emit `…` as the verdict.
     Ok(())
 }
 
@@ -173,7 +167,33 @@ fn on_reaction(state: &Arc<AppState>, session: &Session, bot_id: &str, reply: &G
     if add && emoji == DONE_EMOJI {
         share_final_with_chair(state, session, bot_id)?;
         maybe_quorum(state, session)?;
+        maybe_close_verdict(state, session, bot_id)?;
     }
+    Ok(())
+}
+
+/// The chair's done-signal while the session is in Quorum means its verdict is
+/// complete. Close the session and emit the chair's *final* (edit-filled)
+/// message as the verdict — not the streaming stub `on_send` would have seen.
+/// The Quorum→Closed guard makes this fire only after quorum + only once.
+fn maybe_close_verdict(state: &Arc<AppState>, session: &Session, bot_id: &str) -> Result<()> {
+    if session.chair_bot.as_deref() != Some(bot_id) {
+        return Ok(());
+    }
+    if !state.store.advance_state(&session.id, SessionState::Quorum, SessionState::Closed)? {
+        return Ok(()); // not in quorum yet, or already closed by another reply
+    }
+    let verdict = state
+        .store
+        .messages(&session.id)?
+        .into_iter()
+        .filter(|m| m.author_id.as_deref() == Some(bot_id))
+        .next_back()
+        .map(|m| m.content)
+        .unwrap_or_default();
+    state.emit_north("verdict", &session.id, json!({ "text": verdict }));
+    state.emit_north("state", &session.id, json!({ "state": "closed" }));
+    output::fire(state, session, &verdict)?;
     Ok(())
 }
 
