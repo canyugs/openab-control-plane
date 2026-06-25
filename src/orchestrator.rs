@@ -109,7 +109,17 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
     let bot = state.store.bot(bot_id)?;
     let bot_name = bot.as_ref().map(|b| b.name.clone()).unwrap_or_default();
 
+    // Once closed, drop new sends/topics — a bot whose turn was already in
+    // flight at close time would otherwise append a post-verdict message (often
+    // a "…" stub). Edits still apply (the verdict can finish filling) and
+    // reactions are harmless (delivery is already gated in deliver_event).
+    let closed = matches!(
+        SessionState::from_str(&session.state),
+        SessionState::Closed | SessionState::Aborted
+    );
     match reply.command.as_deref() {
+        None if closed => {}
+        Some("create_topic") if closed => {}
         None => on_send(state, &session, bot_id, &bot_name, &reply)?,
         Some("create_topic") => on_create_topic(state, &session, bot_id, &reply)?,
         Some("add_reaction") => on_reaction(state, &session, bot_id, &reply, true)?,
