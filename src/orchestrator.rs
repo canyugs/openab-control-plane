@@ -59,12 +59,11 @@ fn fanout(state: &AppState, session: &Session, msg: &Message, sender: SenderInfo
 }
 
 /// Client posts the opening intent. Stores it, moves open→deliberating, fans the
-/// trigger to the whole roster (mentioning the chair so it opens the thread).
+/// trigger to the whole roster (mentioning each recipient so its OAB gate opens).
 pub fn post_client_message(state: &Arc<AppState>, session_id: &str, content: &str) -> Result<Message> {
-    let session = match state.store.session(session_id)? {
-        Some(s) => s,
-        None => anyhow::bail!("unknown session {session_id}"),
-    };
+    if state.store.session(session_id)?.is_none() {
+        anyhow::bail!("unknown session {session_id}");
+    }
     let msg = state.store.add_message(session_id, None, "client", None, content, None)?;
     state.store.advance_state(session_id, SessionState::Open, SessionState::Deliberating)?;
 
@@ -172,8 +171,43 @@ fn on_reaction(state: &Arc<AppState>, session: &Session, bot_id: &str, reply: &G
     ack(state, bot_id, reply, None, None);
 
     if add && emoji == DONE_EMOJI {
+        share_final_with_chair(state, session, bot_id)?;
         maybe_quorum(state, session)?;
     }
+    Ok(())
+}
+
+/// On a reviewer's done-signal, deliver its *settled* final reply to the chair
+/// so the chair can synthesize a verdict. We suppress streaming-stub fanout (see
+/// `fanout`), so without this the chair would only ever see "…" from peers and
+/// can't render a quorum verdict. In-thread delivery → no mention needed (OAB
+/// bypasses @mention gating inside a thread).
+fn share_final_with_chair(state: &Arc<AppState>, session: &Session, bot_id: &str) -> Result<()> {
+    let Some(chair) = session.chair_bot.as_deref() else { return Ok(()) };
+    if bot_id == chair {
+        return Ok(()); // the chair's own done-signal needs no relay
+    }
+    let last = state
+        .store
+        .messages(&session.id)?
+        .into_iter()
+        .filter(|m| m.author_id.as_deref() == Some(bot_id))
+        .next_back();
+    let Some(msg) = last else { return Ok(()) };
+    if msg.content.trim().is_empty() || msg.content.trim() == "…" {
+        return Ok(());
+    }
+    let bname = state.store.bot(bot_id)?.map(|b| b.name).unwrap_or_default();
+    let thread = state.store.thread_for_session(&session.id)?;
+    state.deliver_event(
+        chair,
+        &session.id,
+        thread.as_deref(),
+        bot_sender(bot_id, &bname),
+        Content::text(&msg.content),
+        vec![],
+        &msg.id,
+    );
     Ok(())
 }
 
