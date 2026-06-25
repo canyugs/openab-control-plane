@@ -25,6 +25,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/v1/sessions", post(open_session))
         .route("/v1/sessions/:id", get(get_session))
         .route("/v1/sessions/:id/messages", post(post_message))
+        .route("/v1/sessions/:id/roster", post(add_roster))
         .route("/v1/sessions/:id/stream", get(stream_session))
         // served on the internal network to stock OAB pods (like openab-hub's
         // /bot-config); no client auth — the token IS the bot's credential.
@@ -107,6 +108,23 @@ async fn post_message(
     let msg = orchestrator::post_client_message(&state, &id, &req.content)
         .map_err(|_| StatusCode::NOT_FOUND)?;
     Ok(Json(json!({ "message_id": msg.id })))
+}
+
+#[derive(Deserialize)]
+struct AddRoster {
+    bot_id: String,
+}
+
+async fn add_roster(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<AddRoster>,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_auth(&state, &headers)?;
+    let added = orchestrator::add_to_roster(&state, &id, &req.bot_id)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(json!({ "added": added })))
 }
 
 async fn get_session(

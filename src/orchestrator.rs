@@ -96,6 +96,49 @@ pub fn post_client_message(state: &Arc<AppState>, session_id: &str, content: &st
     Ok(msg)
 }
 
+/// Reconstruct the sender of a stored message (for history backfill).
+fn sender_for(state: &AppState, m: &Message) -> SenderInfo {
+    match m.author_kind.as_str() {
+        "bot" => {
+            let id = m.author_id.as_deref().unwrap_or("");
+            let name = state.store.bot(id).ok().flatten().map(|b| b.name).unwrap_or_default();
+            bot_sender(id, &name)
+        }
+        "system" => SenderInfo { id: "system".into(), name: "system".into(), display_name: "system".into(), is_bot: false },
+        _ => SenderInfo { id: "client".into(), name: "client".into(), display_name: "client".into(), is_bot: false },
+    }
+}
+
+/// Add a bot to a session mid-flight and backfill the conversation so far. The
+/// history is replayed through the durable outbox (same as live delivery), so it
+/// arrives in order whether the bot is online now or connects later — OAB batches
+/// the in-thread burst into context. Returns false if it was already a member.
+pub fn add_to_roster(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Result<bool> {
+    if state.store.session(session_id)?.is_none() {
+        anyhow::bail!("unknown session {session_id}");
+    }
+    if !state.store.add_session_bot(session_id, bot_id)? {
+        return Ok(false); // already a member — outbox already covers it
+    }
+    let thread = state.store.thread_for_session(session_id)?;
+    for m in state.store.messages(session_id)? {
+        if m.author_id.as_deref() == Some(bot_id) {
+            continue; // don't echo the joiner's own messages
+        }
+        state.deliver_event(
+            bot_id,
+            session_id,
+            thread.as_deref(),
+            sender_for(state, &m),
+            Content::text(&m.content),
+            vec![],
+            &m.id,
+        );
+    }
+    state.emit_north("roster_add", session_id, json!({ "bot": bot_id }));
+    Ok(true)
+}
+
 /// Dispatch a bot's GatewayReply (the south handler core).
 pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) -> Result<()> {
     let session_id = reply.channel.id.clone();
@@ -323,6 +366,33 @@ mod tests {
             request_id: None,
             quote_message_id: None,
         }
+    }
+
+    #[test]
+    fn late_joiner_is_backfilled_with_history() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let latecomer = store.register_bot("late", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session("t", None, 0, Some(&chair.id), &[chair.id.clone()])
+            .unwrap();
+        store.advance_state(&session.id, SessionState::Open, SessionState::Deliberating).unwrap();
+        // history exists before the latecomer joins
+        store.add_message(&session.id, None, "client", None, "the task", None).unwrap();
+        store.add_message(&session.id, None, "bot", Some(&chair.id), "chair's take", None).unwrap();
+
+        // latecomer joins → backfill enqueues the prior messages into its outbox
+        let added = add_to_roster(&state, &session.id, &latecomer.id).unwrap();
+        assert!(added);
+        let queued: Vec<_> = store.pending_outbox(&latecomer.id).unwrap();
+        assert_eq!(queued.len(), 2, "both prior messages backfilled");
+        assert!(queued.iter().any(|(_, f)| f.contains("the task")));
+        assert!(queued.iter().any(|(_, f)| f.contains("chair's take")));
+
+        // re-adding is a no-op (no duplicate backfill)
+        assert!(!add_to_roster(&state, &session.id, &latecomer.id).unwrap());
+        assert_eq!(store.pending_outbox(&latecomer.id).unwrap().len(), 2);
     }
 
     #[test]

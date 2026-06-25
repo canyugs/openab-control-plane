@@ -103,6 +103,9 @@ pub trait Store: Send + Sync {
         roster: &[String],
     ) -> Result<Session>;
     fn session(&self, id: &str) -> Result<Option<Session>>;
+    /// Add a bot to a session roster. Returns true if newly added (false if it
+    /// was already a member) — the caller backfills history only on a fresh join.
+    fn add_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool>;
     fn set_state(&self, session_id: &str, state: SessionState) -> Result<()>;
     fn advance_state(&self, session_id: &str, from: SessionState, to: SessionState) -> Result<bool>;
     fn roster(&self, session_id: &str) -> Result<Vec<String>>;
@@ -319,6 +322,15 @@ impl Store for SqliteStore {
             )
             .optional()?;
         Ok(s)
+    }
+
+    fn add_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool> {
+        let c = self.conn.lock().unwrap();
+        let n = c.execute(
+            "INSERT OR IGNORE INTO session_bots (session_id, bot_id) VALUES (?1, ?2)",
+            params![session_id, bot_id],
+        )?;
+        Ok(n == 1)
     }
 
     fn set_state(&self, session_id: &str, state: SessionState) -> Result<()> {
