@@ -61,6 +61,11 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
   watchdog above). Test: must it hold even if a bot is slow/dead/buggy/malicious/
   hallucinating? → plane. `pipeline` (ordering guarantee) is the strongest mode;
   `council`/`solo` are weak (steering can do them). See `docs/design.md`.
+- **Three planes, split by guarantee (ADR 001).** gateway = delivery, policy =
+  safety+liveness, membership = admission. **Stay one binary for now**; the
+  `Coordinator` trait (→ `WebhookCoordinator`) is the policy split's escape hatch.
+  Membership (dynamic join, bot self-recruitment) is the real future seam but is a
+  guarantee/admission problem, not a feature — and it comes *after* the watchdog.
 - **OAB-contract invariant:** plane-internal only — no new gateway wire types, no
   OAB change. `tests/spike.rs` (mock bots over the real wire) is the guardrail.
 - **Disposition discipline:** speculative policy → cut; privileged config

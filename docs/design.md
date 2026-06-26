@@ -97,7 +97,10 @@ The answer is not *more* coordination. It is **guarantee**:
 > die). The plane guarantees (deterministic — the invariant holds regardless).
 
 OCP is the layer that holds the invariants the LLMs can't be trusted to hold.
-Two classes, the standard distributed-systems split:
+This guarantee responsibility is also the axis OCP decomposes along (gateway =
+delivery, policy = safety+liveness, membership = admission) — see
+[ADR 001](adr/001-three-planes.md). Two classes, the standard distributed-systems
+split:
 
 | Guarantee | Class | Status |
 |-----------|-------|--------|

@@ -74,11 +74,14 @@ Goal: richer multi-agent patterns beyond broadcast+quorum.
 
 ## Phase 4 — Platform
 
-Goal: multi-tenant, discoverable, extensible.
+Goal: multi-tenant, discoverable, extensible. Most items here build out the
+**membership plane** (who exists / who's alive / who may join) — the weakest of
+the three planes today; see [ADR 001](docs/adr/001-three-planes.md).
 
 | Item | Status | Notes |
 |------|--------|-------|
-| **Bot discovery** — dynamic registration, capability advertisement, health-aware roster | TODO | Currently static `OABCP_BOTS` |
+| **Bot discovery (membership plane)** — dynamic registration, capability advertisement, health-aware roster; join/leave as first-class events | TODO | Moves membership from boot-time-static `OABCP_BOTS` to a dynamic registry. `add_to_roster` + backfill is the start |
+| **Self-recruitment + admission control** — a bot can request adding a member; the plane *guarantees* admission (quota, authz, backfill), never honors it just because a bot asked | TODO | A guarantee problem, not a feature — a hallucinating/malicious bot must not spawn unbounded peers. Pod provisioning (Zeabur) is a separate trust domain → fleet/provisioner, off the coordination hot path. See ADR 001 |
 | **Hooks** — `on_session_open`, `on_quorum`, `on_verdict`, `on_bot_connect` | TODO | Plane-native (Rust trait) vs external (webhook) TBD |
 | **Multi-tenant auth** — per-org API keys, OAuth/OIDC for humans | TODO | Currently single bearer key |
 | **HA / scale** — Postgres/libSQL store, multi-process | TODO | Store trait seam exists, untested |
