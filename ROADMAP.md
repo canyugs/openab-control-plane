@@ -30,6 +30,7 @@ succeeds."
 
 | Item | Status | Notes |
 |------|--------|-------|
+| **Liveness watchdog — timeout → forced `Close`** | TODO | **Completes OCP's reason to exist** (the *guarantee* layer — see [design: steering vs policy](docs/design.md)). A silent reviewer makes `QuorumCouncil` hang forever today. A session-level timeout drives `Close` with the reviews in hand, marking absentees in the verdict — the one guarantee prose can't make (a dead bot can't run its own fallback). Reuses `last_seen`; richer per-step/heartbeat detection stays Phase 3 |
 | **BYOK** — accept user-provided `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` | TODO | AI Hub keys are opt-in add-on, not default |
 | **Shared steering via `pre_seed`** — review output format + rules delivered to bots as an object-store layer (`shared/default.tar.gz`), not stuffed in every trigger | TODO | OAB's job, not the plane's (see [design scope](docs/design.md)). Mechanism: OAB `[hooks.pre_seed]` layer concept — base shared layer + per-agent override. Use **Cloudflare R2 / any S3-compatible store via `endpoint_url`** (our users are on Zeabur/Cloudflare, not AWS). Ref: OAB `docs/hooks.md` (beta.3). Package `docs/steering/pr-review.md` into the shared archive |
 | **Preset-driven roster** — quick=2, standard=3, full=5; idle bots don't join | TODO | Solves slowness: fewer bots for small PRs |
@@ -68,7 +69,7 @@ Goal: richer multi-agent patterns beyond broadcast+quorum.
 | Item | Status | Notes |
 |------|--------|-------|
 | **Shared blackboard** — KV/task state agents read+write (claim tasks, partial results) | TODO | Design first: KV vs task-list+claim |
-| **Liveness / timeouts** — heartbeat-driven stall detection, step timeouts | TODO | `last_seen` recorded but unused |
+| **Liveness / timeouts** — heartbeat-driven stall detection, per-step timeouts | TODO | Richer detection beyond the Phase 1 session-close watchdog (which guarantees termination). `last_seen` recorded but unused |
 | **Targeted addressing / handoff** — first-class A→B direct send | TODO | Currently broadcast + @mention-gate |
 
 ## Phase 4 — Platform

@@ -81,3 +81,50 @@ The discipline isn't "delete every mode-specific thing now" — it's the right
   its own config — i.e. `Debate`'s round count. Not before.
 - **Substrate → accept.** The broadcast-thread + `🆗` convention is the floor,
   forced by riding stock OAB. Not a leak to fix.
+
+## Steering vs policy — what OCP actually guarantees
+
+A running PR-review council (`multi-agent-review`) proves coordination needs **no
+plane**: one shared `AGENTS.md` carries the roster, the quorum rule ("synthesize
+at ≥5 `[done]`"), the handoff signal, and the side-effect (`gh pr comment`). The
+aggregator *LLM* counts quorum; GitHub *is* the north contract. So the honest
+question is not "can a plane coordinate" — steering already does — but **what does
+a plane add that prose cannot.**
+
+The answer is not *more* coordination. It is **guarantee**:
+
+> Steering proposes (probabilistic — the LLM might miscount, skip a step, race, or
+> die). The plane guarantees (deterministic — the invariant holds regardless).
+
+OCP is the layer that holds the invariants the LLMs can't be trusted to hold.
+Two classes, the standard distributed-systems split:
+
+| Guarantee | Class | Status |
+|-----------|-------|--------|
+| once-only + ordered (close once, transition once) | safety | ✅ CAS `advance_state` |
+| only authorized members act | safety | ✅ roster gate |
+| nothing acts after close | safety | ✅ post-close drop |
+| no message lost across disconnect | safety | ✅ outbox + replay |
+| **the session always reaches a terminal verdict** | **liveness** | **❌ not built — no watchdog** |
+
+**Test for "is it OCP's job":** must it hold even if a bot is slow, dead, buggy,
+malicious, or hallucinating? → plane. Only when bots behave? → steering.
+(`aggregator-output.md` shouting "You MUST post to GitHub" is the tell: a prose
+step is skippable; a plane makes the outcome a structural consequence of reaching
+`Closed`, not a step a model might forget.)
+
+Consequence — an honest self-assessment of the modes:
+
+- **`pipeline` is the strongest case for a plane.** "B must not start before A" is
+  exactly what prose enforces unreliably (LLMs jump the gun); mention-gating makes
+  the ordering a *delivery guarantee*.
+- **`council`/`solo` are weak.** Council is what `multi-agent-review` already does
+  in steering; `QuorumCouncil` only earns its place if you need determinism, a
+  non-Discord/programmatic verdict, or the liveness guarantee below. (`solo` exists
+  only to patch a 1-bot hang the plane *itself* introduced by taking over quorum.)
+- **The safety half is real today; the liveness half is the gap.** OCP does not yet
+  deliver its headline promise — a silent reviewer makes `QuorumCouncil` hang
+  forever (same failure as the steering version's flaky attendance). A timeout that
+  forces `Close` regardless of participant silence is structurally impossible in
+  pure prose — a dead bot can't run its own "wait 30 min then proceed" — so it is
+  precisely the plane's job, and the highest-value next item (ROADMAP Phase 1).

@@ -30,22 +30,37 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
 
 ## Next — priority order
 
-1. **Security (do soon):** rotate the GitHub PAT pasted in plaintext; rotate the
+1. **Liveness watchdog: timeout → forced `Close`.** *The* highest-value item — it
+   completes OCP's reason to exist (the **guarantee layer**; see `docs/design.md`
+   "Steering vs policy"). Today a silent reviewer hangs `QuorumCouncil` forever
+   (same failure as the steering council's flaky attendance). Add a session-level
+   deadline → on expiry, `Close` with reviews-in-hand, marking absentees in the
+   verdict. Structurally impossible in prose (a dead bot can't run its own
+   fallback), so it is precisely the plane's job. Reuses `last_seen`. Keep
+   solo/pipeline/1/3/5-bot spike green.
+2. **Security (do soon):** rotate the GitHub PAT pasted in plaintext; rotate the
    leaked `CLAUDE_CODE_OAUTH_TOKEN` (see memory). Needs your account access.
-2. **`Debate` mode — only when multi-round is a real product need.** This is the
+3. **`Debate` mode — only when multi-round is a real product need.** This is the
    mode that *does* force `on_reply` + round state + per-coordinator config
    (generalizes `quorum_n`); `Pipeline` proved the seam without any of it. Don't
    build speculatively.
-3. **Other Phase 1 ROADMAP items (TODO):** shared steering via `pre_seed`
+4. **Other Phase 1 ROADMAP items (TODO):** shared steering via `pre_seed`
    (R2/`endpoint_url`), GitHub App identity (approve/request-changes on own PRs),
    per-role scoped tokens, preset-driven roster, application-shim formalization.
-4. **Optional:** pin template image by `@sha256` digest (supply-chain) — deferred.
+5. **Optional:** pin template image by `@sha256` digest (supply-chain) — deferred.
 
 ## Constraints (decided — don't relitigate)
 
 - **OCP = pluggable coordination *policy* over a fixed OAB-gateway communication
   *substrate*.** Quorum is policy (`QuorumCouncil`), not core. The substrate
   (broadcast thread + `🆗` done-signal) is the floor, forced by riding stock OAB.
+- **OCP's role = the guarantee layer, not "more coordination."** Steering already
+  coordinates (a real Discord council does roster+quorum+verdict in prose); the
+  plane's job is the invariants prose can't hold — *safety* (once-only, ordering,
+  auth, post-close drop — all ✅) and *liveness* (always terminates — ❌, the
+  watchdog above). Test: must it hold even if a bot is slow/dead/buggy/malicious/
+  hallucinating? → plane. `pipeline` (ordering guarantee) is the strongest mode;
+  `council`/`solo` are weak (steering can do them). See `docs/design.md`.
 - **OAB-contract invariant:** plane-internal only — no new gateway wire types, no
   OAB change. `tests/spike.rs` (mock bots over the real wire) is the guardrail.
 - **Disposition discipline:** speculative policy → cut; privileged config
