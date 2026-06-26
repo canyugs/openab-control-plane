@@ -81,7 +81,8 @@ the three planes today; see [ADR 001](docs/adr/001-three-planes.md).
 | Item | Status | Notes |
 |------|--------|-------|
 | **Bot discovery (membership plane)** — dynamic registration, capability advertisement, health-aware roster; join/leave as first-class events | TODO | Moves membership from boot-time-static `OABCP_BOTS` to a dynamic registry. `add_to_roster` + backfill is the start |
-| **Self-recruitment + admission control** — a bot can request adding a member; the plane *guarantees* admission (quota, authz, backfill), never honors it just because a bot asked | TODO | A guarantee problem, not a feature — a hallucinating/malicious bot must not spawn unbounded peers. Pod provisioning (Zeabur) is a separate trust domain → fleet/provisioner, off the coordination hot path. See ADR 001 |
+| **Admission gate** — every roster add passes one chokepoint guaranteeing a bounded, valid roster (registered bot + `OABCP_MAX_ROSTER` quota) | ✅ | `orchestrator::admit` (pure) + `add_to_roster` → `Admission`; `POST .../roster` returns `409` on reject. Fixed a real bug (could add an unregistered bot that hangs the roster). The gate self-recruit will ride |
+| **Self-recruitment + per-bot authz** — a bot can request adding a member; the plane decides admission, never honors it just because a bot asked | TODO | Builds on the admission gate above. Adds the bot-facing recruit path + *which* bots may recruit. A hallucinating/malicious bot must not spawn unbounded peers. Pod provisioning (Zeabur) is a separate trust domain → fleet/provisioner, off the hot path. See ADR 001 |
 | **Hooks** — `on_session_open`, `on_quorum`, `on_verdict`, `on_bot_connect` | TODO | Plane-native (Rust trait) vs external (webhook) TBD |
 | **Multi-tenant auth** — per-org API keys, OAuth/OIDC for humans | TODO | Currently single bearer key |
 | **HA / scale** — Postgres/libSQL store, multi-process | TODO | Store trait seam exists, untested |

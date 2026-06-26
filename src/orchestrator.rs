@@ -143,16 +143,63 @@ fn sender_for(state: &AppState, m: &Message) -> SenderInfo {
     }
 }
 
-/// Add a bot to a session mid-flight and backfill the conversation so far. The
-/// history is replayed through the durable outbox (same as live delivery), so it
-/// arrives in order whether the bot is online now or connects later — OAB batches
-/// the in-thread burst into context. Returns false if it was already a member.
-pub fn add_to_roster(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Result<bool> {
+/// Outcome of an admission decision (membership plane, ADR 001). The plane
+/// guarantees a session roster stays bounded and valid; every add — north-driven
+/// today, bot-recruited later — passes through this one gate.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Admission {
+    Added,
+    AlreadyMember,
+    Rejected(&'static str),
+}
+
+/// Pure admission policy → unit-tested; `add_to_roster` supplies the live values.
+/// `Added` is provisional approval — the caller still performs the insert+backfill.
+fn admit(known: bool, already_member: bool, roster_len: usize, max: usize) -> Admission {
+    if already_member {
+        Admission::AlreadyMember // idempotent re-add, even at capacity
+    } else if !known {
+        Admission::Rejected("unknown bot") // never registered → would hang the roster
+    } else if roster_len >= max {
+        Admission::Rejected("roster full") // bounded growth
+    } else {
+        Admission::Added
+    }
+}
+
+/// Max session roster size (admission quota). ponytail: env read per add — adds
+/// are rare mid-session events; default 16, bump via `OABCP_MAX_ROSTER`.
+fn max_roster() -> usize {
+    std::env::var("OABCP_MAX_ROSTER")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(16)
+}
+
+/// Add a bot to a session mid-flight and backfill the conversation so far,
+/// through the admission gate. The history is replayed via the durable outbox
+/// (same as live delivery), so it arrives in order whether the bot is online now
+/// or connects later — OAB batches the in-thread burst into context. Errors only
+/// on an unknown session; rejection/idempotency are reported via `Admission`.
+pub fn add_to_roster(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Result<Admission> {
     if state.store.session(session_id)?.is_none() {
         anyhow::bail!("unknown session {session_id}");
     }
+    let roster = state.store.roster(session_id)?;
+    let decision = admit(
+        state.store.bot(bot_id)?.is_some(),
+        roster.iter().any(|b| b == bot_id),
+        roster.len(),
+        max_roster(),
+    );
+    if decision != Admission::Added {
+        return Ok(decision);
+    }
+    // approved → insert + backfill. add_session_bot stays the authoritative guard
+    // (false on a concurrent double-add → already a member, skip the backfill).
     if !state.store.add_session_bot(session_id, bot_id)? {
-        return Ok(false); // already a member — outbox already covers it
+        return Ok(Admission::AlreadyMember);
     }
     let thread = state.store.thread_for_session(session_id)?;
     for m in state.store.messages(session_id)? {
@@ -170,7 +217,7 @@ pub fn add_to_roster(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> R
         );
     }
     state.emit_north("roster_add", session_id, json!({ "bot": bot_id }));
-    Ok(true)
+    Ok(Admission::Added)
 }
 
 /// Dispatch a bot's GatewayReply (the south handler core).
@@ -464,16 +511,40 @@ mod tests {
         store.add_message(&session.id, None, "bot", Some(&chair.id), "chair's take", None).unwrap();
 
         // latecomer joins → backfill enqueues the prior messages into its outbox
-        let added = add_to_roster(&state, &session.id, &latecomer.id).unwrap();
-        assert!(added);
+        assert_eq!(add_to_roster(&state, &session.id, &latecomer.id).unwrap(), Admission::Added);
         let queued: Vec<_> = store.pending_outbox(&latecomer.id).unwrap();
         assert_eq!(queued.len(), 2, "both prior messages backfilled");
         assert!(queued.iter().any(|(_, f)| f.contains("the task")));
         assert!(queued.iter().any(|(_, f)| f.contains("chair's take")));
 
         // re-adding is a no-op (no duplicate backfill)
-        assert!(!add_to_roster(&state, &session.id, &latecomer.id).unwrap());
+        assert_eq!(add_to_roster(&state, &session.id, &latecomer.id).unwrap(), Admission::AlreadyMember);
         assert_eq!(store.pending_outbox(&latecomer.id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn admit_policy_decides() {
+        assert_eq!(admit(true, false, 3, 16), Admission::Added);
+        assert_eq!(admit(false, false, 3, 16), Admission::Rejected("unknown bot"));
+        assert_eq!(admit(true, false, 16, 16), Admission::Rejected("roster full"));
+        // already-a-member wins over both unknown and full (idempotent re-add)
+        assert_eq!(admit(false, true, 99, 16), Admission::AlreadyMember);
+    }
+
+    #[test]
+    fn add_to_roster_rejects_unregistered_bot() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let session = store
+            .create_session("t", None, 0, Some(&chair.id), &[chair.id.clone()], "council")
+            .unwrap();
+
+        // a bot id that was never POST /v1/bots'd must not enter the roster
+        let outcome = add_to_roster(&state, &session.id, "ghost-bot").unwrap();
+        assert_eq!(outcome, Admission::Rejected("unknown bot"));
+        assert!(!store.roster(&session.id).unwrap().iter().any(|b| b == "ghost-bot"));
+        assert!(store.pending_outbox("ghost-bot").unwrap().is_empty(), "no backfill for a rejected bot");
     }
 
     #[test]

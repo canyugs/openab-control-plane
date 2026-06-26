@@ -127,11 +127,17 @@ async fn add_roster(
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<AddRoster>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<axum::response::Response, StatusCode> {
     check_auth(&state, &headers)?;
-    let added = orchestrator::add_to_roster(&state, &id, &req.bot_id)
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    Ok(Json(json!({ "added": added })))
+    use orchestrator::Admission::*;
+    // Err = unknown session (404); admission rejection = 409 with a reason.
+    match orchestrator::add_to_roster(&state, &id, &req.bot_id).map_err(|_| StatusCode::NOT_FOUND)? {
+        Added => Ok(Json(json!({ "added": true })).into_response()),
+        AlreadyMember => Ok(Json(json!({ "added": false })).into_response()),
+        Rejected(reason) => {
+            Ok((StatusCode::CONFLICT, Json(json!({ "added": false, "rejected": reason }))).into_response())
+        }
+    }
 }
 
 async fn get_session(

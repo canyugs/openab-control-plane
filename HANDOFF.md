@@ -38,11 +38,13 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
 
 1. **Security (do soon):** rotate the GitHub PAT pasted in plaintext; rotate the
    leaked `CLAUDE_CODE_OAUTH_TOKEN` (see memory). Needs your account access.
-2. **Membership plane (ADR 001):** dynamic registry (join/leave first-class) +
-   bot self-recruitment behind **admission control** (quota/authz/guaranteed
-   backfill) — a guarantee problem, not a feature. The user's stated direction.
-   Comes after the watchdog (now done): make what exists trustworthy before
-   letting the population grow. ROADMAP Phase 4.
+2. **Membership plane (ADR 001), continued.** inc1 done — the **admission gate**
+   (`orchestrator::admit` + `add_to_roster` → `Admission`; bounded + registered-bot
+   roster, `409` on reject, `OABCP_MAX_ROSTER`). Next:
+   - inc2: **bot self-recruitment** — a bot-facing recruit path through the same
+     gate + per-bot authz (*which* bots may recruit). The user's stated direction.
+   - inc3: provisioner (spin up a pod; separate trust domain, off the hot path).
+   Plus dynamic registry (join/leave as first-class events). ROADMAP Phase 4.
 3. **`Debate` mode — only when multi-round is a real product need.** This is the
    mode that *does* force `on_reply` + round state + per-coordinator config
    (generalizes `quorum_n`); `Pipeline` proved the seam without any of it. Don't
