@@ -220,6 +220,47 @@ pub fn add_to_roster(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> R
     Ok(Admission::Added)
 }
 
+/// Extract a self-recruit target from a bot's message: `[[recruit:<bot_id>]]`.
+/// A text convention (like OAB's `[[reply_to:]]`), so no new gateway wire type.
+fn parse_recruit(text: &str) -> Option<&str> {
+    let start = text.find("[[recruit:")? + "[[recruit:".len();
+    let rest = &text[start..];
+    let end = rest.find("]]")?;
+    let id = rest[..end].trim();
+    (!id.is_empty()).then_some(id)
+}
+
+/// Authz: who may recruit. v1 = the session chair only (the coordination
+/// authority); a reviewer can't unilaterally expand the panel. One place to widen
+/// later (role/allow-list) without touching call sites.
+fn may_recruit(session: &Session, bot_id: &str) -> bool {
+    session.chair_bot.as_deref() == Some(bot_id)
+}
+
+/// Self-recruitment (membership plane inc2, ADR 001): a bot asks to add a member
+/// by embedding `[[recruit:<bot_id>]]` in a normal message. Authorized requests
+/// route through the *same* admission gate (`add_to_roster`) — so quota +
+/// registered-bot still hold; a bot can't bypass them by asking. No new wire type.
+fn maybe_recruit(state: &Arc<AppState>, session: &Session, bot_id: &str, text: &str) -> Result<()> {
+    let Some(target) = parse_recruit(text) else { return Ok(()) };
+    if !may_recruit(session, bot_id) {
+        tracing::warn!("bot {bot_id} not authorized to recruit in session {}", session.id);
+        state.emit_north("recruit_denied", &session.id, json!({ "by": bot_id, "target": target }));
+        return Ok(());
+    }
+    let target = target.to_string();
+    match add_to_roster(state, &session.id, &target)? {
+        Admission::Added => {
+            state.emit_north("recruit", &session.id, json!({ "by": bot_id, "added": target }));
+        }
+        Admission::AlreadyMember => {} // already on the panel — no-op
+        Admission::Rejected(reason) => {
+            state.emit_north("recruit_rejected", &session.id, json!({ "by": bot_id, "target": target, "reason": reason }));
+        }
+    }
+    Ok(())
+}
+
 /// Dispatch a bot's GatewayReply (the south handler core).
 pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) -> Result<()> {
     let session_id = reply.channel.id.clone();
@@ -280,6 +321,9 @@ fn on_send(state: &Arc<AppState>, session: &Session, bot_id: &str, bot_name: &st
     fanout(state, session, &msg, bot_sender(bot_id, bot_name), vec![])?;
     state.emit_north("message", &session.id, json!({ "message_id": msg.id, "author": bot_name, "content": reply.content.text }));
     ack(state, bot_id, reply, None, Some(&msg.id));
+    // A bot may embed `[[recruit:<id>]]` to add a member (chair-only, via the
+    // admission gate). Parsed from the same message — no extra wire command.
+    maybe_recruit(state, session, bot_id, &reply.content.text)?;
     // The chair's verdict is closed out on its done-signal (see
     // `maybe_close_verdict`), not here — on_send only ever sees the streaming
     // stub, so closing here would emit `…` as the verdict.
@@ -529,6 +573,26 @@ mod tests {
         assert_eq!(admit(true, false, 16, 16), Admission::Rejected("roster full"));
         // already-a-member wins over both unknown and full (idempotent re-add)
         assert_eq!(admit(false, true, 99, 16), Admission::AlreadyMember);
+    }
+
+    #[test]
+    fn parse_recruit_extracts_target() {
+        assert_eq!(parse_recruit("let's add [[recruit:rev3]] please"), Some("rev3"));
+        assert_eq!(parse_recruit("[[recruit:  spaced  ]]"), Some("spaced"));
+        assert_eq!(parse_recruit("no directive here"), None);
+        assert_eq!(parse_recruit("[[recruit:]]"), None); // empty target
+    }
+
+    #[test]
+    fn may_recruit_is_chair_only() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev = store.register_bot("rev", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session("t", None, 1, Some(&chair.id), &[chair.id.clone(), rev.id.clone()], "council")
+            .unwrap();
+        assert!(may_recruit(&session, &chair.id), "chair may recruit");
+        assert!(!may_recruit(&session, &rev.id), "reviewer may not recruit");
     }
 
     #[test]

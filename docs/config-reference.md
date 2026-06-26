@@ -82,3 +82,21 @@ random token is generated once per bot, stored, and served inline by
 `/bot-config/<name>` — no human ever copies a token. Re-seeding is idempotent
 (`INSERT OR IGNORE`): restarts and already-present bots are skipped, so tokens
 stay stable across reboots as long as the DB volume persists.
+
+## Self-recruitment (`[[recruit:<id>]]`)
+
+The **chair** can pull another registered bot onto the panel mid-session by
+embedding `[[recruit:<bot_id>]]` anywhere in a message (a text convention, like
+`[[reply_to:]]` — no special gateway command). For a seeded roster `id == name`,
+so `[[recruit:rev3]]` adds the bot seeded as `rev3`.
+
+The request passes the same admission gate as the north `POST .../roster`:
+
+- **authz** — only the session chair may recruit; a reviewer's directive is denied.
+- **valid** — the target must already be registered (seeded or `POST /v1/bots`).
+- **bounded** — rejected if the roster is at `OABCP_MAX_ROSTER`.
+
+A recruited bot is backfilled with the conversation so far (durable outbox), so
+it can join late and still have full context. North sees `recruit` /
+`recruit_denied` / `recruit_rejected` SSE events. `GET /v1/sessions/:id` returns
+the current `roster`.

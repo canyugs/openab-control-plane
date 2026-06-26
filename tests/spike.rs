@@ -377,6 +377,47 @@ fn spawn_pipeline_bot(addr: SocketAddr, token: String, session: String, name: St
     })
 }
 
+/// Self-recruitment over the wire (membership inc2): the chair's `[[recruit:ID]]`
+/// adds a member through the admission gate; a reviewer's is denied (authz). No
+/// new gateway command — recruit rides a normal message's text.
+#[tokio::test]
+async fn chair_recruits_through_admission_gate() {
+    let addr = spawn_server().await;
+    let base = addr.to_string();
+    let (chair_id, chair_tok) = register_bot(&base, "chair", "chair").await;
+    let (rev_id, rev_tok) = register_bot(&base, "rev0", "reviewer").await;
+    // registered, but NOT in the initial roster — recruitment must pull them in
+    let (specialist_id, _) = register_bot(&base, "specialist", "reviewer").await;
+    let (sneaky_id, _) = register_bot(&base, "sneaky", "reviewer").await;
+
+    let session = open_session(&base, &[chair_id.clone(), rev_id.clone()], Some(&chair_id), 1).await;
+
+    let chair_ws = connect(addr, &chair_tok).await;
+    let (mut chair_w, _cr) = chair_ws.split();
+    let rev_ws = connect(addr, &rev_tok).await;
+    let (mut rev_w, _rr) = rev_ws.split();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    post_client(&base, &session, "review this").await;
+
+    // chair recruits the specialist (authorized) — embedded in a normal message
+    chair_w.send(reply(&session, &format!("need a security pass [[recruit:{specialist_id}]]"), None, None, None)).await.unwrap();
+    // reviewer tries to recruit (NOT authorized) — must be denied
+    rev_w.send(reply(&session, &format!("sneaking one in [[recruit:{sneaky_id}]]"), None, None, None)).await.unwrap();
+
+    // poll roster until the specialist appears
+    let mut roster: Vec<String> = vec![];
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let s = get_session(&base, &session).await;
+        roster = s["roster"].as_array().unwrap().iter().filter_map(|v| v.as_str().map(String::from)).collect();
+        if roster.contains(&specialist_id) {
+            break;
+        }
+    }
+    assert!(roster.contains(&specialist_id), "chair's recruit must join the roster: {roster:?}");
+    assert!(!roster.contains(&sneaky_id), "a reviewer's recruit must be denied: {roster:?}");
+}
+
 async fn read_response<S>(r: &mut S, req: &str) -> Value
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,

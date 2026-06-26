@@ -152,7 +152,8 @@ async fn get_session(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     let messages = state.store.messages(&id).unwrap_or_default();
-    Ok(Json(json!({ "session": session, "messages": messages })))
+    let roster = state.store.roster(&id).unwrap_or_default();
+    Ok(Json(json!({ "session": session, "messages": messages, "roster": roster })))
 }
 
 #[derive(Deserialize)]
