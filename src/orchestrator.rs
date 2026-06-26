@@ -237,10 +237,26 @@ fn may_recruit(session: &Session, bot_id: &str) -> bool {
     session.chair_bot.as_deref() == Some(bot_id)
 }
 
-/// Self-recruitment (membership plane inc2, ADR 001): a bot asks to add a member
-/// by embedding `[[recruit:<bot_id>]]` in a normal message. Authorized requests
-/// route through the *same* admission gate (`add_to_roster`) — so quota +
+/// Which north event an authorized recruit produces (`None` = silent no-op).
+/// inc3 seam: an `unknown bot` rejection becomes a `provision_requested` signal —
+/// the cue for an *external* fleet provisioner to spin up that pod, register it,
+/// and add it (OCP never calls the infra API; see `docs/provisioner.md`). A
+/// `roster full` rejection stays a plain rejection.
+fn recruit_event(admission: &Admission) -> Option<&'static str> {
+    match admission {
+        Admission::Added => Some("recruit"),
+        Admission::AlreadyMember => None,
+        Admission::Rejected("unknown bot") => Some("provision_requested"),
+        Admission::Rejected(_) => Some("recruit_rejected"),
+    }
+}
+
+/// Self-recruitment (membership plane inc2/inc3, ADR 001): a bot asks to add a
+/// member by embedding `[[recruit:<bot_id>]]` in a normal message. Authorized
+/// requests route through the *same* admission gate (`add_to_roster`) — so quota +
 /// registered-bot still hold; a bot can't bypass them by asking. No new wire type.
+/// A recruit of an unregistered bot emits `provision_requested` for an external
+/// provisioner rather than failing silently (inc3).
 fn maybe_recruit(state: &Arc<AppState>, session: &Session, bot_id: &str, text: &str) -> Result<()> {
     let Some(target) = parse_recruit(text) else { return Ok(()) };
     if !may_recruit(session, bot_id) {
@@ -249,13 +265,11 @@ fn maybe_recruit(state: &Arc<AppState>, session: &Session, bot_id: &str, text: &
         return Ok(());
     }
     let target = target.to_string();
-    match add_to_roster(state, &session.id, &target)? {
-        Admission::Added => {
-            state.emit_north("recruit", &session.id, json!({ "by": bot_id, "added": target }));
-        }
-        Admission::AlreadyMember => {} // already on the panel — no-op
-        Admission::Rejected(reason) => {
-            state.emit_north("recruit_rejected", &session.id, json!({ "by": bot_id, "target": target, "reason": reason }));
+    let outcome = add_to_roster(state, &session.id, &target)?;
+    if let Some(event) = recruit_event(&outcome) {
+        state.emit_north(event, &session.id, json!({ "by": bot_id, "target": target }));
+        if event == "provision_requested" {
+            tracing::info!("provision requested for '{target}' by {bot_id} in session {}", session.id);
         }
     }
     Ok(())
@@ -581,6 +595,16 @@ mod tests {
         assert_eq!(parse_recruit("[[recruit:  spaced  ]]"), Some("spaced"));
         assert_eq!(parse_recruit("no directive here"), None);
         assert_eq!(parse_recruit("[[recruit:]]"), None); // empty target
+    }
+
+    #[test]
+    fn recruit_event_routes_unknown_bot_to_provisioner() {
+        assert_eq!(recruit_event(&Admission::Added), Some("recruit"));
+        assert_eq!(recruit_event(&Admission::AlreadyMember), None);
+        // inc3: an unregistered target is a provisioning cue, not a dead end
+        assert_eq!(recruit_event(&Admission::Rejected("unknown bot")), Some("provision_requested"));
+        // a full roster is a genuine rejection (no pod would help)
+        assert_eq!(recruit_event(&Admission::Rejected("roster full")), Some("recruit_rejected"));
     }
 
     #[test]

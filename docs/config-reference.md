@@ -100,3 +100,8 @@ A recruited bot is backfilled with the conversation so far (durable outbox), so
 it can join late and still have full context. North sees `recruit` /
 `recruit_denied` / `recruit_rejected` SSE events. `GET /v1/sessions/:id` returns
 the current `roster`.
+
+Recruiting a bot that **isn't registered yet** emits `provision_requested`
+instead of a plain rejection — the cue for an external fleet provisioner to spin
+up that pod. OCP never calls the infra API itself; see
+[provisioner.md](provisioner.md).
