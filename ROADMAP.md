@@ -31,7 +31,7 @@ succeeds."
 | Item | Status | Notes |
 |------|--------|-------|
 | **BYOK** — accept user-provided `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` | TODO | AI Hub keys are opt-in add-on, not default |
-| **Shared steering via `pre_seed`** — review output format + rules delivered to bots as an S3 layer (`shared/default.tar.gz`), not stuffed in every trigger | TODO | OAB's job, not the plane's (see [design scope](docs/design.md)). Mechanism: OAB `[hooks.pre_seed]` layer concept — base shared layer + per-agent override. Ref: OAB `docs/hooks.md` (beta.3). Package `docs/steering/pr-review.md` into the shared archive |
+| **Shared steering via `pre_seed`** — review output format + rules delivered to bots as an object-store layer (`shared/default.tar.gz`), not stuffed in every trigger | TODO | OAB's job, not the plane's (see [design scope](docs/design.md)). Mechanism: OAB `[hooks.pre_seed]` layer concept — base shared layer + per-agent override. Use **Cloudflare R2 / any S3-compatible store via `endpoint_url`** (our users are on Zeabur/Cloudflare, not AWS). Ref: OAB `docs/hooks.md` (beta.3). Package `docs/steering/pr-review.md` into the shared archive |
 | **Preset-driven roster** — quick=2, standard=3, full=5; idle bots don't join | TODO | Solves slowness: fewer bots for small PRs |
 | **Application shim** — code-review logic (gh pr diff/comment/label) lives outside the plane | TODO | Shim options: GitHub Action, standalone service, or chair responsibility (current) |
 | **Clean template** — TEMPLATE.md + one-click deploy, no manual bot registration | TODO | `seed_bot` on boot ✅; template needs polish |
