@@ -29,7 +29,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: canyugs/openab-control-plane
+          images: canyu/openab-control-plane
           # v0.1.1 → tags 0.1.1 + latest (matches the template's :0.1.0 scheme)
           tags: |
             type=semver,pattern={{version}}
