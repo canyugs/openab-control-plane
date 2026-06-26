@@ -23,23 +23,26 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
     `starters(roster)` kickoff hook (mention stage 0 only) + ordered roster
     (`ORDER BY rowid`) — no `on_reply`/`Goal`. `run_actions` untouched.
     `tests/spike.rs::pipeline_three_stages_closes_in_order` proves in-order close.
-    22 unit + solo/pipeline/1/3/5-bot spike tests green.
+- **Liveness watchdog — OCP is now a *complete* guarantee layer.**
+  `orchestrator::force_close_timeout` (CAS once-only `close_if_active` + verdict
+  naming absentees) + a 30s background scan in `main.rs` over
+  `active_sessions_before`. Deadline: `OABCP_SESSION_TIMEOUT_SECS` (default 900s).
+  A silent/dead reviewer can no longer hang `QuorumCouncil` forever. By the
+  safety∧liveness decomposition theorem, this is what made the control plane whole
+  (was safety-only). 23 unit + solo/pipeline/1/3/5-bot spike tests green.
 - Release CI: `v*` tag → test → build+push `docker.io/canyu/openab-control-plane`
   (`.github/workflows/release.yml`, SHA-pinned actions + Dependabot). Verified on
   `v0.1.0`/`v0.1.1`.
 
 ## Next — priority order
 
-1. **Liveness watchdog: timeout → forced `Close`.** *The* highest-value item — it
-   completes OCP's reason to exist (the **guarantee layer**; see `docs/design.md`
-   "Steering vs policy"). Today a silent reviewer hangs `QuorumCouncil` forever
-   (same failure as the steering council's flaky attendance). Add a session-level
-   deadline → on expiry, `Close` with reviews-in-hand, marking absentees in the
-   verdict. Structurally impossible in prose (a dead bot can't run its own
-   fallback), so it is precisely the plane's job. Reuses `last_seen`. Keep
-   solo/pipeline/1/3/5-bot spike green.
-2. **Security (do soon):** rotate the GitHub PAT pasted in plaintext; rotate the
+1. **Security (do soon):** rotate the GitHub PAT pasted in plaintext; rotate the
    leaked `CLAUDE_CODE_OAUTH_TOKEN` (see memory). Needs your account access.
+2. **Membership plane (ADR 001):** dynamic registry (join/leave first-class) +
+   bot self-recruitment behind **admission control** (quota/authz/guaranteed
+   backfill) — a guarantee problem, not a feature. The user's stated direction.
+   Comes after the watchdog (now done): make what exists trustworthy before
+   letting the population grow. ROADMAP Phase 4.
 3. **`Debate` mode — only when multi-round is a real product need.** This is the
    mode that *does* force `on_reply` + round state + per-coordinator config
    (generalizes `quorum_n`); `Pipeline` proved the seam without any of it. Don't
@@ -57,8 +60,8 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
 - **OCP's role = the guarantee layer, not "more coordination."** Steering already
   coordinates (a real Discord council does roster+quorum+verdict in prose); the
   plane's job is the invariants prose can't hold — *safety* (once-only, ordering,
-  auth, post-close drop — all ✅) and *liveness* (always terminates — ❌, the
-  watchdog above). Test: must it hold even if a bot is slow/dead/buggy/malicious/
+  auth, post-close drop — all ✅) and *liveness* (always terminates — ✅, the
+  `force_close_timeout` watchdog). Test: must it hold even if a bot is slow/dead/buggy/malicious/
   hallucinating? → plane. `pipeline` (ordering guarantee) is the strongest mode;
   `council`/`solo` are weak (steering can do them). See `docs/design.md`.
 - **Three planes, split by guarantee (ADR 001).** gateway = delivery, policy =

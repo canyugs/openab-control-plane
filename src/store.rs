@@ -114,6 +114,12 @@ pub trait Store: Send + Sync {
     fn add_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool>;
     fn set_state(&self, session_id: &str, state: SessionState) -> Result<()>;
     fn advance_state(&self, session_id: &str, from: SessionState, to: SessionState) -> Result<bool>;
+    /// Close from *any* non-terminal state (the liveness watchdog — the current
+    /// state is unknown when a timeout fires). CAS so only one caller wins;
+    /// returns true if this call performed the close.
+    fn close_if_active(&self, session_id: &str) -> Result<bool>;
+    /// Non-terminal session ids created before `cutoff_ms` — watchdog candidates.
+    fn active_sessions_before(&self, cutoff_ms: i64) -> Result<Vec<String>>;
     fn roster(&self, session_id: &str) -> Result<Vec<String>>;
 
     fn upsert_thread(&self, session_id: &str, root_message_id: Option<&str>) -> Result<String>;
@@ -386,6 +392,26 @@ impl Store for SqliteStore {
             params![session_id, from.as_str(), to.as_str(), closed_at],
         )?;
         Ok(n == 1)
+    }
+
+    fn close_if_active(&self, session_id: &str) -> Result<bool> {
+        let c = self.conn.lock().unwrap();
+        let n = c.execute(
+            "UPDATE sessions SET state = 'closed', closed_at = ?2
+             WHERE id = ?1 AND state NOT IN ('closed', 'aborted')",
+            params![session_id, now_ms()],
+        )?;
+        Ok(n == 1)
+    }
+
+    fn active_sessions_before(&self, cutoff_ms: i64) -> Result<Vec<String>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt = c.prepare(
+            "SELECT id FROM sessions
+             WHERE created_at < ?1 AND state NOT IN ('closed', 'aborted')",
+        )?;
+        let rows = stmt.query_map(params![cutoff_ms], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     fn roster(&self, session_id: &str) -> Result<Vec<String>> {

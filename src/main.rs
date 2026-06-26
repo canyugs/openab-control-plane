@@ -1,6 +1,7 @@
-use openab_control_plane::store::{SqliteStore, Store};
-use openab_control_plane::{build_router, identity, state::AppState};
+use openab_control_plane::store::{now_ms, SqliteStore, Store};
+use openab_control_plane::{build_router, identity, orchestrator, state::AppState};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -19,6 +20,7 @@ async fn main() -> anyhow::Result<()> {
     let store: Arc<dyn Store> = Arc::new(SqliteStore::open(&db)?);
     seed_roster(store.as_ref())?;
     let state = AppState::new(store);
+    spawn_watchdog(state.clone());
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -42,6 +44,37 @@ fn seed_roster(store: &dyn Store) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Liveness watchdog: periodically force-close sessions stuck past the deadline,
+/// so a silent/dead reviewer can't hang a council forever (the one guarantee
+/// prose can't make — see design "what OCP actually guarantees").
+/// ponytail: deadline is anchored on `created_at`, no last-activity reset — bump
+/// `OABCP_SESSION_TIMEOUT_SECS` or add activity tracking if long councils are
+/// legitimate. Default 900s (15 min); scan every 30s.
+fn spawn_watchdog(state: Arc<AppState>) {
+    let timeout_secs: i64 = std::env::var("OABCP_SESSION_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(900);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            tick.tick().await;
+            let cutoff = now_ms() - timeout_secs * 1000;
+            match state.store.active_sessions_before(cutoff) {
+                Ok(ids) => {
+                    for id in ids {
+                        if let Err(e) = orchestrator::force_close_timeout(&state, &id) {
+                            tracing::error!("watchdog close {id} failed: {e}");
+                        }
+                    }
+                }
+                Err(e) => tracing::error!("watchdog scan failed: {e}"),
+            }
+        }
+    });
 }
 
 /// Factor IX disposability: drain on SIGTERM/Ctrl-C. Bots reconnect (1–30s

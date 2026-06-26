@@ -12,6 +12,7 @@ All configuration is via environment variables. No config file needed.
 | `OABCP_BOTS` | _(none)_ | Initial bot roster registered at boot. Format: `name:role,name:role,...` e.g. `chair:chair,rev1:reviewer,rev2:reviewer`. Idempotent — existing bots are skipped |
 | `OABCP_WS_URL` | auto-detected | WebSocket URL bots connect to. Override when the internal hostname differs from default |
 | `OABCP_AGENT_COMMAND` | `claude` | Default agent provider when a pod's `/bot-config` fetch has no `?agent=`. Set this to make a uniform single-provider council; leave default + use `?agent=` per pod to mix |
+| `OABCP_SESSION_TIMEOUT_SECS` | `900` | Liveness watchdog deadline. A session still active this many seconds after creation is force-closed (verdict notes absentees) so a silent/dead reviewer can't hang it forever. Anchored on `created_at` (no last-activity reset) — raise for legitimately long councils |
 | `GH_OUTPUT` | _(off)_ | Set to `1` to enable GitHub PR side-effects (comment, label, review) via `gh` CLI |
 | `RUST_LOG` | `info` | Log level filter (standard `tracing` env filter syntax) |
 

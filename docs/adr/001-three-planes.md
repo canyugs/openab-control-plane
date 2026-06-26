@@ -26,12 +26,12 @@ appears.
 | Plane | Owns the guarantee | Status today | Prior art |
 |-------|--------------------|--------------|-----------|
 | **Data plane** (gateway) | *delivery* — at-least-once, ordering, outbox/replay | built | sidecar/Envoy, message broker |
-| **Control plane** (policy engine) | *safety + liveness* — once-only close, ordering, **always terminates** | safety ✅, liveness ❌ (watchdog) | Temporal/durable execution, SDN control plane |
+| **Control plane** (policy engine) | *safety + liveness* — once-only close, ordering, **always terminates** | safety ✅, liveness ✅ (`force_close_timeout` watchdog) | Temporal/durable execution, SDN control plane |
 | **Membership plane** | *membership/identity* — who exists, who's alive, dynamic join, **admission** | weakest — static `OABCP_BOTS` + per-session roster | etcd/Consul/ZooKeeper, K8s API server + scheduler |
 
 By Alpern & Schneider's decomposition theorem (every property = safety ∧
-liveness), the control plane is **literally incomplete** until the liveness
-watchdog lands — hence its Phase 1 priority.
+liveness), the control plane was **literally incomplete** until the liveness
+watchdog landed (`force_close_timeout`, Phase 1) — now both halves hold.
 
 ### What this says about the two capabilities
 

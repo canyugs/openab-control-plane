@@ -108,7 +108,7 @@ split:
 | only authorized members act | safety | ✅ roster gate |
 | nothing acts after close | safety | ✅ post-close drop |
 | no message lost across disconnect | safety | ✅ outbox + replay |
-| **the session always reaches a terminal verdict** | **liveness** | **❌ not built — no watchdog** |
+| **the session always reaches a terminal verdict** | **liveness** | ✅ `force_close_timeout` watchdog (deadline → forced close) |
 
 **Test for "is it OCP's job":** must it hold even if a bot is slow, dead, buggy,
 malicious, or hallucinating? → plane. Only when bots behave? → steering.
@@ -125,9 +125,11 @@ Consequence — an honest self-assessment of the modes:
   in steering; `QuorumCouncil` only earns its place if you need determinism, a
   non-Discord/programmatic verdict, or the liveness guarantee below. (`solo` exists
   only to patch a 1-bot hang the plane *itself* introduced by taking over quorum.)
-- **The safety half is real today; the liveness half is the gap.** OCP does not yet
-  deliver its headline promise — a silent reviewer makes `QuorumCouncil` hang
-  forever (same failure as the steering version's flaky attendance). A timeout that
-  forces `Close` regardless of participant silence is structurally impossible in
-  pure prose — a dead bot can't run its own "wait 30 min then proceed" — so it is
-  precisely the plane's job, and the highest-value next item (ROADMAP Phase 1).
+- **Both halves are real now.** Safety was always there; liveness landed as the
+  `force_close_timeout` watchdog — a session-level deadline (`OABCP_SESSION_TIMEOUT_SECS`,
+  default 15 min) forces `Close` with reviews-in-hand, naming absentees, so a silent
+  reviewer can't hang `QuorumCouncil` forever (the steering version's flaky-attendance
+  failure). This is structurally impossible in pure prose — a dead bot can't run its
+  own "wait 30 min then proceed" — which is exactly why it's the plane's job. By the
+  decomposition theorem (every property = safety ∧ liveness), only now is OCP a
+  *complete* guarantee layer rather than half of one.

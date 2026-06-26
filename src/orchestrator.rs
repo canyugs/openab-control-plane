@@ -100,6 +100,36 @@ pub fn post_client_message(state: &Arc<AppState>, session_id: &str, content: &st
     Ok(msg)
 }
 
+/// Liveness guarantee (design: "what OCP actually guarantees"). Force a stuck
+/// session to a terminal verdict. A silent reviewer otherwise hangs
+/// `QuorumCouncil` forever (quorum never reached), and a dead bot can't run its
+/// own fallback — so only the plane can guarantee termination. Mode-agnostic:
+/// closes with the reviews already in the thread, naming absentees in the
+/// verdict. CAS once-only — returns true iff this call performed the close (a
+/// normal close racing in wins and this becomes a no-op).
+pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bool> {
+    if !state.store.close_if_active(session_id)? {
+        return Ok(false); // already terminal
+    }
+    let roster = state.store.roster(session_id)?;
+    let done: std::collections::HashSet<String> = state
+        .store
+        .reactors_in_session(session_id, DONE_EMOJI)?
+        .into_iter()
+        .collect();
+    let absent: Vec<&str> = roster.iter().map(String::as_str).filter(|b| !done.contains(*b)).collect();
+    let verdict = format!(
+        "⏱️ Session closed by timeout — {}/{} signaled done.{} (Verdict not synthesized; reviews are in the thread.)",
+        done.len(),
+        roster.len(),
+        if absent.is_empty() { String::new() } else { format!(" Absent: {}.", absent.join(", ")) },
+    );
+    state.emit_north("verdict", session_id, json!({ "text": verdict, "reason": "timeout" }));
+    state.emit_north("state", session_id, json!({ "state": "closed" }));
+    tracing::warn!("watchdog force-closed stale session {session_id}");
+    Ok(true)
+}
+
 /// Reconstruct the sender of a stored message (for history backfill).
 fn sender_for(state: &AppState, m: &Message) -> SenderInfo {
     match m.author_kind.as_str() {
@@ -469,5 +499,30 @@ mod tests {
             store.messages(&session.id).unwrap().iter().any(|m| m.content == "legit"),
             "roster member's message must be stored"
         );
+    }
+
+    #[test]
+    fn watchdog_force_closes_stuck_session_once() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev = store.register_bot("rev", "reviewer", "h2", "t2").unwrap();
+        // quorum needs 1 reviewer done; nobody signals → QuorumCouncil hangs forever
+        let session = store
+            .create_session("t", None, 1, Some(&chair.id), &[chair.id.clone(), rev.id.clone()], "council")
+            .unwrap();
+        store.advance_state(&session.id, SessionState::Open, SessionState::Deliberating).unwrap();
+
+        // the watchdog's scan finds it; the close drives it terminal
+        assert!(store.active_sessions_before(crate::store::now_ms() + 1).unwrap().contains(&session.id));
+        assert!(force_close_timeout(&state, &session.id).unwrap(), "stuck session is closed");
+        assert_eq!(
+            SessionState::from_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Closed,
+        );
+        // once-only: a second fire (or a normal close racing) is a no-op, and the
+        // session no longer appears as a watchdog candidate
+        assert!(!force_close_timeout(&state, &session.id).unwrap(), "second fire is a no-op");
+        assert!(!store.active_sessions_before(crate::store::now_ms() + 1).unwrap().contains(&session.id));
     }
 }
