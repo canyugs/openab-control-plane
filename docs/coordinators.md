@@ -1,7 +1,7 @@
 # Coordinators — pluggable coordination patterns
 
-Status: increment 1 implemented (`src/coordinator.rs` + `orchestrator.rs`);
-increments 2–3 pending. Tracking: ROADMAP Phase 3.
+Status: increments 1–2 implemented (`src/coordinator.rs` + `orchestrator.rs`);
+increment 3 pending. Tracking: ROADMAP Phase 3.
 
 ## Why
 
@@ -213,8 +213,10 @@ upstream change tracked separately — **not** smuggled into a Coordinator.
 ## Mode selection
 
 A `mode` string on the session (default `"council"`), chosen at
-`POST /v1/sessions`. `coordinator_for(mode) -> Box<dyn Coordinator>`. Increment 1
-hardcodes `council` (no schema change); the `mode` column lands with increment 2.
+`POST /v1/sessions`. `for_session(mode) -> Box<dyn Coordinator>` dispatches:
+`"solo"` → `Solo`, else `QuorumCouncil`. The `mode` column landed in increment 2
+(additive `ALTER`, so existing DBs migrate). A 1-bot deploy opts in by sending
+`"mode": "solo"` — see `scripts/open-council.sh` / the template.
 
 ## Other modes (sketches — prove the seam is general)
 
@@ -241,8 +243,12 @@ per event on the hot path — opt-in only.
    `Coordinator` in `coordinator.rs`, `on_done`→`run_actions` in `orchestrator.rs`;
    `output.rs` removed. Mechanism untouched → 1/3/5-bot spike tests prove parity.
    No schema change — QuorumCouncil reads `quorum_n` directly (== `Goal::Quorum(n)`).
-2. **`mode` + `goal` selection + Solo.** Adds session `mode` + `goal` columns;
-   completion becomes goal-driven (`Quorum`/`AllAngles`); Solo fixes 1-bot.
+2. ✅ **`mode` selection + Solo.** Done: session `mode` column (default
+   `council`, additive migration), `for_session(mode)` dispatch, `Solo` impl;
+   `tests/spike.rs::solo_single_bot_closes` proves the 1-bot close over the wire.
+   **`goal` column deferred** — `QuorumCouncil` reads `quorum_n` directly and
+   there is no second completion condition yet (design.md disposition:
+   speculative policy → cut; add `Goal` when a real consumer lands).
 3. **A structurally-different mode (Debate or Pipeline).** Validates the seam
    generalizes beyond fan-in; likely adds `on_reply`/`on_join` to the trait and a
    `Rounds`/`AllStages` goal.

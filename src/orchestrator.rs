@@ -227,7 +227,7 @@ fn on_reaction(state: &Arc<AppState>, session: &Session, bot_id: &str, reply: &G
     ack(state, bot_id, reply, None, None);
 
     if add && emoji == DONE_EMOJI {
-        let coord = coordinator::for_session();
+        let coord = coordinator::for_session(&session.mode);
         let cx = OrchCtx {
             state,
             session,
@@ -423,7 +423,7 @@ mod tests {
         let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
         let latecomer = store.register_bot("late", "reviewer", "h2", "t2").unwrap();
         let session = store
-            .create_session("t", None, 0, Some(&chair.id), &[chair.id.clone()])
+            .create_session("t", None, 0, Some(&chair.id), &[chair.id.clone()], "council")
             .unwrap();
         store.advance_state(&session.id, SessionState::Open, SessionState::Deliberating).unwrap();
         // history exists before the latecomer joins
@@ -450,7 +450,7 @@ mod tests {
         let member = store.register_bot("member", "chair", "h1", "t1").unwrap();
         let outsider = store.register_bot("outsider", "reviewer", "h2", "t2").unwrap();
         let session = store
-            .create_session("t", None, 0, Some(&member.id), &[member.id.clone()])
+            .create_session("t", None, 0, Some(&member.id), &[member.id.clone()], "council")
             .unwrap();
 
         // outsider holds a valid token but is not in the roster → reply dropped

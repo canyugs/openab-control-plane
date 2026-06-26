@@ -69,6 +69,8 @@ pub struct Session {
     pub chair_bot: Option<String>,
     pub created_at: i64,
     pub closed_at: Option<i64>,
+    /// Coordination mode → picks the `Coordinator` (default "council").
+    pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +106,7 @@ pub trait Store: Send + Sync {
         quorum_n: i64,
         chair_bot: Option<&str>,
         roster: &[String],
+        mode: &str,
     ) -> Result<Session>;
     fn session(&self, id: &str) -> Result<Option<Session>>;
     /// Add a bot to a session roster. Returns true if newly added (false if it
@@ -150,7 +153,8 @@ CREATE TABLE IF NOT EXISTS bots (
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY, title TEXT NOT NULL, state TEXT NOT NULL,
     trigger_ref TEXT, quorum_n INTEGER NOT NULL, chair_bot TEXT,
-    created_at INTEGER NOT NULL, closed_at INTEGER
+    created_at INTEGER NOT NULL, closed_at INTEGER,
+    mode TEXT NOT NULL DEFAULT 'council'
 );
 CREATE TABLE IF NOT EXISTS session_bots (
     session_id TEXT NOT NULL, bot_id TEXT NOT NULL,
@@ -175,6 +179,13 @@ CREATE TABLE IF NOT EXISTS outbox (
 CREATE INDEX IF NOT EXISTS idx_outbox_bot ON outbox(bot_id, seq);
 "#;
 
+/// Additive column migrations for DBs created before a column existed. Each
+/// `ALTER` errors with "duplicate column" once the column is present — ignored.
+/// ponytail: no migration framework; one guarded ALTER per added column.
+fn migrate(conn: &Connection) {
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'council'", []);
+}
+
 /// SQLite-backed `Store`. ponytail: one process-wide Mutex<Connection>. Fine at
 /// council scale (router + light writes). Swap the whole type for a networked
 /// `Store` impl in production (design §6c).
@@ -186,12 +197,14 @@ impl SqliteStore {
     pub fn open(path: &str) -> Result<SqliteStore> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn);
         Ok(SqliteStore { conn: Mutex::new(conn) })
     }
 
     pub fn memory() -> Result<SqliteStore> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn);
         Ok(SqliteStore { conn: Mutex::new(conn) })
     }
 
@@ -276,15 +289,16 @@ impl Store for SqliteStore {
         quorum_n: i64,
         chair_bot: Option<&str>,
         roster: &[String],
+        mode: &str,
     ) -> Result<Session> {
         let id = new_id("ses");
         let created_at = now_ms();
         let mut c = self.conn.lock().unwrap();
         let tx = c.transaction()?;
         tx.execute(
-            "INSERT INTO sessions (id, title, state, trigger_ref, quorum_n, chair_bot, created_at)
-             VALUES (?1, ?2, 'open', ?3, ?4, ?5, ?6)",
-            params![id, title, trigger_ref, quorum_n, chair_bot, created_at],
+            "INSERT INTO sessions (id, title, state, trigger_ref, quorum_n, chair_bot, created_at, mode)
+             VALUES (?1, ?2, 'open', ?3, ?4, ?5, ?6, ?7)",
+            params![id, title, trigger_ref, quorum_n, chair_bot, created_at, mode],
         )?;
         for bot_id in roster {
             tx.execute(
@@ -302,6 +316,7 @@ impl Store for SqliteStore {
             chair_bot: chair_bot.map(String::from),
             created_at,
             closed_at: None,
+            mode: mode.to_string(),
         })
     }
 
@@ -309,7 +324,7 @@ impl Store for SqliteStore {
         let c = self.conn.lock().unwrap();
         let s = c
             .query_row(
-                "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at
+                "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode
                  FROM sessions WHERE id = ?1",
                 params![id],
                 |r| {
@@ -322,6 +337,7 @@ impl Store for SqliteStore {
                         chair_bot: r.get(5)?,
                         created_at: r.get(6)?,
                         closed_at: r.get(7)?,
+                        mode: r.get(8)?,
                     })
                 },
             )

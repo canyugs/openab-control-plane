@@ -12,7 +12,9 @@ set -euo pipefail
 : "${KEY:?set KEY to OABCP_API_KEY}"
 ARG="${1:?pass owner/repo#N or a quoted task string}"
 
-ROSTER='["chair","rev1","rev2"]'   # matches OABCP_BOTS in the template
+ROSTER='["chair","rev1","rev2"]'   # matches OABCP_BOTS in the template; edit to taste.
+# A 1-entry roster auto-selects "solo" mode (a lone chair has no reviewers, so a
+# council never reaches quorum); else "council" with quorum = all reviewers.
 
 # Build the trigger.
 if [[ "$ARG" =~ ^([^/]+/[^#]+)#([0-9]+)$ ]]; then
@@ -27,7 +29,7 @@ fi
 
 # Open the session.
 SID=$(curl -s -X POST "$PLANE/v1/sessions" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d "$(python3 -c 'import json,sys; print(json.dumps({"title":"council","trigger_ref":sys.argv[1],"roster":["chair","rev1","rev2"],"quorum_n":2,"chair_bot":"chair"}))' "$REF")" \
+  -d "$(python3 -c 'import json,sys; r=json.loads(sys.argv[1]); print(json.dumps({"title":"council","trigger_ref":sys.argv[2],"roster":r,"quorum_n":max(0,len(r)-1),"chair_bot":r[0],"mode":"solo" if len(r)==1 else "council"}))' "$ROSTER" "$REF")" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["session_id"])')
 echo "session: $SID"
 

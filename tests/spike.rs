@@ -234,6 +234,61 @@ async fn single_bot_parity_thread_react_streaming() {
     );
 }
 
+/// Solo mode closes a 1-bot session — the case `QuorumCouncil` can't (a lone
+/// chair has zero reviewers, so quorum is never reachable). Over the real wire.
+#[tokio::test]
+async fn solo_single_bot_closes() {
+    let addr = spawn_server().await;
+    let base = addr.to_string();
+    let (bot_id, tok) = register_bot(&base, "solo", "chair").await;
+
+    // mode="solo" — inline (the shared helper opens council); roster is the lone bot.
+    let session: String = {
+        let v: Value = reqwest::Client::new()
+            .post(format!("http://{base}/v1/sessions"))
+            .json(&json!({
+                "title": "spike-solo", "roster": [bot_id.clone()],
+                "chair_bot": bot_id, "quorum_n": 0, "mode": "solo",
+            }))
+            .send().await.unwrap().json().await.unwrap();
+        v["session_id"].as_str().unwrap().into()
+    };
+
+    let ws = connect(addr, &tok).await;
+    let (mut w, mut r) = ws.split();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    post_client(&base, &session, "review this").await;
+
+    // on the client trigger: post the verdict, then the 🆗 done-signal on it
+    let trigger = loop {
+        if let Some(Ok(Message::Text(t))) = r.next().await {
+            let v: Value = serde_json::from_str(&t).unwrap();
+            if v.get("event_type").is_some() && v["sender"]["id"] == "client" {
+                break v["message_id"].as_str().unwrap().to_string();
+            }
+        }
+    };
+    w.send(reply(&session, "VERDICT: solo approved", None, None, None)).await.unwrap();
+    w.send(reply(&session, "🆗", Some("add_reaction"), Some(&trigger), None)).await.unwrap();
+
+    let mut closed = false;
+    let mut last = json!({});
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        last = get_session(&base, &session).await;
+        if last["session"]["state"] == "closed" {
+            closed = true;
+            break;
+        }
+    }
+    assert!(closed, "solo session did not close: {last}");
+    assert!(
+        last["messages"].as_array().unwrap().iter()
+            .any(|m| m["content"].as_str().unwrap_or("").contains("VERDICT")),
+        "no verdict in closed solo session"
+    );
+}
+
 async fn read_response<S>(r: &mut S, req: &str) -> Value
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,

@@ -72,6 +72,12 @@ struct OpenSession {
     quorum_n: i64,
     #[serde(default)]
     chair_bot: Option<String>,
+    #[serde(default = "default_mode")]
+    mode: String,
+}
+
+fn default_mode() -> String {
+    "council".to_string()
 }
 
 async fn open_session(
@@ -88,6 +94,7 @@ async fn open_session(
             req.quorum_n,
             req.chair_bot.as_deref(),
             &req.roster,
+            &req.mode,
         )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(json!({ "session_id": s.id })))
