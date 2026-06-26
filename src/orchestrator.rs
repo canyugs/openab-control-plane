@@ -2,7 +2,8 @@
 //! lifecycle, fanout, and quorum; the chair bot is the only LLM judgment.
 
 use crate::protocol::{Content, GatewayReply, GatewayResponse, SenderInfo, RESPONSE_SCHEMA};
-use crate::session::{quorum_reached, DONE_EMOJI};
+use crate::coordinator::{self, Coordinator};
+use crate::session::DONE_EMOJI;
 use crate::state::AppState;
 use crate::store::{Message, Session, SessionState};
 use crate::routing;
@@ -226,9 +227,10 @@ fn on_reaction(state: &Arc<AppState>, session: &Session, bot_id: &str, reply: &G
     ack(state, bot_id, reply, None, None);
 
     if add && emoji == DONE_EMOJI {
-        share_final_with_chair(state, session, bot_id)?;
-        maybe_quorum(state, session)?;
-        maybe_close_verdict(state, session, bot_id)?;
+        let coord = coordinator::for_session(session);
+        share_final_with_synthesizer(state, session, coord.as_ref(), bot_id)?;
+        maybe_quorum(state, session, coord.as_ref())?;
+        maybe_close_verdict(state, session, coord.as_ref(), bot_id)?;
     }
     Ok(())
 }
@@ -237,8 +239,13 @@ fn on_reaction(state: &Arc<AppState>, session: &Session, bot_id: &str, reply: &G
 /// complete. Close the session and emit the chair's *final* (edit-filled)
 /// message as the verdict — not the streaming stub `on_send` would have seen.
 /// The Quorum→Closed guard makes this fire only after quorum + only once.
-fn maybe_close_verdict(state: &Arc<AppState>, session: &Session, bot_id: &str) -> Result<()> {
-    if session.chair_bot.as_deref() != Some(bot_id) {
+fn maybe_close_verdict(
+    state: &Arc<AppState>,
+    session: &Session,
+    coord: &dyn Coordinator,
+    bot_id: &str,
+) -> Result<()> {
+    if coord.synthesizer(session) != Some(bot_id) {
         return Ok(());
     }
     if !state.store.advance_state(&session.id, SessionState::Quorum, SessionState::Closed)? {
@@ -266,10 +273,15 @@ fn maybe_close_verdict(state: &Arc<AppState>, session: &Session, bot_id: &str) -
 /// `fanout`), so without this the chair would only ever see "…" from peers and
 /// can't render a quorum verdict. In-thread delivery → no mention needed (OAB
 /// bypasses @mention gating inside a thread).
-fn share_final_with_chair(state: &Arc<AppState>, session: &Session, bot_id: &str) -> Result<()> {
-    let Some(chair) = session.chair_bot.as_deref() else { return Ok(()) };
+fn share_final_with_synthesizer(
+    state: &Arc<AppState>,
+    session: &Session,
+    coord: &dyn Coordinator,
+    bot_id: &str,
+) -> Result<()> {
+    let Some(chair) = coord.synthesizer(session) else { return Ok(()) };
     if bot_id == chair {
-        return Ok(()); // the chair's own done-signal needs no relay
+        return Ok(()); // the synthesizer's own done-signal needs no relay
     }
     let last = state
         .store
@@ -304,12 +316,12 @@ fn on_edit(state: &Arc<AppState>, session: &Session, bot_id: &str, reply: &Gatew
     Ok(())
 }
 
-/// Count DONE reactors; if quorum, move deliberating→quorum (once) and prompt
-/// the chair for a verdict.
-fn maybe_quorum(state: &Arc<AppState>, session: &Session) -> Result<()> {
+/// Count DONE reactors; if the coordinator says converged, move
+/// deliberating→quorum (once) and prompt the synthesizer.
+fn maybe_quorum(state: &Arc<AppState>, session: &Session, coord: &dyn Coordinator) -> Result<()> {
     let roster = state.store.roster(&session.id)?;
     let done = state.store.reactors_in_session(&session.id, DONE_EMOJI)?;
-    if !quorum_reached(&roster, session.chair_bot.as_deref(), &done, session.quorum_n) {
+    if !coord.converged(session, &roster, &done) {
         return Ok(());
     }
     if !state.store.advance_state(&session.id, SessionState::Deliberating, SessionState::Quorum)? {
@@ -317,9 +329,9 @@ fn maybe_quorum(state: &Arc<AppState>, session: &Session) -> Result<()> {
     }
     state.emit_north("state", &session.id, json!({ "state": "quorum" }));
 
-    if let Some(chair) = &session.chair_bot {
+    if let Some(chair) = coord.synthesizer(session) {
         let chair_name = state.store.bot(chair)?.map(|b| b.name).unwrap_or_default();
-        let prompt = "Quorum reached. Chair, please render the verdict.";
+        let prompt = coord.converge_prompt();
         let msg = state.store.add_message(&session.id, state.store.thread_for_session(&session.id)?.as_deref(), "system", None, prompt, None)?;
         let thread = state.store.thread_for_session(&session.id)?;
         state.deliver_event(

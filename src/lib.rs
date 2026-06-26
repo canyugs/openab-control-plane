@@ -2,6 +2,7 @@
 //! See docs/control-plane-design.md (in the ops repo).
 
 pub mod api;
+pub mod coordinator;
 pub mod identity;
 pub mod orchestrator;
 pub mod protocol;
