@@ -75,6 +75,68 @@ if add && emoji == DONE_EMOJI {
 `output::fire` is deleted. The verdict SSE event is the seam any side-effect
 subscriber (the chair bot already does `gh pr comment`, or an app shim) acts on.
 
+## Flow — before vs after the seam
+
+Same `🆗` done-signal, two control flows. The shift is **decide vs execute**:
+before, the orchestrator decided *and* executed inline; after, the Coordinator
+decides (returns `Action`s) and the orchestrator only executes them.
+
+```
+BEFORE — policy welded into the orchestrator
+────────────────────────────────────────────
+  🆗 done-signal
+       │
+       ▼
+  on_reaction
+   ├─ share_final_with_chair   ← knows: chair
+   ├─ maybe_quorum             ← knows: quorum_n, prompt text
+   └─ maybe_close_verdict      ← knows: chair, Quorum→Closed
+       │  (decides AND executes, inline)
+       ▼
+  store · deliver · emit · advance_state
+
+  New mode ⇒ edit these functions. One welded flow.
+
+
+AFTER — policy behind the Coordinator seam
+────────────────────────────────────────────
+  🆗 done-signal
+       │
+       ▼
+  on_reaction ──build──► Ctx (read-only store view)
+       │
+       ▼
+  Coordinator.on_done(cx, bot) ─► [ Relay, Transition, Prompt, Close ]   POLICY (decides)
+       │                            QuorumCouncil │ Solo │ Debate │ …
+       ▼
+  run_actions(actions) ─────────► store · deliver · emit · CAS           MECHANISM (executes)
+
+  New mode ⇒ new Coordinator. run_actions untouched.
+```
+
+Worked example — `rev1` 🆗 reaching quorum, then `chair` 🆗 closing:
+
+```
+rev1 🆗 → on_done ⇒ [ Relay{rev1→chair}, Transition{Delib→Quorum}, Prompt{chair} ]
+           run_actions: relay · CAS ok→emit "quorum" · prompt chair
+
+chair 🆗 → on_done ⇒ [ Transition{Delib→Quorum}, Prompt{chair}, Close{Quorum} ]
+           run_actions: CAS FAILS (already Quorum) → transition_failed
+                        Prompt SUPPRESSED (no re-prompt)
+                        Close CAS Quorum→Closed ok → emit verdict + closed
+```
+
+Adding **Solo** (fixes 1-bot) touches no orchestrator code — just a new impl:
+
+```rust
+impl Coordinator for Solo {
+    fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
+        // the lone bot's 🆗 closes directly — no quorum gate
+        vec![Action::Close { from: Deliberating, verdict: cx.latest_settled(bot).unwrap_or_default() }]
+    }
+}
+```
+
 ## QuorumCouncil — the parity port
 
 The existing flow becomes the first impl. Exact mapping (preserves behavior):
