@@ -2,7 +2,7 @@
 //! lifecycle, fanout, and quorum; the chair bot is the only LLM judgment.
 
 use crate::protocol::{Content, GatewayReply, GatewayResponse, SenderInfo, RESPONSE_SCHEMA};
-use crate::coordinator::{self, Coordinator};
+use crate::coordinator::{self, Action, Ctx};
 use crate::session::DONE_EMOJI;
 use crate::state::AppState;
 use crate::store::{Message, Session, SessionState};
@@ -227,83 +227,148 @@ fn on_reaction(state: &Arc<AppState>, session: &Session, bot_id: &str, reply: &G
     ack(state, bot_id, reply, None, None);
 
     if add && emoji == DONE_EMOJI {
-        let coord = coordinator::for_session(session);
-        share_final_with_synthesizer(state, session, coord.as_ref(), bot_id)?;
-        maybe_quorum(state, session, coord.as_ref())?;
-        maybe_close_verdict(state, session, coord.as_ref(), bot_id)?;
+        let coord = coordinator::for_session();
+        let cx = OrchCtx {
+            state,
+            session,
+            roster: state.store.roster(&session.id)?,
+        };
+        let actions = coord.on_done(&cx, bot_id);
+        run_actions(state, session, actions)?;
     }
     Ok(())
 }
 
-/// The chair's done-signal while the session is in Quorum means its verdict is
-/// complete. Close the session and emit the chair's *final* (edit-filled)
-/// message as the verdict — not the streaming stub `on_send` would have seen.
-/// The Quorum→Closed guard makes this fire only after quorum + only once.
-fn maybe_close_verdict(
-    state: &Arc<AppState>,
-    session: &Session,
-    coord: &dyn Coordinator,
-    bot_id: &str,
-) -> Result<()> {
-    if coord.synthesizer(session) != Some(bot_id) {
-        return Ok(());
+/// Read-only view the Coordinator decides from; backed by the store.
+struct OrchCtx<'a> {
+    state: &'a AppState,
+    session: &'a Session,
+    roster: Vec<String>,
+}
+
+impl Ctx for OrchCtx<'_> {
+    fn roster(&self) -> &[String] {
+        &self.roster
     }
-    if !state.store.advance_state(&session.id, SessionState::Quorum, SessionState::Closed)? {
-        return Ok(()); // not in quorum yet, or already closed by another reply
+    fn chair(&self) -> Option<&str> {
+        self.session.chair_bot.as_deref()
     }
-    let verdict = state
-        .store
-        .messages(&session.id)?
+    fn quorum_n(&self) -> i64 {
+        self.session.quorum_n
+    }
+    fn reactors(&self, emoji: &str) -> Vec<String> {
+        self.state
+            .store
+            .reactors_in_session(&self.session.id, emoji)
+            .unwrap_or_default()
+    }
+    /// `bot`'s last non-stub message (skips empty / "…" streaming stubs).
+    fn latest_settled(&self, bot: &str) -> Option<String> {
+        self.state
+            .store
+            .messages(&self.session.id)
+            .ok()?
+            .into_iter()
+            .filter(|m| m.author_id.as_deref() == Some(bot))
+            .filter(|m| {
+                let t = m.content.trim();
+                !t.is_empty() && t != "…"
+            })
+            .next_back()
+            .map(|m| m.content)
+    }
+    fn state(&self) -> SessionState {
+        SessionState::from_str(&self.session.state)
+    }
+}
+
+/// Execute the coordinator's actions. `Transition`/`Close` are CAS-guarded (fire
+/// only from their `from` state); a `Prompt` right after a failed `Transition` is
+/// suppressed, so the synthesizer is prompted exactly once — on the call that
+/// actually enters the new state. The plane emits results and closes; it never
+/// acts on the verdict (side-effects are the app's job — design: OCP doesn't own
+/// PR logic).
+fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -> Result<()> {
+    let mut transition_failed = false;
+    for action in actions {
+        match action {
+            Action::Relay { from, to } => {
+                transition_failed = false;
+                relay_settled(state, session, &from, &to)?;
+            }
+            Action::Prompt { to, content } => {
+                if transition_failed {
+                    continue; // its transition didn't happen — don't prompt
+                }
+                deliver_system_prompt(state, session, &to, &content)?;
+            }
+            Action::Transition { from, to } => {
+                let to_str = to.as_str();
+                let ok = state.store.advance_state(&session.id, from, to)?;
+                transition_failed = !ok;
+                if ok {
+                    state.emit_north("state", &session.id, json!({ "state": to_str }));
+                }
+            }
+            Action::Close { from, verdict } => {
+                transition_failed = false;
+                if state.store.advance_state(&session.id, from, SessionState::Closed)? {
+                    state.emit_north("verdict", &session.id, json!({ "text": verdict }));
+                    state.emit_north("state", &session.id, json!({ "state": "closed" }));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Deliver `from`'s settled final to `to`, in-thread (no mention needed — OAB
+/// bypasses @mention gating inside a thread). Skips if `from` has no settled
+/// message (streaming stubs were already filtered out by `latest_settled`).
+fn relay_settled(state: &Arc<AppState>, session: &Session, from: &str, to: &str) -> Result<()> {
+    let msgs = state.store.messages(&session.id)?;
+    let Some(msg) = msgs
         .into_iter()
-        .filter(|m| m.author_id.as_deref() == Some(bot_id))
+        .filter(|m| m.author_id.as_deref() == Some(from))
+        .filter(|m| {
+            let t = m.content.trim();
+            !t.is_empty() && t != "…"
+        })
         .next_back()
-        .map(|m| m.content)
-        .unwrap_or_default();
-    // Plane emits the result and closes — it does not act on it. Side-effects
-    // (PR comment, label, webhook) are the application's job: a north consumer
-    // of these events, or the chair bot's own `gh` call. (design: OCP does NOT
-    // own PR logic.)
-    state.emit_north("verdict", &session.id, json!({ "text": verdict }));
-    state.emit_north("state", &session.id, json!({ "state": "closed" }));
-    Ok(())
-}
-
-/// On a reviewer's done-signal, deliver its *settled* final reply to the chair
-/// so the chair can synthesize a verdict. We suppress streaming-stub fanout (see
-/// `fanout`), so without this the chair would only ever see "…" from peers and
-/// can't render a quorum verdict. In-thread delivery → no mention needed (OAB
-/// bypasses @mention gating inside a thread).
-fn share_final_with_synthesizer(
-    state: &Arc<AppState>,
-    session: &Session,
-    coord: &dyn Coordinator,
-    bot_id: &str,
-) -> Result<()> {
-    let Some(chair) = coord.synthesizer(session) else { return Ok(()) };
-    if bot_id == chair {
-        return Ok(()); // the synthesizer's own done-signal needs no relay
-    }
-    let last = state
-        .store
-        .messages(&session.id)?
-        .into_iter()
-        .filter(|m| m.author_id.as_deref() == Some(bot_id))
-        .next_back();
-    let Some(msg) = last else { return Ok(()) };
-    if msg.content.trim().is_empty() || msg.content.trim() == "…" {
+    else {
         return Ok(());
-    }
-    let bname = state.store.bot(bot_id)?.map(|b| b.name).unwrap_or_default();
+    };
+    let bname = state.store.bot(from)?.map(|b| b.name).unwrap_or_default();
     let thread = state.store.thread_for_session(&session.id)?;
     state.deliver_event(
-        chair,
+        to,
         &session.id,
         thread.as_deref(),
-        bot_sender(bot_id, &bname),
+        bot_sender(from, &bname),
         Content::text(&msg.content),
         vec![],
         &msg.id,
     );
+    Ok(())
+}
+
+/// Deliver a system message to `to` (e.g. the synthesizer prompt).
+fn deliver_system_prompt(state: &Arc<AppState>, session: &Session, to: &str, content: &str) -> Result<()> {
+    let to_name = state.store.bot(to)?.map(|b| b.name).unwrap_or_default();
+    let thread = state.store.thread_for_session(&session.id)?;
+    let msg = state
+        .store
+        .add_message(&session.id, thread.as_deref(), "system", None, content, None)?;
+    state.deliver_event(
+        to,
+        &session.id,
+        thread.as_deref(),
+        SenderInfo { id: "system".into(), name: "system".into(), display_name: "system".into(), is_bot: false },
+        Content::text(content),
+        vec![to_name],
+        &msg.id,
+    );
+    state.emit_north("message", &session.id, json!({ "message_id": msg.id, "author": "system", "content": content }));
     Ok(())
 }
 
@@ -312,38 +377,6 @@ fn on_edit(state: &Arc<AppState>, session: &Session, bot_id: &str, reply: &Gatew
         state.store.edit_message(target, &reply.content.text)?;
         state.emit_north("message_edit", &session.id, json!({ "message_id": target, "content": reply.content.text }));
         ack(state, bot_id, reply, None, Some(target));
-    }
-    Ok(())
-}
-
-/// Count DONE reactors; if the coordinator says converged, move
-/// deliberating→quorum (once) and prompt the synthesizer.
-fn maybe_quorum(state: &Arc<AppState>, session: &Session, coord: &dyn Coordinator) -> Result<()> {
-    let roster = state.store.roster(&session.id)?;
-    let done = state.store.reactors_in_session(&session.id, DONE_EMOJI)?;
-    if !coord.converged(session, &roster, &done) {
-        return Ok(());
-    }
-    if !state.store.advance_state(&session.id, SessionState::Deliberating, SessionState::Quorum)? {
-        return Ok(()); // someone else already advanced it
-    }
-    state.emit_north("state", &session.id, json!({ "state": "quorum" }));
-
-    if let Some(chair) = coord.synthesizer(session) {
-        let chair_name = state.store.bot(chair)?.map(|b| b.name).unwrap_or_default();
-        let prompt = coord.converge_prompt();
-        let msg = state.store.add_message(&session.id, state.store.thread_for_session(&session.id)?.as_deref(), "system", None, prompt, None)?;
-        let thread = state.store.thread_for_session(&session.id)?;
-        state.deliver_event(
-            chair,
-            &session.id,
-            thread.as_deref(),
-            SenderInfo { id: "system".into(), name: "system".into(), display_name: "system".into(), is_bot: false },
-            Content::text(prompt),
-            vec![chair_name],
-            &msg.id,
-        );
-        state.emit_north("message", &session.id, json!({ "message_id": msg.id, "author": "system", "content": prompt }));
     }
     Ok(())
 }

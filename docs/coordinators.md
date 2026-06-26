@@ -1,6 +1,7 @@
 # Coordinators — pluggable coordination patterns
 
-Status: design spec (not yet implemented). Tracking: ROADMAP Phase 3.
+Status: increment 1 implemented (`src/coordinator.rs` + `orchestrator.rs`);
+increments 2–3 pending. Tracking: ROADMAP Phase 3.
 
 ## Why
 
@@ -174,10 +175,10 @@ per event on the hot path — opt-in only.
 
 ## Implementation increments
 
-1. **Extract the seam + QuorumCouncil + drop `output.rs`.** Mechanism untouched →
-   1/3/5-bot integration tests prove parity. Net behavior unchanged; scope leak
-   (output.rs) removed. No schema change — QuorumCouncil reads `quorum_n` directly
-   (== `Goal::Quorum(n)`).
+1. ✅ **Extract the seam + QuorumCouncil + drop `output.rs`.** Done: `Ctx`/`Action`/
+   `Coordinator` in `coordinator.rs`, `on_done`→`run_actions` in `orchestrator.rs`;
+   `output.rs` removed. Mechanism untouched → 1/3/5-bot spike tests prove parity.
+   No schema change — QuorumCouncil reads `quorum_n` directly (== `Goal::Quorum(n)`).
 2. **`mode` + `goal` selection + Solo.** Adds session `mode` + `goal` columns;
    completion becomes goal-driven (`Quorum`/`AllAngles`); Solo fixes 1-bot.
 3. **A structurally-different mode (Debate or Pipeline).** Validates the seam
