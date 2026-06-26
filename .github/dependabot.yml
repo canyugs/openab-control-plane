@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Keep SHA-pinned actions current: Dependabot bumps the SHA and its version
+  # comment together, so pinning stays safe instead of going stale.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  # Rust deps in Cargo.lock.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
