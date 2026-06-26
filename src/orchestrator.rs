@@ -62,9 +62,9 @@ fn fanout(state: &AppState, session: &Session, msg: &Message, sender: SenderInfo
 /// Client posts the opening intent. Stores it, moves open→deliberating, fans the
 /// trigger to the whole roster (mentioning each recipient so its OAB gate opens).
 pub fn post_client_message(state: &Arc<AppState>, session_id: &str, content: &str) -> Result<Message> {
-    if state.store.session(session_id)?.is_none() {
+    let Some(session) = state.store.session(session_id)? else {
         anyhow::bail!("unknown session {session_id}");
-    }
+    };
     let msg = state.store.add_message(session_id, None, "client", None, content, None)?;
     state.store.advance_state(session_id, SessionState::Open, SessionState::Deliberating)?;
 
@@ -76,20 +76,23 @@ pub fn post_client_message(state: &Arc<AppState>, session_id: &str, content: &st
     };
     let roster = state.store.roster(session_id)?;
     let thread = state.store.thread_for_session(session_id)?;
-    // Mention EACH recipient in its own copy. A stock OAB bot in a group gates on
-    // @mention before a thread exists (gateway.rs is_responder); mentioning only
-    // the chair left reviewers gated out of the trigger, so they never saw the
-    // task. bot_username == the plane's bot name (served in /bot-config), so the
-    // recipient's own name matches its gate.
+    // Who is prompted to act now is a coordinator decision: council/solo mention
+    // everyone (all start); pipeline mentions only stage 0. Non-starters still get
+    // the trigger as context (gates/history) but aren't mentioned, so they wait.
+    // A stock OAB bot in a group gates on @mention before a thread exists
+    // (gateway.rs is_responder); bot_username == the plane's bot name (served in
+    // /bot-config), so a recipient's own name matches its gate.
+    let starters = coordinator::for_session(&session.mode).starters(&roster);
     for target in routing::fanout_targets(&roster, None) {
         let tname = state.store.bot(&target)?.map(|b| b.name).unwrap_or_default();
+        let mentions = if starters.contains(&target) { vec![tname] } else { vec![] };
         state.deliver_event(
             &target,
             session_id,
             thread.as_deref(),
             sender.clone(),
             Content::text(content),
-            vec![tname],
+            mentions,
             &msg.id,
         );
     }

@@ -1,7 +1,7 @@
 # Coordinators — pluggable coordination patterns
 
-Status: increments 1–2 implemented (`src/coordinator.rs` + `orchestrator.rs`);
-increment 3 pending. Tracking: ROADMAP Phase 3.
+Status: increments 1–3 implemented (`src/coordinator.rs` + `orchestrator.rs`):
+`QuorumCouncil`, `Solo`, `Pipeline`. Tracking: ROADMAP Phase 3.
 
 ## Why
 
@@ -26,6 +26,7 @@ The split is already clean in `orchestrator.rs`:
 | roster auth, closed-gate, command dispatch (`handle_reply`) | what a done-signal (🆗) means |
 | store message, fanout, emit north, ack (`on_send`) | when/whether to relay a bot's final to another |
 | thread upsert (`on_create_topic`) | when quorum is reached + what message prompts whom |
+| deliver the trigger to the roster (`post_client_message`) | *who is mentioned* (prompted to act) on the trigger — `starters` (council: all; pipeline: stage 0) |
 | store reaction, emit, ack (`on_reaction`) | what closes the session + what the verdict is |
 | edit (`on_edit`), backfill (`add_to_roster`), `deliver_event` | — |
 
@@ -225,8 +226,9 @@ A `mode` string on the session (default `"council"`), chosen at
   `Close { from: Deliberating, verdict: latest_settled(bot) }`. No quorum gate.
 - **Debate** — N rounds: each 🆗 advances a round counter; `Prompt` all members
   with the others' finals; close after K rounds or convergence. Needs `on_reply`.
-- **Pipeline** — sequential handoff A→B→C: each bot's 🆗 → `Relay` to the next in
-  an ordered roster; close when the last finishes. Order from roster position.
+- **Pipeline** (implemented) — sequential handoff A→B→C: each bot's 🆗 → `Relay`
+  to the next in the ordered roster + `Prompt` it; close when the last finishes.
+  Order from roster position; `starters` mentions only stage 0 on the trigger.
 
 ## Webhook coordinator (future, no architectural fork)
 
@@ -249,9 +251,14 @@ per event on the hot path — opt-in only.
    **`goal` column deferred** — `QuorumCouncil` reads `quorum_n` directly and
    there is no second completion condition yet (design.md disposition:
    speculative policy → cut; add `Goal` when a real consumer lands).
-3. **A structurally-different mode (Debate or Pipeline).** Validates the seam
-   generalizes beyond fan-in; likely adds `on_reply`/`on_join` to the trait and a
-   `Rounds`/`AllStages` goal.
+3. ✅ **`Pipeline` — a structurally-different (non-fan-in) mode.** Done:
+   sequential handoff stage0→…→stageN, `tests/spike.rs::pipeline_three_stages_closes_in_order`
+   proves in-order close over the wire. Generalization cost was **smaller than
+   predicted**: it needed a `starters(roster)` kickoff hook (so only stage 0 is
+   @mentioned on the trigger; others wait), **not** `on_reply`/`on_join` or a
+   `Goal` enum — `on_done` + ordered roster (`ORDER BY rowid`) sufficed. Debate
+   (multi-round) is the mode that would force `on_reply` + round state; build it
+   only when actually needed.
 
 Every increment keeps the 1/3/5-bot spike tests green (OAB contract guardrail).
 

@@ -289,6 +289,94 @@ async fn solo_single_bot_closes() {
     );
 }
 
+/// Pipeline mode: a 3-stage sequential handoff closes in order over the wire.
+/// Only stage 0 is mentioned on the trigger; each stage's 🆗 relays to the next
+/// and prompts it; the last stage's 🆗 closes. Proves the seam handles a
+/// structurally-different (non-fan-in) mode with no orchestrator special-casing.
+#[tokio::test]
+async fn pipeline_three_stages_closes_in_order() {
+    let addr = spawn_server().await;
+    let base = addr.to_string();
+
+    let mut bots = vec![];
+    for i in 0..3 {
+        bots.push(register_bot(&base, &format!("s{i}"), "reviewer").await);
+    }
+    let roster: Vec<String> = bots.iter().map(|(id, _)| id.clone()).collect();
+
+    let session: String = {
+        let v: Value = reqwest::Client::new()
+            .post(format!("http://{base}/v1/sessions"))
+            .json(&json!({
+                "title": "spike-pipeline", "roster": roster,
+                "quorum_n": 0, "mode": "pipeline",
+            }))
+            .send().await.unwrap().json().await.unwrap();
+        v["session_id"].as_str().unwrap().into()
+    };
+
+    let mut handles = vec![];
+    for (i, (_, tok)) in bots.iter().enumerate() {
+        handles.push(spawn_pipeline_bot(addr, tok.clone(), session.clone(), format!("s{i}")));
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    post_client(&base, &session, "Review PR #1 through the pipeline").await;
+
+    let mut closed = false;
+    let mut last = json!({});
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        last = get_session(&base, &session).await;
+        if last["session"]["state"] == "closed" {
+            closed = true;
+            break;
+        }
+    }
+    for h in handles { h.abort(); }
+    assert!(closed, "pipeline did not close: {last}");
+
+    // every stage ran, and strictly in order (messages are created_at-ordered)
+    let messages = last["messages"].as_array().unwrap();
+    let pos = |name: &str| {
+        messages.iter().position(|m| {
+            m["content"].as_str().unwrap_or("") == format!("stage {name} output")
+        })
+    };
+    let (p0, p1, p2) = (pos("s0"), pos("s1"), pos("s2"));
+    assert!(p0.is_some() && p1.is_some() && p2.is_some(), "a stage never ran: {messages:?}");
+    assert!(p0 < p1 && p1 < p2, "stages did not run in sequence: {p0:?} {p1:?} {p2:?}");
+}
+
+/// Pipeline stage bot: acts only when @mentioned (stage 0 on the trigger, later
+/// stages on the handoff prompt) — proving non-starters wait. Posts its stage
+/// output then the 🆗 done-signal.
+fn spawn_pipeline_bot(addr: SocketAddr, token: String, session: String, name: String) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let ws = connect(addr, &token).await;
+        let (mut w, mut r) = ws.split();
+        while let Some(Ok(msg)) = r.next().await {
+            let Message::Text(t) = msg else {
+                if matches!(msg, Message::Close(_)) { break; }
+                continue;
+            };
+            let v: Value = serde_json::from_str(&t).unwrap();
+            if v.get("event_type").is_none() {
+                continue;
+            }
+            let sender = v["sender"]["id"].as_str().unwrap_or("");
+            let mentioned = v["mentions"].as_array()
+                .map(|a| a.iter().any(|m| m.as_str() == Some(name.as_str())))
+                .unwrap_or(false);
+            let msg_id = v["message_id"].as_str().unwrap_or("").to_string();
+            // act on my turn only: a mentioned trigger (client) or handoff (system)
+            if mentioned && (sender == "client" || sender == "system") {
+                w.send(reply(&session, &format!("stage {name} output"), None, None, None)).await.ok();
+                w.send(reply(&session, "🆗", Some("add_reaction"), Some(&msg_id), None)).await.ok();
+            }
+        }
+    })
+}
+
 async fn read_response<S>(r: &mut S, req: &str) -> Value
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,

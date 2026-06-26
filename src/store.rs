@@ -390,7 +390,10 @@ impl Store for SqliteStore {
 
     fn roster(&self, session_id: &str) -> Result<Vec<String>> {
         let c = self.conn.lock().unwrap();
-        let mut stmt = c.prepare("SELECT bot_id FROM session_bots WHERE session_id = ?1")?;
+        // ORDER BY rowid = insertion order = the order roster was passed at
+        // create_session. Pipeline stage order rides on this; council ignores it.
+        let mut stmt =
+            c.prepare("SELECT bot_id FROM session_bots WHERE session_id = ?1 ORDER BY rowid")?;
         let rows = stmt.query_map(params![session_id], |r| r.get::<_, String>(0))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }

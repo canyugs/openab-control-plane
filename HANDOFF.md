@@ -19,7 +19,11 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
     live-found 1-bot hang** — proven over the wire by
     `tests/spike.rs::solo_single_bot_closes`. `open-council.sh` auto-picks `solo`
     for a 1-entry roster. `goal` column deferred (no second condition yet).
-    20 unit + solo/1/3/5-bot spike tests green.
+  - Increment 3: `Pipeline` (sequential handoff, non-fan-in). Needed only a
+    `starters(roster)` kickoff hook (mention stage 0 only) + ordered roster
+    (`ORDER BY rowid`) — no `on_reply`/`Goal`. `run_actions` untouched.
+    `tests/spike.rs::pipeline_three_stages_closes_in_order` proves in-order close.
+    22 unit + solo/pipeline/1/3/5-bot spike tests green.
 - Release CI: `v*` tag → test → build+push `docker.io/canyu/openab-control-plane`
   (`.github/workflows/release.yml`, SHA-pinned actions + Dependabot). Verified on
   `v0.1.0`/`v0.1.1`.
@@ -28,10 +32,10 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
 
 1. **Security (do soon):** rotate the GitHub PAT pasted in plaintext; rotate the
    leaked `CLAUDE_CODE_OAUTH_TOKEN` (see memory). Needs your account access.
-2. **Coordinator increment 3: Debate or Pipeline — only when a real second
-   structural mode is an actual product need.** Forces `on_reply`/`on_join` trait
-   widening + opaque per-coordinator config (generalizes `quorum_n`). Don't build
-   speculatively.
+2. **`Debate` mode — only when multi-round is a real product need.** This is the
+   mode that *does* force `on_reply` + round state + per-coordinator config
+   (generalizes `quorum_n`); `Pipeline` proved the seam without any of it. Don't
+   build speculatively.
 3. **Other Phase 1 ROADMAP items (TODO):** shared steering via `pre_seed`
    (R2/`endpoint_url`), GitHub App identity (approve/request-changes on own PRs),
    per-role scoped tokens, preset-driven roster, application-shim formalization.
