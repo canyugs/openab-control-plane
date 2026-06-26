@@ -36,7 +36,7 @@ PLANE=https://my-council.zeabur.app KEY=<OABCP_API_KEY> \
 Stream the deliberation/verdict from the URL the script prints.
 
 ## Image hosting
-The template references `docker.io/zeabur/openab-control-plane:<version>` (public).
+The template references `docker.io/canyugs/openab-control-plane:<version>` (public).
 Images build + push automatically via `.github/workflows/release.yml` on a `v*`
 git tag — `git tag v0.1.1 && git push origin v0.1.1` publishes `:0.1.1` and
 `:latest`. Bump the template's `image:` tag to match the release you want.
