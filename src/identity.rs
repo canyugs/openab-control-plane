@@ -20,6 +20,15 @@ pub fn issue(store: &dyn Store, name: &str, role: &str) -> Result<(Bot, String)>
     Ok((bot, token))
 }
 
+/// Idempotently register a roster bot whose `id == name`, so pods can fetch
+/// `/bot-config/<name>` with a name known ahead of time (template-wired). The
+/// token is random, stored once, and served via `/bot-config` — no human copies
+/// it. Returns true if newly created, false if it already existed.
+pub fn seed(store: &dyn Store, name: &str, role: &str) -> Result<bool> {
+    let token = format!("oabct_{}", uuid::Uuid::new_v4().simple());
+    store.seed_bot(name, name, role, &hash_token(&token), &token)
+}
+
 /// Resolve a connection token to its bot, or error.
 pub fn verify(store: &dyn Store, token: &str) -> Result<Bot> {
     store
@@ -46,6 +55,16 @@ mod tests {
         let store = SqliteStore::memory().unwrap();
         issue(&store, "gandalf", "chair").unwrap();
         assert!(verify(&store, "oabct_nope").is_err());
+    }
+
+    #[test]
+    fn seed_is_idempotent_and_id_equals_name() {
+        let store = SqliteStore::memory().unwrap();
+        assert!(seed(&store, "rev1", "reviewer").unwrap()); // first → inserted
+        assert!(!seed(&store, "rev1", "reviewer").unwrap()); // again → skipped
+        let bot = store.bot("rev1").unwrap().unwrap();
+        assert_eq!(bot.id, "rev1"); // id == name, so /bot-config/rev1 resolves
+        assert_eq!(bot.role, "reviewer");
     }
 
     #[test]

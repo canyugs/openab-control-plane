@@ -7,9 +7,17 @@ It owns what OpenAB deliberately doesn't (it's "a pipe, not a container"):
 identity/trust, the conversation/session model, routing/fanout, quorum, and
 verdict side-effects. Bots are stock OpenAB pods speaking the gateway protocol.
 
-Design: `../multi-agent-review-ops/docs/control-plane-design.md`.
+## Docs
 
-## Layout (design §16)
+- [Roadmap](ROADMAP.md) — phased plan, done log, known issues
+- [Design](docs/design.md) — scope (what OCP owns vs doesn't)
+- [Architecture](docs/architecture.md) — north/core/south model, source layout
+- [Configuration](docs/config-reference.md) — all env vars and seed format
+- [PR Review Flow](docs/flow.md) — end-to-end council flow for PR review
+- [Deploy](docs/deploy.md) — Zeabur template one-click deploy
+- [PR Review Format](docs/steering/pr-review.md) — reviewer + chair output format
+
+## Layout
 
 | File | Role |
 |---|---|
@@ -46,19 +54,6 @@ GET  /v1/sessions/:id/stream       (SSE: message|reaction|state|verdict)
 
 Register a bot to get its token, then point an OpenAB pod's `[gateway]` at the
 plane — no proxy patch, stock image. See `config.toml.example`.
-
-## Simple vs Scale (everything scale-side is opt-in)
-
-Defaults work out of the box; you only reach for the right column when you need
-it. Nothing here forces Postgres or pre_seed on a small setup. See design §6c.
-
-| Concern | Default (simple) | Opt-in (scale) |
-|---|---|---|
-| Store | local SQLite `plane.db` | networked `Store` impl (Postgres/libSQL) — swap one line in `main.rs`, no caller changes |
-| Bot token/config | inline in `config.toml` | pre_seed layer from S3/R2/MinIO (one stock image for many bots) |
-| North auth | open (`OABCP_API_KEY` unset) | bearer key via `OABCP_API_KEY` |
-| Verdict output | logged | real GitHub PR comment via `GH_OUTPUT=1` |
-| Disposability | `/healthz` + graceful shutdown (always on) | k8s liveness/readiness probes |
 
 ## Test
 

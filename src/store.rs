@@ -86,6 +86,9 @@ pub struct Message {
 /// Backing-service seam (design §6c). All callers depend on this, not on SQLite.
 pub trait Store: Send + Sync {
     fn register_bot(&self, name: &str, role: &str, token_hash: &str, token_plain: &str) -> Result<Bot>;
+    /// Idempotent insert with a caller-chosen id (= name for a seeded roster, so
+    /// pods can fetch /bot-config/<name>). Returns true if newly inserted.
+    fn seed_bot(&self, id: &str, name: &str, role: &str, token_hash: &str, token_plain: &str) -> Result<bool>;
     fn bot_by_token_hash(&self, token_hash: &str) -> Result<Option<Bot>>;
     fn bot(&self, id: &str) -> Result<Option<Bot>>;
     /// Plaintext token, for serving /bot-config to a stock OAB pod (spike
@@ -218,6 +221,15 @@ impl Store for SqliteStore {
             params![id, name, role, token_hash, token_plain],
         )?;
         Ok(Bot { id, name: name.to_string(), role: role.to_string() })
+    }
+
+    fn seed_bot(&self, id: &str, name: &str, role: &str, token_hash: &str, token_plain: &str) -> Result<bool> {
+        let c = self.conn.lock().unwrap();
+        let n = c.execute(
+            "INSERT OR IGNORE INTO bots (id, name, role, token_hash, token_plain) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, name, role, token_hash, token_plain],
+        )?;
+        Ok(n > 0)
     }
 
     fn bot_token_plain(&self, id: &str) -> Result<Option<String>> {

@@ -5,7 +5,7 @@
 use crate::identity;
 use crate::orchestrator;
 use crate::state::AppState;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
@@ -142,6 +142,29 @@ async fn get_session(
     Ok(Json(json!({ "session": session, "messages": messages })))
 }
 
+#[derive(Deserialize)]
+struct BotConfigParams {
+    /// Which agent CLI this bot runs. A mixed-provider council sets a different
+    /// value per pod (in its `/bot-config` fetch URL); omit for an all-Claude one.
+    agent: Option<String>,
+}
+
+/// Maps a provider name to the OAB `[agent]` `command` + `args`. OAB splits the
+/// two (`config.rs`: `command: String`, `args: Vec<String>`), so multi-word
+/// invocations like `gemini --acp` must be split here. Unknown names pass
+/// through as a raw command (escape hatch for agents not in the table).
+fn agent_command(agent: &str) -> (String, Vec<&'static str>) {
+    match agent {
+        "claude" | "claude-agent-acp" => ("claude-agent-acp".into(), vec![]),
+        "codex" => ("codex-acp".into(), vec![]),
+        "gemini" => ("gemini".into(), vec!["--acp"]),
+        "grok" => ("grok".into(), vec!["agent", "stdio"]),
+        "kiro" => ("kiro-cli".into(), vec!["acp", "--trust-all-tools"]),
+        "copilot" => ("copilot".into(), vec!["--acp", "--stdio"]),
+        other => (other.to_string(), vec![]),
+    }
+}
+
 /// Serves a stock OAB pod its full config.toml with `[gateway]` pointing back at
 /// this plane. Mirrors openab-hub's `/bot-config/{id}`. The chair's "open a
 /// thread + @mention reviewers" behavior comes from the trigger message, not
@@ -149,6 +172,7 @@ async fn get_session(
 async fn bot_config(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(params): Query<BotConfigParams>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let bot = state
         .store
@@ -162,6 +186,26 @@ async fn bot_config(
         .ok_or(StatusCode::NOT_FOUND)?;
     let ws_url = std::env::var("OABCP_WS_URL")
         .unwrap_or_else(|_| "ws://openab-control-plane.zeabur.internal:8080/ws".into());
+    // BYOK, per-bot provider. `?agent=` (set per pod) picks the CLI; default is
+    // Claude, or OABCP_AGENT_COMMAND for an all-one-provider council. The actual
+    // credential is never handled here — inherit_env whitelists every known
+    // provider key and the pod carries whatever the deployer set (env_clear
+    // drops the rest), so each bot can be on its own key or subscription.
+    let agent = params
+        .agent
+        .or_else(|| std::env::var("OABCP_AGENT_COMMAND").ok())
+        .unwrap_or_else(|| "claude".into());
+    let (command, args) = agent_command(&agent);
+    let args_line = if args.is_empty() {
+        String::new()
+    } else {
+        let joined = args
+            .iter()
+            .map(|a| format!("{a:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("\nargs = [{joined}]")
+    };
     let toml = format!(
         r#"[gateway]
 url = "{ws_url}"
@@ -172,9 +216,9 @@ bot_username = "{name}"
 streaming = true
 
 [agent]
-command = "claude-agent-acp"
+command = "{command}"{args_line}
 working_dir = "/home/node"
-inherit_env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
+inherit_env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GROK_CODE_XAI_API_KEY", "KIRO_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN"]
 
 [pool]
 max_sessions = 4
@@ -202,4 +246,25 @@ async fn stream_session(
         }
     });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_command;
+
+    #[test]
+    fn maps_known_providers_and_splits_args() {
+        assert_eq!(agent_command("claude"), ("claude-agent-acp".into(), vec![]));
+        assert_eq!(agent_command("codex"), ("codex-acp".into(), vec![]));
+        assert_eq!(agent_command("gemini"), ("gemini".into(), vec!["--acp"]));
+        assert_eq!(
+            agent_command("kiro"),
+            ("kiro-cli".into(), vec!["acp", "--trust-all-tools"])
+        );
+    }
+
+    #[test]
+    fn unknown_agent_passes_through_as_raw_command() {
+        assert_eq!(agent_command("my-custom-acp"), ("my-custom-acp".into(), vec![]));
+    }
 }

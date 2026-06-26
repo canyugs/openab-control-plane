@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Open a review council against a deployed OpenAB Review Council template.
+#
+# Usage:
+#   PLANE=https://<your-domain> KEY=<OABCP_API_KEY> ./open-council.sh owner/repo#123
+#   PLANE=https://<your-domain> KEY=<OABCP_API_KEY> ./open-council.sh "Free-text task to review"
+#
+# Needs: curl, python3, and (for the PR form) gh authenticated locally.
+set -euo pipefail
+
+: "${PLANE:?set PLANE to the control-plane URL}"
+: "${KEY:?set KEY to OABCP_API_KEY}"
+ARG="${1:?pass owner/repo#N or a quoted task string}"
+
+ROSTER='["chair","rev1","rev2"]'   # matches OABCP_BOTS in the template
+
+# Build the trigger.
+if [[ "$ARG" =~ ^([^/]+/[^#]+)#([0-9]+)$ ]]; then
+  REPO="${BASH_REMATCH[1]}"; NUM="${BASH_REMATCH[2]}"
+  TITLE=$(gh pr view "$NUM" --repo "$REPO" --json title -q .title)
+  DIFF=$(gh pr diff "$NUM" --repo "$REPO")
+  TRIGGER=$(printf 'PR Review Council — %s #%s "%s"\n\nReview the diff below. Reviewers: post findings then react 🆗.\nChair: post an in-progress comment, synthesize a verdict, then `gh pr comment/review/edit` on %s #%s (you have gh), and react 🆗.\n\n===== DIFF =====\n%s\n===== END DIFF =====\n' "$REPO" "$NUM" "$TITLE" "$REPO" "$NUM" "$DIFF")
+  REF="github:pr/$REPO#$NUM"
+else
+  TRIGGER="$ARG"; REF="adhoc"
+fi
+
+# Open the session.
+SID=$(curl -s -X POST "$PLANE/v1/sessions" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d "$(python3 -c 'import json,sys; print(json.dumps({"title":"council","trigger_ref":sys.argv[1],"roster":["chair","rev1","rev2"],"quorum_n":2,"chair_bot":"chair"}))' "$REF")" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["session_id"])')
+echo "session: $SID"
+
+# Post the trigger.
+curl -s -X POST "$PLANE/v1/sessions/$SID/messages" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d "$(python3 -c 'import json,sys;print(json.dumps({"content":sys.stdin.read()}))' <<<"$TRIGGER")" >/dev/null
+echo "trigger posted. Stream it:"
+echo "  curl -N $PLANE/v1/sessions/$SID/stream -H \"Authorization: Bearer $KEY\""
