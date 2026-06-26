@@ -29,7 +29,6 @@ verdict side-effects. Bots are stock OpenAB pods speaking the gateway protocol.
 | `src/orchestrator.rs` | lifecycle: convene → quorum → verdict |
 | `src/ws.rs` | south: gateway `/ws` server |
 | `src/api.rs` | north: REST + SSE |
-| `src/output.rs` | verdict → GitHub PR comment |
 
 ## Run
 

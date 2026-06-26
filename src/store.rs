@@ -133,9 +133,6 @@ pub trait Store: Send + Sync {
     fn remove_reaction(&self, message_id: &str, bot_id: &str, emoji: &str) -> Result<()>;
     fn reactors_in_session(&self, session_id: &str, emoji: &str) -> Result<Vec<String>>;
 
-    fn add_output(&self, session_id: &str, kind: &str, target: &str) -> Result<String>;
-    fn set_output_status(&self, output_id: &str, status: &str) -> Result<()>;
-
     /// Durable per-bot outbox (offline delivery). Frames queued here are flushed
     /// in `seq` order when the bot is connected; a disconnected bot keeps them
     /// and gets them on reconnect. `ack_outbox` removes a delivered frame.
@@ -170,10 +167,6 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS reactions (
     message_id TEXT NOT NULL, bot_id TEXT NOT NULL, emoji TEXT NOT NULL,
     PRIMARY KEY (message_id, bot_id, emoji)
-);
-CREATE TABLE IF NOT EXISTS outputs (
-    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, kind TEXT NOT NULL,
-    target TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS outbox (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -490,26 +483,6 @@ impl Store for SqliteStore {
         )?;
         let rows = stmt.query_map(params![session_id, emoji], |r| r.get::<_, String>(0))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
-    }
-
-    fn add_output(&self, session_id: &str, kind: &str, target: &str) -> Result<String> {
-        let id = new_id("out");
-        let c = self.conn.lock().unwrap();
-        c.execute(
-            "INSERT INTO outputs (id, session_id, kind, target, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, 'pending', ?5)",
-            params![id, session_id, kind, target, now_ms()],
-        )?;
-        Ok(id)
-    }
-
-    fn set_output_status(&self, output_id: &str, status: &str) -> Result<()> {
-        let c = self.conn.lock().unwrap();
-        c.execute(
-            "UPDATE outputs SET status = ?2 WHERE id = ?1",
-            params![output_id, status],
-        )?;
-        Ok(())
     }
 
     fn enqueue_outbox(&self, bot_id: &str, frame: &str) -> Result<()> {

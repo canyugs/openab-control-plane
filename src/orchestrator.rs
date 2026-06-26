@@ -5,7 +5,7 @@ use crate::protocol::{Content, GatewayReply, GatewayResponse, SenderInfo, RESPON
 use crate::session::{quorum_reached, DONE_EMOJI};
 use crate::state::AppState;
 use crate::store::{Message, Session, SessionState};
-use crate::{output, routing};
+use crate::routing;
 use anyhow::Result;
 use serde_json::json;
 use std::sync::Arc;
@@ -252,9 +252,12 @@ fn maybe_close_verdict(state: &Arc<AppState>, session: &Session, bot_id: &str) -
         .next_back()
         .map(|m| m.content)
         .unwrap_or_default();
+    // Plane emits the result and closes — it does not act on it. Side-effects
+    // (PR comment, label, webhook) are the application's job: a north consumer
+    // of these events, or the chair bot's own `gh` call. (design: OCP does NOT
+    // own PR logic.)
     state.emit_north("verdict", &session.id, json!({ "text": verdict }));
     state.emit_north("state", &session.id, json!({ "state": "closed" }));
-    output::fire(state, session, &verdict)?;
     Ok(())
 }
 

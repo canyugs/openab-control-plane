@@ -4,7 +4,6 @@
 pub mod api;
 pub mod identity;
 pub mod orchestrator;
-pub mod output;
 pub mod protocol;
 pub mod routing;
 pub mod session;

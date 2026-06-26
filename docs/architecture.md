@@ -19,7 +19,7 @@ it orchestrates.
  ┌─────────────────────────────────────────┐
  │                  Core                    │
  │  identity · sessions · routing           │
- │  orchestration · store · output          │
+ │  orchestration · quorum · store          │
  └─────────────────────────────────────────┘
 ```
 
@@ -37,8 +37,9 @@ The two edges don't know about each other:
   don't know who triggered the session.
 - **Add a south agent** (new LLM backend, MCP agent) → north unchanged, users
   don't know which agent is behind the bot.
-- **Add a core capability** (new panel type, output adapter, quorum rule) →
-  both interfaces stay stable.
+- **Add a core capability** (new coordination mode, quorum rule) → both
+  interfaces stay stable. Side-effects (PR comment, webhook) are *not* core —
+  a north consumer of the `verdict`/`state` events does them.
 
 Design doc calls this "stable middle, replaceable edges."
 
@@ -55,7 +56,6 @@ src/
 ├── state.rs          core: AppState, connection registry
 ├── protocol.rs       south: gateway wire types (GatewayEvent/Reply/Response)
 ├── store.rs          core: SQLite persistence (bots, sessions, roster, outbox)
-├── output.rs         core: verdict side-effects (GitHub PR)
 ├── identity.rs       core: per-bot token hashing
 └── north/ south/     reserved for when files outgrow flat layout
 ```
