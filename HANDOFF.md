@@ -40,8 +40,18 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
   plane):** chair posted 3 "in-progress" comments + 2 verdict comments — a bit
   noisy; the trigger could tell the chair to post in-progress once. Session
   `verdict` field came back empty (verdict lives in PR comments + thread, not the
-  session row) — fine for now, surface it later if the API needs it. (Test
-  project torn down.)
+  session row) — fine for now, surface it later if the API needs it.
+- **Comment-noise fix LIVE-PROVEN + standing council is up (2026-06-27).** The
+  trigger now tells the chair to maintain ONE PR comment via a single
+  `gh pr comment N --edit-last --create-if-none` (creates first time, edits the
+  same comment every wake after — so rounds 2/3 overwrite in place). Re-ran on
+  `canyugs/openab#14` (old 8 comments deleted first): closed via quorum in 61.9s,
+  PR ended with **exactly 1** well-formatted verdict (critical panic + SI/IEC
+  label + thin-test findings). **Council is now a PERSISTENT deploy — do NOT tear
+  down** (server is always on, idle pods cost ~nothing). Coords: project
+  `oab-council` (`6a3f3afc22d1fdaf7eb045fe`) on OnCloud server, plane
+  `https://oab-council.zeabur.app`, API key = control-plane `PASSWORD` var. Reuse
+  for any review: `PLANE=… KEY=… scripts/open-council.sh owner/repo#N`.
 - **Coordinator refactor — Option 2 + Option 3 increments 1–2 done.**
   - Option 2: `output.rs` (verdict → gh comment) deleted from core — side-effects
     are the app's job; close path only emits `verdict`/`state:closed` events.
