@@ -11,19 +11,24 @@ verdict side-effects. Bots are stock OpenAB pods speaking the gateway protocol.
 
 Stand up a working PR-review council and get your first verdict in a few minutes.
 
-**1. Deploy** — one control-plane + 3 stock OpenAB Claude pods (1 chair + 2 reviewers):
+**1. Deploy** — one control-plane + 3 stock OpenAB Claude pods (1 chair + 2 reviewers).
+First gather: a Claude token from `claude setup-token`, a Zeabur project id (from the
+dashboard URL or `zeabur project list`), and — optionally — a fine-grained GitHub PAT
+with `pull_requests: write` + `contents: read` so the chair can post verdicts:
 
 ```sh
 npx zeabur@latest template deploy -f zeabur-template.yaml \
   --project-id <PROJECT_ID> \
   --var PUBLIC_DOMAIN=my-council \
-  --var CLAUDE_CODE_OAUTH_TOKEN=<from `claude setup-token`> \
-  --var GH_TOKEN=<fine-grained PAT>   # lets the chair comment on PRs; omit to deliberate only
+  --var CLAUDE_CODE_OAUTH_TOKEN=<OAUTH_TOKEN> \
+  --var GH_TOKEN=<PAT>
 ```
 
-The plane comes up at `https://my-council.zeabur.app`. Its API key is the
-auto-generated `OABCP_API_KEY` (= `PASSWORD`) on the control-plane service — copy
-it from the Zeabur dashboard's **Variables** tab.
+Omit `GH_TOKEN` to run the council without PR write-back — it still deliberates and
+produces a verdict, but won't post it to GitHub. The plane comes up at
+`https://my-council.zeabur.app`; Zeabur exposes its auto-generated API key as the
+`PASSWORD` env var on the control-plane service (referenced by `OABCP_API_KEY`) —
+copy it from the dashboard's **Variables** tab.
 
 **2a. Review a PR on demand** (needs `node`):
 
@@ -38,7 +43,8 @@ The chair posts a single verdict comment on the PR; `--watch` streams progress a
 [`.github/workflows/council-review.yml`](.github/workflows/council-review.yml) into
 the target repo and set two repo secrets, `COUNCIL_PLANE` (the plane URL) and
 `COUNCIL_KEY` (the `OABCP_API_KEY`). Every PR open/update then convenes a council
-automatically. See [deploy.md](docs/deploy.md) for the full guide.
+automatically (fork PRs are skipped — they can't read the secrets). See
+[deploy.md](docs/deploy.md) for the full guide.
 
 ## Docs
 

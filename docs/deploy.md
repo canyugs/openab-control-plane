@@ -61,6 +61,10 @@ The workflow runs on `pull_request` (opened / synchronize / reopened) and on man
 (fire-and-forget) — the chair posts the verdict back to the PR asynchronously. Fork
 PRs are skipped (they can't read the secrets); same-repo PRs and manual dispatch run.
 
+If a review never appears: check the **Action run log** for convene errors (wrong
+`COUNCIL_PLANE`/`COUNCIL_KEY`), then the **plane / chair logs** for the session — a
+session that never reaches quorum is force-closed by the 900s liveness watchdog.
+
 > This is the **PAT track**: the chair comments using the `GH_TOKEN` you gave the
 > deploy, so verdicts appear under that account. Posting as a distinct **bot
 > identity** (and formal approve/request-changes) is the GitHub App track — see the
