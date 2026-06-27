@@ -31,6 +31,9 @@ permissions:
 jobs:
   convene:
     runs-on: ubuntu-latest
+    # Fire-and-forget: this job convenes the council and exits — it does NOT wait
+    # for the review. The council posts its verdict asynchronously as a PR comment
+    # (the chair holds GH_TOKEN in its pod). The timeout only caps the convene call.
     timeout-minutes: 5
     # Fork PRs can't read the COUNCIL_KEY secret, so skip the event path for them
     # (same-repo PRs and manual dispatch still run). Mirrors openab's guard.
@@ -51,4 +54,7 @@ jobs:
             echo "::error::COUNCIL_PLANE / COUNCIL_KEY secrets are not set"
             exit 1
           fi
+          # PR is a workflow_dispatch input on the manual path — validate before it
+          # reaches the shell (the pull_request path is already a trusted integer).
+          [[ "${PR}" =~ ^[0-9]+$ ]] || { echo "::error::PR must be a number, got '${PR}'"; exit 1; }
           scripts/open-council.sh "${GITHUB_REPOSITORY}#${PR}"
