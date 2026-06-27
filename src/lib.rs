@@ -4,6 +4,7 @@
 pub mod api;
 pub mod coordinator;
 pub mod github_app;
+pub mod github_webhook;
 pub mod identity;
 pub mod orchestrator;
 pub mod protocol;

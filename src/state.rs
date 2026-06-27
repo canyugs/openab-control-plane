@@ -28,6 +28,9 @@ pub struct AppState {
     /// None = PAT mode (pr-agent's `deployment_type = "user"`): pods fall back to the
     /// shared `GH_TOKEN` until the App is provisioned (ROADMAP Phase 1).
     pub github_app: Option<GitHubApp>,
+    /// Webhook HMAC secret (`x-hub-signature-256`). None = signature not enforced
+    /// (dev only — `handle_webhook` logs a warning each time).
+    pub github_webhook_secret: Option<String>,
 }
 
 impl AppState {
@@ -41,6 +44,7 @@ impl AppState {
             platform: "feishu".into(),
             api_key: std::env::var("OABCP_API_KEY").ok(),
             github_app: GitHubApp::from_env(),
+            github_webhook_secret: std::env::var("GITHUB_WEBHOOK_SECRET").ok(),
         })
     }
 

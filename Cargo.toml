@@ -23,6 +23,8 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 jsonwebtoken = "9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 base64 = "0.22"
+# Webhook signature verification (x-hub-signature-256). sha2 is already a dep.
+hmac = "0.12"
 
 [dev-dependencies]
 tokio-tungstenite = "0.23"

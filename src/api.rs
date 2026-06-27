@@ -34,6 +34,12 @@ pub fn router() -> Router<Arc<AppState>> {
         // served on the internal network to stock OAB pods (like openab-hub's
         // /bot-config); no client auth — the token IS the bot's credential.
         .route("/bot-config/:id", get(bot_config))
+        // GitHub webhook ingress — auth is the x-hub-signature-256 HMAC, not the
+        // north bearer key, so it's deliberately outside check_auth.
+        .route(
+            "/api/v1/github_webhooks",
+            post(crate::github_webhook::handle_webhook),
+        )
 }
 
 fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
