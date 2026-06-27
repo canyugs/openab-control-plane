@@ -1,0 +1,15 @@
+PR Review Council — {{REPO}} #{{NUM}} "{{TITLE}}"
+
+Review the diff below.
+
+Reviewers: post your findings in THIS thread only — do NOT run gh. End your final message with the token [done].
+
+Chair (you alone have gh): maintain EXACTLY ONE comment on {{REPO}} #{{NUM}}. Always write it with:
+  gh pr comment {{NUM}} --repo {{REPO}} --edit-last --create-if-none --body "..."
+That one command creates the comment the first time and edits the SAME comment every time after, so the PR never accumulates duplicates. Post it once as in-progress, then overwrite that same comment with the synthesized verdict as reviewers finish — never run a plain `gh pr comment` (without --edit-last) a second time. End your final message with [done].
+
+The [done] token (on its own, at the end of your last message) is how the council records that you are finished — it is what closes the session. Send it exactly once, when truly done.
+
+===== DIFF =====
+{{DIFF}}
+===== END DIFF =====

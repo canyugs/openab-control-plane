@@ -4,15 +4,34 @@
 # Usage:
 #   PLANE=https://<your-domain> KEY=<OABCP_API_KEY> ./open-council.sh owner/repo#123
 #   PLANE=https://<your-domain> KEY=<OABCP_API_KEY> ./open-council.sh "Free-text task to review"
+#   PLANE=… KEY=… ./open-council.sh --watch owner/repo#123      # follow + print the verdict
 #
-# Needs: curl, python3, and (for the PR form) gh authenticated locally.
+# Env:
+#   PLANE   control-plane URL                              (required)
+#   KEY     OABCP_API_KEY                                  (required)
+#   ROSTER  JSON array of bot names (default ["chair","rev1","rev2"], matches OABCP_BOTS)
+#   QUORUM  override quorum_n          (default: all reviewers = len(roster)-1)
+#   MODE    override mode              (default: solo for 1-entry roster, else council)
+#   FOLLOW  =1 to stream + print the verdict (same as --watch)
+#
+# Needs: curl, node, and (for the PR form) gh authenticated locally.
+# Deliberately depends on node (not jq/python3): node ships on GitHub runners AND
+# in the dev sandbox, so the same script runs in CI and by hand.
 set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# --watch / -w may precede the arg; FOLLOW=1 does the same.
+case "${1:-}" in
+  -w|--watch) FOLLOW=1; shift ;;
+esac
+FOLLOW="${FOLLOW:-0}"
 
 : "${PLANE:?set PLANE to the control-plane URL}"
 : "${KEY:?set KEY to OABCP_API_KEY}"
 ARG="${1:?pass owner/repo#N or a quoted task string}"
 
-ROSTER='["chair","rev1","rev2"]'   # matches OABCP_BOTS in the template; edit to taste.
+ROSTER="${ROSTER:-[\"chair\",\"rev1\",\"rev2\"]}"   # override via env; matches OABCP_BOTS.
 # A 1-entry roster auto-selects "solo" mode (a lone chair has no reviewers, so a
 # council never reaches quorum); else "council" with quorum = all reviewers.
 
@@ -21,20 +40,65 @@ if [[ "$ARG" =~ ^([^/]+/[^#]+)#([0-9]+)$ ]]; then
   REPO="${BASH_REMATCH[1]}"; NUM="${BASH_REMATCH[2]}"
   TITLE=$(gh pr view "$NUM" --repo "$REPO" --json title -q .title)
   DIFF=$(gh pr diff "$NUM" --repo "$REPO")
-  TRIGGER=$(printf 'PR Review Council — %s #%s "%s"\n\nReview the diff below.\n\nReviewers: post your findings in THIS thread only — do NOT run gh. End your final message with the token [done].\n\nChair (you alone have gh): maintain EXACTLY ONE comment on %s #%s. Always write it with:\n  gh pr comment %s --repo %s --edit-last --create-if-none --body "..."\nThat one command creates the comment the first time and edits the SAME comment every time after, so the PR never accumulates duplicates. Post it once as in-progress, then overwrite that same comment with the synthesized verdict as reviewers finish — never run a plain `gh pr comment` (without --edit-last) a second time. End your final message with [done].\n\nThe [done] token (on its own, at the end of your last message) is how the council records that you are finished — it is what closes the session. Send it exactly once, when truly done.\n\n===== DIFF =====\n%s\n===== END DIFF =====\n' "$REPO" "$NUM" "$TITLE" "$REPO" "$NUM" "$NUM" "$REPO" "$DIFF")
+  # Render scripts/pr-review-trigger.tmpl with named {{...}} placeholders (no
+  # positional %s, no printf %-in-diff hazard). Steering lives in the template.
+  TRIGGER=$(REPO="$REPO" NUM="$NUM" TITLE="$TITLE" DIFF="$DIFF" TMPL="$SCRIPT_DIR/pr-review-trigger.tmpl" node -e '
+    const fs = require("fs");
+    let t = fs.readFileSync(process.env.TMPL, "utf8");
+    for (const k of ["REPO", "NUM", "TITLE", "DIFF"]) t = t.split("{{" + k + "}}").join(process.env[k]);
+    process.stdout.write(t);
+  ')
   REF="github:pr/$REPO#$NUM"
 else
   TRIGGER="$ARG"; REF="adhoc"
 fi
 
-# Open the session.
+# Open the session (node builds the body: quorum_n + mode derived from the roster,
+# overridable via QUORUM / MODE).
+OPEN_BODY=$(ROSTER="$ROSTER" REF="$REF" QUORUM="${QUORUM:-}" MODE="${MODE:-}" node -e '
+  const r = JSON.parse(process.env.ROSTER);
+  const quorum = process.env.QUORUM ? Number(process.env.QUORUM) : Math.max(0, r.length - 1);
+  const mode = process.env.MODE || (r.length === 1 ? "solo" : "council");
+  process.stdout.write(JSON.stringify({
+    title: "council", trigger_ref: process.env.REF, roster: r,
+    quorum_n: quorum, chair_bot: r[0], mode,
+  }));
+')
 SID=$(curl -s -X POST "$PLANE/v1/sessions" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d "$(python3 -c 'import json,sys; r=json.loads(sys.argv[1]); print(json.dumps({"title":"council","trigger_ref":sys.argv[2],"roster":r,"quorum_n":max(0,len(r)-1),"chair_bot":r[0],"mode":"solo" if len(r)==1 else "council"}))' "$ROSTER" "$REF")" \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["session_id"])')
+  -d "$OPEN_BODY" \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).session_id))')
 echo "session: $SID"
 
 # Post the trigger.
 curl -s -X POST "$PLANE/v1/sessions/$SID/messages" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d "$(python3 -c 'import json,sys;print(json.dumps({"content":sys.stdin.read()}))' <<<"$TRIGGER")" >/dev/null
-echo "trigger posted. Stream it:"
-echo "  curl -N $PLANE/v1/sessions/$SID/stream -H \"Authorization: Bearer $KEY\""
+  -d "$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify({content:s})))' <<<"$TRIGGER")" >/dev/null
+
+STREAM_URL="$PLANE/v1/sessions/$SID/stream"
+if [[ "$FOLLOW" != "1" ]]; then
+  echo "trigger posted. Stream it:"
+  echo "  curl -N $STREAM_URL -H \"Authorization: Bearer $KEY\""
+  exit 0
+fi
+
+# --watch: follow the SSE stream, echo messages live, print the verdict, exit on close.
+echo "trigger posted. Following… (Ctrl-C to detach; the council keeps running)"
+set +o pipefail   # node exit on close sends SIGPIPE to curl — that's expected, not a failure.
+curl -sN "$STREAM_URL" -H "Authorization: Bearer $KEY" | node -e '
+  let ev = null, buf = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", d => {
+    buf += d;
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i); buf = buf.slice(i + 1);
+      if (line.startsWith("event:")) ev = line.slice(6).trim();
+      else if (line.startsWith("data:")) {
+        const data = line.slice(5).trim();
+        let o; try { o = JSON.parse(data); } catch { continue; }
+        if (ev === "message") console.error(`  [${o.author}] ${String(o.content).replace(/\s+/g, " ").slice(0, 200)}`);
+        else if (ev === "verdict") console.log("\n===== VERDICT =====\n" + o.text + "\n===================");
+        else if (ev === "state" && o.state === "closed") process.exit(0);
+      }
+    }
+  });
+'

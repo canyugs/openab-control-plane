@@ -33,7 +33,10 @@ service. Then:
 PLANE=https://my-council.zeabur.app KEY=<OABCP_API_KEY> \
   scripts/open-council.sh owner/repo#123      # or a quoted free-text task
 ```
-Stream the deliberation/verdict from the URL the script prints.
+The script prints a stream URL to follow by hand, or pass `--watch` (or `FOLLOW=1`)
+to follow inline and print the verdict on close. Council size is the `ROSTER` env
+(default `["chair","rev1","rev2"]`); `QUORUM`/`MODE` override the derived defaults.
+Needs `node` (not python3/jq) — same runtime as CI and the dev sandbox.
 
 ## Image hosting
 The template references `docker.io/canyu/openab-control-plane:<version>` (public).
