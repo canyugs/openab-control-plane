@@ -21,7 +21,7 @@ if [[ "$ARG" =~ ^([^/]+/[^#]+)#([0-9]+)$ ]]; then
   REPO="${BASH_REMATCH[1]}"; NUM="${BASH_REMATCH[2]}"
   TITLE=$(gh pr view "$NUM" --repo "$REPO" --json title -q .title)
   DIFF=$(gh pr diff "$NUM" --repo "$REPO")
-  TRIGGER=$(printf 'PR Review Council — %s #%s "%s"\n\nReview the diff below. Reviewers: post findings then react 🆗.\nChair: post an in-progress comment, synthesize a verdict, then `gh pr comment/review/edit` on %s #%s (you have gh), and react 🆗.\n\n===== DIFF =====\n%s\n===== END DIFF =====\n' "$REPO" "$NUM" "$TITLE" "$REPO" "$NUM" "$DIFF")
+  TRIGGER=$(printf 'PR Review Council — %s #%s "%s"\n\nReview the diff below. Reviewers: post your findings, then end your final message with the token [done].\nChair: post an in-progress comment, wait for reviewers, synthesize a verdict, run `gh pr comment/review/edit` on %s #%s (you have gh), then end your final message with [done].\n\nThe [done] token (on its own, at the end of your last message) is how the council records that you are finished — it is what closes the session. Send it exactly once, when truly done.\n\n===== DIFF =====\n%s\n===== END DIFF =====\n' "$REPO" "$NUM" "$TITLE" "$REPO" "$NUM" "$DIFF")
   REF="github:pr/$REPO#$NUM"
 else
   TRIGGER="$ARG"; REF="adhoc"

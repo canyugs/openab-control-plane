@@ -18,10 +18,15 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
      deliberation without cleanly hitting quorum-close; `force_close_timeout`
      force-closed at session age 910s (900s deadline). The liveness guarantee
      built this session saved a real hung council. ✅
-  2. **Quorum→close is fragile with real bots** (follow-up below). They use 🆗 in
-     message *text* and across many rounds rather than emitting the single
-     done-signal the CAS path expects, so the happy-path close didn't fire on a
-     substantial PR — it ran to the watchdog instead. (Test project torn down.)
+  2. **Quorum→close was fragile with real bots → FIXED.** They signal completion
+     in message *text* (`[done]`, the convention the real Discord council actually
+     uses), not the `add_reaction` 🆗 the quorum path counted. `is_done_signal` +
+     `check_text_done` now treat a trailing `[done]` (or a bare 🆗) on send/edit as
+     a done-signal (synthetic 🆗 → same coordinator path); the watchdog now also
+     surfaces the chair's synthesized verdict instead of burying it. `open-council.sh`
+     trigger updated to instruct `[done]`. Proven by
+     `tests/spike.rs::council_closes_on_text_done_signal` (closes with zero
+     reactions). (Test project torn down.)
 - **Coordinator refactor — Option 2 + Option 3 increments 1–2 done.**
   - Option 2: `output.rs` (verdict → gh comment) deleted from core — side-effects
     are the app's job; close path only emits `verdict`/`state:closed` events.
@@ -50,14 +55,11 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
 
 ## Next — priority order
 
-1. **Quorum-close robustness (live-found, high value).** On `openabdev/openab#1187`
-   the council produced a verdict but never cleanly closed via quorum — real bots
-   sprinkle 🆗 through text across rounds instead of one recognized done-signal, so
-   the CAS quorum→chair→close dance didn't trigger; only the watchdog ended it (at
-   910s). The watchdog is the safety net, but the 5-min happy path should fire.
-   Options: count a chair message that posts a verdict (or runs `gh pr review`) as
-   the close trigger; or treat 🆗 reactions more liberally. Make the happy path
-   robust to messy real-bot behavior, not just mock bots.
+1. **Re-run the live milestone to confirm the `[done]` fix end-to-end.** The text
+   done-signal fix is unit+spike-proven; a fresh deploy (cut `v0.1.3` first so the
+   image carries it) against a real PR should now close via quorum in the 5-min
+   window instead of running to the watchdog. Watch whether real bots emit a clean
+   trailing `[done]` per the updated trigger.
 2. **Security (do soon):** rotate the GitHub PAT + `CLAUDE_CODE_OAUTH_TOKEN` —
    both were dumped in plaintext by `zeabur variable list` this session (already on
    the list). Needs your account access.

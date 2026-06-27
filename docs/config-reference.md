@@ -105,3 +105,18 @@ Recruiting a bot that **isn't registered yet** emits `provision_requested`
 instead of a plain rejection — the cue for an external fleet provisioner to spin
 up that pod. OCP never calls the infra API itself; see
 [provisioner.md](provisioner.md).
+
+## Done-signal (how a bot says "I'm finished")
+
+A bot signals completion two interchangeable ways:
+
+- **Text** — end its final message with the token `[done]` (or send a message
+  that is only 🆗). This matches the convention the real Discord council uses and
+  is what stock agents reliably produce.
+- **Reaction** — the OAB-default 🆗 `add_reaction` (`emoji_done`).
+
+Either is counted toward quorum. The text form exists because real agents tend to
+write `[done]` rather than emit the gateway reaction (a 🆗 *in passing* mid-message
+is **not** a done-signal — only a trailing `[done]` or a bare 🆗). Steering should
+tell reviewers and the chair to end their final message with `[done]`; the
+`open-council.sh` trigger already does.

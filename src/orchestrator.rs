@@ -100,6 +100,23 @@ pub fn post_client_message(state: &Arc<AppState>, session_id: &str, content: &st
     Ok(msg)
 }
 
+/// A bot's last *settled* (non-stub) message content. Standalone twin of
+/// `OrchCtx::latest_settled` for the watchdog, which builds no `OrchCtx`.
+fn chair_latest_settled(state: &Arc<AppState>, session_id: &str, bot: &str) -> Option<String> {
+    state
+        .store
+        .messages(session_id)
+        .ok()?
+        .into_iter()
+        .filter(|m| m.author_id.as_deref() == Some(bot))
+        .filter(|m| {
+            let t = m.content.trim();
+            !t.is_empty() && t != "…"
+        })
+        .next_back()
+        .map(|m| m.content)
+}
+
 /// Liveness guarantee (design: "what OCP actually guarantees"). Force a stuck
 /// session to a terminal verdict. A silent reviewer otherwise hangs
 /// `QuorumCouncil` forever (quorum never reached), and a dead bot can't run its
@@ -118,12 +135,23 @@ pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bo
         .into_iter()
         .collect();
     let absent: Vec<&str> = roster.iter().map(String::as_str).filter(|b| !done.contains(*b)).collect();
-    let verdict = format!(
-        "⏱️ Session closed by timeout — {}/{} signaled done.{} (Verdict not synthesized; reviews are in the thread.)",
+    let note = format!(
+        "⏱️ Session closed by timeout — {}/{} signaled done.{}",
         done.len(),
         roster.len(),
         if absent.is_empty() { String::new() } else { format!(" Absent: {}.", absent.join(", ")) },
     );
+    // If the chair already synthesized a verdict (the live #1187 case: produced
+    // but never cleanly closed), surface it — don't bury it under the timeout note.
+    let chair_final = state
+        .store
+        .session(session_id)?
+        .and_then(|s| s.chair_bot)
+        .and_then(|chair| chair_latest_settled(state, session_id, &chair));
+    let verdict = match chair_final {
+        Some(v) => format!("{note}\n\n{v}"),
+        None => format!("{note} (No verdict synthesized; reviews are in the thread.)"),
+    };
     state.emit_north("verdict", session_id, json!({ "text": verdict, "reason": "timeout" }));
     state.emit_north("state", session_id, json!({ "state": "closed" }));
     tracing::warn!("watchdog force-closed stale session {session_id}");
@@ -338,9 +366,9 @@ fn on_send(state: &Arc<AppState>, session: &Session, bot_id: &str, bot_name: &st
     // A bot may embed `[[recruit:<id>]]` to add a member (chair-only, via the
     // admission gate). Parsed from the same message — no extra wire command.
     maybe_recruit(state, session, bot_id, &reply.content.text)?;
-    // The chair's verdict is closed out on its done-signal (see
-    // `maybe_close_verdict`), not here — on_send only ever sees the streaming
-    // stub, so closing here would emit `…` as the verdict.
+    // A done-signal posted as a complete (non-streamed) message is caught here;
+    // a streamed one is caught in `on_edit` when the final content lands.
+    check_text_done(state, session, bot_id, &msg.id, &reply.content.text)?;
     Ok(())
 }
 
@@ -365,14 +393,43 @@ fn on_reaction(state: &Arc<AppState>, session: &Session, bot_id: &str, reply: &G
     ack(state, bot_id, reply, None, None);
 
     if add && emoji == DONE_EMOJI {
-        let coord = coordinator::for_session(&session.mode);
-        let cx = OrchCtx {
-            state,
-            session,
-            roster: state.store.roster(&session.id)?,
-        };
-        let actions = coord.on_done(&cx, bot_id);
-        run_actions(state, session, actions)?;
+        run_done(state, session, bot_id)?;
+    }
+    Ok(())
+}
+
+/// Run the active coordinator's done-handling for `bot` and execute the actions.
+/// Shared by the 🆗-reaction path and the text done-signal path.
+fn run_done(state: &Arc<AppState>, session: &Session, bot_id: &str) -> Result<()> {
+    let coord = coordinator::for_session(&session.mode);
+    let cx = OrchCtx {
+        state,
+        session,
+        roster: state.store.roster(&session.id)?,
+    };
+    let actions = coord.on_done(&cx, bot_id);
+    run_actions(state, session, actions)
+}
+
+/// Real agents often signal completion in message *text* (`[done]`, or a bare
+/// 🆗) rather than via the gateway `add_reaction` the quorum path counts — this
+/// is what stalled the live `openabdev/openab#1187` council. Recognize the text
+/// form too. Conservative on purpose: a trailing `[done]` or a message that is
+/// only 🆗 — not any 🆗 in passing (real bots use 🆗 as an ack mid-thread).
+fn is_done_signal(text: &str) -> bool {
+    let t = text.trim();
+    t == DONE_EMOJI || t.ends_with("[done]")
+}
+
+/// If `text` is a done-signal, register a synthetic 🆗 (so the quorum count sees
+/// it) and run the coordinator — the text-path equivalent of an `add_reaction`.
+/// Checked on both send and edit: with `streaming=true` the final content (with
+/// the `[done]`) lands via `edit_message`, not the initial stub. Idempotent —
+/// `add_reaction` is INSERT OR IGNORE and the close/transition CAS guard re-runs.
+fn check_text_done(state: &Arc<AppState>, session: &Session, bot_id: &str, msg_id: &str, text: &str) -> Result<()> {
+    if is_done_signal(text) {
+        state.store.add_reaction(msg_id, bot_id, DONE_EMOJI)?;
+        run_done(state, session, bot_id)?;
     }
     Ok(())
 }
@@ -515,6 +572,8 @@ fn on_edit(state: &Arc<AppState>, session: &Session, bot_id: &str, reply: &Gatew
         state.store.edit_message(target, &reply.content.text)?;
         state.emit_north("message_edit", &session.id, json!({ "message_id": target, "content": reply.content.text }));
         ack(state, bot_id, reply, None, Some(target));
+        // a streamed done-signal arrives here (the stub had no `[done]` yet)
+        check_text_done(state, session, bot_id, target, &reply.content.text)?;
     }
     Ok(())
 }
@@ -595,6 +654,16 @@ mod tests {
         assert_eq!(parse_recruit("[[recruit:  spaced  ]]"), Some("spaced"));
         assert_eq!(parse_recruit("no directive here"), None);
         assert_eq!(parse_recruit("[[recruit:]]"), None); // empty target
+    }
+
+    #[test]
+    fn is_done_signal_matches_text_done_not_passing_ok() {
+        assert!(is_done_signal("🆗"));                       // bare done emoji
+        assert!(is_done_signal("review: LGTM [done]"));      // trailing token
+        assert!(is_done_signal("  VERDICT: approved [done]  "));
+        assert!(!is_done_signal("🆗 Rev1, good point"));     // ack in passing — NOT done
+        assert!(!is_done_signal("I'll post [done] when finished")); // not trailing
+        assert!(!is_done_signal("still reviewing the diff"));
     }
 
     #[test]

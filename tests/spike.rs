@@ -418,6 +418,68 @@ async fn chair_recruits_through_admission_gate() {
     assert!(!roster.contains(&sneaky_id), "a reviewer's recruit must be denied: {roster:?}");
 }
 
+/// The live `openabdev/openab#1187` fix: real bots signal completion in message
+/// TEXT (`[done]`), not via the `add_reaction` 🆗 the quorum path counts. Prove a
+/// council closes on text done-signals with ZERO reactions sent.
+#[tokio::test]
+async fn council_closes_on_text_done_signal() {
+    let addr = spawn_server().await;
+    let base = addr.to_string();
+    let (chair_id, chair_tok) = register_bot(&base, "chair", "chair").await;
+    let (rev_id, rev_tok) = register_bot(&base, "rev0", "reviewer").await;
+    let session = open_session(&base, &[chair_id.clone(), rev_id.clone()], Some(&chair_id), 1).await;
+
+    let h1 = spawn_text_done_bot(addr, chair_tok, session.clone(), Role::Chair);
+    let h2 = spawn_text_done_bot(addr, rev_tok, session.clone(), Role::Reviewer);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    post_client(&base, &session, "review this").await;
+
+    let mut closed = false;
+    let mut last = json!({});
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        last = get_session(&base, &session).await;
+        if last["session"]["state"] == "closed" { closed = true; break; }
+    }
+    h1.abort(); h2.abort();
+    assert!(closed, "council must close on text [done] (no reactions sent): {last}");
+    assert!(
+        last["messages"].as_array().unwrap().iter()
+            .any(|m| m["content"].as_str().unwrap_or("").contains("VERDICT")),
+        "verdict missing from closed session",
+    );
+}
+
+/// Bot that signals completion via TEXT `[done]` only — never sends add_reaction.
+fn spawn_text_done_bot(addr: SocketAddr, token: String, session: String, role: Role) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let ws = connect(addr, &token).await;
+        let (mut w, mut r) = ws.split();
+        while let Some(Ok(msg)) = r.next().await {
+            let Message::Text(t) = msg else {
+                if matches!(msg, Message::Close(_)) { break; }
+                continue;
+            };
+            let v: Value = serde_json::from_str(&t).unwrap();
+            if v.get("event_type").is_none() { continue; }
+            let sender = v["sender"]["id"].as_str().unwrap_or("");
+            let msg_id = v["message_id"].as_str().unwrap_or("").to_string();
+            match role {
+                Role::Reviewer if sender == "client" => {
+                    w.send(reply(&session, "review: LGTM [done]", None, None, None)).await.ok();
+                }
+                Role::Chair if sender == "client" => {
+                    w.send(reply(&session, "Council", Some("create_topic"), Some(&msg_id), None)).await.ok();
+                }
+                Role::Chair if sender == "system" => {
+                    w.send(reply(&session, "VERDICT: approved [done]", None, None, None)).await.ok();
+                }
+                _ => {}
+            }
+        }
+    })
+}
+
 async fn read_response<S>(r: &mut S, req: &str) -> Value
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
