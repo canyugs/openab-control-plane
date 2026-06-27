@@ -21,6 +21,25 @@ today's single shared `OABCP_API_KEY` there is no user to borrow, so every sessi
 is act-as-self regardless of roster size. The act-as-user mode is gated on the
 Phase 4 per-user OAuth/OIDC item, not a separate feature.
 
+### Note: enterprise BaaS asks (act-as-user track)
+
+A team piloting OpenAB as a centralized internal BaaS (single-user task bots —
+Confluence Q&A, Slack alerting) raised three governance blockers from a security
+review (2026-06-27). They map onto OCP as follows — the plane is the right home for
+two of them, the third belongs to another layer:
+
+| Ask | OCP home | Status |
+|-----|----------|--------|
+| **1. Identity delegation (act-on-behalf-of)** — bot acts as the current Slack user (Okta/OIDC), not a shared service token, so users only see what their own perms allow | **Yes — the plane is the natural home.** This is exactly the act-as-user mode above: north carries an authenticated single user → plane mints a per-connector scoped token → bot acts as that user. Phase 4 *Multi-tenant auth (OAuth/OIDC for humans)* + *Session-scoped credentials* | TODO — deferred act-as-user half; today act-as-self via shared `OABCP_API_KEY` |
+| **2. End-to-end audit (trace downstream op → triggering user)** | **Partial.** The plane is already named the central audit point (Phase 4 *Audit log* + *Central revoke*) — but it tags side-effects to the **bot identity**, not the **human**. The user-link only exists once ask 1 lands; the two are coupled | TODO — central choke point planned; user attribution depends on ask 1 |
+| **3. Scalable access control — dynamic Okta/Slack-group binding instead of static `allowedUsers`/`allowedChannels`** | **Not OCP.** The membership plane / admission gate governs which *bots* join a roster, not which *humans* may invoke a bot. Per-user gating lives in the OpenAB gateway (platform adapters, which OCP does not own — see [design.md](docs/design.md)) or a front auth-proxy | Out of scope — OpenAB-core / auth-proxy |
+
+**The line:** the actionable-in-OCP work is asks 1+2, and it is one piece of work —
+pull the Phase 4 identity quartet (multi-tenant OIDC / session-scoped creds / audit /
+central revoke) forward *and* build the act-as-user north-identity path this section
+deliberately drew tight. Ask 3 stays out of the plane. None of this is built; the
+pilot's use case is precisely the act-as-user mode OCP deferred.
+
 ## Phase 1 — Usable (now)
 
 Goal: from one template deploy (plane **+ OAB pods**) to a code review that runs
