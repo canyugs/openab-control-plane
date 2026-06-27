@@ -135,6 +135,15 @@ pub async fn handle_webhook(
     //    fact that sessions are cheap; gate before production (GITHUB_ALLOWED_REPOS +
     //    collaborator check). quorum_n = 0 + empty roster = a placeholder council that
     //    Phase 2 recruitment fills; it is NOT a "0 = expire now" TTL.
+    // Idempotency: GitHub re-delivers on 5xx (and a PR can get repeated `/review`s).
+    // If a council is already open for this PR, return it instead of opening a dup.
+    if let Some(existing) = state
+        .store
+        .active_session_for_trigger(&trigger.pr_url)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        return Ok(Json(json!({ "ok": true, "triggered": true, "session_id": existing, "deduped": true })).into_response());
+    }
     let title = format!("Review {}#{}", trigger.repo, trigger.pr_number);
     let session = state
         .store

@@ -121,6 +121,10 @@ pub trait Store: Send + Sync {
     /// Non-terminal session ids created before `cutoff_ms` — watchdog candidates.
     fn active_sessions_before(&self, cutoff_ms: i64) -> Result<Vec<String>>;
     fn roster(&self, session_id: &str) -> Result<Vec<String>>;
+    /// A non-terminal session carrying this `trigger_ref`, if any. Makes
+    /// webhook-driven creation idempotent: GitHub re-delivers on 5xx, so a retried
+    /// PR event must not open a second council for the same PR.
+    fn active_session_for_trigger(&self, trigger_ref: &str) -> Result<Option<String>>;
 
     fn upsert_thread(&self, session_id: &str, root_message_id: Option<&str>) -> Result<String>;
     fn thread_for_session(&self, session_id: &str) -> Result<Option<String>>;
@@ -450,6 +454,18 @@ impl Store for SqliteStore {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
+    fn active_session_for_trigger(&self, trigger_ref: &str) -> Result<Option<String>> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT id FROM sessions
+             WHERE trigger_ref = ?1 AND state NOT IN ('closed', 'aborted')
+             ORDER BY created_at DESC LIMIT 1",
+            params![trigger_ref],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?)
+    }
+
     fn upsert_thread(&self, session_id: &str, root_message_id: Option<&str>) -> Result<String> {
         let c = self.conn.lock().unwrap();
         if let Some(existing) = self.thread_locked(&c, session_id)? {
@@ -615,5 +631,25 @@ impl Store for SqliteStore {
             params![session_id],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_session_for_trigger_dedups_only_while_open() {
+        let store = SqliteStore::memory().unwrap();
+        let pr = "https://api.github.com/repos/o/r/pulls/1";
+        assert!(store.active_session_for_trigger(pr).unwrap().is_none());
+
+        let s = store.create_session("Review o/r#1", Some(pr), 0, None, &[], "council").unwrap();
+        // an open session with this trigger is found → webhook retry is idempotent
+        assert_eq!(store.active_session_for_trigger(pr).unwrap().as_deref(), Some(s.id.as_str()));
+
+        // once closed, the same PR can open a fresh council (e.g. a later push)
+        store.set_state(&s.id, SessionState::Closed).unwrap();
+        assert!(store.active_session_for_trigger(pr).unwrap().is_none());
     }
 }

@@ -124,12 +124,39 @@ impl GitHubApp {
     ///     base64-wrapped PEM (convenient for single-line env stores).
     ///   - `GITHUB_API_BASE` (optional; defaults to public GitHub, override for GHES).
     pub fn from_env() -> Option<GitHubApp> {
-        let app_id = std::env::var("GITHUB_APP_ID").ok()?;
-        let installation_id = std::env::var("GITHUB_APP_INSTALLATION_ID").ok()?.parse().ok()?;
-        let private_key_pem = normalize_pem(&std::env::var("GITHUB_APP_PRIVATE_KEY").ok()?);
-        let api_base =
-            std::env::var("GITHUB_API_BASE").unwrap_or_else(|_| "https://api.github.com".into());
-        Some(GitHubApp::from_parts(app_id, private_key_pem, installation_id, api_base))
+        let app_id = std::env::var("GITHUB_APP_ID").ok();
+        let inst = std::env::var("GITHUB_APP_INSTALLATION_ID").ok();
+        let key = std::env::var("GITHUB_APP_PRIVATE_KEY").ok();
+        match (app_id, inst, key) {
+            // App mode simply not configured — expected, fall back to PAT mode quietly.
+            (None, None, None) => None,
+            (Some(app_id), Some(inst), Some(raw)) => {
+                // Loud, not silent: a set-but-malformed installation id is an operator
+                // typo, not "App mode off". Disable App but say why.
+                let installation_id = match inst.parse::<u64>() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        tracing::error!(
+                            "GITHUB_APP_INSTALLATION_ID='{inst}' is not a valid u64 — \
+                             GitHub App disabled, falling back to PAT mode"
+                        );
+                        return None;
+                    }
+                };
+                let api_base = std::env::var("GITHUB_API_BASE")
+                    .unwrap_or_else(|_| "https://api.github.com".into());
+                Some(GitHubApp::from_parts(app_id, normalize_pem(&raw), installation_id, api_base))
+            }
+            // Partial config is also an operator error, not a silent downgrade.
+            _ => {
+                tracing::error!(
+                    "GitHub App partially configured — need GITHUB_APP_ID + \
+                     GITHUB_APP_INSTALLATION_ID + GITHUB_APP_PRIVATE_KEY together; \
+                     disabling App, falling back to PAT mode"
+                );
+                None
+            }
+        }
     }
 
     /// Mint a short-lived App JWT (RS256, `iss = app_id`, ≤10 min) — the auth used to

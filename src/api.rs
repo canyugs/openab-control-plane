@@ -287,6 +287,16 @@ async fn github_token(
         .bot(&req.bot_id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
+    // The bot must belong to *this* session — otherwise a caller could mint a token
+    // for session B using a bot from session A. (Role is still bounded to the bot's
+    // stored role, so this is defense-in-depth, not the only guard.)
+    let roster = state
+        .store
+        .roster(&id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !roster.iter().any(|b| b == &req.bot_id) {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let role = crate::github_app::Role::from_bot_role(&bot.role);
     let token =
         identity::github_token_for(state.store.as_ref(), app, &state.github_mint_lock, &id, role)
