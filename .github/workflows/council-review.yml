@@ -1,0 +1,60 @@
+name: Council Review
+
+# CodeRabbit-style auto-trigger (PAT track): when a PR opens or updates, open a
+# review council on the standing control plane. The chair posts the verdict back
+# to the PR (it holds GH_TOKEN inside its pod) — this job only *convenes* the
+# council via the plane's north API; it never writes to the PR itself.
+#
+# Setup (repo secrets):
+#   COUNCIL_PLANE  = https://<your-plane-domain>      (e.g. https://oab-council.zeabur.app)
+#   COUNCIL_KEY    = the control-plane OABCP_API_KEY   (the `PASSWORD` var)
+#
+# Structure borrowed from openab's pr-bot-review.yml (fork guard + concurrency);
+# OCP triggers via REST, not a Discord webhook.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to review
+        required: true
+
+concurrency:
+  group: council-review-${{ github.event.pull_request.number || github.event.inputs.pr }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  convene:
+    runs-on: ubuntu-latest
+    # Fire-and-forget: this job convenes the council and exits — it does NOT wait
+    # for the review. The council posts its verdict asynchronously as a PR comment
+    # (the chair holds GH_TOKEN in its pod). The timeout only caps the convene call.
+    timeout-minutes: 5
+    # Fork PRs can't read the COUNCIL_KEY secret, so skip the event path for them
+    # (same-repo PRs and manual dispatch still run). Mirrors openab's guard.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+      - name: Open review council
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLANE: ${{ secrets.COUNCIL_PLANE }}
+          KEY: ${{ secrets.COUNCIL_KEY }}
+          PR: ${{ github.event.pull_request.number || github.event.inputs.pr }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PLANE:-}" ] || [ -z "${KEY:-}" ]; then
+            echo "::error::COUNCIL_PLANE / COUNCIL_KEY secrets are not set"
+            exit 1
+          fi
+          # PR is a workflow_dispatch input on the manual path — validate before it
+          # reaches the shell (the pull_request path is already a trusted integer).
+          [[ "${PR}" =~ ^[0-9]+$ ]] || { echo "::error::PR must be a number, got '${PR}'"; exit 1; }
+          scripts/open-council.sh "${GITHUB_REPOSITORY}#${PR}"
