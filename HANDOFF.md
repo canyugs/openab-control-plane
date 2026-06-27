@@ -27,6 +27,21 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
      trigger updated to instruct `[done]`. Proven by
      `tests/spike.rs::council_closes_on_text_done_signal` (closes with zero
      reactions). (Test project torn down.)
+- **`[done]` fix LIVE-PROVEN on `canyugs/openab#14` (2026-06-27, image `0.1.3`).**
+  Fresh template deploy (project `oab-council-v013`, OnCloud server) against a
+  purpose-built test PR (`humanize_bytes` with a planted index-OOB panic + a
+  unit-label mismatch). The council **closed in 80.8s via the text-`[done]`
+  quorum path** — `system: "Quorum reached…"` fired, chair/rev1/rev2 all emitted
+  trailing `[done]`, *not* the watchdog (lifetime ≪ 900s). Both planted bugs
+  caught; chair posted a correct **Request Changes** verdict to the PR
+  (`unit + 1 < UNITS.len()` fix + regression test) via `gh`. This is the v0.1.2
+  live-found fragility (#1187, closed only by the 910s watchdog) now closing
+  cleanly under quorum. Milestone re-run done. **Polish nit (steering, not
+  plane):** chair posted 3 "in-progress" comments + 2 verdict comments — a bit
+  noisy; the trigger could tell the chair to post in-progress once. Session
+  `verdict` field came back empty (verdict lives in PR comments + thread, not the
+  session row) — fine for now, surface it later if the API needs it. (Test
+  project torn down.)
 - **Coordinator refactor — Option 2 + Option 3 increments 1–2 done.**
   - Option 2: `output.rs` (verdict → gh comment) deleted from core — side-effects
     are the app's job; close path only emits `verdict`/`state:closed` events.
@@ -55,11 +70,11 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
 
 ## Next — priority order
 
-1. **Re-run the live milestone to confirm the `[done]` fix end-to-end.** The text
-   done-signal fix is unit+spike-proven; a fresh deploy (cut `v0.1.3` first so the
-   image carries it) against a real PR should now close via quorum in the 5-min
-   window instead of running to the watchdog. Watch whether real bots emit a clean
-   trailing `[done]` per the updated trigger.
+1. ~~Re-run the live milestone to confirm the `[done]` fix end-to-end.~~ **DONE**
+   — `v0.1.3` cut + image published; live on `canyugs/openab#14`, closed in 80.8s
+   via the `[done]` quorum path (not the watchdog). See "Done + verified" above.
+   Open follow-on (optional, low pri): trim duplicate chair "in-progress" comments
+   via the trigger; consider surfacing the verdict on the session row.
 2. **Security (do soon):** rotate the GitHub PAT + `CLAUDE_CODE_OAUTH_TOKEN` —
    both were dumped in plaintext by `zeabur variable list` this session (already on
    the list). Needs your account access.
