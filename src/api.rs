@@ -27,9 +27,19 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/v1/sessions/:id/messages", post(post_message))
         .route("/v1/sessions/:id/roster", post(add_roster))
         .route("/v1/sessions/:id/stream", get(stream_session))
+        // Option A: the plane mints a per-role scoped GitHub installation token for a
+        // pod, bound to this session. The pod calls GitHub with it instead of the
+        // shared PAT. Closing the session purges it (central revoke).
+        .route("/v1/sessions/:id/github-token", post(github_token))
         // served on the internal network to stock OAB pods (like openab-hub's
         // /bot-config); no client auth — the token IS the bot's credential.
         .route("/bot-config/:id", get(bot_config))
+        // GitHub webhook ingress — auth is the x-hub-signature-256 HMAC, not the
+        // north bearer key, so it's deliberately outside check_auth.
+        .route(
+            "/api/v1/github_webhooks",
+            post(crate::github_webhook::handle_webhook),
+        )
 }
 
 fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
@@ -241,6 +251,58 @@ session_ttl_hours = 2
         name = bot.name,
     );
     Ok(([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], toml))
+}
+
+#[derive(Deserialize)]
+struct GithubTokenReq {
+    /// Which bot is asking. Required: the token scope is derived from this bot's
+    /// stored role, never from a caller-supplied role string — otherwise any caller
+    /// could request `{"role":"chair"}` and receive a write token (role escalation).
+    bot_id: String,
+}
+
+/// Mint (or reuse) a per-role scoped GitHub installation token for this session.
+/// 501 if the plane is in PAT mode (no App configured); 404 for an unknown session
+/// or bot. The role is always derived from the bot's stored role, so a reviewer can
+/// never obtain a write token by asking for one.
+async fn github_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<GithubTokenReq>,
+) -> Result<axum::response::Response, StatusCode> {
+    check_auth(&state, &headers)?;
+    let Some(app) = state.github_app.as_ref() else {
+        // PAT mode — no App provisioned yet. The pod keeps using the shared GH_TOKEN.
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    };
+    state
+        .store
+        .session(&id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    // Authoritative from the bot record — the request carries no role.
+    let bot = state
+        .store
+        .bot(&req.bot_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    // The bot must belong to *this* session — otherwise a caller could mint a token
+    // for session B using a bot from session A. (Role is still bounded to the bot's
+    // stored role, so this is defense-in-depth, not the only guard.)
+    let roster = state
+        .store
+        .roster(&id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !roster.iter().any(|b| b == &req.bot_id) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let role = crate::github_app::Role::from_bot_role(&bot.role);
+    let token =
+        identity::github_token_for(state.store.as_ref(), app, &state.github_mint_lock, &id, role)
+            .await
+            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    Ok(Json(json!({ "token": token, "role": role.as_str() })).into_response())
 }
 
 async fn stream_session(

@@ -121,6 +121,10 @@ pub trait Store: Send + Sync {
     /// Non-terminal session ids created before `cutoff_ms` — watchdog candidates.
     fn active_sessions_before(&self, cutoff_ms: i64) -> Result<Vec<String>>;
     fn roster(&self, session_id: &str) -> Result<Vec<String>>;
+    /// A non-terminal session carrying this `trigger_ref`, if any. Makes
+    /// webhook-driven creation idempotent: GitHub re-delivers on 5xx, so a retried
+    /// PR event must not open a second council for the same PR.
+    fn active_session_for_trigger(&self, trigger_ref: &str) -> Result<Option<String>>;
 
     fn upsert_thread(&self, session_id: &str, root_message_id: Option<&str>) -> Result<String>;
     fn thread_for_session(&self, session_id: &str) -> Result<Option<String>>;
@@ -148,6 +152,24 @@ pub trait Store: Send + Sync {
     fn enqueue_outbox(&self, bot_id: &str, frame: &str) -> Result<()>;
     fn pending_outbox(&self, bot_id: &str) -> Result<Vec<(i64, String)>>;
     fn ack_outbox(&self, seq: i64) -> Result<()>;
+
+    /// Per-`session × role` GitHub installation-token cache (Principle: Agent
+    /// Identity). The plane mints a scoped token once per (session, role) and reuses
+    /// it until near expiry, so a council doesn't hit GitHub's token endpoint on
+    /// every post. `expires_at` is unix-ms (`now_ms`). Upsert overwrites on refresh.
+    fn cache_installation_token(
+        &self,
+        session_id: &str,
+        role: &str,
+        token: &str,
+        expires_at: i64,
+    ) -> Result<()>;
+    /// Cached `(token, expires_at_ms)` for a (session, role), or None. The caller
+    /// decides freshness (refresh margin lives in `github_app`).
+    fn installation_token(&self, session_id: &str, role: &str) -> Result<Option<(String, i64)>>;
+    /// Central revoke: drop every scoped token for a session. Called when the session
+    /// closes so a pod can't keep acting on GitHub after the verdict.
+    fn purge_installation_tokens(&self, session_id: &str) -> Result<()>;
 }
 
 const SCHEMA: &str = r#"
@@ -183,6 +205,14 @@ CREATE TABLE IF NOT EXISTS outbox (
     bot_id TEXT NOT NULL, frame TEXT NOT NULL, created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_bot ON outbox(bot_id, seq);
+-- KNOWN GAP (#4): `token` is stored in plaintext. GitHub installation tokens are
+-- short-lived (≤1h) bearer credentials; until encryption-at-rest lands (AES-GCM with
+-- a KMS-derived key) the DB file itself must be access-controlled. Fast-follow.
+CREATE TABLE IF NOT EXISTS installation_tokens (
+    session_id TEXT NOT NULL, role TEXT NOT NULL,
+    token TEXT NOT NULL, expires_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, role)
+);
 "#;
 
 /// Additive column migrations for DBs created before a column existed. Each
@@ -424,6 +454,18 @@ impl Store for SqliteStore {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
+    fn active_session_for_trigger(&self, trigger_ref: &str) -> Result<Option<String>> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT id FROM sessions
+             WHERE trigger_ref = ?1 AND state NOT IN ('closed', 'aborted')
+             ORDER BY created_at DESC LIMIT 1",
+            params![trigger_ref],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?)
+    }
+
     fn upsert_thread(&self, session_id: &str, root_message_id: Option<&str>) -> Result<String> {
         let c = self.conn.lock().unwrap();
         if let Some(existing) = self.thread_locked(&c, session_id)? {
@@ -551,5 +593,63 @@ impl Store for SqliteStore {
         let c = self.conn.lock().unwrap();
         c.execute("DELETE FROM outbox WHERE seq = ?1", params![seq])?;
         Ok(())
+    }
+
+    fn cache_installation_token(
+        &self,
+        session_id: &str,
+        role: &str,
+        token: &str,
+        expires_at: i64,
+    ) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO installation_tokens (session_id, role, token, expires_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(session_id, role)
+             DO UPDATE SET token = excluded.token, expires_at = excluded.expires_at",
+            params![session_id, role, token, expires_at],
+        )?;
+        Ok(())
+    }
+
+    fn installation_token(&self, session_id: &str, role: &str) -> Result<Option<(String, i64)>> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT token, expires_at FROM installation_tokens
+             WHERE session_id = ?1 AND role = ?2",
+            params![session_id, role],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .optional()?)
+    }
+
+    fn purge_installation_tokens(&self, session_id: &str) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "DELETE FROM installation_tokens WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_session_for_trigger_dedups_only_while_open() {
+        let store = SqliteStore::memory().unwrap();
+        let pr = "https://api.github.com/repos/o/r/pulls/1";
+        assert!(store.active_session_for_trigger(pr).unwrap().is_none());
+
+        let s = store.create_session("Review o/r#1", Some(pr), 0, None, &[], "council").unwrap();
+        // an open session with this trigger is found → webhook retry is idempotent
+        assert_eq!(store.active_session_for_trigger(pr).unwrap().as_deref(), Some(s.id.as_str()));
+
+        // once closed, the same PR can open a fresh council (e.g. a later push)
+        store.set_state(&s.id, SessionState::Closed).unwrap();
+        assert!(store.active_session_for_trigger(pr).unwrap().is_none());
     }
 }

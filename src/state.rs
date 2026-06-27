@@ -1,5 +1,6 @@
 //! Shared runtime: the bot connection hub (south) + north event broadcast.
 
+use crate::github_app::GitHubApp;
 use crate::protocol::{
     ChannelInfo, Content, GatewayEvent, SenderInfo, EVENT_SCHEMA,
 };
@@ -23,6 +24,18 @@ pub struct AppState {
     pub platform: String,
     /// North API bearer key. None = open (dev/tests).
     pub api_key: Option<String>,
+    /// GitHub App credential for minting per-role scoped installation tokens.
+    /// None = PAT mode (pr-agent's `deployment_type = "user"`): pods fall back to the
+    /// shared `GH_TOKEN` until the App is provisioned (ROADMAP Phase 1).
+    pub github_app: Option<GitHubApp>,
+    /// Webhook HMAC secret (`x-hub-signature-256`). None = the webhook endpoint
+    /// rejects every request (403) — a missing secret is fail-closed, not fail-open.
+    pub github_webhook_secret: Option<String>,
+    /// Serializes installation-token minting so concurrent requests for the same
+    /// `(session, role)` can't each mint a distinct live token (check-then-act race).
+    /// Coarse (one lock for all mints) but mints are rare at council scale; make it
+    /// keyed if mint volume ever grows.
+    pub github_mint_lock: tokio::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -35,6 +48,9 @@ impl AppState {
             north_tx,
             platform: "feishu".into(),
             api_key: std::env::var("OABCP_API_KEY").ok(),
+            github_app: GitHubApp::from_env(),
+            github_webhook_secret: std::env::var("GITHUB_WEBHOOK_SECRET").ok(),
+            github_mint_lock: tokio::sync::Mutex::new(()),
         })
     }
 
