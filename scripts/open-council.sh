@@ -140,21 +140,22 @@ fi
 echo "trigger posted. Following… (Ctrl-C to detach; the council keeps running)"
 set +o pipefail   # node exit on close sends SIGPIPE to curl — that's expected, not a failure.
 curl -sN "$STREAM_URL" -H "Authorization: Bearer $KEY" | node -e '
-  let ev = null, buf = "";
+  // Wire format: the plane sends one JSON object per SSE `data:` line
+  // ({type, session_id, payload, ts}) — NOT named SSE events. So switch on
+  // o.type and read o.payload (see state.rs emit_north / api.rs stream_session).
+  let buf = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", d => {
     buf += d;
     let i;
     while ((i = buf.indexOf("\n")) >= 0) {
       const line = buf.slice(0, i); buf = buf.slice(i + 1);
-      if (line.startsWith("event:")) ev = line.slice(6).trim();
-      else if (line.startsWith("data:")) {
-        const data = line.slice(5).trim();
-        let o; try { o = JSON.parse(data); } catch { continue; }
-        if (ev === "message") console.error(`  [${o.author}] ${String(o.content).replace(/\s+/g, " ").slice(0, 200)}`);
-        else if (ev === "verdict") console.log("\n===== VERDICT =====\n" + o.text + "\n===================");
-        else if (ev === "state" && o.state === "closed") process.exit(0);
-      }
+      if (!line.startsWith("data:")) continue;
+      let o; try { o = JSON.parse(line.slice(5).trim()); } catch { continue; }
+      const p = o.payload || {};
+      if (o.type === "message") console.error(`  [${p.author}] ${String(p.content).replace(/\s+/g, " ").slice(0, 200)}`);
+      else if (o.type === "verdict") console.log("\n===== VERDICT =====\n" + p.text + "\n===================");
+      else if (o.type === "state" && p.state === "closed") process.exit(0);
     }
   });
 '
