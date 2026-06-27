@@ -8,6 +8,20 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
 - **Phase 1 milestone PROVEN.** Fresh template deploy → council verdict in
   **3m34s** (< 5 min), live on `canyugs/council-demo#1`; chair posted the verdict
   comment. Full loop: start → deliberate → reply → close. (Test project torn down.)
+- **Live re-confirmation on `openabdev/openab#1187` (2026-06-27, image `0.1.2`).**
+  Full template deploy (control-plane + chair + rev1 + rev2) on the user's Zeabur
+  server. The council produced a genuine expert review — verdict **Request
+  Changes** with a correct **P1** (`is_multiple_of()` needs Rust 1.87 MSRV), **P2**
+  HTTP-drain race + OAuth client-id impersonation; chair attempted
+  `gh pr review --request-changes`. **Two live findings:**
+  1. **Watchdog works in production.** The real bots stalled in multi-round
+     deliberation without cleanly hitting quorum-close; `force_close_timeout`
+     force-closed at session age 910s (900s deadline). The liveness guarantee
+     built this session saved a real hung council. ✅
+  2. **Quorum→close is fragile with real bots** (follow-up below). They use 🆗 in
+     message *text* and across many rounds rather than emitting the single
+     done-signal the CAS path expects, so the happy-path close didn't fire on a
+     substantial PR — it ran to the watchdog instead. (Test project torn down.)
 - **Coordinator refactor — Option 2 + Option 3 increments 1–2 done.**
   - Option 2: `output.rs` (verdict → gh comment) deleted from core — side-effects
     are the app's job; close path only emits `verdict`/`state:closed` events.
@@ -36,8 +50,17 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
 
 ## Next — priority order
 
-1. **Security (do soon):** rotate the GitHub PAT pasted in plaintext; rotate the
-   leaked `CLAUDE_CODE_OAUTH_TOKEN` (see memory). Needs your account access.
+1. **Quorum-close robustness (live-found, high value).** On `openabdev/openab#1187`
+   the council produced a verdict but never cleanly closed via quorum — real bots
+   sprinkle 🆗 through text across rounds instead of one recognized done-signal, so
+   the CAS quorum→chair→close dance didn't trigger; only the watchdog ended it (at
+   910s). The watchdog is the safety net, but the 5-min happy path should fire.
+   Options: count a chair message that posts a verdict (or runs `gh pr review`) as
+   the close trigger; or treat 🆗 reactions more liberally. Make the happy path
+   robust to messy real-bot behavior, not just mock bots.
+2. **Security (do soon):** rotate the GitHub PAT + `CLAUDE_CODE_OAUTH_TOKEN` —
+   both were dumped in plaintext by `zeabur variable list` this session (already on
+   the list). Needs your account access.
 2. **Membership plane (ADR 001), continued.** inc1+inc2 done:
    - inc1 — **admission gate** (`admit` + `add_to_roster` → `Admission`; bounded +
      registered-bot roster, `409` on reject, `OABCP_MAX_ROSTER`).
