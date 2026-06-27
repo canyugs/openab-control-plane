@@ -42,6 +42,36 @@ quorum = participating reviewers. Without a preset, reviewers are generic
 all-rounders (today's behaviour). Needs `node` (not python3/jq) — same runtime as
 CI and the dev sandbox.
 
+## Auto-review every PR (GitHub Action)
+
+For CodeRabbit-style "open a PR → it gets reviewed" with no manual trigger, copy
+[`.github/workflows/council-review.yml`](../.github/workflows/council-review.yml)
+into the target repo and set two repo secrets:
+
+- `COUNCIL_PLANE` — the plane URL, e.g. `https://my-council.zeabur.app`
+- `COUNCIL_KEY` — the control-plane `OABCP_API_KEY`
+
+```sh
+gh secret set COUNCIL_PLANE --body "https://my-council.zeabur.app"
+gh secret set COUNCIL_KEY   --body "<OABCP_API_KEY>"
+```
+
+The workflow runs on `pull_request` (opened / synchronize / reopened) and on manual
+`workflow_dispatch`. It convenes a council via the plane's REST API and exits
+(fire-and-forget) — the chair posts the verdict back to the PR asynchronously. Fork
+PRs are skipped (they can't read the secrets); same-repo PRs and manual dispatch run.
+
+If a review never appears: check the **Action run log** for convene errors (wrong
+`COUNCIL_PLANE`/`COUNCIL_KEY`), then the **plane / chair logs** for the session — a
+session that never reaches quorum is force-closed by the 900s liveness watchdog. If
+the council *runs* but no comment lands, the chair couldn't post — verify `GH_TOKEN`
+has `pull_requests: write` + `contents: read`.
+
+> This is the **PAT track**: the chair comments using the `GH_TOKEN` you gave the
+> deploy, so verdicts appear under that account. Posting as a distinct **bot
+> identity** (and formal approve/request-changes) is the GitHub App track — see the
+> roadmap.
+
 ## Image hosting
 The template references `docker.io/canyu/openab-control-plane:<version>` (public).
 Images build + push automatically via `.github/workflows/release.yml` on a `v*`

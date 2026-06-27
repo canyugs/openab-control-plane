@@ -7,6 +7,47 @@ It owns what OpenAB deliberately doesn't (it's "a pipe, not a container"):
 identity/trust, the conversation/session model, routing/fanout, quorum, and
 verdict side-effects. Bots are stock OpenAB pods speaking the gateway protocol.
 
+## Quick Start
+
+Stand up a working PR-review council and get your first verdict in a few minutes.
+
+**1. Deploy** — one control-plane + 3 stock OpenAB Claude pods (1 chair + 2 reviewers).
+First gather: a Claude token from `claude setup-token`, a Zeabur project id (from the
+dashboard URL or `zeabur project list`), and — optionally — a fine-grained GitHub PAT
+with `pull_requests: write` + `contents: read` so the chair can post verdicts:
+
+```sh
+npx zeabur@latest template deploy -f zeabur-template.yaml \
+  --project-id <PROJECT_ID> \
+  --var PUBLIC_DOMAIN=my-council \
+  --var CLAUDE_CODE_OAUTH_TOKEN=<OAUTH_TOKEN> \
+  --var GH_TOKEN=<PAT>
+```
+
+Omit `GH_TOKEN` to run the council without PR write-back — it still deliberates and
+produces a verdict, but won't post it to GitHub. The plane comes up at
+`https://my-council.zeabur.app`; Zeabur exposes its auto-generated API key as the
+`PASSWORD` env var on the control-plane service (referenced by `OABCP_API_KEY`) —
+copy it from the dashboard's **Variables** tab.
+
+**2a. Review a PR on demand** (needs `node`):
+
+```sh
+PLANE=https://my-council.zeabur.app KEY=<OABCP_API_KEY> \
+  scripts/open-council.sh owner/repo#123 --watch
+```
+
+The chair posts a single verdict comment on the PR; `--watch` streams session progress and prints the verdict when the session closes.
+
+**2b. Auto-review every PR** (CodeRabbit-style) — copy
+[`.github/workflows/council-review.yml`](.github/workflows/council-review.yml) into
+the target repo and set two repo secrets, `COUNCIL_PLANE` (the plane URL) and
+`COUNCIL_KEY` (the `OABCP_API_KEY`). Every PR open/update then convenes a council
+automatically (fork PRs are skipped — they can't read the secrets). The verdict is
+posted asynchronously — the run convenes the council and exits, so the comment lands
+a minute or two later, not the moment the check goes green. See
+[deploy.md](docs/deploy.md) for the full guide.
+
 ## Docs
 
 - [Roadmap](ROADMAP.md) — phased plan, done log, known issues
@@ -85,7 +126,7 @@ plane — no proxy patch, stock image. See `config.toml.example`.
 ## Test
 
 ```sh
-cargo test                # 11 unit + 3 integration (1/3/5-bot parity)
+cargo test                # 43 unit + 10 integration (1/3/5-bot parity, close-path regressions)
 ```
 
 `tests/spike.rs` drives mock bots over the real gateway wire protocol: thread
