@@ -37,13 +37,15 @@ PLANE=https://my-council.zeabur.app KEY=<OABCP_API_KEY> \
   scripts/open-council.sh owner/repo#123 --watch
 ```
 
-The chair posts a single verdict comment on the PR; `--watch` streams progress and prints it on close.
+The chair posts a single verdict comment on the PR; `--watch` streams session progress and prints the verdict when the session closes.
 
 **2b. Auto-review every PR** (CodeRabbit-style) — copy
 [`.github/workflows/council-review.yml`](.github/workflows/council-review.yml) into
 the target repo and set two repo secrets, `COUNCIL_PLANE` (the plane URL) and
 `COUNCIL_KEY` (the `OABCP_API_KEY`). Every PR open/update then convenes a council
-automatically (fork PRs are skipped — they can't read the secrets). See
+automatically (fork PRs are skipped — they can't read the secrets). The verdict is
+posted asynchronously — the run convenes the council and exits, so the comment lands
+a minute or two later, not the moment the check goes green. See
 [deploy.md](docs/deploy.md) for the full guide.
 
 ## Docs
