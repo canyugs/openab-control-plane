@@ -255,18 +255,16 @@ session_ttl_hours = 2
 
 #[derive(Deserialize)]
 struct GithubTokenReq {
-    /// Which bot is asking — its `store::Bot.role` decides the token scope. Falls
-    /// back to `role` if the caller passes a role string directly.
-    #[serde(default)]
-    bot_id: Option<String>,
-    #[serde(default)]
-    role: Option<String>,
+    /// Which bot is asking. Required: the token scope is derived from this bot's
+    /// stored role, never from a caller-supplied role string — otherwise any caller
+    /// could request `{"role":"chair"}` and receive a write token (role escalation).
+    bot_id: String,
 }
 
 /// Mint (or reuse) a per-role scoped GitHub installation token for this session.
 /// 501 if the plane is in PAT mode (no App configured); 404 for an unknown session
-/// or bot. The role is derived from the bot's stored role so a reviewer can never
-/// obtain a write token by asking for one.
+/// or bot. The role is always derived from the bot's stored role, so a reviewer can
+/// never obtain a write token by asking for one.
 async fn github_token(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -283,21 +281,17 @@ async fn github_token(
         .session(&id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    // Role is authoritative from the bot record, not caller-supplied, when bot_id is
-    // given — prevents a reviewer from requesting a chair (write) token.
-    let role = if let Some(bot_id) = req.bot_id.as_deref() {
-        let bot = state
-            .store
-            .bot(bot_id)
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .ok_or(StatusCode::NOT_FOUND)?;
-        crate::github_app::Role::from_bot_role(&bot.role)
-    } else {
-        crate::github_app::Role::from_bot_role(req.role.as_deref().unwrap_or("reviewer"))
-    };
-    let token = identity::github_token_for(state.store.as_ref(), app, &id, role)
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    // Authoritative from the bot record — the request carries no role.
+    let bot = state
+        .store
+        .bot(&req.bot_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let role = crate::github_app::Role::from_bot_role(&bot.role);
+    let token =
+        identity::github_token_for(state.store.as_ref(), app, &state.github_mint_lock, &id, role)
+            .await
+            .map_err(|_| StatusCode::BAD_GATEWAY)?;
     Ok(Json(json!({ "token": token, "role": role.as_str() })).into_response())
 }
 

@@ -93,6 +93,10 @@ pub struct GitHubApp {
     private_key_pem: String,
     pub installation_id: u64,
     api_base: String,
+    /// Reused across mints — a fresh `Client` per call allocates a new TLS context +
+    /// connection pool and leaks file descriptors under concurrency. `Client` is
+    /// cheap to clone (it's an `Arc` inside), so `derive(Clone)` stays correct.
+    client: reqwest::Client,
 }
 
 impl GitHubApp {
@@ -107,6 +111,7 @@ impl GitHubApp {
             private_key_pem: private_key_pem.into(),
             installation_id,
             api_base: api_base.into(),
+            client: reqwest::Client::new(),
         }
     }
 
@@ -151,7 +156,8 @@ impl GitHubApp {
             self.api_base.trim_end_matches('/'),
             self.installation_id
         );
-        let resp = reqwest::Client::new()
+        let resp = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {jwt}"))
             .header("Accept", "application/vnd.github+json")
@@ -161,41 +167,40 @@ impl GitHubApp {
             .send()
             .await
             .context("installation access_tokens request failed")?;
+        // Check status before parsing: an error response may not be the JSON shape we
+        // expect, and a parse failure there would mask the real HTTP error.
         let status = resp.status();
-        let body: Value = resp.json().await.context("parse access_tokens response")?;
+        let raw = resp.text().await.context("read access_tokens response body")?;
         if !status.is_success() {
-            return Err(anyhow!("GitHub access_tokens returned {status}: {body}"));
+            return Err(anyhow!("GitHub access_tokens returned {status}: {raw}"));
         }
+        let body: Value = serde_json::from_str(&raw).context("parse access_tokens response")?;
         let token = body["token"]
             .as_str()
             .ok_or_else(|| anyhow!("access_tokens response had no `token`: {body}"))?
             .to_string();
-        Ok(MintedToken { token, expires_at: now_ms_local() + TOKEN_TTL_MS, role })
+        Ok(MintedToken { token, expires_at: crate::store::now_ms() + TOKEN_TTL_MS, role })
     }
 }
 
 /// Accept a PEM with real newlines, a `\n`-escaped single line, or a base64-wrapped
-/// PEM — env stores mangle multi-line secrets in all three ways.
+/// PEM — env stores mangle multi-line secrets in all three ways. Only treat input as
+/// base64 if the decode actually yields a PEM; otherwise return it unchanged so the
+/// error surfaces clearly at RSA-key parse time rather than as random bytes.
 fn normalize_pem(raw: &str) -> String {
     let s = raw.trim();
     if s.contains("-----BEGIN") {
-        s.replace("\\n", "\n")
-    } else {
-        use base64::{engine::general_purpose::STANDARD, Engine};
-        STANDARD
-            .decode(s)
-            .ok()
-            .and_then(|b| String::from_utf8(b).ok())
-            .unwrap_or_else(|| s.to_string())
+        return s.replace("\\n", "\n");
+    }
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    match STANDARD.decode(s).ok().and_then(|b| String::from_utf8(b).ok()) {
+        Some(decoded) if decoded.contains("-----BEGIN") => decoded,
+        _ => s.to_string(),
     }
 }
 
 fn unix_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
-}
-
-fn now_ms_local() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
 }
 
 #[cfg(test)]

@@ -48,24 +48,48 @@ pub fn verify(store: &dyn Store, token: &str) -> Result<Bot> {
 /// token unless it's absent or within the refresh margin, otherwise mints a fresh
 /// one (chair → write, reviewer → read-only) and caches it. The pod calls GitHub
 /// with the returned token instead of the old broad shared PAT.
+///
+/// `mint_lock` serializes the mint section: without it, concurrent callers for the
+/// same (session, role) each pass the freshness check and each mint a distinct live
+/// token (check-then-act race).
 pub async fn github_token_for(
     store: &dyn Store,
     app: &GitHubApp,
+    mint_lock: &tokio::sync::Mutex<()>,
     session_id: &str,
     role: Role,
 ) -> Result<String> {
-    if let Some((token, expires_at)) = store.installation_token(session_id, role.as_str())? {
-        if expires_at - now_ms() > REFRESH_MARGIN_MS {
-            return Ok(token); // cache hit, comfortably fresh — no GitHub round-trip
-        }
+    if let Some(token) = fresh_cached(store, session_id, role)? {
+        return Ok(token); // cache hit, comfortably fresh — no GitHub round-trip
+    }
+    // Serialize mints, then re-check: another task may have minted while we waited.
+    let _guard = mint_lock.lock().await;
+    if let Some(token) = fresh_cached(store, session_id, role)? {
+        return Ok(token);
     }
     let minted = app.mint_installation_token(role).await?;
     store.cache_installation_token(session_id, role.as_str(), &minted.token, minted.expires_at)?;
     Ok(minted.token)
 }
 
+/// Cached token for (session, role) iff it stays valid past the refresh margin.
+/// Written as `expires_at > now + margin` (not `expires_at - now > margin`) so an
+/// already-expired token reads as a plain miss.
+fn fresh_cached(store: &dyn Store, session_id: &str, role: Role) -> Result<Option<String>> {
+    Ok(store
+        .installation_token(session_id, role.as_str())?
+        .filter(|(_, expires_at)| *expires_at > now_ms() + REFRESH_MARGIN_MS)
+        .map(|(token, _)| token))
+}
+
 /// Central revoke (ROADMAP): when a session closes, drop its scoped GitHub tokens so
 /// a pod can't keep acting on the PR after the verdict. Call from every close path.
+///
+/// KNOWN GAP (#3): this purges only the plane's cache — it does not call
+/// `DELETE /installation/token` on GitHub, so a token already handed to a pod stays
+/// valid at GitHub until its TTL (≤1h) elapses. The close paths are sync; a real
+/// server-side revoke needs an async call and is tracked as a fast-follow. TTL is
+/// the backstop until then.
 pub fn revoke_session_github_tokens(store: &dyn Store, session_id: &str) -> Result<()> {
     store.purge_installation_tokens(session_id)
 }
@@ -124,9 +148,10 @@ mod tests {
         store
             .cache_installation_token("ses_1", "chair", "ghs_cached", far_future)
             .unwrap();
-        // dummy_app would panic/err if minting were attempted (bad key) — the cache
-        // hit must short-circuit before that.
-        let got = github_token_for(&store, &dummy_app(), "ses_1", Role::Chair)
+        // dummy_app would err if minting were attempted (bad key) — the cache hit
+        // must short-circuit before that.
+        let lock = tokio::sync::Mutex::new(());
+        let got = github_token_for(&store, &dummy_app(), &lock, "ses_1", Role::Chair)
             .await
             .unwrap();
         assert_eq!(got, "ghs_cached");

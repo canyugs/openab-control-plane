@@ -201,6 +201,9 @@ CREATE TABLE IF NOT EXISTS outbox (
     bot_id TEXT NOT NULL, frame TEXT NOT NULL, created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_bot ON outbox(bot_id, seq);
+-- KNOWN GAP (#4): `token` is stored in plaintext. GitHub installation tokens are
+-- short-lived (≤1h) bearer credentials; until encryption-at-rest lands (AES-GCM with
+-- a KMS-derived key) the DB file itself must be access-controlled. Fast-follow.
 CREATE TABLE IF NOT EXISTS installation_tokens (
     session_id TEXT NOT NULL, role TEXT NOT NULL,
     token TEXT NOT NULL, expires_at INTEGER NOT NULL,

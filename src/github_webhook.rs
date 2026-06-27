@@ -89,7 +89,9 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                 pr_number: body["issue"]["number"].as_u64()?,
                 pr_url: pr_url.to_string(),
                 installation_id,
-                reason: cmd.split_whitespace().next().unwrap_or("/review").to_string(),
+                // Normalized to a fixed value — never reflect raw comment text into
+                // logs / north events.
+                reason: "/review".into(),
             })
         }
         _ => None,
@@ -102,16 +104,15 @@ pub async fn handle_webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response, StatusCode> {
-    // 1. Signature. If a secret is configured, require a valid one (403 otherwise).
-    //    If unset, run open but loudly — convenient for local dev, unsafe in prod.
+    // 1. Signature — fail-closed. No configured secret → reject everything (a
+    //    missing secret must never mean "skip verification"). Invalid signature → 403.
+    let Some(secret) = state.github_webhook_secret.as_deref() else {
+        tracing::error!("GITHUB_WEBHOOK_SECRET unset — rejecting webhook (fail-closed)");
+        return Err(StatusCode::FORBIDDEN);
+    };
     let sig = headers.get("x-hub-signature-256").and_then(|v| v.to_str().ok());
-    match state.github_webhook_secret.as_deref() {
-        Some(secret) => {
-            if !verify_signature(secret, &body, sig) {
-                return Err(StatusCode::FORBIDDEN);
-            }
-        }
-        None => tracing::warn!("GITHUB_WEBHOOK_SECRET unset — webhook signature NOT verified"),
+    if !verify_signature(secret, &body, sig) {
+        return Err(StatusCode::FORBIDDEN);
     }
 
     // 2. Parse the event.
@@ -129,6 +130,11 @@ pub async fn handle_webhook(
     // 4. Open a session. Roster recruitment + angle assignment is Phase 2; here we
     //    record the trigger (trigger_ref = PR URL) so the council can pick it up, and
     //    emit a north event for the UI.
+    //    KNOWN GAPS: no per-repo allowlist (#11) and no permission gate on `/review`
+    //    (#12) — any signed webhook / any reader can open a session. Bounded by the
+    //    fact that sessions are cheap; gate before production (GITHUB_ALLOWED_REPOS +
+    //    collaborator check). quorum_n = 0 + empty roster = a placeholder council that
+    //    Phase 2 recruitment fills; it is NOT a "0 = expire now" TTL.
     let title = format!("Review {}#{}", trigger.repo, trigger.pr_number);
     let session = state
         .store
