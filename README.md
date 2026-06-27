@@ -49,6 +49,34 @@ GET  /v1/sessions/:id                                            -> {session, me
 GET  /v1/sessions/:id/stream       (SSE: message|reaction|state|verdict)
 ```
 
+## Council size (how many OAB pods?)
+
+The plane is **not** an OAB pod — it's a separate service. Each OAB pod = one bot
+= one roster seat, with a role (`chair` or `reviewer`). Who exists is seeded at
+boot from `OABCP_BOTS` (`name:role,…`); the template default is
+`chair:chair,rev1:reviewer,rev2:reviewer` → a one-click deploy is **1 control-plane
++ 3 OAB pods**.
+
+A council = **1 chair + (N−1) reviewers**. `open-council.sh` sets
+`quorum_n = max(0, len(roster) − 1)` (**all** reviewers must signal), `chair_bot =
+roster[0]`, and `mode = solo` for a 1-entry roster else `council`. It closes when
+every reviewer sends `[done]` *or* the chair sends `[done]` (chair is the closing
+authority).
+
+| OAB pods | Result |
+|---|---|
+| 1 | `solo` — no reviewers, not a real council |
+| 2 | minimum council: chair + 1 reviewer, `quorum_n=1` |
+| **3** | **shipped default / standing-council sweet spot**: chair + rev1 + rev2, `quorum_n=2` |
+| 5 | proven in demo (chair + rev1..rev4) |
+
+Proven live at 1 / 3 / 5 bots. **Sizing is manual today** — you pick N by how many
+pods you deploy (`OABCP_BOTS`) + which names go in the session roster. Preset-driven
+rosters (quick=2 / standard=3 / full=5) and angle assignment are Phase 2 (TODO, see
+[Roadmap](ROADMAP.md)). To resize: edit `OABCP_BOTS` + add/remove pod services and
+redeploy, or `POST /v1/sessions/:id/roster` to add a bot mid-session (removal/leave
+is not built yet).
+
 ## South (a stock OpenAB bot)
 
 Register a bot to get its token, then point an OpenAB pod's `[gateway]` at the
