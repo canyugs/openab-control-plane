@@ -36,7 +36,11 @@ PLANE=https://my-council.zeabur.app KEY=<OABCP_API_KEY> \
 The script prints a stream URL to follow by hand, or pass `--watch` (or `FOLLOW=1`)
 to follow inline and print the verdict on close. Council size is the `ROSTER` env
 (default `["chair","rev1","rev2"]`); `QUORUM`/`MODE` override the derived defaults.
-Needs `node` (not python3/jq) — same runtime as CI and the dev sandbox.
+Pass `--preset quick|standard|full` (PR path only) to assign review angles to the
+reviewers — angles are round-robined onto the roster, extra reviewers sit out,
+quorum = participating reviewers. Without a preset, reviewers are generic
+all-rounders (today's behaviour). Needs `node` (not python3/jq) — same runtime as
+CI and the dev sandbox.
 
 ## Image hosting
 The template references `docker.io/canyu/openab-control-plane:<version>` (public).

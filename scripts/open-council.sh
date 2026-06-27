@@ -4,14 +4,16 @@
 # Usage:
 #   PLANE=https://<your-domain> KEY=<OABCP_API_KEY> ./open-council.sh owner/repo#123
 #   PLANE=https://<your-domain> KEY=<OABCP_API_KEY> ./open-council.sh "Free-text task to review"
-#   PLANE=… KEY=… ./open-council.sh --watch owner/repo#123      # follow + print the verdict
+#   PLANE=… KEY=… ./open-council.sh --watch owner/repo#123              # follow + print the verdict
+#   PLANE=… KEY=… ./open-council.sh --preset quick owner/repo#123       # assign angles to reviewers
 #
 # Env:
 #   PLANE   control-plane URL                              (required)
 #   KEY     OABCP_API_KEY                                  (required)
 #   ROSTER  JSON array of bot names (default ["chair","rev1","rev2"], matches OABCP_BOTS)
-#   QUORUM  override quorum_n          (default: all reviewers = len(roster)-1)
+#   QUORUM  override quorum_n          (default: all participating reviewers)
 #   MODE    override mode              (default: solo for 1-entry roster, else council)
+#   PRESET  quick|standard|full        (same as --preset; PR path only — assigns review angles)
 #   FOLLOW  =1 to stream + print the verdict (same as --watch)
 #
 # Needs: curl, node, and (for the PR form) gh authenticated locally.
@@ -21,11 +23,17 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-# --watch / -w may precede the arg; FOLLOW=1 does the same.
-case "${1:-}" in
-  -w|--watch) FOLLOW=1; shift ;;
-esac
+# Flags (--watch / --preset) may precede the arg, in any order. Env does the same.
 FOLLOW="${FOLLOW:-0}"
+PRESET="${PRESET:-}"
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+    -w|--watch)   FOLLOW=1; shift ;;
+    -p|--preset)  PRESET="${2:?--preset needs quick|standard|full}"; shift 2 ;;
+    --preset=*)   PRESET="${1#*=}"; shift ;;
+    *) echo "unknown flag: $1" >&2; exit 2 ;;
+  esac
+done
 
 : "${PLANE:?set PLANE to the control-plane URL}"
 : "${KEY:?set KEY to OABCP_API_KEY}"
@@ -35,27 +43,74 @@ ROSTER="${ROSTER:-[\"chair\",\"rev1\",\"rev2\"]}"   # override via env; matches 
 # A 1-entry roster auto-selects "solo" mode (a lone chair has no reviewers, so a
 # council never reaches quorum); else "council" with quorum = all reviewers.
 
+# Defaults: no preset → today's behaviour (generic reviewers, derived quorum/roster).
+EFF_ROSTER="$ROSTER"
+QUORUM_EFF="${QUORUM:-}"
+ASSIGN_TEXT=""
+
 # Build the trigger.
 if [[ "$ARG" =~ ^([^/]+/[^#]+)#([0-9]+)$ ]]; then
   REPO="${BASH_REMATCH[1]}"; NUM="${BASH_REMATCH[2]}"
   TITLE=$(gh pr view "$NUM" --repo "$REPO" --json title -q .title)
   DIFF=$(gh pr diff "$NUM" --repo "$REPO")
+
+  # --preset: assign review angles to reviewers. Round-robin angles → reviewers;
+  # if angles < reviewers, the extras sit out (trimmed from this session's roster
+  # so quorum doesn't wait on idle bots); if angles > reviewers, a bot covers
+  # several. quorum = participating reviewers. PR path only.
+  if [[ -n "$PRESET" ]]; then
+    case "$PRESET" in
+      quick)    ANGLES='["correctness","security","integration"]' ;;
+      standard) ANGLES='["correctness","architecture","security","testing","docs"]' ;;
+      full)     ANGLES='["correctness","architecture","security","testing","docs","performance","spec"]' ;;
+      *) echo "unknown preset: $PRESET (want quick|standard|full)" >&2; exit 2 ;;
+    esac
+    PLAN=$(ROSTER="$ROSTER" ANGLES="$ANGLES" node -e '
+      const roster = JSON.parse(process.env.ROSTER);
+      const angles = JSON.parse(process.env.ANGLES);
+      const chair = roster[0];
+      const reviewers = roster.slice(1);
+      if (reviewers.length === 0) {       // solo / no reviewers — preset is a no-op
+        process.stdout.write(JSON.stringify({ roster, quorum_n: 0, assignment: "" }));
+      } else {
+        const assign = {};
+        let participating;
+        if (angles.length <= reviewers.length) {
+          participating = reviewers.slice(0, angles.length);
+          angles.forEach((a, i) => { assign[participating[i]] = [a]; });
+        } else {
+          participating = reviewers.slice();
+          angles.forEach((a, i) => { (assign[participating[i % participating.length]] ||= []).push(a); });
+        }
+        const lines = participating.map(r => `- ${r} → ${assign[r].join(", ")}`).join("\n");
+        const assignment =
+          "Angle assignment — cover ONLY the angle(s) on the row matching your bot name; ignore the rest:\n" +
+          lines;
+        process.stdout.write(JSON.stringify({ roster: [chair, ...participating], quorum_n: participating.length, assignment }));
+      }
+    ')
+    EFF_ROSTER=$(printf '%s' "$PLAN" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify(JSON.parse(s).roster)))')
+    ASSIGN_TEXT=$(printf '%s' "$PLAN" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).assignment))')
+    [[ -z "$QUORUM_EFF" ]] && QUORUM_EFF=$(printf '%s' "$PLAN" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(String(JSON.parse(s).quorum_n)))')
+  fi
+
   # Render scripts/pr-review-trigger.tmpl with named {{...}} placeholders (no
   # positional %s, no printf %-in-diff hazard). Steering lives in the template.
-  TRIGGER=$(REPO="$REPO" NUM="$NUM" TITLE="$TITLE" DIFF="$DIFF" TMPL="$SCRIPT_DIR/pr-review-trigger.tmpl" node -e '
+  TRIGGER=$(REPO="$REPO" NUM="$NUM" TITLE="$TITLE" DIFF="$DIFF" ANGLE_ASSIGNMENT="$ASSIGN_TEXT" TMPL="$SCRIPT_DIR/pr-review-trigger.tmpl" node -e '
     const fs = require("fs");
     let t = fs.readFileSync(process.env.TMPL, "utf8");
-    for (const k of ["REPO", "NUM", "TITLE", "DIFF"]) t = t.split("{{" + k + "}}").join(process.env[k]);
+    for (const k of ["REPO", "NUM", "TITLE", "DIFF", "ANGLE_ASSIGNMENT"]) t = t.split("{{" + k + "}}").join(process.env[k]);
     process.stdout.write(t);
   ')
   REF="github:pr/$REPO#$NUM"
 else
+  [[ -n "$PRESET" ]] && echo "note: --preset ignored for free-text tasks (angles apply to a PR diff)" >&2
   TRIGGER="$ARG"; REF="adhoc"
 fi
 
 # Open the session (node builds the body: quorum_n + mode derived from the roster,
-# overridable via QUORUM / MODE).
-OPEN_BODY=$(ROSTER="$ROSTER" REF="$REF" QUORUM="${QUORUM:-}" MODE="${MODE:-}" node -e '
+# overridable via QUORUM / MODE; --preset may have trimmed the roster + set quorum).
+OPEN_BODY=$(ROSTER="$EFF_ROSTER" REF="$REF" QUORUM="$QUORUM_EFF" MODE="${MODE:-}" node -e '
   const r = JSON.parse(process.env.ROSTER);
   const quorum = process.env.QUORUM ? Number(process.env.QUORUM) : Math.max(0, r.length - 1);
   const mode = process.env.MODE || (r.length === 1 ? "solo" : "council");
@@ -68,6 +123,7 @@ SID=$(curl -s -X POST "$PLANE/v1/sessions" -H "Authorization: Bearer $KEY" -H 'C
   -d "$OPEN_BODY" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).session_id))')
 echo "session: $SID"
+[[ -n "$ASSIGN_TEXT" ]] && echo "preset: $PRESET → $EFF_ROSTER"
 
 # Post the trigger.
 curl -s -X POST "$PLANE/v1/sessions/$SID/messages" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
