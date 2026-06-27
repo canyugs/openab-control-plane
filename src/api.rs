@@ -27,6 +27,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/v1/sessions/:id/messages", post(post_message))
         .route("/v1/sessions/:id/roster", post(add_roster))
         .route("/v1/sessions/:id/stream", get(stream_session))
+        // Option A: the plane mints a per-role scoped GitHub installation token for a
+        // pod, bound to this session. The pod calls GitHub with it instead of the
+        // shared PAT. Closing the session purges it (central revoke).
+        .route("/v1/sessions/:id/github-token", post(github_token))
         // served on the internal network to stock OAB pods (like openab-hub's
         // /bot-config); no client auth — the token IS the bot's credential.
         .route("/bot-config/:id", get(bot_config))
@@ -241,6 +245,54 @@ session_ttl_hours = 2
         name = bot.name,
     );
     Ok(([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], toml))
+}
+
+#[derive(Deserialize)]
+struct GithubTokenReq {
+    /// Which bot is asking — its `store::Bot.role` decides the token scope. Falls
+    /// back to `role` if the caller passes a role string directly.
+    #[serde(default)]
+    bot_id: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+}
+
+/// Mint (or reuse) a per-role scoped GitHub installation token for this session.
+/// 501 if the plane is in PAT mode (no App configured); 404 for an unknown session
+/// or bot. The role is derived from the bot's stored role so a reviewer can never
+/// obtain a write token by asking for one.
+async fn github_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<GithubTokenReq>,
+) -> Result<axum::response::Response, StatusCode> {
+    check_auth(&state, &headers)?;
+    let Some(app) = state.github_app.as_ref() else {
+        // PAT mode — no App provisioned yet. The pod keeps using the shared GH_TOKEN.
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    };
+    state
+        .store
+        .session(&id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    // Role is authoritative from the bot record, not caller-supplied, when bot_id is
+    // given — prevents a reviewer from requesting a chair (write) token.
+    let role = if let Some(bot_id) = req.bot_id.as_deref() {
+        let bot = state
+            .store
+            .bot(bot_id)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .ok_or(StatusCode::NOT_FOUND)?;
+        crate::github_app::Role::from_bot_role(&bot.role)
+    } else {
+        crate::github_app::Role::from_bot_role(req.role.as_deref().unwrap_or("reviewer"))
+    };
+    let token = identity::github_token_for(state.store.as_ref(), app, &id, role)
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    Ok(Json(json!({ "token": token, "role": role.as_str() })).into_response())
 }
 
 async fn stream_session(

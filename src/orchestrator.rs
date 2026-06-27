@@ -128,6 +128,8 @@ pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bo
     if !state.store.close_if_active(session_id)? {
         return Ok(false); // already terminal
     }
+    // Central revoke: scoped GitHub tokens die with the session (Agent Identity).
+    let _ = crate::identity::revoke_session_github_tokens(state.store.as_ref(), session_id);
     let roster = state.store.roster(session_id)?;
     let done: std::collections::HashSet<String> = state
         .store
@@ -508,6 +510,11 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
             Action::Close { from, verdict } => {
                 transition_failed = false;
                 if state.store.advance_state(&session.id, from, SessionState::Closed)? {
+                    // Central revoke: scoped GitHub tokens die with the session.
+                    let _ = crate::identity::revoke_session_github_tokens(
+                        state.store.as_ref(),
+                        &session.id,
+                    );
                     state.emit_north("verdict", &session.id, json!({ "text": verdict }));
                     state.emit_north("state", &session.id, json!({ "state": "closed" }));
                 }

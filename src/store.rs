@@ -148,6 +148,24 @@ pub trait Store: Send + Sync {
     fn enqueue_outbox(&self, bot_id: &str, frame: &str) -> Result<()>;
     fn pending_outbox(&self, bot_id: &str) -> Result<Vec<(i64, String)>>;
     fn ack_outbox(&self, seq: i64) -> Result<()>;
+
+    /// Per-`session × role` GitHub installation-token cache (Principle: Agent
+    /// Identity). The plane mints a scoped token once per (session, role) and reuses
+    /// it until near expiry, so a council doesn't hit GitHub's token endpoint on
+    /// every post. `expires_at` is unix-ms (`now_ms`). Upsert overwrites on refresh.
+    fn cache_installation_token(
+        &self,
+        session_id: &str,
+        role: &str,
+        token: &str,
+        expires_at: i64,
+    ) -> Result<()>;
+    /// Cached `(token, expires_at_ms)` for a (session, role), or None. The caller
+    /// decides freshness (refresh margin lives in `github_app`).
+    fn installation_token(&self, session_id: &str, role: &str) -> Result<Option<(String, i64)>>;
+    /// Central revoke: drop every scoped token for a session. Called when the session
+    /// closes so a pod can't keep acting on GitHub after the verdict.
+    fn purge_installation_tokens(&self, session_id: &str) -> Result<()>;
 }
 
 const SCHEMA: &str = r#"
@@ -183,6 +201,11 @@ CREATE TABLE IF NOT EXISTS outbox (
     bot_id TEXT NOT NULL, frame TEXT NOT NULL, created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_bot ON outbox(bot_id, seq);
+CREATE TABLE IF NOT EXISTS installation_tokens (
+    session_id TEXT NOT NULL, role TEXT NOT NULL,
+    token TEXT NOT NULL, expires_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, role)
+);
 "#;
 
 /// Additive column migrations for DBs created before a column existed. Each
@@ -550,6 +573,44 @@ impl Store for SqliteStore {
     fn ack_outbox(&self, seq: i64) -> Result<()> {
         let c = self.conn.lock().unwrap();
         c.execute("DELETE FROM outbox WHERE seq = ?1", params![seq])?;
+        Ok(())
+    }
+
+    fn cache_installation_token(
+        &self,
+        session_id: &str,
+        role: &str,
+        token: &str,
+        expires_at: i64,
+    ) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO installation_tokens (session_id, role, token, expires_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(session_id, role)
+             DO UPDATE SET token = excluded.token, expires_at = excluded.expires_at",
+            params![session_id, role, token, expires_at],
+        )?;
+        Ok(())
+    }
+
+    fn installation_token(&self, session_id: &str, role: &str) -> Result<Option<(String, i64)>> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT token, expires_at FROM installation_tokens
+             WHERE session_id = ?1 AND role = ?2",
+            params![session_id, role],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .optional()?)
+    }
+
+    fn purge_installation_tokens(&self, session_id: &str) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "DELETE FROM installation_tokens WHERE session_id = ?1",
+            params![session_id],
+        )?;
         Ok(())
     }
 }
