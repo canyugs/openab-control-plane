@@ -50,9 +50,22 @@ jobs:
           PR: ${{ github.event.pull_request.number || github.event.inputs.pr }}
         run: |
           set -euo pipefail
+          # Soft-skip (not fail) when the secrets aren't visible — this run can't
+          # review, but it shouldn't red-X the PR. Happens on a fresh install before
+          # secrets are set, and on Dependabot PRs unless the same secrets are also
+          # added with `gh secret set --app dependabot` (Dependabot runs can't read
+          # regular Actions secrets).
+          #
+          # This keys on secret *absence*, not actor, so it is deliberately permissive:
+          # council-review is an ADVISORY check (the real review is the chair's PR
+          # comment), not a merge gate — a skipped run grants no privilege. If you make
+          # council-review a *required* status check, tighten this to skip only for
+          # `[ "$GITHUB_ACTOR" = "dependabot[bot]" ]` so other no-secret contexts
+          # (forks, misconfig) still fail loudly.
           if [ -z "${PLANE:-}" ] || [ -z "${KEY:-}" ]; then
-            echo "::error::COUNCIL_PLANE / COUNCIL_KEY secrets are not set"
-            exit 1
+            echo "::notice::COUNCIL_PLANE / COUNCIL_KEY not set for this run — skipping council review"
+            echo '> Council review skipped — secrets not configured for this run' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
           # PR is a workflow_dispatch input on the manual path — validate before it
           # reaches the shell (the pull_request path is already a trusted integer).
