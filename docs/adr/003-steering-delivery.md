@@ -1,4 +1,4 @@
-# ADR 002 — Steering delivery: how standing review rules reach the bots
+# ADR 003 — Steering delivery: how standing review rules reach the bots
 
 Status: **proposed** (undecided) · 2026-06-27
 
