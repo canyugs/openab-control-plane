@@ -480,6 +480,96 @@ fn spawn_text_done_bot(addr: SocketAddr, token: String, session: String, role: R
     })
 }
 
+/// Chair that synthesizes proactively: on the client trigger it opens the thread
+/// and immediately posts its verdict + `[done]`. It does NOT wait for a `system`
+/// quorum prompt — which never comes when a reviewer stays silent. This is what
+/// the real #4 chair did (it judged it had enough from the diff).
+fn spawn_chair_proactive_bot(addr: SocketAddr, token: String, session: String) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let ws = connect(addr, &token).await;
+        let (mut w, mut r) = ws.split();
+        while let Some(Ok(msg)) = r.next().await {
+            let Message::Text(t) = msg else {
+                if matches!(msg, Message::Close(_)) { break; }
+                continue;
+            };
+            let v: Value = serde_json::from_str(&t).unwrap();
+            if v.get("event_type").is_none() { continue; }
+            if v["sender"]["id"] == "client" {
+                let msg_id = v["message_id"].as_str().unwrap_or("").to_string();
+                w.send(reply(&session, "Council", Some("create_topic"), Some(&msg_id), None)).await.ok();
+                w.send(reply(&session, "VERDICT: approved [done]", None, None, None)).await.ok();
+            }
+        }
+    })
+}
+
+/// Reviewer that deliberates (posts a review) but NEVER emits a done-signal —
+/// the silent reviewer that left quorum unreachable on #4.
+fn spawn_reviewer_no_done_bot(addr: SocketAddr, token: String, session: String, name: String) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let ws = connect(addr, &token).await;
+        let (mut w, mut r) = ws.split();
+        while let Some(Ok(msg)) = r.next().await {
+            let Message::Text(t) = msg else {
+                if matches!(msg, Message::Close(_)) { break; }
+                continue;
+            };
+            let v: Value = serde_json::from_str(&t).unwrap();
+            if v.get("event_type").is_none() { continue; }
+            if v["sender"]["id"] == "client" {
+                w.send(reply(&session, &format!("review from {name}: needs work"), None, None, None)).await.ok();
+                // no done-signal — intentionally
+            }
+        }
+    })
+}
+
+/// Live-found on canyugs/openab-control-plane#4 (2026-06-27): on a real PR one
+/// reviewer deliberated but never emitted a done-signal, so the 2-of-2 reviewer
+/// quorum was never reached. The chair synthesized the verdict and signalled done
+/// — but the close was gated on the `Quorum` state, so the session hung until the
+/// 900s watchdog (plus a duplicate-ack chatter storm). The chair holds closing
+/// authority: its `[done]` must close from `Deliberating` too. Here NEITHER
+/// reviewer signals (quorum is unreachable with quorum_n=2); the chair's `[done]`
+/// must still close. Pre-fix, this would hang to the timeout.
+#[tokio::test]
+async fn chair_done_closes_without_full_quorum() {
+    let addr = spawn_server().await;
+    let base = addr.to_string();
+    let (chair_id, chair_tok) = register_bot(&base, "chair", "chair").await;
+    let (rev0_id, rev0_tok) = register_bot(&base, "rev0", "reviewer").await;
+    let (rev1_id, rev1_tok) = register_bot(&base, "rev1", "reviewer").await;
+    // quorum_n = 2: BOTH reviewers would have to signal for a formal quorum.
+    let session = open_session(
+        &base, &[chair_id.clone(), rev0_id.clone(), rev1_id.clone()], Some(&chair_id), 2,
+    ).await;
+
+    let hc = spawn_chair_proactive_bot(addr, chair_tok, session.clone());
+    let h0 = spawn_reviewer_no_done_bot(addr, rev0_tok, session.clone(), "rev0".into());
+    let h1 = spawn_reviewer_no_done_bot(addr, rev1_tok, session.clone(), "rev1".into());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    post_client(&base, &session, "review this").await;
+
+    let mut closed = false;
+    let mut last = json!({});
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        last = get_session(&base, &session).await;
+        if last["session"]["state"] == "closed" { closed = true; break; }
+    }
+    hc.abort(); h0.abort(); h1.abort();
+
+    // No reviewer ever signalled done, so a 2-of-2 quorum was never reachable —
+    // the close could ONLY have come from the chair's authority over Deliberating.
+    assert!(closed, "chair's [done] must close without a full reviewer quorum: {last}");
+    assert!(
+        last["messages"].as_array().unwrap().iter()
+            .any(|m| m["content"].as_str().unwrap_or("").contains("VERDICT")),
+        "chair's verdict missing from closed session",
+    );
+}
+
 async fn read_response<S>(r: &mut S, req: &str) -> Value
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,

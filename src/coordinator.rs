@@ -87,10 +87,23 @@ impl Coordinator for QuorumCouncil {
             }
         }
 
-        // 3. the chair's own done in Quorum closes with its final (was maybe_close_verdict)
+        // 3. the chair's own done closes with its final. The chair is the
+        //    coordination authority and the only writer, so its done closes from
+        //    whichever active state we're in: `Quorum` (reviewers reached it — the
+        //    designed path) or `Deliberating` (the chair synthesized before a
+        //    formal reviewer quorum). The latter is the live-found fix
+        //    (canyugs/openab-control-plane#4, 2026-06-27): on a real PR a reviewer
+        //    deliberated but never emitted a done-signal, so quorum was never
+        //    reached and the chair's verdict hung the session until the 900s
+        //    watchdog (with a duplicate-ack chatter storm). The Close CAS still
+        //    fires at most once; a stray post-close done no-ops.
         if Some(bot) == chair {
+            let from = match cx.state() {
+                SessionState::Quorum => SessionState::Quorum,
+                _ => SessionState::Deliberating,
+            };
             actions.push(Action::Close {
-                from: SessionState::Quorum,
+                from,
                 verdict: cx.latest_settled(bot).unwrap_or_default(),
             });
         }
@@ -173,6 +186,19 @@ mod tests {
     struct FakeCtx {
         roster: Vec<String>,
         final_msg: Option<String>,
+        quorum_n: i64,
+        reactors: Vec<String>,
+        state: SessionState,
+    }
+    /// A Deliberating ctx with no done-signals yet (the common starting point).
+    fn ctx(roster: &[&str], final_msg: Option<&str>) -> FakeCtx {
+        FakeCtx {
+            roster: roster.iter().map(|s| s.to_string()).collect(),
+            final_msg: final_msg.map(String::from),
+            quorum_n: 0,
+            reactors: vec![],
+            state: SessionState::Deliberating,
+        }
     }
     impl Ctx for FakeCtx {
         fn roster(&self) -> &[String] {
@@ -182,16 +208,16 @@ mod tests {
             self.roster.first().map(String::as_str)
         }
         fn quorum_n(&self) -> i64 {
-            0
+            self.quorum_n
         }
         fn reactors(&self, _: &str) -> Vec<String> {
-            vec![]
+            self.reactors.clone()
         }
         fn latest_settled(&self, _: &str) -> Option<String> {
             self.final_msg.clone()
         }
         fn state(&self) -> SessionState {
-            SessionState::Deliberating
+            self.state.clone()
         }
     }
 
@@ -204,7 +230,7 @@ mod tests {
 
     #[test]
     fn solo_lone_bot_closes_directly_with_its_final() {
-        let cx = FakeCtx { roster: vec!["solo".into()], final_msg: Some("verdict".into()) };
+        let cx = ctx(&["solo"], Some("verdict"));
         let actions = Solo.on_done(&cx, "solo");
         assert_eq!(actions.len(), 1, "solo emits exactly one Close, no quorum gate");
         match &actions[0] {
@@ -214,6 +240,55 @@ mod tests {
             }
             _ => panic!("expected Close"),
         }
+    }
+
+    /// Live-found (canyugs/openab-control-plane#4, 2026-06-27): a reviewer never
+    /// emitted a done-signal, so the 2-of-2 reviewer quorum was never reached and
+    /// the session never entered `Quorum`. The chair synthesized the verdict and
+    /// signalled done anyway — its close must fire from `Deliberating`, on the
+    /// chair's authority, not hang until the watchdog.
+    #[test]
+    fn quorum_council_chair_done_closes_from_deliberating_without_quorum() {
+        let cx = FakeCtx {
+            quorum_n: 2,                // both reviewers must signal for a quorum…
+            reactors: vec![],           // …but none did → quorum unreachable
+            state: SessionState::Deliberating,
+            ..ctx(&["chair", "rev0", "rev1"], Some("VERDICT"))
+        };
+        let closes: Vec<_> = QuorumCouncil
+            .on_done(&cx, "chair")
+            .into_iter()
+            .filter(|a| matches!(a, Action::Close { .. }))
+            .collect();
+        assert_eq!(closes.len(), 1, "chair's done emits exactly one Close");
+        match &closes[0] {
+            Action::Close { from, verdict } => {
+                assert_eq!(*from, SessionState::Deliberating, "closes from Deliberating, not Quorum");
+                assert_eq!(verdict, "VERDICT");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// The designed path is unchanged: once reviewers reached quorum (state is
+    /// `Quorum`), the chair's done still closes from `Quorum`.
+    #[test]
+    fn quorum_council_chair_done_closes_from_quorum_when_reached() {
+        let cx = FakeCtx {
+            quorum_n: 1,
+            reactors: vec!["rev0".into()],
+            state: SessionState::Quorum,
+            ..ctx(&["chair", "rev0"], Some("VERDICT"))
+        };
+        let from = QuorumCouncil
+            .on_done(&cx, "chair")
+            .into_iter()
+            .find_map(|a| match a {
+                Action::Close { from, .. } => Some(from),
+                _ => None,
+            })
+            .expect("chair's done emits a Close");
+        assert_eq!(from, SessionState::Quorum);
     }
 
     #[test]
@@ -226,10 +301,7 @@ mod tests {
 
     #[test]
     fn pipeline_hands_off_then_closes_on_last() {
-        let cx = FakeCtx {
-            roster: vec!["a".into(), "b".into(), "c".into()],
-            final_msg: Some("c's report".into()),
-        };
+        let cx = ctx(&["a", "b", "c"], Some("c's report"));
         // middle stage hands to the next
         let mid = Pipeline.on_done(&cx, "a");
         assert!(
