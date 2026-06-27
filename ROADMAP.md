@@ -56,7 +56,7 @@ succeeds."
 | **Application shim** — code-review logic (gh pr diff/comment/label) lives outside the plane | TODO | Shim options: GitHub Action, standalone service, or chair responsibility (current) |
 | **Clean template** — TEMPLATE.md + one-click deploy, no manual bot registration | TODO | `seed_bot` on boot ✅; template needs polish |
 | **GitHub App identity** — bot acts as itself, not the author (see [Agent Identity](#principle-agent-identity)) | TODO | Old 5 apps are gone; build one fresh. App perms: `pull_requests:write`, `contents:read` |
-| **Per-role scoped tokens** — chair gets a write token, reviewers read-only | TODO | Enforces "only chair writes" + prevents duplicate comments (×3) |
+| **Per-role scoped tokens** — chair gets a write token, reviewers read-only | mint ✅ / fetch+use TODO | **#8 minted half done**: `github_token` endpoint mints per-(session,role) tokens (chair `pull_requests:write`, reviewer `pull_requests:read` — role from the bot record, not the caller). **Remaining (Blocks A/C of self-fetch):** bots call the endpoint at session start + configure `gh` with the scoped token, and the static shared `GH_TOKEN` is removed from the pods (standing council drifted — all 3 bots currently share one PAT). Enforces "only chair writes" by capability, not prose; also gives reviewers read-only access for self-fetch context |
 
 ## Phase 2 — Angles & Automation
 
@@ -64,8 +64,9 @@ Goal: preset-based angle assignment, auto-trigger, structured output.
 
 | Item | Status | Notes |
 |------|--------|-------|
-| **Angle assignment in trigger** — `--preset quick\|standard\|full`, assignment table in trigger message | TODO | Phase 1 of angle-based presets |
-| **Preset selection** — default standard; PR label `review:quick`/`review:full` overrides | TODO | Phase 2 of presets |
+| **Angle assignment in trigger** — `--preset quick\|standard\|full`, assignment table in trigger message | ✅ | `open-council.sh --preset` round-robins angles onto reviewers (extras trimmed, quorum = participants); table rendered into the trigger; each bot covers its row. Live-proven on canyugs/openab#14 |
+| **Self-fetch review (pointer trigger)** — bots fetch the PR themselves (`gh pr diff` / read files) instead of the diff being embedded in the broadcast trigger | ✅ Block B | `open-council.sh --self-fetch` sends a pointer trigger (`pr-review-trigger-pointer.tmpl`, no `{{DIFF}}`). Solves huge-diff trigger bloat **and** diff-only bias — the reviewer reads surrounding context. Live-proven on canyugs/openab#14 (reviewer cited the `lib.rs` re-export — info absent from the diff). Default stays diff-in-trigger (stock-template reviewers have no gh). **Write-safe completion = per-role scoped read-only tokens** (Blocks A/C, see *Per-role scoped tokens*) — until then reviewers' write-avoidance is steering-only |
+| **Preset selection** — default standard; PR label `review:quick`/`review:full` overrides | TODO | Phase 2 of presets (the `--preset` flag exists; PR-label auto-select is the remaining half) |
 | **Auto-trigger** — webhook shim: PR opened / `/review` comment → open session | TODO | Removes manual session creation |
 | **Decision→review-state** — chair approve/request-changes as source of truth + label | TODO | Depends on GitHub App identity |
 | **Post-review actions** — chair posts action menu, compact summary (🔴×1 🟡×10 🟢×5) | TODO | Phase 3 of presets |
