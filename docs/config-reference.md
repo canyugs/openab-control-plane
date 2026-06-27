@@ -17,6 +17,20 @@ All configuration is via environment variables. No config file needed.
 | `GH_OUTPUT` | _(off)_ | Set to `1` to enable GitHub PR side-effects (comment, label, review) via `gh` CLI |
 | `RUST_LOG` | `info` | Log level filter (standard `tracing` env filter syntax) |
 
+## GitHub App + webhook (identity track, optional)
+
+Optional — lets the chair post verdicts as a **GitHub App bot identity** (per-role
+scoped tokens: chair `pull_requests:write`, reviewers read-only) and lets GitHub
+trigger reviews via webhook. Without these, use the PAT track (`GH_TOKEN` on the chair
+pod + the `council-review.yml` Action) — see [deploy.md](deploy.md).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GITHUB_APP_ID` | _(none)_ | GitHub App id. The plane mints a short-lived App JWT → per-role installation token; a pod fetches its scoped token via `/v1/sessions/:id/github-token` |
+| `GITHUB_APP_INSTALLATION_ID` | _(none)_ | Installation the tokens are minted against (single-install today) |
+| `GITHUB_APP_PRIVATE_KEY` | _(none)_ | The App's PEM private key — held only by the plane; pods never see it |
+| `GITHUB_WEBHOOK_SECRET` | _(none)_ | HMAC secret for `POST /api/v1/github_webhooks`. **Fail-closed**: unset = every webhook is rejected. Opens a session on a PR `opened`/`reopened`/`ready_for_review`, or a `/review` comment on a PR |
+
 ## Bot pods (set on OpenAB containers, not the plane)
 
 BYOK: set **one** credential matching the agent (`OABCP_AGENT_COMMAND`). Both a

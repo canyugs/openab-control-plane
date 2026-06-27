@@ -69,8 +69,33 @@ has `pull_requests: write` + `contents: read`.
 
 > This is the **PAT track**: the chair comments using the `GH_TOKEN` you gave the
 > deploy, so verdicts appear under that account. Posting as a distinct **bot
-> identity** (and formal approve/request-changes) is the GitHub App track — see the
-> roadmap.
+> identity** is the GitHub App track below.
+
+## GitHub App + webhook (identity track)
+
+The Action above is the **PAT track** — simple and turnkey, but verdicts post under
+the `GH_TOKEN` account. The **identity track** (shipped v0.1.5) instead has the chair
+post as a **GitHub App bot**, with per-role scoped tokens (chair `pull_requests:write`,
+reviewers read-only) the plane mints per session, plus a built-in webhook so GitHub
+triggers reviews directly — no Action to copy. Set on the control-plane service:
+
+| Variable | Purpose |
+|----------|---------|
+| `GITHUB_APP_ID` · `GITHUB_APP_INSTALLATION_ID` · `GITHUB_APP_PRIVATE_KEY` | App identity — the plane mints per-role installation tokens; a pod fetches its scoped token via `/v1/sessions/:id/github-token` (the App key never leaves the plane) |
+| `GITHUB_WEBHOOK_SECRET` | HMAC secret for the webhook endpoint (fail-closed if unset) |
+
+Point the App's webhook at `POST <plane>/api/v1/github_webhooks` (subscribe to pull
+requests + issue comments). A PR `opened`/`reopened`/`ready_for_review`, or a `/review`
+comment on a PR, then opens a session.
+
+> **Status (v0.1.5):** the App identity (scoped tokens) and the webhook *ingress*
+> (signature-verified, opens a session) are in place, but **roster recruitment + angle
+> assignment for webhook-opened sessions is Phase 2** — a webhook today opens a session
+> that Phase-2 recruitment will fill, not yet a turnkey reviewer. There is also **no
+> per-repo allowlist and no permission gate on `/review`** yet (any signed webhook can
+> open a session) — gate these before production. **The Action (PAT) path above is the
+> turnkey route today.** Setup + end-to-end validation:
+> [github-app-validation.md](github-app-validation.md).
 
 ## Image hosting
 The template references `docker.io/canyu/openab-control-plane:<version>` (public).

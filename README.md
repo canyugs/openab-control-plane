@@ -48,6 +48,11 @@ posted asynchronously — the run convenes the council and exits, so the comment
 a minute or two later, not the moment the check goes green. See
 [deploy.md](docs/deploy.md) for the full guide.
 
+Want verdicts to post as a **GitHub App bot** (not your account) and have GitHub
+trigger reviews directly via webhook — no Action to copy? That's the identity track
+(`GITHUB_APP_*` + `GITHUB_WEBHOOK_SECRET`), shipped in v0.1.5 with some Phase-2 gaps —
+see [deploy.md](docs/deploy.md) and [github-app-validation.md](docs/github-app-validation.md).
+
 ## Docs
 
 - [Roadmap](ROADMAP.md) — phased plan, done log, known issues
