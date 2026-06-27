@@ -127,45 +127,50 @@ pub async fn handle_webhook(
         return Ok(Json(json!({ "ok": true, "triggered": false })).into_response());
     };
 
-    // 4. Open a session. Roster recruitment + angle assignment is Phase 2; here we
-    //    record the trigger (trigger_ref = PR URL) so the council can pick it up, and
-    //    emit a north event for the UI.
+    // 4. Convene the council for this PR: read the diff, open a session with the
+    //    standing roster, post the trigger so the bots start (see `council`).
     //    KNOWN GAPS: no per-repo allowlist (#11) and no permission gate on `/review`
-    //    (#12) — any signed webhook / any reader can open a session. Bounded by the
-    //    fact that sessions are cheap; gate before production (GITHUB_ALLOWED_REPOS +
-    //    collaborator check). quorum_n = 0 + empty roster = a placeholder council that
-    //    Phase 2 recruitment fills; it is NOT a "0 = expire now" TTL.
+    //    (#12) — any signed webhook / any reader can convene. Bounded by sessions
+    //    being cheap; gate before production (GITHUB_ALLOWED_REPOS + collaborator).
+    let trigger_ref = crate::council::pr_trigger_ref(&trigger.repo, trigger.pr_number);
+
     // Idempotency: GitHub re-delivers on 5xx (and a PR can get repeated `/review`s).
-    // If a council is already open for this PR, return it instead of opening a dup.
+    // If a council is already open for this PR, return it instead of convening a dup.
     if let Some(existing) = state
         .store
-        .active_session_for_trigger(&trigger.pr_url)
+        .active_session_for_trigger(&trigger_ref)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
         return Ok(Json(json!({ "ok": true, "triggered": true, "session_id": existing, "deduped": true })).into_response());
     }
-    let title = format!("Review {}#{}", trigger.repo, trigger.pr_number);
-    let session = state
-        .store
-        .create_session(&title, Some(&trigger.pr_url), 0, None, &[], "council")
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    state.emit_north(
-        "github_trigger",
-        &session.id,
-        json!({
-            "repo": trigger.repo,
-            "pr_number": trigger.pr_number,
-            "pr_url": trigger.pr_url,
-            "installation_id": trigger.installation_id,
-            "reason": trigger.reason,
-        }),
-    );
-    tracing::info!(
-        session = %session.id, repo = %trigger.repo,
-        pr = trigger.pr_number, reason = %trigger.reason,
-        "opened session from GitHub webhook"
-    );
-    Ok(Json(json!({ "ok": true, "triggered": true, "session_id": session.id })).into_response())
+
+    match crate::council::convene_for_pr(&state, &trigger.repo, trigger.pr_number).await {
+        Ok(session_id) => {
+            state.emit_north(
+                "github_trigger",
+                &session_id,
+                json!({
+                    "repo": trigger.repo,
+                    "pr_number": trigger.pr_number,
+                    "pr_url": trigger.pr_url,
+                    "installation_id": trigger.installation_id,
+                    "reason": trigger.reason,
+                }),
+            );
+            tracing::info!(
+                session = %session_id, repo = %trigger.repo,
+                pr = trigger.pr_number, reason = %trigger.reason,
+                "convened council from GitHub webhook"
+            );
+            Ok(Json(json!({ "ok": true, "triggered": true, "session_id": session_id })).into_response())
+        }
+        Err(e) => {
+            // 500 lets GitHub retry a transient failure (the idempotency check above
+            // prevents a duplicate council if a retry lands after a partial success).
+            tracing::error!(repo = %trigger.repo, pr = trigger.pr_number, "convene failed: {e:#}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 #[cfg(test)]
