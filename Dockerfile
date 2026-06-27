@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# scripts/ holds pr-review-trigger.tmpl, pulled in at compile time via include_str!
+# (src/council.rs). Must be in the build context or the build can't find it.
+COPY scripts ./scripts
 RUN cargo build --release --bin openab-control-plane
 
 FROM debian:bookworm-slim
