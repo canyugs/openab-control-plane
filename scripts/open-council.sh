@@ -6,6 +6,7 @@
 #   PLANE=https://<your-domain> KEY=<OABCP_API_KEY> ./open-council.sh "Free-text task to review"
 #   PLANE=… KEY=… ./open-council.sh --watch owner/repo#123              # follow + print the verdict
 #   PLANE=… KEY=… ./open-council.sh --preset quick owner/repo#123       # assign angles to reviewers
+#   PLANE=… KEY=… ./open-council.sh --self-fetch owner/repo#123         # bots fetch the PR (no inline diff)
 #
 # Env:
 #   PLANE   control-plane URL                              (required)
@@ -14,6 +15,7 @@
 #   QUORUM  override quorum_n          (default: all participating reviewers)
 #   MODE    override mode              (default: solo for 1-entry roster, else council)
 #   PRESET  quick|standard|full        (same as --preset; PR path only — assigns review angles)
+#   SELF_FETCH =1 to send a pointer trigger; bots fetch the diff themselves (same as --self-fetch)
 #   FOLLOW  =1 to stream + print the verdict (same as --watch)
 #
 # Needs: curl, node, and (for the PR form) gh authenticated locally.
@@ -26,11 +28,13 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # Flags (--watch / --preset) may precede the arg, in any order. Env does the same.
 FOLLOW="${FOLLOW:-0}"
 PRESET="${PRESET:-}"
+SELF_FETCH="${SELF_FETCH:-0}"
 while [[ "${1:-}" == -* ]]; do
   case "$1" in
-    -w|--watch)   FOLLOW=1; shift ;;
-    -p|--preset)  PRESET="${2:?--preset needs quick|standard|full}"; shift 2 ;;
-    --preset=*)   PRESET="${1#*=}"; shift ;;
+    -w|--watch)       FOLLOW=1; shift ;;
+    -p|--preset)      PRESET="${2:?--preset needs quick|standard|full}"; shift 2 ;;
+    --preset=*)       PRESET="${1#*=}"; shift ;;
+    -s|--self-fetch)  SELF_FETCH=1; shift ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
@@ -52,7 +56,14 @@ ASSIGN_TEXT=""
 if [[ "$ARG" =~ ^([^/]+/[^#]+)#([0-9]+)$ ]]; then
   REPO="${BASH_REMATCH[1]}"; NUM="${BASH_REMATCH[2]}"
   TITLE=$(gh pr view "$NUM" --repo "$REPO" --json title -q .title)
-  DIFF=$(gh pr diff "$NUM" --repo "$REPO")
+  # --self-fetch: send a pointer trigger (the bots run `gh pr diff` themselves, so a
+  # huge diff never bloats the broadcast) instead of embedding the diff. Needs the
+  # bots to have GitHub read access (read-only scoped token / GH_TOKEN in the pod).
+  if [[ "$SELF_FETCH" == "1" ]]; then
+    TMPL_FILE="$SCRIPT_DIR/pr-review-trigger-pointer.tmpl"; DIFF=""
+  else
+    TMPL_FILE="$SCRIPT_DIR/pr-review-trigger.tmpl";         DIFF=$(gh pr diff "$NUM" --repo "$REPO")
+  fi
 
   # --preset: assign review angles to reviewers. Round-robin angles → reviewers;
   # if angles < reviewers, the extras sit out (trimmed from this session's roster
@@ -94,9 +105,10 @@ if [[ "$ARG" =~ ^([^/]+/[^#]+)#([0-9]+)$ ]]; then
     [[ -z "$QUORUM_EFF" ]] && QUORUM_EFF=$(printf '%s' "$PLAN" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(String(JSON.parse(s).quorum_n)))')
   fi
 
-  # Render scripts/pr-review-trigger.tmpl with named {{...}} placeholders (no
-  # positional %s, no printf %-in-diff hazard). Steering lives in the template.
-  TRIGGER=$(REPO="$REPO" NUM="$NUM" TITLE="$TITLE" DIFF="$DIFF" ANGLE_ASSIGNMENT="$ASSIGN_TEXT" TMPL="$SCRIPT_DIR/pr-review-trigger.tmpl" node -e '
+  # Render the chosen template with named {{...}} placeholders (no positional %s, no
+  # printf %-in-diff hazard). Steering lives in the template; the pointer template
+  # simply has no {{DIFF}} so DIFF="" is a no-op there.
+  TRIGGER=$(REPO="$REPO" NUM="$NUM" TITLE="$TITLE" DIFF="$DIFF" ANGLE_ASSIGNMENT="$ASSIGN_TEXT" TMPL="$TMPL_FILE" node -e '
     const fs = require("fs");
     let t = fs.readFileSync(process.env.TMPL, "utf8");
     for (const k of ["REPO", "NUM", "TITLE", "DIFF", "ANGLE_ASSIGNMENT"]) t = t.split("{{" + k + "}}").join(process.env[k]);

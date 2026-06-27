@@ -1,0 +1,18 @@
+PR Review Council — {{REPO}} #{{NUM}} "{{TITLE}}"
+
+Fetch and review the PR yourself — the diff is NOT inlined below (it may be large).
+
+{{ANGLE_ASSIGNMENT}}
+Reviewers: read the PR with your own tools, then post your findings in THIS thread
+only. You have READ-only access — pull exactly what your angle needs:
+  - the diff:            gh pr diff {{NUM}} --repo {{REPO}}
+  - large PR? start narrow: gh pr diff {{NUM}} --repo {{REPO}} --name-only, then read only the files your angle touches
+  - surrounding context: gh pr checkout {{NUM}} (or read files directly) to judge the change in context, not in isolation
+Do NOT run `gh pr comment` / `gh pr review` — writes will fail for you, and the chair
+owns the PR comment. End your final message with the token [done].
+
+Chair (you alone may write to the PR): maintain EXACTLY ONE comment on {{REPO}} #{{NUM}}. Always write it with:
+  gh pr comment {{NUM}} --repo {{REPO}} --edit-last --create-if-none --body "..."
+That one command creates the comment the first time and edits the SAME comment every time after, so the PR never accumulates duplicates. Post it once as in-progress, then overwrite that same comment with the synthesized verdict as reviewers finish — never run a plain `gh pr comment` (without --edit-last) a second time. End your final message with [done].
+
+The [done] token (on its own, at the end of your last message) is how the council records that you are finished — it is what closes the session. Send it exactly once, when truly done.
