@@ -52,6 +52,27 @@ State as of this session. Read `docs/coordinators.md` (spec, source of truth) an
   `oab-council` (`6a3f3afc22d1fdaf7eb045fe`) on OnCloud server, plane
   `https://oab-council.zeabur.app`, API key = control-plane `PASSWORD` var. Reuse
   for any review: `PLANE=… KEY=… scripts/open-council.sh owner/repo#N`.
+- **Chair-closing-authority fix LIVE-PROVEN on `canyugs/openab-control-plane#4`
+  (2026-06-27, image `0.1.4`).** Dogfooding the council on its *own* repo (a real
+  Dependabot `rusqlite` 0.31→0.40 bump, not a planted-bug test) surfaced a fresh
+  `QuorumCouncil` fragility: the reviewers deliberated but never emitted a
+  done-signal, so the 2-of-2 reviewer quorum was never reached. The chair
+  synthesized a correct verdict and signalled `[done]`, but the close was gated on
+  `from: Quorum` → the CAS failed → the session hung in Deliberating until the
+  900s watchdog, with a duplicate-ack chatter storm (chair/rev1 looping
+  "Duplicate — session closed"). **Fix (PR #6, `caa32d3`):** `QuorumCouncil::on_done`
+  closes from whichever active state the chair is in — `Quorum` (the designed
+  path) OR `Deliberating` (the chair finished before a formal quorum). The chair
+  is the coordination authority + only writer, so its done is authoritative;
+  closing immediately also drops the post-close chatter (`handle_reply`'s
+  closed-drop). Proven over the wire by
+  `tests/spike.rs::chair_done_closes_without_full_quorum` (neither reviewer
+  signals → still closes; hangs to timeout pre-fix) + 2 coordinator unit tests;
+  31 unit + 8 spike green. **Live:** re-ran #4 on the redeployed `0.1.4` council —
+  **closed in 51s via the chair `[done]` path** (reviewers never reached quorum),
+  5 clean messages (was 13 with chatter), one edit-last verdict comment. Extends
+  the v0.1.3 #1187/#14 done-signal work from "text `[done]` *counts*" to "chair
+  `[done]` *closes* without a formal reviewer quorum." Council now runs `0.1.4`.
 - **Coordinator refactor — Option 2 + Option 3 increments 1–2 done.**
   - Option 2: `output.rs` (verdict → gh comment) deleted from core — side-effects
     are the app's job; close path only emits `verdict`/`state:closed` events.
