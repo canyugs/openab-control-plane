@@ -36,6 +36,22 @@ pub struct WebhookTrigger {
     pub installation_id: Option<u64>,
     /// "auto" for a PR-opened trigger, or the slash command for a comment trigger.
     pub reason: String,
+    /// Review preset from a `review:<preset>` label on the PR, read straight from the
+    /// webhook payload (no GitHub call). `None` → convene falls back to the global
+    /// env / default. Lets a PR pick its own review depth (lite|quick|standard|full).
+    pub preset: Option<String>,
+}
+
+/// Extract a `review:<preset>` label name (the part after `review:`) from a payload
+/// `labels` array, if present. Validation of the preset name happens in `council`.
+fn preset_from_labels(labels: &Value) -> Option<String> {
+    labels.as_array()?.iter().find_map(|l| {
+        l["name"]
+            .as_str()
+            .and_then(|n| n.strip_prefix("review:"))
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+    })
 }
 
 /// Verify GitHub's `x-hub-signature-256` HMAC-SHA256 over the raw body, in constant
@@ -70,6 +86,7 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                 pr_url: pr["url"].as_str()?.to_string(),
                 installation_id,
                 reason: "auto".into(),
+                preset: preset_from_labels(&pr["labels"]),
             })
         }
         "issue_comment" => {
@@ -92,6 +109,7 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                 // Normalized to a fixed value — never reflect raw comment text into
                 // logs / north events.
                 reason: "/review".into(),
+                preset: preset_from_labels(&body["issue"]["labels"]),
             })
         }
         _ => None,
@@ -144,7 +162,7 @@ pub async fn handle_webhook(
         return Ok(Json(json!({ "ok": true, "triggered": true, "session_id": existing, "deduped": true })).into_response());
     }
 
-    match crate::council::convene_for_pr(&state, &trigger.repo, trigger.pr_number).await {
+    match crate::council::convene_for_pr(&state, &trigger.repo, trigger.pr_number, trigger.preset.clone()).await {
         Ok(session_id) => {
             state.emit_north(
                 "github_trigger",
@@ -209,6 +227,33 @@ mod tests {
         assert_eq!(t.pr_number, 7);
         assert_eq!(t.installation_id, Some(99));
         assert_eq!(t.reason, "auto");
+        assert_eq!(t.preset, None); // no review:<preset> label
+    }
+
+    #[test]
+    fn review_label_sets_preset_from_payload() {
+        // pull_request labels
+        let pr = json!({
+            "action": "opened",
+            "repository": { "full_name": "o/r" },
+            "pull_request": { "number": 1, "url": "u", "labels": [{"name":"bug"},{"name":"review:full"}] }
+        });
+        assert_eq!(parse_trigger("pull_request", &pr).unwrap().preset.as_deref(), Some("full"));
+        // issue_comment reads the issue's labels
+        let ic = json!({
+            "action": "created",
+            "repository": { "full_name": "o/r" },
+            "issue": { "number": 1, "pull_request": { "url": "u" }, "labels": [{"name":"review:quick"}] },
+            "comment": { "body": "/review" }
+        });
+        assert_eq!(parse_trigger("issue_comment", &ic).unwrap().preset.as_deref(), Some("quick"));
+        // no review: label → None
+        let none = json!({
+            "action": "opened",
+            "repository": { "full_name": "o/r" },
+            "pull_request": { "number": 1, "url": "u", "labels": [{"name":"enhancement"}] }
+        });
+        assert_eq!(parse_trigger("pull_request", &none).unwrap().preset, None);
     }
 
     #[test]
