@@ -1,6 +1,6 @@
 # Product hypothesis — outcome-priced PR review ("free on green, charge on red/yellow")
 
-**Status: hypothesis (pre-decision) · 2026-06-28.** Not an ADR (no decision taken) and not a scoped work item. Recorded so the idea — and the prior-art that bounds it — survives past the conversation it came from. Promote to a Proposed ADR only if/when we commit to it as a commercial direction.
+**Status: prior-art survey + risk backing for [ADR 006](adr/006-commercial-model-outcome-framed-review.md) · 2026-06-28.** This note holds the vendor survey and the risk analysis; the commercial **decision** (proposed) lives in ADR 006. Not itself a decision record.
 
 ## The hypothesis
 
@@ -59,33 +59,20 @@ Red/yellow then becomes the **value narrative**, not the raw **billing hook**.
 2. **Unit-economics inversion** — COGS is per-PR (every review burns tokens); revenue is per-finding. A clean repo = full compute, $0 revenue. Clean big customers cost the most. (Mitigation: ADR 005 cost governance; possibly a per-PR or per-seat floor so red/yellow is the *value story* over a base, not the sole meter.)
 3. **Self-adjudicated severity = trust** — if the vendor's agent sets severity and severity sets price, precision stops being nice-to-have and becomes the moat. The [ROADMAP](../ROADMAP.md) Evaluation/Benchmark work (CodeReviewBench etc.) moves from "future" to "core."
 
-## Billing unit (proposed direction — recorded, not yet ratified)
+## Billing unit → decided in ADR 006
 
-Goal: block all three risks above *and* keep free-on-green as the wedge. Constraint: no BYOK → margin = price − compute, and **compute is per-PR** (every review burns tokens regardless of outcome).
-
-| Option | Blocks false-pos | Blocks inversion | Blocks self-adjudication | Keeps wedge |
-|---|---|---|---|---|
-| A — pure per-finding (original idea) | ❌ worst | ❌ worst | ❌ worst | ✅ |
-| B — pure per-PR (= Ellipsis) | ✅ | ✅ | ✅ | ❌ you *are* Ellipsis |
-| C — pure per-seat (= most peers) | ✅ | ⚠️ trades for another | ✅ | ❌ undifferentiated |
-| **D — subscription bundle, metered on *addressed* red/yellow** | ✅ | ✅ (via cost-gov) | ✅ | ✅ |
-
-**Recommended: D.** Subscription bundle (e.g. $20 / ~500 red + ~1000 yellow) gives the buyer a predictable bill; red/yellow is the metering unit **and** the value narrative.
-
-**The load-bearing detail — the billable signal is behavioral, not self-declared.** Accept-to-bill (charge only findings the user clicks "accept") has a *new* failure mode: it gives the **buyer** an incentive to mark real bugs as "rejected" to dodge the fee — gaming flips from vendor to buyer. So bill on whether a finding was **addressed** — the author actually changed the flagged line / amended the PR / resolved the thread:
-
-- **Blocks vendor inflation** — a finding only bills if it's acted on; spraying noise that gets ignored earns nothing.
-- **Blocks buyer dodging** — "was it addressed" is an objective fact in the diff, not a self-reported flag the buyer can fake.
-- **Genuinely customer-confirmable** — mirrors Sierra's "resolution is *observed*, not self-reported," importing the proven support-pricing model.
-
-**Inversion is bounded by cost governance, not by a price floor.** Clean PRs still cost compute; rather than bolt on a per-seat floor, lean on [ADR 005](adr/005-cost-governance-roster-swap.md): cheap-default model on the first pass drives green-PR COGS toward zero, escalate only on signal. **Free-on-green survives economically *because* cost governance caps the COGS of green** — the cost-governance work is this model's survival condition, not a side feature.
-
-One-line: **subscription bundle · metered on *addressed* red/yellow (diff-confirmed, not user-declared) · green free, its COGS capped by cheap-default cost governance.**
+The billing-unit decision (subscription bundle, metered on **addressed** red/yellow,
+green free with COGS capped by cost governance) has been promoted to its own decision
+record: **[ADR 006 — Commercial model: outcome-framed PR review](adr/006-commercial-model-outcome-framed-review.md)** (Status: proposed). The option comparison (A–D) and the
+"addressed, not self-declared accept" reasoning live there. This note remains the
+**prior-art survey + risk backing** for that ADR.
 
 ## Open questions / next
 
-- The above is **recorded as the proposed direction, not ratified.** Promote to a **Proposed ADR** ("commercial model: outcome-framed review") once Can commits to D + the addressed-signal mechanism.
-- Define "addressed" precisely (line changed within N commits? thread resolved? merged-with-edit?) — the detection rule is where this gets hard.
+- ADR 006 is **proposed, not accepted** — ratify once the metering/billing path is
+  committed and the "addressed" detection rule is specified.
+- Define "addressed" precisely (line changed within N commits? thread resolved?
+  merged-with-edit?) — the detection rule is where this gets hard. (ADR 006 key open problem.)
 - Complete the survey periodically — 2026 pricing is volatile (Greptile/BugBot/Ellipsis/Copilot all changed recently); Entelligence numbers are sales-gated/soft; Trag figures are third-party-reported.
 
 ## Sources
