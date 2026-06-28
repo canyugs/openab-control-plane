@@ -32,7 +32,7 @@ spec:
       domainKey: PUBLIC_DOMAIN
       spec:
         source:
-          image: docker.io/canyu/openab-control-plane:0.1.4
+          image: docker.io/canyu/openab-control-plane:0.1.9
         ports:
           - id: web
             port: 8090
@@ -72,15 +72,19 @@ spec:
             - run
             - -c
             - http://control-plane.zeabur.internal:8090/bot-config/chair
-        # Persist HOME so the chair's GitHub App auth (~/.config/gh) and key
-        # (~/.github-app.pem) survive restarts — the pre_boot hook (served via
-        # bot-config) mints an installation token and `gh auth login`s as the App.
+        # Persist HOME so an optional GitHub App upgrade (key on PV + the
+        # bot-config pre_boot hook → gh auth login as the App) survives restarts.
         volumes:
           - id: home
             dir: /home/node
         env:
           CLAUDE_CODE_OAUTH_TOKEN:
             default: ${CLAUDE_CODE_OAUTH_TOKEN}
+          # Out-of-box PR write-back uses this PAT. To upgrade to App identity
+          # (zeabur-council[bot]): put the key on the volume + remove GH_TOKEN so
+          # gh uses the App auth from the pre_boot hook instead of this env token.
+          GH_TOKEN:
+            default: ${GH_TOKEN}
 
     - name: rev1
       icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/anthropic.svg
