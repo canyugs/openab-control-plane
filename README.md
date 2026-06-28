@@ -39,12 +39,14 @@ PLANE=https://my-council.zeabur.app KEY=<OABCP_API_KEY> \
 
 The chair posts a single verdict comment on the PR; `--watch` streams session progress and prints the verdict when the session closes.
 
-**2b. Auto-review every PR** (CodeRabbit-style) — set up the **GitHub App + webhook**:
-put `GITHUB_APP_*` + `GITHUB_WEBHOOK_SECRET` on the plane and point the App's webhook at
-`POST <plane>/api/v1/github_webhooks`. A PR opened / reopened / ready-for-review, or a
-`/review` comment, then **convenes a real council automatically** (no per-repo workflow
-to copy) and the chair posts one verdict comment back **as the App bot**
-(`zeabur-council[bot]`, not your account). Full guide:
+**2b. Auto-review every PR** (CodeRabbit-style) — set `GITHUB_WEBHOOK_SECRET` on the
+plane and point a webhook at `POST <plane>/api/v1/github_webhooks` (subscribe to Pull
+requests + Issue comments). A PR opened / reopened / ready-for-review, or a `/review`
+comment, then **convenes a real council automatically** (no per-repo workflow to copy)
+and the chair posts one verdict comment back. By default it posts via your `GH_TOKEN`
+PAT; to post as a clean App bot (`zeabur-council[bot]`, not your account) do the
+**pod-local App-identity upgrade** ([deploy.md §3](docs/deploy.md)). Per-PR depth: add a
+`review:lite|quick|standard|full` label. Guides:
 [deploy.md](docs/deploy.md) · [github-app-validation.md](docs/github-app-validation.md).
 
 > `.github/workflows/council-review.yml` is a **manual fallback** now
