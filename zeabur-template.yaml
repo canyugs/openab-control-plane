@@ -72,11 +72,15 @@ spec:
             - run
             - -c
             - http://control-plane.zeabur.internal:8090/bot-config/chair
+        # Persist HOME so the chair's GitHub App auth (~/.config/gh) and key
+        # (~/.github-app.pem) survive restarts — the pre_boot hook (served via
+        # bot-config) mints an installation token and `gh auth login`s as the App.
+        volumes:
+          - id: home
+            dir: /home/node
         env:
           CLAUDE_CODE_OAUTH_TOKEN:
             default: ${CLAUDE_CODE_OAUTH_TOKEN}
-          GH_TOKEN:
-            default: ${GH_TOKEN}
 
     - name: rev1
       icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/anthropic.svg
