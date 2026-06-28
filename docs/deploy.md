@@ -1,6 +1,6 @@
 # OpenAB Review Council — Zeabur template
 
-One-click deploy of a multi-agent PR-review council: a control plane plus stock
+One-command deploy of a multi-agent PR-review council: a control plane plus stock
 OpenAB Claude pods (1 chair + 2 reviewers) that deliberate and post a verdict.
 
 ## What deploys
@@ -36,7 +36,7 @@ PLANE=https://my-council.zeabur.app KEY=<OABCP_API_KEY> \
 The script prints a stream URL to follow by hand, or pass `--watch` (or `FOLLOW=1`)
 to follow inline and print the verdict on close. Council size is the `ROSTER` env
 (default `["chair","rev1","rev2"]`); `QUORUM`/`MODE` override the derived defaults.
-Pass `--preset quick|standard|full` (PR path only) to assign review angles to the
+Pass `--preset lite|quick|standard|full` (PR path only) to assign review angles to the
 reviewers — angles are round-robined onto the roster, extra reviewers sit out,
 quorum = participating reviewers. Without a preset, reviewers are generic
 all-rounders (today's behaviour). Needs `node` (not python3/jq) — same runtime as
@@ -65,10 +65,11 @@ prompt as the CLI `open-council.sh --self-fetch` (shared
 idempotent (one open council per PR).
 
 > **Status:** the webhook convenes a real council (v0.1.6) with preset/angle assignment
-> (v0.1.7). Two gaps to close before production: **no per-repo allowlist and no
-> permission gate on `/review`** — any signed webhook can open a session. The chair
-> still posts the verdict from its pod's `GH_TOKEN`; switching the *post* path to the
-> App bot identity is a separate parity step. Setup + end-to-end validation:
+> (v0.1.7), and the **chair now posts the verdict as the GitHub App** (`zeabur-council[bot]`,
+> clean attribution) via a chair-only `pre_boot` App-auth hook (v0.1.9) — App identity
+> is **live and validated** (end-to-end L3, issue #9 closed). Two gaps remain to close
+> before exposing it to untrusted repos: **no per-repo allowlist and no permission gate
+> on `/review`** — any signed webhook can open a session. Setup + validation:
 > [github-app-validation.md](github-app-validation.md).
 
 ## Manual / fallback review (GitHub Action)
