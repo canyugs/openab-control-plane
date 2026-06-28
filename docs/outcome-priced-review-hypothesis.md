@@ -59,10 +59,33 @@ Red/yellow then becomes the **value narrative**, not the raw **billing hook**.
 2. **Unit-economics inversion** — COGS is per-PR (every review burns tokens); revenue is per-finding. A clean repo = full compute, $0 revenue. Clean big customers cost the most. (Mitigation: ADR 005 cost governance; possibly a per-PR or per-seat floor so red/yellow is the *value story* over a base, not the sole meter.)
 3. **Self-adjudicated severity = trust** — if the vendor's agent sets severity and severity sets price, precision stops being nice-to-have and becomes the moat. The [ROADMAP](../ROADMAP.md) Evaluation/Benchmark work (CodeReviewBench etc.) moves from "future" to "core."
 
+## Billing unit (proposed direction — recorded, not yet ratified)
+
+Goal: block all three risks above *and* keep free-on-green as the wedge. Constraint: no BYOK → margin = price − compute, and **compute is per-PR** (every review burns tokens regardless of outcome).
+
+| Option | Blocks false-pos | Blocks inversion | Blocks self-adjudication | Keeps wedge |
+|---|---|---|---|---|
+| A — pure per-finding (original idea) | ❌ worst | ❌ worst | ❌ worst | ✅ |
+| B — pure per-PR (= Ellipsis) | ✅ | ✅ | ✅ | ❌ you *are* Ellipsis |
+| C — pure per-seat (= most peers) | ✅ | ⚠️ trades for another | ✅ | ❌ undifferentiated |
+| **D — subscription bundle, metered on *addressed* red/yellow** | ✅ | ✅ (via cost-gov) | ✅ | ✅ |
+
+**Recommended: D.** Subscription bundle (e.g. $20 / ~500 red + ~1000 yellow) gives the buyer a predictable bill; red/yellow is the metering unit **and** the value narrative.
+
+**The load-bearing detail — the billable signal is behavioral, not self-declared.** Accept-to-bill (charge only findings the user clicks "accept") has a *new* failure mode: it gives the **buyer** an incentive to mark real bugs as "rejected" to dodge the fee — gaming flips from vendor to buyer. So bill on whether a finding was **addressed** — the author actually changed the flagged line / amended the PR / resolved the thread:
+
+- **Blocks vendor inflation** — a finding only bills if it's acted on; spraying noise that gets ignored earns nothing.
+- **Blocks buyer dodging** — "was it addressed" is an objective fact in the diff, not a self-reported flag the buyer can fake.
+- **Genuinely customer-confirmable** — mirrors Sierra's "resolution is *observed*, not self-reported," importing the proven support-pricing model.
+
+**Inversion is bounded by cost governance, not by a price floor.** Clean PRs still cost compute; rather than bolt on a per-seat floor, lean on [ADR 005](adr/005-cost-governance-roster-swap.md): cheap-default model on the first pass drives green-PR COGS toward zero, escalate only on signal. **Free-on-green survives economically *because* cost governance caps the COGS of green** — the cost-governance work is this model's survival condition, not a side feature.
+
+One-line: **subscription bundle · metered on *addressed* red/yellow (diff-confirmed, not user-declared) · green free, its COGS capped by cheap-default cost governance.**
+
 ## Open questions / next
 
-- Decide the **billing unit**: pure per-finding is probably wrong (risks 1+2); likely per-PR or per-seat **floor** + red/yellow as the value framing, and/or accept-to-bill.
-- If pursued: promote to a **Proposed ADR** ("commercial model: outcome-framed review") once the billing unit and the accept-to-bill mechanism are pinned.
+- The above is **recorded as the proposed direction, not ratified.** Promote to a **Proposed ADR** ("commercial model: outcome-framed review") once Can commits to D + the addressed-signal mechanism.
+- Define "addressed" precisely (line changed within N commits? thread resolved? merged-with-edit?) — the detection rule is where this gets hard.
 - Complete the survey periodically — 2026 pricing is volatile (Greptile/BugBot/Ellipsis/Copilot all changed recently); Entelligence numbers are sales-gated/soft; Trag figures are third-party-reported.
 
 ## Sources
