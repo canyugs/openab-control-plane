@@ -1,5 +1,12 @@
 # PR Review — Output Format
 
+> **Source of truth moved.** The complete, current review steering (protocol +
+> output format, reconciled with the live templates: read-only self-fetch,
+> `--body-file`, `--edit-last`, `[done]`) now lives in
+> [`skills/pr-review/SKILL.md`](../../skills/pr-review/SKILL.md). This file is kept
+> for reference; prefer the skill.
+
+
 ## Reviewer output
 
 Post one message with all findings, then react 🆗.
