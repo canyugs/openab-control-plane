@@ -60,13 +60,29 @@ That's the whole quick path: **deploy → run a review → verdict on the PR.**
 
 ## 2. Auto-review every PR (trigger paths)
 
-| Path | How | Identity |
-|------|-----|----------|
-| **GitHub App webhook** (recommended) | PR `opened`/`reopened`/`ready_for_review` or a `/review` comment auto-convenes a council | PAT by default; **App bot** after the §3 upgrade |
-| `scripts/open-council.sh` | manual, on demand (terminal / CI) | PAT |
-| `.github/workflows/council-review.yml` | manual fallback (`workflow_dispatch` only) | PAT |
+**Trigger and identity are orthogonal.** The *trigger* (below) is how a review is
+convened; the *identity* the chair posts under (PAT or App bot) is the chair pod's
+`gh` auth (§1 = PAT, §3 = App) and is independent of the trigger.
 
-**Set up the webhook:**
+| Trigger (pick one for auto) | How | Setup |
+|------|-----|-------|
+| **GitHub Action** (easiest) | drop `examples/pr-review.yml` into the repo → PR open/update fires it | copy 1 file + 2 secrets |
+| **GitHub App / repo webhook** | PR event or `/review` comment hits the plane directly | create an App/webhook + secret |
+| `scripts/open-council.sh` | manual, on demand (terminal / CI) | none |
+
+> **Use the Action *or* the webhook for auto — not both on one repo, or a PR convenes
+> two councils.** Both call the same convene (pointer trigger, bots self-fetch, ADR 004).
+
+**Set up the GitHub Action (easiest):** copy [`examples/pr-review.yml`](../examples/pr-review.yml)
+to the target repo's `.github/workflows/`, and set two repo secrets:
+```sh
+gh secret set COUNCIL_PLANE --body "https://my-council.zeabur.app"
+gh secret set COUNCIL_KEY   --body "<OABCP_API_KEY>"
+```
+On a PR it POSTs `<plane>/v1/review {repo, pr}` — the plane convenes a council and the
+chair posts the verdict. (Any CI / script can hit `/v1/review` the same way.)
+
+**Set up the webhook (alternative):**
 1. On the **control-plane** service set `GITHUB_WEBHOOK_SECRET` (HMAC secret; the
    endpoint is **fail-closed** — unset ⇒ every webhook is rejected).
 2. Optionally set `OABCP_COUNCIL_PRESET` (`lite`/`quick`/`standard`/`full`, default

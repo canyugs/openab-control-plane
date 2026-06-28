@@ -27,6 +27,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/v1/sessions/:id/messages", post(post_message))
         .route("/v1/sessions/:id/roster", post(add_roster))
         .route("/v1/sessions/:id/stream", get(stream_session))
+        // Convene a PR review by ref — the trivial primitive a droppable GitHub
+        // Action (or any CI) calls: POST {repo, pr, preset?}. Same convene as the
+        // webhook (pointer trigger, bots self-fetch); idempotent per PR.
+        .route("/v1/review", post(review_pr))
         // Option A: the plane mints a per-role scoped GitHub installation token for a
         // pod, bound to this session. The pod calls GitHub with it instead of the
         // shared PAT. Closing the session purges it (central revoke).
@@ -264,6 +268,39 @@ session_ttl_hours = 2
         hooks_section = hooks_section,
     );
     Ok(([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], toml))
+}
+
+#[derive(Deserialize)]
+struct ReviewReq {
+    repo: String,
+    pr: u64,
+    /// Optional preset override (lite|quick|standard|full) for this PR; falls back
+    /// to the global env / default. Same precedence as a `review:<preset>` label.
+    #[serde(default)]
+    preset: Option<String>,
+}
+
+/// Convene a council to review a PR — the north REST primitive a droppable GitHub
+/// Action (or any CI) calls. Same convene path as the webhook (pointer trigger, bots
+/// self-fetch); idempotent (re-runs dedup to the open council for that PR).
+async fn review_pr(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<ReviewReq>,
+) -> Result<axum::response::Response, StatusCode> {
+    check_auth(&state, &headers)?;
+    let trigger_ref = crate::council::pr_trigger_ref(&req.repo, req.pr);
+    if let Some(existing) = state
+        .store
+        .active_session_for_trigger(&trigger_ref)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        return Ok(Json(json!({ "session_id": existing, "deduped": true })).into_response());
+    }
+    let sid = crate::council::convene_for_pr(&state, &req.repo, req.pr, req.preset)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!({ "session_id": sid })).into_response())
 }
 
 #[derive(Deserialize)]
