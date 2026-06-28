@@ -162,9 +162,16 @@ pub async fn convene_for_pr(state: &Arc<AppState>, repo: &str, num: u64) -> Resu
     }
     // Optional preset: assign angles to reviewers (trim idle ones, quorum = those
     // assigned). No preset → generic review, all reviewers report.
-    let (eff_roster, quorum, assignment) = match council_preset().as_deref().and_then(preset_angles) {
-        Some(angles) => assign_angles(&roster, &angles),
-        None => (roster.clone(), (roster.len() as i64 - 1).max(0), String::new()),
+    let generic = || (roster.clone(), (roster.len() as i64 - 1).max(0), String::new());
+    let (eff_roster, quorum, assignment) = match council_preset() {
+        None => generic(),
+        Some(p) => match preset_angles(&p) {
+            Some(angles) => assign_angles(&roster, &angles),
+            None => {
+                tracing::warn!(preset = %p, "unknown OABCP_COUNCIL_PRESET (want quick|standard|full); falling back to generic review");
+                generic()
+            }
+        },
     };
     let trigger_ref = pr_trigger_ref(repo, num);
     let session = state.store.create_session(
@@ -197,6 +204,17 @@ mod tests {
         assert!(t.contains("diff --git a b"));
         // no leftover placeholders
         assert!(!t.contains("{{"));
+    }
+
+    #[test]
+    fn preset_angles_known_and_unknown() {
+        assert_eq!(preset_angles("quick").map(|v| v.len()), Some(3));
+        assert_eq!(preset_angles("standard").map(|v| v.len()), Some(5));
+        assert_eq!(preset_angles("full").map(|v| v.len()), Some(7));
+        // unrecognized → None → caller falls back to generic review (with a warn)
+        assert!(preset_angles("QUICK").is_none()); // case-sensitive
+        assert!(preset_angles("stanard").is_none()); // typo
+        assert!(preset_angles("").is_none());
     }
 
     #[test]
