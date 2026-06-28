@@ -64,6 +64,29 @@ LocalStack/MinIO path. Two consequences:
 - **Plane injects steering into the served `config.toml`** — design.md explicitly
   forbids it ("we don't `[agent.steering]`-inject, don't serve `CLAUDE.md`").
 
+## Note — `include_str!` is a fourth transport ("bake into the artifact")
+
+Trigger-embed (①) is what ships today, and its steering source is a **single file**
+consumed two ways:
+
+- **manual path** (`open-council.sh`) reads the `.tmpl` at **runtime** — edit the
+  file, it takes effect on the next run, no rebuild.
+- **webhook path** (`council.rs`) embeds it with **`include_str!`** at **compile
+  time** — the template is baked into the plane binary as a `const &str`. (Since
+  v0.1.8 / ADR 004 the webhook posts the **pointer** template
+  `pr-review-trigger-pointer.tmpl`, so the plane makes zero GitHub calls and the
+  bots self-fetch — the `include_str!` mechanism is unchanged, only *which* template.)
+
+So there is already a fourth steering-delivery transport beyond ①②③ — **bake into
+the artifact** — and it is the lightest: single source of truth (manual + webhook
+render an identical prompt, they can't drift), a self-contained binary (no runtime
+file, no external store, no credentials), version-locked to the release. Its cost is
+the mirror of pre_seed's benefit: **changing the webhook's steering needs a rebuild +
+redeploy**, not a hot edit. For rules that are small and stable that is an acceptable
+trade — part of why ① stays the *Now* choice. pre_seed (②/③) only earns its keep once
+steering must change often, or be **shared across more than one trigger builder** /
+delivered as a per-`$HOME` file with role-split layers — which `include_str!` can't do.
+
 ## Leaning (not decided)
 
 - **Now:** keep ① — it works, and the trigger steering is already extracted to
