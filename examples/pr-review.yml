@@ -1,0 +1,58 @@
+# Council review — droppable GitHub Action (auto-trigger).
+#
+# The easiest auto-review install: copy this file to your repo's
+# .github/workflows/pr-review.yml and set two repo secrets:
+#   COUNCIL_PLANE = https://<your-plane-domain>     (your deployed control-plane)
+#   COUNCIL_KEY   = the control-plane OABCP_API_KEY (the PASSWORD var)
+#
+# On a PR opened/updated it asks the plane to convene a council; the chair posts
+# one verdict comment back (as the chair pod's identity — PAT by default, or the
+# App bot if you did the App-identity upgrade). The plane self-fetches the diff, so
+# this job just fires one request and exits.
+#
+# Use EITHER this Action OR the GitHub App webhook — not both on the same repo, or a
+# PR convenes two councils. See docs/deploy.md.
+name: Council Review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to review
+        required: true
+
+concurrency:
+  group: council-review-${{ github.event.pull_request.number || github.event.inputs.pr }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Fork PRs can't read repo secrets — skip the event path for them (same-repo PRs
+    # and manual dispatch still run).
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Convene review council
+        env:
+          PLANE: ${{ secrets.COUNCIL_PLANE }}
+          KEY: ${{ secrets.COUNCIL_KEY }}
+          PR: ${{ github.event.pull_request.number || github.event.inputs.pr }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PLANE:-}" ] || [ -z "${KEY:-}" ]; then
+            echo "::notice::COUNCIL_PLANE / COUNCIL_KEY not set — skipping council review"
+            exit 0
+          fi
+          [[ "${PR}" =~ ^[0-9]+$ ]] || { echo "::error::PR must be a number"; exit 1; }
+          curl -fsS -X POST "${PLANE%/}/v1/review" \
+            -H "Authorization: Bearer ${KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{\"repo\":\"${GITHUB_REPOSITORY}\",\"pr\":${PR}}"
