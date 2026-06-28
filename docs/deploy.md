@@ -85,8 +85,17 @@ optional angle assignment, *not* the diff — the plane makes **zero GitHub call
 to a PR — it overrides the global default for that PR (read from the webhook payload, no
 GitHub call). Precedence: label > `OABCP_COUNCIL_PRESET` > `lite`.
 
-> Two gaps before exposing the webhook to untrusted repos: **no per-repo allowlist** and
-> **no permission gate on `/review`** — any signed webhook can open a session.
+**Conversational follow-up (`@mention` / `/ask`, ADR 006):** a PR comment that is
+`/ask <question>` — or `@`s the bot when `OABCP_BOT_HANDLE` is set (e.g.
+`@zeabur-council why is this a P1?`) — convenes a **solo** session that answers as a
+**new** PR comment (separate from the review verdict). The bot self-fetches the PR +
+thread (zero plane GitHub calls); multi-turn just re-asks. Only **write-ish** commenters
+(`author_association` OWNER/MEMBER/COLLABORATOR) can ask — it's on-demand token spend.
+
+**Restricting who/what can trigger:** set `OABCP_ALLOWED_REPOS` (comma-separated
+`owner/repo`; unset = allow all) to ignore webhooks from any other repo. Note `/ask`/
+`@mention` is additionally permission-gated as above; a plain `/review` comment is not,
+so anyone who can comment can convene one review council (bounded — one council per PR).
 
 ---
 

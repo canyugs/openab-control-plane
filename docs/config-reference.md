@@ -16,6 +16,8 @@ All configuration is via environment variables. No config file needed.
 | `OABCP_MAX_ROSTER` | `16` | Admission quota — max bots in a session roster. Mid-session adds (`POST /v1/sessions/:id/roster`) beyond this are rejected (`409`). Bounds roster growth; applies to dynamic adds, not the initial roster at open |
 | `OABCP_COUNCIL_ROSTER` | `chair,rev1,rev2` | Webhook-convened council roster (comma-separated; `[0]` is the chair, the rest review). Should match the bots seeded via `OABCP_BOTS` |
 | `OABCP_COUNCIL_PRESET` | _(none)_ | Default webhook-convened review preset: `lite` (1 angle), `quick` (3), `standard` (5), `full` (7). Angles are round-robined onto the reviewers (extras trimmed, quorum = participants). Unset = generic review (every reviewer covers everything). A per-PR `review:<preset>` label overrides this. Mirrors `open-council.sh --preset` |
+| `OABCP_BOT_HANDLE` | _(none)_ | The App bot's GitHub handle (e.g. `zeabur-council`) for conversational follow-ups (ADR 006). When set, a PR comment that `@mention`s it is answered by a solo session. Unset → only the explicit `/ask` command works, not `@mention` |
+| `OABCP_ALLOWED_REPOS` | _(allow all)_ | Comma-separated `owner/repo` allowlist for webhook triggers. Unset/empty = allow all; when set, a webhook from any other repo is acked and ignored. (Follow-up `/ask`/`@mention` is *additionally* gated to write-ish commenters by `author_association`.) |
 | `GH_OUTPUT` | _(off)_ | Set to `1` to enable GitHub PR side-effects (comment, label, review) via `gh` CLI |
 | `RUST_LOG` | `info` | Log level filter (standard `tracing` env filter syntax) |
 
