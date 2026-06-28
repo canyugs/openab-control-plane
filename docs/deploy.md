@@ -42,60 +42,49 @@ quorum = participating reviewers. Without a preset, reviewers are generic
 all-rounders (today's behaviour). Needs `node` (not python3/jq) — same runtime as
 CI and the dev sandbox.
 
-## Auto-review every PR (GitHub Action)
+## Auto-review every PR (GitHub App webhook)
 
-For CodeRabbit-style "open a PR → it gets reviewed" with no manual trigger, copy
-[`.github/workflows/council-review.yml`](../.github/workflows/council-review.yml)
-into the target repo and set two repo secrets:
+The turnkey "open a PR → it gets reviewed" path. Create a GitHub App, install it on
+the repo, and put its credentials on the control-plane service:
 
-- `COUNCIL_PLANE` — the plane URL, e.g. `https://my-council.zeabur.app`
-- `COUNCIL_KEY` — the control-plane `OABCP_API_KEY`
+| Variable | Purpose |
+|----------|---------|
+| `GITHUB_APP_ID` · `GITHUB_APP_INSTALLATION_ID` · `GITHUB_APP_PRIVATE_KEY` | App identity — the plane mints per-role installation tokens (chair `pull_requests:write`, reviewers read-only); a pod fetches its scoped token via `/v1/sessions/:id/github-token` (the App key never leaves the plane) |
+| `GITHUB_WEBHOOK_SECRET` | HMAC secret for the webhook endpoint (fail-closed if unset) |
+| `OABCP_COUNCIL_ROSTER` | Roster the webhook convenes (default `chair,rev1,rev2`; `[0]` is chair) |
+| `OABCP_COUNCIL_PRESET` | Optional review preset for webhook councils: `quick`/`standard`/`full` (angle assignment) |
+
+Point the App's webhook at `POST <plane>/api/v1/github_webhooks` (subscribe to pull
+requests + issue comments). A PR `opened`/`reopened`/`ready_for_review`, or a `/review`
+comment on a PR, then **convenes a real council** — `src/council.rs:convene_for_pr`
+reads the PR diff and posts the same trigger as the CLI path (shared
+`scripts/pr-review-trigger.tmpl`) — and the chair posts one verdict comment back.
+Re-deliveries are idempotent (one open council per PR).
+
+> **Status:** the webhook convenes a real council (v0.1.6) with preset/angle assignment
+> (v0.1.7). Two gaps to close before production: **no per-repo allowlist and no
+> permission gate on `/review`** — any signed webhook can open a session. The chair
+> still posts the verdict from its pod's `GH_TOKEN`; switching the *post* path to the
+> App bot identity is a separate parity step. Setup + end-to-end validation:
+> [github-app-validation.md](github-app-validation.md).
+
+## Manual / fallback review (GitHub Action)
+
+`.github/workflows/council-review.yml` is the **PAT-track manual path** — use it to
+re-review a PR on demand (Actions → *Run workflow*) or as a fallback if the webhook is
+down. It is `workflow_dispatch`-only (the auto `pull_request` trigger moved to the
+webhook above, so they don't double-convene). Set two repo secrets:
 
 ```sh
 gh secret set COUNCIL_PLANE --body "https://my-council.zeabur.app"
 gh secret set COUNCIL_KEY   --body "<OABCP_API_KEY>"
 ```
 
-The workflow runs on `pull_request` (opened / synchronize / reopened) and on manual
-`workflow_dispatch`. It convenes a council via the plane's REST API and exits
-(fire-and-forget) — the chair posts the verdict back to the PR asynchronously. Fork
-PRs are skipped (they can't read the secrets); same-repo PRs and manual dispatch run.
-
-If a review never appears: check the **Action run log** for convene errors (wrong
-`COUNCIL_PLANE`/`COUNCIL_KEY`), then the **plane / chair logs** for the session — a
-session that never reaches quorum is force-closed by the 900s liveness watchdog. If
-the council *runs* but no comment lands, the chair couldn't post — verify `GH_TOKEN`
-has `pull_requests: write` + `contents: read`.
-
-> This is the **PAT track**: the chair comments using the `GH_TOKEN` you gave the
-> deploy, so verdicts appear under that account. Posting as a distinct **bot
-> identity** is the GitHub App track below.
-
-## GitHub App + webhook (identity track)
-
-The Action above is the **PAT track** — simple and turnkey, but verdicts post under
-the `GH_TOKEN` account. The **identity track** (shipped v0.1.5) instead has the chair
-post as a **GitHub App bot**, with per-role scoped tokens (chair `pull_requests:write`,
-reviewers read-only) the plane mints per session, plus a built-in webhook so GitHub
-triggers reviews directly — no Action to copy. Set on the control-plane service:
-
-| Variable | Purpose |
-|----------|---------|
-| `GITHUB_APP_ID` · `GITHUB_APP_INSTALLATION_ID` · `GITHUB_APP_PRIVATE_KEY` | App identity — the plane mints per-role installation tokens; a pod fetches its scoped token via `/v1/sessions/:id/github-token` (the App key never leaves the plane) |
-| `GITHUB_WEBHOOK_SECRET` | HMAC secret for the webhook endpoint (fail-closed if unset) |
-
-Point the App's webhook at `POST <plane>/api/v1/github_webhooks` (subscribe to pull
-requests + issue comments). A PR `opened`/`reopened`/`ready_for_review`, or a `/review`
-comment on a PR, then opens a session.
-
-> **Status (v0.1.5):** the App identity (scoped tokens) and the webhook *ingress*
-> (signature-verified, opens a session) are in place, but **roster recruitment + angle
-> assignment for webhook-opened sessions is Phase 2** — a webhook today opens a session
-> that Phase-2 recruitment will fill, not yet a turnkey reviewer. There is also **no
-> per-repo allowlist and no permission gate on `/review`** yet (any signed webhook can
-> open a session) — gate these before production. **The Action (PAT) path above is the
-> turnkey route today.** Setup + end-to-end validation:
-> [github-app-validation.md](github-app-validation.md).
+It convenes via the plane's REST API and exits (fire-and-forget); the chair posts the
+verdict asynchronously from its pod's `GH_TOKEN`. If a review never appears: check the
+**Action run log** for convene errors, then the **plane / chair logs** — a session that
+never reaches quorum is force-closed by the 900s watchdog. If the council *runs* but no
+comment lands, verify `GH_TOKEN` has `pull_requests: write` + `contents: read`.
 
 ## Image hosting
 The template references `docker.io/canyu/openab-control-plane:<version>` (public).

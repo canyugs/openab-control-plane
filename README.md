@@ -39,19 +39,16 @@ PLANE=https://my-council.zeabur.app KEY=<OABCP_API_KEY> \
 
 The chair posts a single verdict comment on the PR; `--watch` streams session progress and prints the verdict when the session closes.
 
-**2b. Auto-review every PR** (CodeRabbit-style) — copy
-[`.github/workflows/council-review.yml`](.github/workflows/council-review.yml) into
-the target repo and set two repo secrets, `COUNCIL_PLANE` (the plane URL) and
-`COUNCIL_KEY` (the `OABCP_API_KEY`). Every PR open/update then convenes a council
-automatically (fork PRs are skipped — they can't read the secrets). The verdict is
-posted asynchronously — the run convenes the council and exits, so the comment lands
-a minute or two later, not the moment the check goes green. See
-[deploy.md](docs/deploy.md) for the full guide.
+**2b. Auto-review every PR** (CodeRabbit-style) — set up the **GitHub App + webhook**:
+put `GITHUB_APP_*` + `GITHUB_WEBHOOK_SECRET` on the plane and point the App's webhook at
+`POST <plane>/api/v1/github_webhooks`. A PR opened / reopened / ready-for-review, or a
+`/review` comment, then **convenes a real council automatically** (no per-repo workflow
+to copy) and the chair posts one verdict comment back. Full guide:
+[deploy.md](docs/deploy.md) · [github-app-validation.md](docs/github-app-validation.md).
 
-Want verdicts to post as a **GitHub App bot** (not your account) and have GitHub
-trigger reviews directly via webhook — no Action to copy? That's the identity track
-(`GITHUB_APP_*` + `GITHUB_WEBHOOK_SECRET`), shipped in v0.1.5 with some Phase-2 gaps —
-see [deploy.md](docs/deploy.md) and [github-app-validation.md](docs/github-app-validation.md).
+> `.github/workflows/council-review.yml` is a **manual fallback** now
+> (`workflow_dispatch` only) — the automatic `pull_request` trigger moved to the webhook
+> to avoid double-convening. Use it, or `open-council.sh`, to re-review on demand.
 
 ## Docs
 
