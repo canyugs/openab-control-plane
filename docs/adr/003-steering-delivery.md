@@ -42,6 +42,10 @@ LocalStack/MinIO path. Two consequences:
 
 ## Options
 
+> The table covers the three *candidate* options. A fourth transport —
+> `include_str!` ("bake into the artifact") — is already shipped as ①'s current
+> implementation, not a peer choice; it lives in the **Note** after *Rejected*.
+
 | Axis | ① Trigger-embed (today) | ② `pre_seed` ← external R2/OSS | ③ `pre_seed` ← OCP-hosted S3 origin |
 |---|---|---|---|
 | External infra | none | provision/maintain a bucket | none (folded into the plane) |
@@ -78,11 +82,13 @@ consumed two ways:
   bots self-fetch — the `include_str!` mechanism is unchanged, only *which* template.)
 
 So there is already a fourth steering-delivery transport beyond ①②③ — **bake into
-the artifact** — and it is the lightest: single source of truth (manual + webhook
-render an identical prompt, they can't drift), a self-contained binary (no runtime
-file, no external store, no credentials), version-locked to the release. Its cost is
-the mirror of pre_seed's benefit: **changing the webhook's steering needs a rebuild +
-redeploy**, not a hot edit. For rules that are small and stable that is an acceptable
+the artifact** — and it is the lightest: single source of truth (one `.tmpl` feeds
+both paths; the webhook carries a *compile-time snapshot*, so at any given release the
+two renders are identical — editing the file without rebuilding lets them diverge
+until the next build, which is exactly the rebuild cost named next), a self-contained
+binary (no runtime file, no external store, no credentials), version-locked to the
+release. Its cost is the mirror of pre_seed's benefit: **changing the webhook's
+steering needs a rebuild + redeploy**, not a hot edit. For rules that are small and stable that is an acceptable
 trade — part of why ① stays the *Now* choice. pre_seed (②/③) only earns its keep once
 steering must change often, or be **shared across more than one trigger builder** /
 delivered as a per-`$HOME` file with role-split layers — which `include_str!` can't do.
