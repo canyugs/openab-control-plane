@@ -56,10 +56,13 @@ the repo, and put its credentials on the control-plane service:
 
 Point the App's webhook at `POST <plane>/api/v1/github_webhooks` (subscribe to pull
 requests + issue comments). A PR `opened`/`reopened`/`ready_for_review`, or a `/review`
-comment on a PR, then **convenes a real council** — `src/council.rs:convene_for_pr`
-reads the PR diff and posts the same trigger as the CLI path (shared
-`scripts/pr-review-trigger.tmpl`) — and the chair posts one verdict comment back.
-Re-deliveries are idempotent (one open council per PR).
+comment on a PR, then **convenes a real council** — `convene_for_pr` posts a **pointer**
+trigger (the PR ref + optional angle assignment, *not* the diff: as of v0.1.8 / ADR 004
+the plane makes zero GitHub calls), the reviewer bots **self-fetch** the PR
+(`gh pr diff`), and the chair posts one verdict comment back with its own `gh`. Same
+prompt as the CLI `open-council.sh --self-fetch` (shared
+`scripts/pr-review-trigger-pointer.tmpl` via `include_str!`). Re-deliveries are
+idempotent (one open council per PR).
 
 > **Status:** the webhook convenes a real council (v0.1.6) with preset/angle assignment
 > (v0.1.7). Two gaps to close before production: **no per-repo allowlist and no
