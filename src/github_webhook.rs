@@ -80,16 +80,25 @@ fn mention_handle() -> Option<String> {
 /// this PR"). `None` if it's neither. Pure (handle passed in) for testing.
 fn parse_ask_comment(comment: &str, handle: Option<&str>) -> Option<String> {
     let c = comment.trim();
+    // `/ask` — require a word boundary so `/asked` / `/asking` don't match and launch
+    // a session with a nonsense question.
     if let Some(rest) = c.strip_prefix("/ask") {
-        return Some(rest.trim().to_string());
+        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+            return Some(rest.trim().to_string());
+        }
     }
     if let Some(h) = handle {
         let tag = format!("@{h}");
         if let Some(pos) = c.find(&tag) {
-            let rest = c[pos + tag.len()..]
-                .trim_start_matches("[bot]") // tolerate `@handle[bot]`
-                .trim();
-            return Some(rest.to_string());
+            let tail = &c[pos + tag.len()..];
+            // Word boundary after the handle (GitHub handles are `[A-Za-z0-9-]`), so a
+            // handle `council` doesn't match the *different* user `@council-admin`.
+            let boundary =
+                tail.is_empty() || !tail.starts_with(|ch: char| ch.is_alphanumeric() || ch == '-');
+            if boundary {
+                let rest = tail.trim_start_matches("[bot]").trim(); // tolerate `@handle[bot]`
+                return Some(rest.to_string());
+            }
         }
     }
     None
@@ -258,6 +267,17 @@ pub async fn handle_webhook(
         .await
         {
             Ok(session_id) => {
+                // Telemetry parity with the review path's `github_trigger` event.
+                state.emit_north(
+                    "github_ask",
+                    &session_id,
+                    json!({
+                        "repo": trigger.repo,
+                        "pr_number": trigger.pr_number,
+                        "comment_id": trigger.comment_id,
+                        "reason": trigger.reason,
+                    }),
+                );
                 tracing::info!(session = %session_id, repo = %trigger.repo, pr = trigger.pr_number, "answered follow-up from GitHub webhook");
                 Ok(Json(json!({ "ok": true, "triggered": true, "session_id": session_id })).into_response())
             }
@@ -442,6 +462,11 @@ mod tests {
         assert!(parse_ask_comment("@zeabur-council hi", None).is_none());
         // ordinary chatter is not an ask
         assert!(parse_ask_comment("lgtm thanks", Some("zeabur-council")).is_none());
+        // word-boundary: `/asked`/`/asking` must NOT match `/ask`
+        assert!(parse_ask_comment("/asked for another review", None).is_none());
+        assert!(parse_ask_comment("/asking", None).is_none());
+        // word-boundary: handle `council` must NOT match the different user `@council-admin`
+        assert!(parse_ask_comment("@council-admin said yes", Some("council")).is_none());
     }
 
     #[test]
