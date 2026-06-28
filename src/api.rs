@@ -230,6 +230,18 @@ async fn bot_config(
             .join(", ");
         format!("\nargs = [{joined}]")
     };
+    // The chair writes to the PR, so it posts as the shared GitHub App (clean
+    // `[bot]` attribution) — not its pod PAT. A pre_boot hook mints an installation
+    // token and `gh auth login`s as the App, then refreshes before the 1h expiry
+    // (mirrors multi-agent-review-ops). The App key + minter live on the chair's
+    // persistent volume (~/.github-app.pem, ~/bin/get-gh-app-token.sh), NOT in env
+    // (the hook env is sanitized). Reviewers don't write, so they keep GH_TOKEN.
+    // Safe no-op (`on_failure = "warn"` + exit 0) until the volume is provisioned.
+    let hooks_section = if bot.role == "chair" {
+        "\n[hooks.pre_boot]\non_failure = \"warn\"\ntimeout_seconds = 60\ninline = '''\n#!/bin/sh\nset -e\nexport HOME=/home/node\nif [ ! -x \"$HOME/bin/get-gh-app-token.sh\" ]; then echo \"github app auth not provisioned (no get-gh-app-token.sh); skipping\"; exit 0; fi\nauth() { \"$HOME/bin/get-gh-app-token.sh\" | gh auth login --with-token; }\nauth\ngit config --global credential.helper '!gh auth git-credential' || true\n# refresh before the 1h installation-token expiry\n( while sleep 3000; do auth || true; done ) &\n'''\n"
+    } else {
+        ""
+    };
     let toml = format!(
         r#"[gateway]
 url = "{ws_url}"
@@ -247,8 +259,9 @@ inherit_env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
 [pool]
 max_sessions = 4
 session_ttl_hours = 2
-"#,
+{hooks_section}"#,
         name = bot.name,
+        hooks_section = hooks_section,
     );
     Ok(([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], toml))
 }
