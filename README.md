@@ -46,7 +46,9 @@ comment, then **convenes a real council automatically** (no per-repo workflow to
 and the chair posts one verdict comment back. By default it posts via your `GH_TOKEN`
 PAT; to post as a clean App bot (`zeabur-council[bot]`, not your account) do the
 **pod-local App-identity upgrade** ([deploy.md §3](docs/deploy.md)). Per-PR depth: add a
-`review:lite|quick|standard|full` label. Guides:
+`review:lite|quick|standard|full` label. **Ask a follow-up:** a write-ish reviewer can
+comment `/ask <question>` (or `@`-mention the bot when `OABCP_BOT_HANDLE` is set) and a
+solo session answers in the thread. Guides:
 [deploy.md](docs/deploy.md) · [github-app-validation.md](docs/github-app-validation.md).
 
 > `.github/workflows/council-review.yml` is a **manual fallback** now
