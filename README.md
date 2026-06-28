@@ -60,8 +60,11 @@ PAT; to post as a clean App bot (`zeabur-council[bot]`, not your account) do the
 - [Architecture](docs/architecture.md) — north/core/south model, source layout
 - [Configuration](docs/config-reference.md) — all env vars and seed format
 - [PR Review Flow](docs/flow.md) — end-to-end council flow for PR review
-- [Deploy](docs/deploy.md) — Zeabur template deploy + the two PR-trigger paths
-- [PR Review Format](docs/steering/pr-review.md) — reviewer + chair output format
+- [Deploy & install](docs/deploy.md) — quick-start (PAT) + App-identity upgrade + trigger paths
+- [GitHub App validation](docs/github-app-validation.md) — App identity setup + L3 runbook
+- [PR review steering](skills/pr-review/SKILL.md) — reviewer + chair output format (source of truth)
+- [Decision records (ADRs)](docs/adr/) — 001 three-planes · 002 identity-scope · 003 steering-delivery · 004 bot-identity · 005 cost-governance
+- Enterprise hardening — consolidated requirements: issue #29
 
 ## Layout
 
