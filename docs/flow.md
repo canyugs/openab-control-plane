@@ -48,7 +48,7 @@ What actually happens when the council reviews a PR, as built and verified
 ## Verified
 A 3-bot council deployed entirely from the template reviewed `canyugs/council-demo#1`
 (a planted tax-base bug): `deliberating → quorum → closed`, chair caught the bug,
-posted the verdict, applied `council-reviewed`. See `TEMPLATE.md` to reproduce.
+posted the verdict, applied `council-reviewed`. See [deploy.md](deploy.md) to reproduce.
 
 ## Known gaps (see TODO.md)
 Auto-trigger (no PR webhook yet — open session manually/script), large-diff chunking,

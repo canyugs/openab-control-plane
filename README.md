@@ -57,7 +57,7 @@ to copy) and the chair posts one verdict comment back. Full guide:
 - [Architecture](docs/architecture.md) — north/core/south model, source layout
 - [Configuration](docs/config-reference.md) — all env vars and seed format
 - [PR Review Flow](docs/flow.md) — end-to-end council flow for PR review
-- [Deploy](docs/deploy.md) — Zeabur template one-click deploy
+- [Deploy](docs/deploy.md) — Zeabur template deploy + the two PR-trigger paths
 - [PR Review Format](docs/steering/pr-review.md) — reviewer + chair output format
 
 ## Layout
