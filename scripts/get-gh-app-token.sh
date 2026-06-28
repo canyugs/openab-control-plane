@@ -23,9 +23,16 @@ PAYLOAD=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((NOW - 60))" "$((NOW + 540)
 SIG=$(printf '%s.%s' "$HEADER" "$PAYLOAD" | openssl dgst -sha256 -sign "$KEY" -binary | b64)
 JWT="${HEADER}.${PAYLOAD}.${SIG}"
 
-# GitHub's JSON has a space after the colon, so match it loosely (no jq dependency).
-curl -sf -X POST \
+# Capture the response and check curl's exit BEFORE extracting — with `set -e` and a
+# pipe, the pipeline's status is the last command's (`head`), so a failed `curl -sf`
+# would otherwise pass silently as empty output and the caller's `gh auth login` would
+# fail with a misleading error. GitHub's JSON has a space after the colon → match loosely
+# (no jq dependency).
+RESP=$(curl -sf -X POST \
   -H "Authorization: Bearer ${JWT}" \
   -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/app/installations/${INSTALLATION_ID}/access_tokens" \
-  | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+  "https://api.github.com/app/installations/${INSTALLATION_ID}/access_tokens") || {
+  echo "get-gh-app-token: GitHub access_tokens call failed (bad JWT / installation id / PEM?)" >&2
+  exit 1
+}
+printf '%s' "$RESP" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1

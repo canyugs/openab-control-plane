@@ -49,7 +49,10 @@ PLANE=https://my-council.zeabur.app KEY=<OABCP_API_KEY> \
 ```
 The chair posts a single verdict comment (authored by the PAT owner); `--watch`
 streams progress and prints the verdict on close. `--preset lite|quick|standard|full`
-assigns review angles to the reviewers (lite=1 → full=7); without it, default is lite.
+assigns review angles to the reviewers (lite=1 → full=7); **without `--preset`,
+`open-council.sh` runs generic all-rounder reviewers (no angle split)**. (The `lite`
+default applies to the webhook path — `OABCP_COUNCIL_PRESET`/code default — not this
+script.)
 
 That's the whole quick path: **deploy → run a review → verdict on the PR.**
 
@@ -110,10 +113,10 @@ service without one, mount a volume at `/home/node` first — dashboard or the
    both files in and lock down ownership (the pre_boot hook runs as `node` and can't read
    a root-owned key):
    ```sh
-   CHAIR=<chair-service-id>
-   npx zeabur@latest service exec --id $CHAIR -- sh -c 'cat > $HOME/.github-app.pem'      < path/to/app.pem
-   npx zeabur@latest service exec --id $CHAIR -- sh -c 'mkdir -p $HOME/bin; cat > $HOME/bin/get-gh-app-token.sh' < scripts/get-gh-app-token.sh
-   npx zeabur@latest service exec --id $CHAIR -- sh -c 'chmod 600 $HOME/.github-app.pem; chmod +x $HOME/bin/get-gh-app-token.sh; chown node:node $HOME/.github-app.pem $HOME/bin/get-gh-app-token.sh'
+   CHAIR=<chair-service-id>   # use explicit /home/node (the pod's HOME) — `service exec` may run as root, so $HOME could be /root
+   npx zeabur@latest service exec --id $CHAIR -- sh -c 'cat > /home/node/.github-app.pem'      < path/to/app.pem
+   npx zeabur@latest service exec --id $CHAIR -- sh -c 'mkdir -p /home/node/bin; cat > /home/node/bin/get-gh-app-token.sh' < scripts/get-gh-app-token.sh
+   npx zeabur@latest service exec --id $CHAIR -- sh -c 'chmod 600 /home/node/.github-app.pem; chmod +x /home/node/bin/get-gh-app-token.sh; chown node:node /home/node/.github-app.pem /home/node/bin/get-gh-app-token.sh'
    ```
 2. **Remove `GH_TOKEN`** from the chair service — `gh` prefers the env token over the
    App auth, so it must go:
