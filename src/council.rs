@@ -1,26 +1,25 @@
 //! Convene a review council from a webhook (ROADMAP Phase 2 "Auto-trigger" — the
-//! convene half). Mirrors `scripts/open-council.sh` but runs inside the plane: read
-//! the PR title + diff, open a session with the standing roster, and post the trigger
-//! so the bots start reviewing. The chair posts the verdict from its own pod
-//! (`GH_TOKEN`); this only *reads* the diff and kicks off deliberation.
+//! convene half). Mirrors `scripts/open-council.sh --self-fetch` but runs inside the
+//! plane: open a session with the standing roster and post a **pointer** trigger
+//! (the PR ref, optional angle assignment — not the diff) so the bots fetch + review
+//! the PR with their own `gh`.
 //!
-//! Minimal wiring: standing roster, no preset/angle assignment yet (that's the next
-//! Phase-2 step). The diff is read via the App installation token when configured,
-//! else the pod's `GH_TOKEN` — so it works before App env is provisioned and upgrades
-//! to App identity automatically once it is.
+//! The plane never calls GitHub (ADR 004 — GitHub I/O belongs to the pods): reviewers
+//! self-fetch the diff (`gh pr diff`), the chair posts the verdict with its own `gh`
+//! (authenticated as the shared App at the pod level). The trigger is auth-agnostic —
+//! identity is whatever the pod's `gh` is logged in as.
 
-use crate::github_app::Role;
 use crate::orchestrator;
 use crate::state::AppState;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use std::sync::Arc;
 
-/// Shared with `scripts/open-council.sh` (single source of truth) so the CI/PAT
-/// path and the webhook path produce identical review prompts.
-const TRIGGER_TMPL: &str = include_str!("../scripts/pr-review-trigger.tmpl");
+/// Pointer trigger — shared with `scripts/open-council.sh --self-fetch` via
+/// `include_str!` so the CI/manual path and the webhook path post identical prompts.
+const TRIGGER_TMPL: &str = include_str!("../scripts/pr-review-trigger-pointer.tmpl");
 
-/// Session `trigger_ref` for a PR — also the idempotency key (so a re-delivered
-/// webhook dedups to the open council). Matches open-council.sh's `REF`.
+/// Session `trigger_ref` for a PR — also the idempotency key (a re-delivered webhook
+/// dedups to the open council). Matches open-council.sh's `REF`.
 pub fn pr_trigger_ref(repo: &str, num: u64) -> String {
     format!("github:pr/{repo}#{num}")
 }
@@ -102,60 +101,22 @@ fn assign_angles(roster: &[String], angles: &[&str]) -> (Vec<String>, i64, Strin
     (eff, quorum, text)
 }
 
-/// Render the PR-review trigger from the shared template. `angle_assignment` is the
-/// preset assignment block (empty string = generic review, no angles).
-pub fn render_trigger(repo: &str, num: u64, title: &str, diff: &str, angle_assignment: &str) -> String {
+/// Render the pointer trigger. No diff, no title fetch — the plane makes zero GitHub
+/// calls; the bots pull what they need. `{{TITLE}}` is left blank (cosmetic; the bots
+/// see the real title when they fetch the PR). `angle_assignment` is the preset block
+/// (empty = generic review, no angles).
+pub fn render_trigger(repo: &str, num: u64, angle_assignment: &str) -> String {
     TRIGGER_TMPL
         .replace("{{REPO}}", repo)
         .replace("{{NUM}}", &num.to_string())
-        .replace("{{TITLE}}", title)
+        .replace("{{TITLE}}", "")
         .replace("{{ANGLE_ASSIGNMENT}}", angle_assignment)
-        .replace("{{DIFF}}", diff)
 }
 
-/// A GitHub read token for fetching the PR: the App installation token (read scope)
-/// if the App is configured, else the pod's `GH_TOKEN`.
-async fn read_token(state: &AppState) -> Result<String> {
-    if let Some(app) = state.github_app.as_ref() {
-        Ok(app.mint_installation_token(Role::Reviewer).await?.token)
-    } else {
-        std::env::var("GH_TOKEN").context("no GitHub App configured and GH_TOKEN unset")
-    }
-}
-
-/// Fetch a PR's title (JSON) and unified diff.
-async fn fetch_pr(token: &str, repo: &str, num: u64) -> Result<(String, String)> {
-    let client = reqwest::Client::new();
-    let url = format!("https://api.github.com/repos/{repo}/pulls/{num}");
-    let auth = |r: reqwest::RequestBuilder| {
-        r.header("Authorization", format!("Bearer {token}"))
-            .header("User-Agent", "openab-control-plane")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-    };
-    let meta: serde_json::Value = auth(client.get(&url).header("Accept", "application/vnd.github+json"))
-        .send()
-        .await?
-        .error_for_status()
-        .context("GET pull (meta)")?
-        .json()
-        .await?;
-    let title = meta["title"].as_str().unwrap_or("").to_string();
-    let diff = auth(client.get(&url).header("Accept", "application/vnd.github.v3.diff"))
-        .send()
-        .await?
-        .error_for_status()
-        .context("GET pull (diff)")?
-        .text()
-        .await?;
-    Ok((title, diff))
-}
-
-/// Convene a council for a PR: read the diff, open a session with the standing
-/// roster (chair = roster[0], quorum = all reviewers), and post the trigger so the
-/// bots start. Returns the new session id.
+/// Convene a council for a PR: open a session with the standing roster (chair =
+/// roster[0]; optional preset trims reviewers + sets quorum) and post the pointer
+/// trigger so the bots start. Returns the new session id. No GitHub I/O happens here.
 pub async fn convene_for_pr(state: &Arc<AppState>, repo: &str, num: u64) -> Result<String> {
-    let token = read_token(state).await?;
-    let (title, diff) = fetch_pr(&token, repo, num).await.context("fetch PR")?;
     let roster = council_roster();
     if roster.is_empty() {
         return Err(anyhow!("empty council roster"));
@@ -182,9 +143,8 @@ pub async fn convene_for_pr(state: &Arc<AppState>, repo: &str, num: u64) -> Resu
         &eff_roster,
         "council",
     )?;
-    let trigger = render_trigger(repo, num, &title, &diff, &assignment);
-    orchestrator::post_client_message(state, &session.id, &trigger)
-        .context("post trigger message")?;
+    let trigger = render_trigger(repo, num, &assignment);
+    orchestrator::post_client_message(state, &session.id, &trigger)?;
     Ok(session.id)
 }
 
@@ -198,12 +158,19 @@ mod tests {
     }
 
     #[test]
-    fn render_trigger_fills_placeholders() {
-        let t = render_trigger("canyugs/ocp", 7, "Fix bug", "diff --git a b", "");
-        assert!(t.contains("canyugs/ocp #7 \"Fix bug\""));
-        assert!(t.contains("diff --git a b"));
-        // no leftover placeholders
+    fn render_trigger_is_pointer_with_no_inlined_diff() {
+        let t = render_trigger("canyugs/ocp", 7, "");
+        assert!(t.contains("canyugs/ocp #7"));
+        // pointer trigger tells bots to self-fetch; the diff is NOT inlined
+        assert!(t.contains("gh pr diff 7 --repo canyugs/ocp"));
+        assert!(!t.contains("===== DIFF ====="));
         assert!(!t.contains("{{"));
+    }
+
+    #[test]
+    fn render_trigger_includes_angle_assignment() {
+        let t = render_trigger("o/r", 1, "- rev1 → security");
+        assert!(t.contains("- rev1 → security"));
     }
 
     #[test]
@@ -211,7 +178,6 @@ mod tests {
         assert_eq!(preset_angles("quick").map(|v| v.len()), Some(3));
         assert_eq!(preset_angles("standard").map(|v| v.len()), Some(5));
         assert_eq!(preset_angles("full").map(|v| v.len()), Some(7));
-        // unrecognized → None → caller falls back to generic review (with a warn)
         assert!(preset_angles("QUICK").is_none()); // case-sensitive
         assert!(preset_angles("stanard").is_none()); // typo
         assert!(preset_angles("").is_none());
@@ -222,30 +188,29 @@ mod tests {
         let s = |a: &[&str]| a.iter().map(|x| x.to_string()).collect::<Vec<_>>();
 
         // quick (3 angles) over 2 reviewers → round-robin: rev1 gets 2, rev2 gets 1; quorum 2
-        let (eff, q, text) = assign_angles(&s(&["chair", "rev1", "rev2"]), &["correctness", "security", "integration"]);
+        let (eff, q, text) = assign_angles(
+            &s(&["chair", "rev1", "rev2"]),
+            &["correctness", "security", "integration"],
+        );
         assert_eq!(eff, vec!["chair", "rev1", "rev2"]);
         assert_eq!(q, 2);
         assert!(text.contains("rev1 → correctness, integration"));
         assert!(text.contains("rev2 → security"));
 
-        // 3 angles over 5 reviewers → first 3 review one each, rev4/rev5 trimmed; quorum 3
-        let (eff2, q2, _) = assign_angles(
-            &s(&["chair", "rev1", "rev2", "rev3", "rev4", "rev5"]),
-            &["correctness", "security", "integration"],
-        );
-        assert_eq!(eff2, vec!["chair", "rev1", "rev2", "rev3"]);
-        assert_eq!(q2, 3);
+        // 1 angle over 2 reviewers → rev2 sits out (trimmed); quorum 1
+        let (eff, q, _) = assign_angles(&s(&["chair", "rev1", "rev2"]), &["correctness"]);
+        assert_eq!(eff, vec!["chair", "rev1"]);
+        assert_eq!(q, 1);
 
-        // solo (no reviewers) → no-op
-        let (eff3, q3, text3) = assign_angles(&s(&["chair"]), &["correctness"]);
-        assert_eq!(eff3, vec!["chair"]);
-        assert_eq!(q3, 0);
-        assert!(text3.is_empty());
+        // solo (no reviewers) → preset is a no-op
+        let (eff, q, text) = assign_angles(&s(&["chair"]), &["correctness", "security"]);
+        assert_eq!(eff, vec!["chair"]);
+        assert_eq!(q, 0);
+        assert!(text.is_empty());
     }
 
     #[test]
     fn roster_default_matches_seeded_bots() {
-        // (env-independent default; OABCP_COUNCIL_ROSTER overrides at runtime)
         std::env::remove_var("OABCP_COUNCIL_ROSTER");
         assert_eq!(council_roster(), vec!["chair", "rev1", "rev2"]);
     }
