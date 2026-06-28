@@ -42,6 +42,7 @@ enough to test.
 | Agent steering (`CLAUDE.md`, `AGENTS.md`, `.kiro/steering/`) | Bot deployer via OAB `pre_seed` / `pre_boot` | Agent-agnostic — any CLI OAB supports works without plane changes |
 | LLM reasoning / verdict content | The agent (chair bot) | Plane never calls an LLM |
 | Agent credentials (`CLAUDE_CODE_OAUTH_TOKEN`, API keys) | Each bot pod via `inherit_env` | Plane never touches model keys |
+| Bot-side credential consumption — fetching its scoped GitHub token, configuring `gh`, not holding a static write PAT | OAB bot / pod | OCP **mints, offers (`/v1/sessions/:id/github-token`), and purges-on-close** per-role scoped tokens (purge = drop from the store so they're never served again, not a GitHub-side revoke); how the pod *consumes* a credential (and which static tokens it carries) is the pod's job — same boundary as `inherit_env` above |
 | PR-specific logic (gh pr diff, gh pr comment, label) | Application shim or chair bot | Code review is an app on top of OCP, not part of it |
 | Agent lifecycle (spawn, pool, session TTL) | OpenAB (`[agent]` + `[pool]` config) | OAB's existing session pool management |
 | Platform adapters (Discord, Slack, Telegram) | OpenAB gateway | OCP speaks the gateway wire protocol, not platform APIs |
