@@ -39,9 +39,13 @@ pub fn council_roster() -> Vec<String> {
         .unwrap_or_else(|| vec!["chair".into(), "rev1".into(), "rev2".into()])
 }
 
-/// Review angles per preset (mirrors `scripts/open-council.sh`).
+/// Default preset when neither a PR label nor the global env selects one.
+const DEFAULT_PRESET: &str = "lite";
+
+/// Review angles per preset (1 / 3 / 5 / 7 angles). Mirrors `scripts/open-council.sh`.
 fn preset_angles(preset: &str) -> Option<Vec<&'static str>> {
     match preset {
+        "lite" => Some(vec!["correctness"]),
         "quick" => Some(vec!["correctness", "security", "integration"]),
         "standard" => Some(vec!["correctness", "architecture", "security", "testing", "docs"]),
         "full" => Some(vec![
@@ -57,14 +61,32 @@ fn preset_angles(preset: &str) -> Option<Vec<&'static str>> {
     }
 }
 
-/// Selected preset from env `OABCP_COUNCIL_PRESET` (quick|standard|full). `None` →
-/// generic review: every reviewer covers everything (today's default). Mirrors the
-/// opt-in `--preset` flag on `open-council.sh`.
+/// Global default preset from env `OABCP_COUNCIL_PRESET` (lite|quick|standard|full).
+/// `None` → fall through to `DEFAULT_PRESET`.
 fn council_preset() -> Option<String> {
     std::env::var("OABCP_COUNCIL_PRESET")
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Resolve the preset for one convene: a per-PR `review:<preset>` label wins, then the
+/// global env, then `DEFAULT_PRESET` (lite). Unknown values are warned and skipped so
+/// resolution always lands on a valid preset.
+fn pick_preset(label_preset: Option<&str>) -> String {
+    if let Some(l) = label_preset {
+        if preset_angles(l).is_some() {
+            return l.to_string();
+        }
+        tracing::warn!(label = %l, "unknown review:<preset> label; ignoring");
+    }
+    if let Some(e) = council_preset() {
+        if preset_angles(&e).is_some() {
+            return e;
+        }
+        tracing::warn!(preset = %e, "unknown OABCP_COUNCIL_PRESET (want lite|quick|standard|full); using default");
+    }
+    DEFAULT_PRESET.to_string()
 }
 
 /// Assign angles round-robin onto the reviewers (roster minus chair), mirroring
@@ -116,24 +138,22 @@ pub fn render_trigger(repo: &str, num: u64, angle_assignment: &str) -> String {
 /// Convene a council for a PR: open a session with the standing roster (chair =
 /// roster[0]; optional preset trims reviewers + sets quorum) and post the pointer
 /// trigger so the bots start. Returns the new session id. No GitHub I/O happens here.
-pub async fn convene_for_pr(state: &Arc<AppState>, repo: &str, num: u64) -> Result<String> {
+pub async fn convene_for_pr(
+    state: &Arc<AppState>,
+    repo: &str,
+    num: u64,
+    label_preset: Option<String>,
+) -> Result<String> {
     let roster = council_roster();
     if roster.is_empty() {
         return Err(anyhow!("empty council roster"));
     }
-    // Optional preset: assign angles to reviewers (trim idle ones, quorum = those
-    // assigned). No preset → generic review, all reviewers report.
-    let generic = || (roster.clone(), (roster.len() as i64 - 1).max(0), String::new());
-    let (eff_roster, quorum, assignment) = match council_preset() {
-        None => generic(),
-        Some(p) => match preset_angles(&p) {
-            Some(angles) => assign_angles(&roster, &angles),
-            None => {
-                tracing::warn!(preset = %p, "unknown OABCP_COUNCIL_PRESET (want quick|standard|full); falling back to generic review");
-                generic()
-            }
-        },
-    };
+    // Preset (per-PR label > global env > lite) assigns angles to reviewers, trims
+    // idle ones, and sets quorum to the participating reviewers.
+    let preset = pick_preset(label_preset.as_deref());
+    let angles = preset_angles(&preset).expect("pick_preset returns a valid preset");
+    let (eff_roster, quorum, assignment) = assign_angles(&roster, &angles);
+    tracing::info!(preset = %preset, quorum, "convene preset resolved");
     let trigger_ref = pr_trigger_ref(repo, num);
     let session = state.store.create_session(
         "council",
@@ -174,13 +194,31 @@ mod tests {
     }
 
     #[test]
-    fn preset_angles_known_and_unknown() {
+    fn preset_angles_scale_1_3_5_7() {
+        assert_eq!(preset_angles("lite").map(|v| v.len()), Some(1));
         assert_eq!(preset_angles("quick").map(|v| v.len()), Some(3));
         assert_eq!(preset_angles("standard").map(|v| v.len()), Some(5));
         assert_eq!(preset_angles("full").map(|v| v.len()), Some(7));
         assert!(preset_angles("QUICK").is_none()); // case-sensitive
         assert!(preset_angles("stanard").is_none()); // typo
         assert!(preset_angles("").is_none());
+    }
+
+    #[test]
+    fn pick_preset_label_over_env_over_default() {
+        std::env::remove_var("OABCP_COUNCIL_PRESET");
+        // no label, no env → default (lite)
+        assert_eq!(pick_preset(None), "lite");
+        // valid label wins
+        assert_eq!(pick_preset(Some("full")), "full");
+        // unknown label ignored → default
+        assert_eq!(pick_preset(Some("bogus")), "lite");
+        // env override when no label
+        std::env::set_var("OABCP_COUNCIL_PRESET", "standard");
+        assert_eq!(pick_preset(None), "standard");
+        // label still beats env
+        assert_eq!(pick_preset(Some("quick")), "quick");
+        std::env::remove_var("OABCP_COUNCIL_PRESET");
     }
 
     #[test]

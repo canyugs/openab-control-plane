@@ -71,10 +71,11 @@ if [[ "$ARG" =~ ^([^/]+/[^#]+)#([0-9]+)$ ]]; then
   # several. quorum = participating reviewers. PR path only.
   if [[ -n "$PRESET" ]]; then
     case "$PRESET" in
+      lite)     ANGLES='["correctness"]' ;;
       quick)    ANGLES='["correctness","security","integration"]' ;;
       standard) ANGLES='["correctness","architecture","security","testing","docs"]' ;;
       full)     ANGLES='["correctness","architecture","security","testing","docs","performance","spec"]' ;;
-      *) echo "unknown preset: $PRESET (want quick|standard|full)" >&2; exit 2 ;;
+      *) echo "unknown preset: $PRESET (want lite|quick|standard|full)" >&2; exit 2 ;;
     esac
     PLAN=$(ROSTER="$ROSTER" ANGLES="$ANGLES" node -e '
       const roster = JSON.parse(process.env.ROSTER);
