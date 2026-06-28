@@ -14,6 +14,8 @@ All configuration is via environment variables. No config file needed.
 | `OABCP_AGENT_COMMAND` | `claude` | Default agent provider when a pod's `/bot-config` fetch has no `?agent=`. Set this to make a uniform single-provider council; leave default + use `?agent=` per pod to mix |
 | `OABCP_SESSION_TIMEOUT_SECS` | `900` | Liveness watchdog deadline. A session still active this many seconds after creation is force-closed (verdict notes absentees) so a silent/dead reviewer can't hang it forever. Anchored on `created_at` (no last-activity reset) — raise for legitimately long councils |
 | `OABCP_MAX_ROSTER` | `16` | Admission quota — max bots in a session roster. Mid-session adds (`POST /v1/sessions/:id/roster`) beyond this are rejected (`409`). Bounds roster growth; applies to dynamic adds, not the initial roster at open |
+| `OABCP_COUNCIL_ROSTER` | `chair,rev1,rev2` | Webhook-convened council roster (comma-separated; `[0]` is the chair, the rest review). Should match the bots seeded via `OABCP_BOTS` |
+| `OABCP_COUNCIL_PRESET` | _(none)_ | Webhook-convened review preset: `quick` (3 angles), `standard` (5), `full` (7). Angles are round-robined onto the reviewers (extras trimmed, quorum = participants). Unset = generic review (every reviewer covers everything). Mirrors `open-council.sh --preset` |
 | `GH_OUTPUT` | _(off)_ | Set to `1` to enable GitHub PR side-effects (comment, label, review) via `gh` CLI |
 | `RUST_LOG` | `info` | Log level filter (standard `tracing` env filter syntax) |
 
