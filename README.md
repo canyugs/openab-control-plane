@@ -43,7 +43,8 @@ The chair posts a single verdict comment on the PR; `--watch` streams session pr
 put `GITHUB_APP_*` + `GITHUB_WEBHOOK_SECRET` on the plane and point the App's webhook at
 `POST <plane>/api/v1/github_webhooks`. A PR opened / reopened / ready-for-review, or a
 `/review` comment, then **convenes a real council automatically** (no per-repo workflow
-to copy) and the chair posts one verdict comment back. Full guide:
+to copy) and the chair posts one verdict comment back **as the App bot**
+(`zeabur-council[bot]`, not your account). Full guide:
 [deploy.md](docs/deploy.md) · [github-app-validation.md](docs/github-app-validation.md).
 
 > `.github/workflows/council-review.yml` is a **manual fallback** now
@@ -97,7 +98,7 @@ GET  /v1/sessions/:id/stream       (SSE: message|reaction|state|verdict)
 The plane is **not** an OAB pod — it's a separate service. Each OAB pod = one bot
 = one roster seat, with a role (`chair` or `reviewer`). Who exists is seeded at
 boot from `OABCP_BOTS` (`name:role,…`); the template default is
-`chair:chair,rev1:reviewer,rev2:reviewer` → a one-click deploy is **1 control-plane
+`chair:chair,rev1:reviewer,rev2:reviewer` → a template deploy is **1 control-plane
 + 3 OAB pods**.
 
 A council = **1 chair + (N−1) reviewers**. `open-council.sh` sets
@@ -128,7 +129,7 @@ plane — no proxy patch, stock image. See `config.toml.example`.
 ## Test
 
 ```sh
-cargo test                # 43 unit + 10 integration (1/3/5-bot parity, close-path regressions)
+cargo test                # 51 unit + 10 integration (1/3/5-bot parity, close-path regressions)
 ```
 
 `tests/spike.rs` drives mock bots over the real gateway wire protocol: thread
