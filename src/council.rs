@@ -168,6 +168,59 @@ pub async fn convene_for_pr(
     Ok(session.id)
 }
 
+// --- Conversational follow-up (ADR 006) ---------------------------------------
+
+/// Ask pointer trigger — shared shape with the review trigger, but for a single bot
+/// answering a question and posting a NEW comment (not the edit-last verdict).
+const ASK_TRIGGER_TMPL: &str = include_str!("../scripts/pr-ask-trigger-pointer.tmpl");
+
+/// Session `trigger_ref` for a follow-up ask — comment-scoped so a re-delivered
+/// `issue_comment` webhook dedups. Distinct namespace from the PR-level review ref
+/// (`github:pr/…`) so an ask never collides with the review session.
+pub fn pr_ask_trigger_ref(repo: &str, num: u64, comment_id: Option<u64>) -> String {
+    match comment_id {
+        Some(id) => format!("github:ask/{repo}#{num}@{id}"),
+        None => format!("github:ask/{repo}#{num}"),
+    }
+}
+
+/// Render the ask pointer trigger: the PR ref + the user's question. No diff/thread
+/// inlined — the bot self-fetches (ADR 004).
+pub fn render_ask_trigger(repo: &str, num: u64, question: &str) -> String {
+    ASK_TRIGGER_TMPL
+        .replace("{{REPO}}", repo)
+        .replace("{{NUM}}", &num.to_string())
+        .replace("{{QUESTION}}", question)
+}
+
+/// Answer a follow-up on a PR with a **solo** session (ADR 006): one bot (the chair —
+/// the only writer) self-fetches the PR + thread, answers, and posts a NEW comment.
+/// Cheaper than a council and the right shape for a single answer; no GitHub I/O here.
+pub async fn convene_ask(
+    state: &Arc<AppState>,
+    repo: &str,
+    num: u64,
+    question: &str,
+    comment_id: Option<u64>,
+) -> Result<String> {
+    let chair = council_roster()
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("empty council roster"))?;
+    let trigger_ref = pr_ask_trigger_ref(repo, num, comment_id);
+    let session = state.store.create_session(
+        "ask",
+        Some(&trigger_ref),
+        0,
+        Some(&chair),
+        std::slice::from_ref(&chair),
+        "solo",
+    )?;
+    let trigger = render_ask_trigger(repo, num, question);
+    orchestrator::post_client_message(state, &session.id, &trigger)?;
+    Ok(session.id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,5 +304,27 @@ mod tests {
     fn roster_default_matches_seeded_bots() {
         std::env::remove_var("OABCP_COUNCIL_ROSTER");
         assert_eq!(council_roster(), vec!["chair", "rev1", "rev2"]);
+    }
+
+    #[test]
+    fn ask_trigger_ref_is_comment_scoped() {
+        assert_eq!(pr_ask_trigger_ref("o/r", 7, Some(555)), "github:ask/o/r#7@555");
+        assert_eq!(pr_ask_trigger_ref("o/r", 7, None), "github:ask/o/r#7");
+        // distinct namespace from the review ref so they never collide
+        assert_ne!(pr_ask_trigger_ref("o/r", 7, None), pr_trigger_ref("o/r", 7));
+    }
+
+    #[test]
+    fn render_ask_trigger_carries_question_and_self_fetch() {
+        let t = render_ask_trigger("canyugs/ocp", 7, "why is this a P1?");
+        assert!(t.contains("canyugs/ocp #7"));
+        assert!(t.contains("why is this a P1?"));
+        // self-fetch (no inlined diff) + a NEW comment (not the edit-last verdict)
+        assert!(t.contains("gh pr view 7 --repo canyugs/ocp --comments"));
+        assert!(t.contains("gh pr comment 7 --repo canyugs/ocp --body-file"));
+        assert!(t.contains("NEW comment"));
+        // must not reuse the review verdict's edit-in-place comment signature
+        assert!(!t.contains("--create-if-none"));
+        assert!(!t.contains("{{"));
     }
 }

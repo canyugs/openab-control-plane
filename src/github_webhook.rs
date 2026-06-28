@@ -34,12 +34,74 @@ pub struct WebhookTrigger {
     /// Which installation sent this. Captured for future multi-install token minting;
     /// today `GitHubApp` mints against the single env installation (Phase-2 gap).
     pub installation_id: Option<u64>,
-    /// "auto" for a PR-opened trigger, or the slash command for a comment trigger.
+    /// "auto" for a PR-opened trigger, `/review` for a review command, or `"ask"` for a
+    /// conversational follow-up (`@mention` / `/ask`, ADR 006).
     pub reason: String,
     /// Review preset from a `review:<preset>` label on the PR, read straight from the
     /// webhook payload (no GitHub call). `None` → convene falls back to the global
     /// env / default. Lets a PR pick its own review depth (lite|quick|standard|full).
     pub preset: Option<String>,
+    /// The follow-up question text — set only when `reason == "ask"` (ADR 006).
+    pub question: Option<String>,
+    /// Triggering comment id — the idempotency key for an `ask` (a re-delivered
+    /// `issue_comment` webhook must not double-answer). `None` for PR-event triggers.
+    pub comment_id: Option<u64>,
+}
+
+/// Users allowed to command the bot via a comment (`/review`, `/ask`, `@mention`).
+/// Read from the webhook payload's `author_association` — no GitHub call. Write-ish
+/// roles only: anyone else's command is ignored (matters most for `/ask`, which spends
+/// tokens on demand — ADR 006).
+fn can_command(author_association: &str) -> bool {
+    matches!(author_association, "OWNER" | "MEMBER" | "COLLABORATOR")
+}
+
+/// Per-repo allowlist gate. `allowlist` = the `OABCP_ALLOWED_REPOS` value (comma-sep
+/// `owner/repo`). Unset/empty → allow all (opt-in, no regression). Pure for testing.
+fn repo_allowed(repo: &str, allowlist: Option<&str>) -> bool {
+    match allowlist.map(str::trim).filter(|s| !s.is_empty()) {
+        None => true,
+        Some(list) => list.split(',').map(str::trim).any(|r| r == repo),
+    }
+}
+
+/// The bot's GitHub handle for `@mention` parsing (env `OABCP_BOT_HANDLE`, e.g.
+/// `zeabur-council`). Unset → only the explicit `/ask` command works, not `@mention`.
+fn mention_handle() -> Option<String> {
+    std::env::var("OABCP_BOT_HANDLE")
+        .ok()
+        .map(|s| s.trim().trim_start_matches('@').to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Extract a follow-up question from a PR comment (ADR 006). A comment is an "ask" if
+/// it starts with `/ask` **or** @mentions the bot handle; the returned string is the
+/// question with the command/mention stripped (may be empty — a bare ping = "look at
+/// this PR"). `None` if it's neither. Pure (handle passed in) for testing.
+fn parse_ask_comment(comment: &str, handle: Option<&str>) -> Option<String> {
+    let c = comment.trim();
+    // `/ask` — require a word boundary so `/asked` / `/asking` don't match and launch
+    // a session with a nonsense question.
+    if let Some(rest) = c.strip_prefix("/ask") {
+        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+            return Some(rest.trim().to_string());
+        }
+    }
+    if let Some(h) = handle {
+        let tag = format!("@{h}");
+        if let Some(pos) = c.find(&tag) {
+            let tail = &c[pos + tag.len()..];
+            // Word boundary after the handle (GitHub handles are `[A-Za-z0-9-]`), so a
+            // handle `council` doesn't match the *different* user `@council-admin`.
+            let boundary =
+                tail.is_empty() || !tail.starts_with(|ch: char| ch.is_alphanumeric() || ch == '-');
+            if boundary {
+                let rest = tail.trim_start_matches("[bot]").trim(); // tolerate `@handle[bot]`
+                return Some(rest.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Extract a `review:<preset>` label name (the part after `review:`) from a payload
@@ -87,6 +149,8 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                 installation_id,
                 reason: "auto".into(),
                 preset: preset_from_labels(&pr["labels"]),
+                question: None,
+                comment_id: None,
             })
         }
         "issue_comment" => {
@@ -97,20 +161,43 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
             // on plain issues must not open a review session.
             let pr_url = body["issue"]["pull_request"]["url"].as_str()?;
             let comment = body["comment"]["body"].as_str().unwrap_or("");
+            let repo = body["repository"]["full_name"].as_str()?.to_string();
+            let pr_number = body["issue"]["number"].as_u64()?;
             let cmd = comment.trim();
-            if !cmd.starts_with("/review") {
-                return None;
+            if cmd.starts_with("/review") {
+                return Some(WebhookTrigger {
+                    repo,
+                    pr_number,
+                    pr_url: pr_url.to_string(),
+                    installation_id,
+                    // Normalized to a fixed value — never reflect raw comment text into
+                    // logs / north events.
+                    reason: "/review".into(),
+                    preset: preset_from_labels(&body["issue"]["labels"]),
+                    question: None,
+                    comment_id: None,
+                });
             }
-            Some(WebhookTrigger {
-                repo: body["repository"]["full_name"].as_str()?.to_string(),
-                pr_number: body["issue"]["number"].as_u64()?,
-                pr_url: pr_url.to_string(),
-                installation_id,
-                // Normalized to a fixed value — never reflect raw comment text into
-                // logs / north events.
-                reason: "/review".into(),
-                preset: preset_from_labels(&body["issue"]["labels"]),
-            })
+            // Conversational follow-up (ADR 006): `/ask` or an `@mention` of the bot,
+            // answered by a solo session. Permission-gated (token spend on demand) —
+            // only a write-ish commenter may ask; everyone else is ignored.
+            if let Some(question) = parse_ask_comment(comment, mention_handle().as_deref()) {
+                let assoc = body["comment"]["author_association"].as_str().unwrap_or("");
+                if !can_command(assoc) {
+                    return None;
+                }
+                return Some(WebhookTrigger {
+                    repo,
+                    pr_number,
+                    pr_url: pr_url.to_string(),
+                    installation_id,
+                    reason: "ask".into(),
+                    preset: None,
+                    question: Some(question),
+                    comment_id: body["comment"]["id"].as_u64(),
+                });
+            }
+            None
         }
         _ => None,
     }
@@ -145,11 +232,63 @@ pub async fn handle_webhook(
         return Ok(Json(json!({ "ok": true, "triggered": false })).into_response());
     };
 
-    // 4. Convene the council for this PR: read the diff, open a session with the
-    //    standing roster, post the trigger so the bots start (see `council`).
-    //    KNOWN GAPS: no per-repo allowlist (#11) and no permission gate on `/review`
-    //    (#12) — any signed webhook / any reader can convene. Bounded by sessions
-    //    being cheap; gate before production (GITHUB_ALLOWED_REPOS + collaborator).
+    // 4. Per-repo allowlist (opt-in via `OABCP_ALLOWED_REPOS`; unset = allow all). A
+    //    disallowed repo is acked and ignored — a signed webhook from an un-listed repo
+    //    must not convene. (`/ask` is also commenter-permission-gated in parse_trigger.)
+    if !repo_allowed(&trigger.repo, std::env::var("OABCP_ALLOWED_REPOS").ok().as_deref()) {
+        tracing::warn!(repo = %trigger.repo, "repo not in OABCP_ALLOWED_REPOS — ignoring webhook");
+        return Ok(Json(json!({ "ok": true, "triggered": false, "reason": "repo_not_allowed" })).into_response());
+    }
+
+    // 5. Conversational follow-up (ADR 006) takes the ask path: a solo session answers
+    //    the question. Idempotency keys on the comment id (a re-delivered issue_comment
+    //    must not double-answer) — distinct from the PR-level review dedup below.
+    if trigger.reason == "ask" {
+        let ask_ref = crate::council::pr_ask_trigger_ref(
+            &trigger.repo,
+            trigger.pr_number,
+            trigger.comment_id,
+        );
+        if let Some(existing) = state
+            .store
+            .active_session_for_trigger(&ask_ref)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        {
+            return Ok(Json(json!({ "ok": true, "triggered": true, "session_id": existing, "deduped": true })).into_response());
+        }
+        let question = trigger.question.clone().unwrap_or_default();
+        return match crate::council::convene_ask(
+            &state,
+            &trigger.repo,
+            trigger.pr_number,
+            &question,
+            trigger.comment_id,
+        )
+        .await
+        {
+            Ok(session_id) => {
+                // Telemetry parity with the review path's `github_trigger` event.
+                state.emit_north(
+                    "github_ask",
+                    &session_id,
+                    json!({
+                        "repo": trigger.repo,
+                        "pr_number": trigger.pr_number,
+                        "comment_id": trigger.comment_id,
+                        "reason": trigger.reason,
+                    }),
+                );
+                tracing::info!(session = %session_id, repo = %trigger.repo, pr = trigger.pr_number, "answered follow-up from GitHub webhook");
+                Ok(Json(json!({ "ok": true, "triggered": true, "session_id": session_id })).into_response())
+            }
+            Err(e) => {
+                tracing::error!(repo = %trigger.repo, pr = trigger.pr_number, "ask convene failed: {e:#}");
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        };
+    }
+
+    // 6. Review path: convene a council for this PR (pointer trigger; bots self-fetch).
     let trigger_ref = crate::council::pr_trigger_ref(&trigger.repo, trigger.pr_number);
 
     // Idempotency: GitHub re-delivers on 5xx (and a PR can get repeated `/review`s).
@@ -302,5 +441,69 @@ mod tests {
     #[test]
     fn unknown_event_ignored() {
         assert!(parse_trigger("push", &json!({})).is_none());
+    }
+
+    // --- conversational follow-up (ADR 006) ---
+
+    #[test]
+    fn parse_ask_comment_matches_slash_ask_and_mention() {
+        // /ask with text → question is the remainder
+        assert_eq!(parse_ask_comment("/ask why is this a P1?", None).as_deref(), Some("why is this a P1?"));
+        // bare /ask → empty question (a ping = "look at this PR")
+        assert_eq!(parse_ask_comment("/ask", None).as_deref(), Some(""));
+        // @mention (handle configured) → question stripped of the mention
+        assert_eq!(
+            parse_ask_comment("@zeabur-council can you suggest a fix?", Some("zeabur-council")).as_deref(),
+            Some("can you suggest a fix?"),
+        );
+        // tolerate the [bot] suffix
+        assert_eq!(parse_ask_comment("@zeabur-council[bot] ping", Some("zeabur-council")).as_deref(), Some("ping"));
+        // a mention with no configured handle is NOT an ask
+        assert!(parse_ask_comment("@zeabur-council hi", None).is_none());
+        // ordinary chatter is not an ask
+        assert!(parse_ask_comment("lgtm thanks", Some("zeabur-council")).is_none());
+        // word-boundary: `/asked`/`/asking` must NOT match `/ask`
+        assert!(parse_ask_comment("/asked for another review", None).is_none());
+        assert!(parse_ask_comment("/asking", None).is_none());
+        // word-boundary: handle `council` must NOT match the different user `@council-admin`
+        assert!(parse_ask_comment("@council-admin said yes", Some("council")).is_none());
+    }
+
+    #[test]
+    fn can_command_is_write_ish_only() {
+        for a in ["OWNER", "MEMBER", "COLLABORATOR"] {
+            assert!(can_command(a), "{a} should be allowed");
+        }
+        for a in ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", ""] {
+            assert!(!can_command(a), "{a} should be denied");
+        }
+    }
+
+    #[test]
+    fn repo_allowed_opt_in() {
+        assert!(repo_allowed("o/r", None), "unset = allow all");
+        assert!(repo_allowed("o/r", Some("")), "empty = allow all");
+        assert!(repo_allowed("o/r", Some("a/b, o/r ,c/d")));
+        assert!(!repo_allowed("x/y", Some("a/b,o/r")));
+    }
+
+    #[test]
+    fn ask_command_triggers_for_write_user_and_is_gated() {
+        let body = |assoc: &str| {
+            json!({
+                "action": "created",
+                "repository": { "full_name": "canyugs/ocp" },
+                "issue": { "number": 12, "pull_request": { "url": "u" } },
+                "comment": { "id": 555, "body": "/ask why P1?", "author_association": assoc }
+            })
+        };
+        // a collaborator's /ask → an ask trigger carrying the question + comment id
+        let t = parse_trigger("issue_comment", &body("COLLABORATOR")).expect("write user asks");
+        assert_eq!(t.reason, "ask");
+        assert_eq!(t.question.as_deref(), Some("why P1?"));
+        assert_eq!(t.comment_id, Some(555));
+        assert_eq!(t.pr_number, 12);
+        // a non-write commenter's /ask is ignored (token-spend gate)
+        assert!(parse_trigger("issue_comment", &body("NONE")).is_none());
     }
 }
