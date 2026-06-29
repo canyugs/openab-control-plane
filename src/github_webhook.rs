@@ -104,6 +104,15 @@ fn parse_ask_comment(comment: &str, handle: Option<&str>) -> Option<String> {
     None
 }
 
+/// Match a slash command only when the command is exact or followed by whitespace, so
+/// `/reviewer` does not trigger `/review`.
+fn starts_with_slash_command(comment: &str, command: &str) -> bool {
+    let Some(rest) = comment.strip_prefix(command) else {
+        return false;
+    };
+    rest.is_empty() || rest.starts_with(char::is_whitespace)
+}
+
 /// Extract a `review:<preset>` label name (the part after `review:`) from a payload
 /// `labels` array, if present. Validation of the preset name happens in `council`.
 fn preset_from_labels(labels: &Value) -> Option<String> {
@@ -165,7 +174,7 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
             let repo = body["repository"]["full_name"].as_str()?.to_string();
             let pr_number = body["issue"]["number"].as_u64()?;
             let cmd = comment.trim();
-            if cmd.starts_with("/review") {
+            if starts_with_slash_command(cmd, "/review") {
                 let assoc = body["comment"]["author_association"].as_str().unwrap_or("");
                 if !can_command(assoc) {
                     return None;
@@ -434,8 +443,25 @@ mod tests {
             })
         };
         assert!(parse_trigger("issue_comment", &body("COLLABORATOR")).is_some());
+        assert!(parse_trigger("issue_comment", &body("OWNER")).is_some());
         assert!(parse_trigger("issue_comment", &body("CONTRIBUTOR")).is_none());
         assert!(parse_trigger("issue_comment", &body("NONE")).is_none());
+
+        let missing_assoc = json!({
+            "action": "created",
+            "repository": { "full_name": "canyugs/ocp" },
+            "issue": { "number": 12, "pull_request": { "url": "u" } },
+            "comment": { "body": "/review please" }
+        });
+        assert!(parse_trigger("issue_comment", &missing_assoc).is_none());
+
+        let different_command = json!({
+            "action": "created",
+            "repository": { "full_name": "canyugs/ocp" },
+            "issue": { "number": 12, "pull_request": { "url": "u" } },
+            "comment": { "body": "/reviewer please", "author_association": "OWNER" }
+        });
+        assert!(parse_trigger("issue_comment", &different_command).is_none());
     }
 
     #[test]
