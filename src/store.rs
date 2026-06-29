@@ -5,7 +5,7 @@
 //! so the swap touches only this file. ponytail: one impl for now, but the seam
 //! is deliberate (see design §6c "12-factor posture").
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
@@ -233,12 +233,36 @@ CREATE TABLE IF NOT EXISTS installation_tokens (
 /// ponytail: no migration framework; one guarded ALTER per added column.
 fn migrate(conn: &Connection) -> Result<()> {
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'council'", []);
+    ensure_no_duplicate_active_trigger_refs(conn)?;
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_active_trigger_ref
          ON sessions(trigger_ref)
          WHERE trigger_ref IS NOT NULL AND state NOT IN ('closed', 'aborted')",
         [],
     )?;
+    Ok(())
+}
+
+fn ensure_no_duplicate_active_trigger_refs(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT trigger_ref, COUNT(*)
+         FROM sessions
+         WHERE trigger_ref IS NOT NULL AND state NOT IN ('closed', 'aborted')
+         GROUP BY trigger_ref
+         HAVING COUNT(*) > 1
+         ORDER BY trigger_ref
+         LIMIT 5",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(format!("{} ({})", r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    let duplicates = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    if !duplicates.is_empty() {
+        bail!(
+            "cannot add active trigger_ref uniqueness index; duplicate active trigger_ref rows exist: {}",
+            duplicates.join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -293,8 +317,7 @@ impl SqliteStore {
         Ok(c.query_row(
             "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode
              FROM sessions
-             WHERE trigger_ref = ?1 AND state NOT IN ('closed', 'aborted')
-             ORDER BY created_at DESC LIMIT 1",
+             WHERE trigger_ref = ?1 AND state NOT IN ('closed', 'aborted')",
             params![trigger_ref],
             |r| {
                 Ok(Session {
@@ -440,7 +463,11 @@ impl Store for SqliteStore {
                 if let Some(existing) = Self::active_session_for_trigger_locked(&c, trigger_ref)? {
                     return Ok((existing, true));
                 }
-                Err(err)
+                Err(err).with_context(|| {
+                    format!(
+                        "active trigger_ref conflict for '{trigger_ref}' but no active session was found"
+                    )
+                })
             }
             Err(err) => Err(err),
         }
@@ -777,5 +804,39 @@ mod tests {
         assert!(deduped);
         assert_eq!(second.id, first.id);
         assert_eq!(second.title, "Review o/r#2");
+    }
+
+    #[test]
+    fn create_session_deduped_without_trigger_ref_creates_distinct_sessions() {
+        let store = SqliteStore::memory().unwrap();
+
+        let (first, deduped) = store
+            .create_session_deduped("manual", None, 0, None, &[], "council")
+            .unwrap();
+        assert!(!deduped);
+
+        let (second, deduped) = store
+            .create_session_deduped("manual", None, 0, None, &[], "council")
+            .unwrap();
+        assert!(!deduped);
+        assert_ne!(second.id, first.id);
+    }
+
+    #[test]
+    fn duplicate_active_trigger_ref_preflight_reports_clear_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions (id, title, state, trigger_ref, quorum_n, created_at, mode)
+             VALUES ('s1', 't', 'open', 'dup', 0, 1, 'council');
+             INSERT INTO sessions (id, title, state, trigger_ref, quorum_n, created_at, mode)
+             VALUES ('s2', 't', 'deliberating', 'dup', 0, 2, 'council');",
+        )
+        .unwrap();
+
+        let err = ensure_no_duplicate_active_trigger_refs(&conn).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate active trigger_ref rows"));
+        assert!(msg.contains("dup (2)"));
     }
 }

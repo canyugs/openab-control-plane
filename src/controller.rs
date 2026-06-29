@@ -41,6 +41,8 @@ fn open_session(
     action: OpenSessionAction,
 ) -> Result<ControllerActionResult> {
     if let Some(trigger_ref) = action.trigger_ref.as_deref() {
+        // Idempotent retry wins over re-validation: the active session is the
+        // source of truth even if the retried action's roster/config drifted.
         if let Some(existing) = state.store.active_session_for_trigger(trigger_ref)? {
             return Ok(ControllerActionResult::SessionOpened {
                 session_id: existing,
@@ -227,6 +229,13 @@ mod tests {
     fn open_session_action_validates_roster_and_chair_identity() {
         let state = state_with_bots();
 
+        let mut empty = review_action();
+        empty.roster.clear();
+        assert!(execute(&state, ControllerAction::OpenSession(empty))
+            .unwrap_err()
+            .to_string()
+            .contains("non-empty roster"));
+
         let mut missing = review_action();
         missing.roster.push("ghost".into());
         assert!(execute(&state, ControllerAction::OpenSession(missing))
@@ -245,6 +254,13 @@ mod tests {
     #[test]
     fn open_session_action_validates_quorum_and_mode() {
         let state = state_with_bots();
+
+        let mut negative = review_action();
+        negative.quorum_n = -1;
+        assert!(execute(&state, ControllerAction::OpenSession(negative))
+            .unwrap_err()
+            .to_string()
+            .contains("non-negative"));
 
         let mut too_high = review_action();
         too_high.quorum_n = 2;
