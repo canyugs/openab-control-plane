@@ -6,7 +6,7 @@
 //! is deliberate (see design §6c "12-factor posture").
 
 use anyhow::Result;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -108,6 +108,19 @@ pub trait Store: Send + Sync {
         roster: &[String],
         mode: &str,
     ) -> Result<Session>;
+    /// Idempotent session create for controller actions. If a non-terminal session
+    /// already owns `trigger_ref`, returns it with `deduped = true` and does not
+    /// mutate its prompt or roster.
+    #[allow(clippy::too_many_arguments)]
+    fn create_session_deduped(
+        &self,
+        title: &str,
+        trigger_ref: Option<&str>,
+        quorum_n: i64,
+        chair_bot: Option<&str>,
+        roster: &[String],
+        mode: &str,
+    ) -> Result<(Session, bool)>;
     fn session(&self, id: &str) -> Result<Option<Session>>;
     /// Add a bot to a session roster. Returns true if newly added (false if it
     /// was already a member) — the caller backfills history only on a fresh join.
@@ -215,11 +228,31 @@ CREATE TABLE IF NOT EXISTS installation_tokens (
 );
 "#;
 
-/// Additive column migrations for DBs created before a column existed. Each
+/// Additive migrations for DBs created before a column or index existed. Each
 /// `ALTER` errors with "duplicate column" once the column is present — ignored.
 /// ponytail: no migration framework; one guarded ALTER per added column.
-fn migrate(conn: &Connection) {
+fn migrate(conn: &Connection) -> Result<()> {
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'council'", []);
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_active_trigger_ref
+         ON sessions(trigger_ref)
+         WHERE trigger_ref IS NOT NULL AND state NOT IN ('closed', 'aborted')",
+        [],
+    )?;
+    Ok(())
+}
+
+fn is_constraint_violation(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(|err| match err {
+                rusqlite::Error::SqliteFailure(code, _) => {
+                    code.code == ErrorCode::ConstraintViolation
+                }
+                _ => false,
+            })
+    })
 }
 
 /// SQLite-backed `Store`. ponytail: one process-wide Mutex<Connection>. Fine at
@@ -233,14 +266,14 @@ impl SqliteStore {
     pub fn open(path: &str) -> Result<SqliteStore> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
-        migrate(&conn);
+        migrate(&conn)?;
         Ok(SqliteStore { conn: Mutex::new(conn) })
     }
 
     pub fn memory() -> Result<SqliteStore> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
-        migrate(&conn);
+        migrate(&conn)?;
         Ok(SqliteStore { conn: Mutex::new(conn) })
     }
 
@@ -249,6 +282,33 @@ impl SqliteStore {
             "SELECT id FROM threads WHERE session_id = ?1",
             params![session_id],
             |r| r.get::<_, String>(0),
+        )
+        .optional()?)
+    }
+
+    fn active_session_for_trigger_locked(
+        c: &Connection,
+        trigger_ref: &str,
+    ) -> Result<Option<Session>> {
+        Ok(c.query_row(
+            "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode
+             FROM sessions
+             WHERE trigger_ref = ?1 AND state NOT IN ('closed', 'aborted')
+             ORDER BY created_at DESC LIMIT 1",
+            params![trigger_ref],
+            |r| {
+                Ok(Session {
+                    id: r.get(0)?,
+                    title: r.get(1)?,
+                    state: r.get(2)?,
+                    trigger_ref: r.get(3)?,
+                    quorum_n: r.get(4)?,
+                    chair_bot: r.get(5)?,
+                    created_at: r.get(6)?,
+                    closed_at: r.get(7)?,
+                    mode: r.get(8)?,
+                })
+            },
         )
         .optional()?)
     }
@@ -356,6 +416,36 @@ impl Store for SqliteStore {
         })
     }
 
+    fn create_session_deduped(
+        &self,
+        title: &str,
+        trigger_ref: Option<&str>,
+        quorum_n: i64,
+        chair_bot: Option<&str>,
+        roster: &[String],
+        mode: &str,
+    ) -> Result<(Session, bool)> {
+        if let Some(trigger_ref) = trigger_ref {
+            let c = self.conn.lock().unwrap();
+            if let Some(existing) = Self::active_session_for_trigger_locked(&c, trigger_ref)? {
+                return Ok((existing, true));
+            }
+        }
+
+        match self.create_session(title, trigger_ref, quorum_n, chair_bot, roster, mode) {
+            Ok(session) => Ok((session, false)),
+            Err(err) if trigger_ref.is_some() && is_constraint_violation(&err) => {
+                let c = self.conn.lock().unwrap();
+                let trigger_ref = trigger_ref.expect("checked by is_some guard");
+                if let Some(existing) = Self::active_session_for_trigger_locked(&c, trigger_ref)? {
+                    return Ok((existing, true));
+                }
+                Err(err)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     fn session(&self, id: &str) -> Result<Option<Session>> {
         let c = self.conn.lock().unwrap();
         let s = c
@@ -456,14 +546,7 @@ impl Store for SqliteStore {
 
     fn active_session_for_trigger(&self, trigger_ref: &str) -> Result<Option<String>> {
         let c = self.conn.lock().unwrap();
-        Ok(c.query_row(
-            "SELECT id FROM sessions
-             WHERE trigger_ref = ?1 AND state NOT IN ('closed', 'aborted')
-             ORDER BY created_at DESC LIMIT 1",
-            params![trigger_ref],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?)
+        Ok(Self::active_session_for_trigger_locked(&c, trigger_ref)?.map(|session| session.id))
     }
 
     fn upsert_thread(&self, session_id: &str, root_message_id: Option<&str>) -> Result<String> {
@@ -651,5 +734,48 @@ mod tests {
         // once closed, the same PR can open a fresh council (e.g. a later push)
         store.set_state(&s.id, SessionState::Closed).unwrap();
         assert!(store.active_session_for_trigger(pr).unwrap().is_none());
+    }
+
+    #[test]
+    fn active_trigger_ref_is_unique_until_terminal() {
+        let store = SqliteStore::memory().unwrap();
+        let trigger = "github:pr/o/r#1";
+        let first = store
+            .create_session("Review o/r#1", Some(trigger), 0, None, &[], "council")
+            .unwrap();
+
+        assert!(store
+            .create_session("Review o/r#1 retry", Some(trigger), 0, None, &[], "council")
+            .is_err());
+
+        store.set_state(&first.id, SessionState::Closed).unwrap();
+        assert!(store
+            .create_session("Review o/r#1 again", Some(trigger), 0, None, &[], "council")
+            .is_ok());
+    }
+
+    #[test]
+    fn create_session_deduped_returns_existing_active_trigger() {
+        let store = SqliteStore::memory().unwrap();
+        let trigger = "github:pr/o/r#2";
+
+        let (first, deduped) = store
+            .create_session_deduped("Review o/r#2", Some(trigger), 0, None, &[], "council")
+            .unwrap();
+        assert!(!deduped);
+
+        let (second, deduped) = store
+            .create_session_deduped(
+                "Review o/r#2 retry",
+                Some(trigger),
+                0,
+                None,
+                &[],
+                "council",
+            )
+            .unwrap();
+        assert!(deduped);
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.title, "Review o/r#2");
     }
 }

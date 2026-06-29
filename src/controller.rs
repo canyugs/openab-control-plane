@@ -40,8 +40,6 @@ fn open_session(
     state: &Arc<AppState>,
     action: OpenSessionAction,
 ) -> Result<ControllerActionResult> {
-    validate_open_session(state, &action)?;
-
     if let Some(trigger_ref) = action.trigger_ref.as_deref() {
         if let Some(existing) = state.store.active_session_for_trigger(trigger_ref)? {
             return Ok(ControllerActionResult::SessionOpened {
@@ -51,7 +49,9 @@ fn open_session(
         }
     }
 
-    let session = state.store.create_session(
+    validate_open_session(state, &action)?;
+
+    let (session, deduped) = state.store.create_session_deduped(
         &action.title,
         action.trigger_ref.as_deref(),
         action.quorum_n,
@@ -59,6 +59,12 @@ fn open_session(
         &action.roster,
         &action.mode,
     )?;
+    if deduped {
+        return Ok(ControllerActionResult::SessionOpened {
+            session_id: session.id,
+            deduped: true,
+        });
+    }
 
     if !action.prompt.trim().is_empty() {
         orchestrator::post_client_message(state, &session.id, &action.prompt)?;
@@ -175,6 +181,28 @@ mod tests {
             }
         );
         assert_eq!(state.store.messages(&session_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn open_session_action_without_trigger_ref_does_not_dedupe() {
+        let state = state_with_bots();
+        let mut action = review_action();
+        action.trigger_ref = None;
+
+        let first = execute(&state, ControllerAction::OpenSession(action.clone())).unwrap();
+        let second = execute(&state, ControllerAction::OpenSession(action)).unwrap();
+        let ControllerActionResult::SessionOpened {
+            session_id: first_id,
+            deduped: first_deduped,
+        } = first;
+        let ControllerActionResult::SessionOpened {
+            session_id: second_id,
+            deduped: second_deduped,
+        } = second;
+
+        assert!(!first_deduped);
+        assert!(!second_deduped);
+        assert_ne!(first_id, second_id);
     }
 
     #[test]
