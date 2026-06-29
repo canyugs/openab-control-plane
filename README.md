@@ -122,10 +122,13 @@ authority).
 | **3** | **shipped default / standing-council sweet spot**: chair + rev1 + rev2, `quorum_n=2` |
 | 5 | proven in demo (chair + rev1..rev4) |
 
-Proven live at 1 / 3 / 5 bots. **Sizing is manual today** — you pick N by how many
-pods you deploy (`OABCP_BOTS`) + which names go in the session roster. Preset-driven
-rosters (quick=2 / standard=3 / full=5) and angle assignment are Phase 2 (TODO, see
-[Roadmap](ROADMAP.md)). To resize: edit `OABCP_BOTS` + add/remove pod services and
+Proven live at 1 / 3 / 5 bots. **How many pods exist** is manual — you pick N by how
+many you deploy (`OABCP_BOTS`) + which names go in the session roster. **How many
+actually review a given PR** is preset-driven and automatic: a preset
+(`lite`/`quick`/`standard`/`full`, default lite) picks 1/3/5/7 angles and
+`assign_angles` round-robins them onto the roster, trimming idle reviewers (quorum =
+participants) — set per-PR via a `review:<preset>` label or globally via
+`OABCP_COUNCIL_PRESET`. To resize the pod pool: edit `OABCP_BOTS` + add/remove pod services and
 redeploy, or `POST /v1/sessions/:id/roster` to add a bot mid-session (removal/leave
 is not built yet).
 
