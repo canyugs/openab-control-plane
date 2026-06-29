@@ -54,9 +54,15 @@ skipped. Switching provider = change `OABCP_AGENT_COMMAND` + set that provider's
 | `COPILOT_GITHUB_TOKEN` | GitHub Copilot | Optional PAT |
 | `GH_TOKEN` | — | GitHub PAT for PR operations. **Set only on the chair pod** to prevent duplicate comments |
 
-Device-flow-only agents (Claude CLI proper, OpenCode, Hermes, Cursor, Antigravity,
-MiMo) can't BYOK by env var — they need interactive login, not supported on the
-gateway path today.
+**"Use your own login" = token form only.** Your own subscription login *is*
+supported — *as a token*: `claude setup-token` mints `CLAUDE_CODE_OAUTH_TOKEN` from
+your Claude Pro/Max login (above), and each pod can carry its own. What is **not**
+supported on the gateway path today is **interactive / device-flow login** — agents
+whose only auth is an interactive login that writes credentials into the pod (Claude
+CLI proper, OpenCode, Hermes, Cursor, Antigravity, MiMo) can't be authed by env var
+and have no validated on-pod login path. (The chair's persistent volume +
+`gh auth login` in its `pre_boot` hook authenticates **`gh`/git for PR write-back**,
+not the agent model — don't conflate the two.)
 
 ## Per-bot provider (mixed councils)
 
@@ -101,6 +107,40 @@ random token is generated once per bot, stored, and served inline by
 `/bot-config/<name>` — no human ever copies a token. Re-seeding is idempotent
 (`INSERT OR IGNORE`): restarts and already-present bots are skipped, so tokens
 stay stable across reboots as long as the DB volume persists.
+
+## Add / remove a bot (change the standing council)
+
+Three things carry a bot's name and **must stay aligned**: `OABCP_BOTS` (seeds the
+identity), the pod's `/bot-config/<name>` fetch URL (the running container), and
+`OABCP_COUNCIL_ROSTER` (who the webhook actually convenes). `OABCP_BOTS` ≠
+`OABCP_COUNCIL_ROSTER`: the first decides *which identities exist*, the second
+*which of them form a council*.
+
+**Add a reviewer (e.g. `rev3`)** — all three, names matching:
+1. control-plane env: `OABCP_BOTS` += `rev3:reviewer`, `OABCP_COUNCIL_ROSTER` += `rev3`.
+2. Add a pod service running `openab run -c <plane>/bot-config/rev3` (append
+   `?agent=<provider>` for a mixed council) with that provider's credential env.
+3. Restart the control-plane (seeds `rev3`) and deploy the new pod.
+
+**Remove a reviewer**:
+1. Drop it from `OABCP_COUNCIL_ROSTER` (so it's no longer convened) and restart the plane.
+2. Delete/stop its pod service.
+- Dropping it from `OABCP_BOTS` does **not** un-seed the identity (seed is
+  `INSERT OR IGNORE` / additive) — but the leftover row is harmless once the bot is
+  out of the roster and has no pod. To actually purge it, delete the row from the DB.
+
+**Change the chair** — reorder `OABCP_COUNCIL_ROSTER` so the desired bot is `[0]`.
+Only the chair gets the `pre_boot` App hook + PR write, so the new chair pod needs
+the write setup: a `GH_TOKEN` (PAT track) or the App key on its volume (App track) —
+see [deploy.md](deploy.md).
+
+**Just want fewer bots on a small PR** — don't change composition; use a smaller
+preset (`review:lite` label or `OABCP_COUNCIL_PRESET`). Idle reviewers are trimmed
+automatically (quorum = participants).
+
+**Mid-session (runtime) add** — `POST /v1/sessions/:id/roster {bot_id}` or chair
+`[[recruit:<id>]]` (below). Admission-gated, capped by `OABCP_MAX_ROSTER`. **Removal
+mid-session is not supported.**
 
 ## Self-recruitment (`[[recruit:<id>]]`)
 
