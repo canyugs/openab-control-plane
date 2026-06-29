@@ -9,7 +9,7 @@
 //! (authenticated as the shared App at the pod level). The trigger is auth-agnostic —
 //! identity is whatever the pod's `gh` is logged in as.
 
-use crate::orchestrator;
+use crate::controller::{self, ControllerAction, ControllerActionResult, OpenSessionAction};
 use crate::state::AppState;
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
@@ -47,7 +47,13 @@ fn preset_angles(preset: &str) -> Option<Vec<&'static str>> {
     match preset {
         "lite" => Some(vec!["correctness"]),
         "quick" => Some(vec!["correctness", "security", "integration"]),
-        "standard" => Some(vec!["correctness", "architecture", "security", "testing", "docs"]),
+        "standard" => Some(vec![
+            "correctness",
+            "architecture",
+            "security",
+            "testing",
+            "docs",
+        ]),
         "full" => Some(vec![
             "correctness",
             "architecture",
@@ -144,6 +150,16 @@ pub async fn convene_for_pr(
     num: u64,
     label_preset: Option<String>,
 ) -> Result<String> {
+    let action = review_open_session_action(repo, num, label_preset)?;
+    let result = controller::execute(state, ControllerAction::OpenSession(action))?;
+    Ok(session_id(result))
+}
+
+fn review_open_session_action(
+    repo: &str,
+    num: u64,
+    label_preset: Option<String>,
+) -> Result<OpenSessionAction> {
     let roster = council_roster();
     if roster.is_empty() {
         return Err(anyhow!("empty council roster"));
@@ -155,17 +171,16 @@ pub async fn convene_for_pr(
     let (eff_roster, quorum, assignment) = assign_angles(&roster, &angles);
     tracing::info!(preset = %preset, quorum, "convene preset resolved");
     let trigger_ref = pr_trigger_ref(repo, num);
-    let session = state.store.create_session(
-        "council",
-        Some(&trigger_ref),
-        quorum,
-        Some(&eff_roster[0]),
-        &eff_roster,
-        "council",
-    )?;
     let trigger = render_trigger(repo, num, &assignment);
-    orchestrator::post_client_message(state, &session.id, &trigger)?;
-    Ok(session.id)
+    Ok(OpenSessionAction {
+        title: "council".into(),
+        trigger_ref: Some(trigger_ref),
+        roster: eff_roster.clone(),
+        quorum_n: quorum,
+        chair_bot: Some(eff_roster[0].clone()),
+        mode: "council".into(),
+        prompt: trigger,
+    })
 }
 
 // --- Conversational follow-up (ADR 006) ---------------------------------------
@@ -203,22 +218,38 @@ pub async fn convene_ask(
     question: &str,
     comment_id: Option<u64>,
 ) -> Result<String> {
+    let action = ask_open_session_action(repo, num, question, comment_id)?;
+    let result = controller::execute(state, ControllerAction::OpenSession(action))?;
+    Ok(session_id(result))
+}
+
+fn ask_open_session_action(
+    repo: &str,
+    num: u64,
+    question: &str,
+    comment_id: Option<u64>,
+) -> Result<OpenSessionAction> {
     let chair = council_roster()
         .into_iter()
         .next()
         .ok_or_else(|| anyhow!("empty council roster"))?;
     let trigger_ref = pr_ask_trigger_ref(repo, num, comment_id);
-    let session = state.store.create_session(
-        "ask",
-        Some(&trigger_ref),
-        0,
-        Some(&chair),
-        std::slice::from_ref(&chair),
-        "solo",
-    )?;
     let trigger = render_ask_trigger(repo, num, question);
-    orchestrator::post_client_message(state, &session.id, &trigger)?;
-    Ok(session.id)
+    Ok(OpenSessionAction {
+        title: "ask".into(),
+        trigger_ref: Some(trigger_ref),
+        roster: std::slice::from_ref(&chair).to_vec(),
+        quorum_n: 0,
+        chair_bot: Some(chair),
+        mode: "solo".into(),
+        prompt: trigger,
+    })
+}
+
+fn session_id(result: ControllerActionResult) -> String {
+    match result {
+        ControllerActionResult::SessionOpened { session_id, .. } => session_id,
+    }
 }
 
 #[cfg(test)]
@@ -308,7 +339,10 @@ mod tests {
 
     #[test]
     fn ask_trigger_ref_is_comment_scoped() {
-        assert_eq!(pr_ask_trigger_ref("o/r", 7, Some(555)), "github:ask/o/r#7@555");
+        assert_eq!(
+            pr_ask_trigger_ref("o/r", 7, Some(555)),
+            "github:ask/o/r#7@555"
+        );
         assert_eq!(pr_ask_trigger_ref("o/r", 7, None), "github:ask/o/r#7");
         // distinct namespace from the review ref so they never collide
         assert_ne!(pr_ask_trigger_ref("o/r", 7, None), pr_trigger_ref("o/r", 7));

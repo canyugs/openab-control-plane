@@ -2,6 +2,7 @@
 //! See docs/control-plane-design.md (in the ops repo).
 
 pub mod api;
+pub mod controller;
 pub mod coordinator;
 pub mod council;
 pub mod github_app;
