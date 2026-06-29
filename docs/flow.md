@@ -5,9 +5,9 @@ What actually happens when the council reviews a PR, as built and verified
 
 ## Topology
 ```
-  you ──REST/SSE──▶ control-plane ──gateway /ws──▶ chair  (stock OpenAB Claude pod, has GH_TOKEN)
-                         │                        ├─▶ rev1   (stock pod, no GH_TOKEN)
-                         │                        └─▶ rev2   (stock pod, no GH_TOKEN)
+  you ──REST/SSE──▶ control-plane ──gateway /ws──▶ chair  (stock OpenAB Claude pod, has PR write auth)
+                         │                        ├─▶ rev1   (stock pod, no write auth)
+                         │                        └─▶ rev2   (stock pod, no write auth)
                          └─ SQLite (/data): bots, sessions, roster, outbox
 ```
 - Pods are **stock** `ghcr.io/openabdev/openab:*-claude` — no fork. They dial OUT to the plane.
@@ -16,9 +16,10 @@ What actually happens when the council reviews a PR, as built and verified
 
 ## The flow
 1. **Open** — `POST /v1/sessions {roster:[chair,rev1,rev2], quorum_n:2, chair_bot:chair, trigger_ref:"github:pr/owner/repo#N"}`.
-2. **Trigger** — `POST /v1/sessions/:id/messages` with the review task. For a PR, the
-   diff is fetched (`gh pr diff`) and **embedded in the trigger** so reviewers (who
-   have no `gh`) can read it. The plane @mentions each roster bot so none are gated out.
+2. **Trigger** — `POST /v1/sessions/:id/messages` with the review task. For webhook
+   and `--self-fetch` PR reviews, the trigger carries a pointer (`owner/repo#N`), not
+   the diff; bots fetch the PR with their own `gh`. The plane @mentions each roster
+   bot so none are gated out.
 3. **Fan-out** — the plane delivers the trigger to every bot except the author
    (`routing.rs`); a forum thread is opened (`channel_type=supergroup`).
 4. **Review** — rev1/rev2 each post findings in the thread, then react 🆗
@@ -26,8 +27,8 @@ What actually happens when the council reviews a PR, as built and verified
    the plane relays that reviewer's final message to the chair.
 5. **Quorum** — when reviewers-who-🆗 ≥ `quorum_n` (`session.rs`), state →
    `quorum`; the plane prompts the chair to render the verdict.
-6. **Verdict + side-effects** — the chair (the only pod with `GH_TOKEN`) synthesizes
-   the verdict and acts on the PR via `gh`:
+6. **Verdict + side-effects** — the chair (the only pod with PR write auth)
+   synthesizes the verdict and acts on the PR via `gh`:
    - in-progress comment → `gh pr comment`
    - verdict comment → `gh pr comment`
    - `gh pr edit --add-label council-reviewed`
@@ -38,9 +39,12 @@ What actually happens when the council reviews a PR, as built and verified
    `handle_reply` refuse post-close sends). The verdict is also at `GET /v1/sessions/:id`.
 
 ## Identity model (why chair-only `gh`)
-- Only the **chair** holds `GH_TOKEN` (a fine-grained PAT). Reviewers have none →
-  they physically can't write to the PR, so no duplicate comments. They review the
-  embedded diff.
+- Only the **chair** has PR write auth: either a fine-grained `GH_TOKEN` PAT or
+  pod-local GitHub App auth (`zeabur-council[bot]`). Reviewers have no write token →
+  they physically can't write to the PR, so no duplicate comments. On pointer
+  triggers they still need GitHub read access; public repos work anonymously, while
+  private repos need a read-only reviewer credential or the separate per-role App
+  token path.
 - **Self-review caveat:** GitHub blocks approve/request-changes on your *own* PR. The
   token's account must differ from the PR author for `gh pr review --approve` to land;
   comments + labels always work. Reviewing others' PRs is unaffected.

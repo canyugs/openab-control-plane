@@ -3,12 +3,14 @@
 One-command deploy of a multi-agent PR-review council: a control plane plus stock
 OpenAB Claude pods (1 chair + 2 reviewers) that deliberate and post a verdict.
 
-There are two identity tiers:
+There are two normal install tracks. Pick **one automatic trigger** for a target repo:
 
-- **Quick start (PAT)** — deploy + review in a few minutes. The chair posts the
-  verdict using a personal access token, so comments are authored by *your* account.
-- **Upgrade to App identity** — the chair posts as a GitHub App
-  (`zeabur-council[bot]`, clean attribution). A few extra pod-local steps.
+- **PAT + copied Action** — fastest external quickstart. The chair posts with a
+  personal access token, so verdicts are authored by *your* account.
+- **GitHub App webhook + App identity** — dogfood/default. PR events hit the plane
+  directly, and the chair posts as a GitHub App bot (`zeabur-council[bot]`).
+
+Manual reruns use `scripts/open-council.sh` and do not require either auto trigger.
 
 ## What deploys
 - `control-plane` — this repo's image, REST/SSE on a public domain, `/ws` gateway
@@ -21,10 +23,11 @@ There are two identity tiers:
 ## Variables
 - `PUBLIC_DOMAIN` — domain for the plane's API.
 - `CLAUDE_CODE_OAUTH_TOKEN` — agent auth for every pod (`claude setup-token`).
-- `GH_TOKEN` (optional) — fine-grained PAT (`pull_requests: write`, `contents: read`)
-  so the **chair** can post verdicts. This is the **quick-start** write path; leave it
-  blank to deliberate without PR write-back, or drop it later when upgrading to App
-  identity.
+- `GH_TOKEN` (PAT template only) — fine-grained PAT (`pull_requests: write`,
+  `contents: read`) so the **chair** can post verdicts.
+- `GITHUB_WEBHOOK_SECRET` (App template / webhook track only) — HMAC secret set on
+  the **control-plane** service. After changing it, restart the control-plane so
+  the running process sees the new env.
 
 ---
 
@@ -32,12 +35,15 @@ There are two identity tiers:
 
 **Deploy:**
 ```sh
-npx zeabur@latest template deploy -i=false -f zeabur-template.yaml \
+npx zeabur@latest template deploy -i=false -c Z7TQIR \
   --project-id <PROJECT_ID> \
   --var PUBLIC_DOMAIN=my-council \
   --var CLAUDE_CODE_OAUTH_TOKEN=<token> \
   --var GH_TOKEN=<pat>
 ```
+Template source lives in `zeabur-template.pat.yaml`; use `-f zeabur-template.pat.yaml`
+instead of `-c Z7TQIR` when deploying an unpublished local edit.
+
 The plane comes up at `https://my-council.zeabur.app`. Its API key is the
 auto-generated `OABCP_API_KEY` (the `PASSWORD` var) on the **control-plane** service —
 copy it from the dashboard's *Variables* tab.
@@ -82,8 +88,21 @@ review on one path:
 > ADR 004).
 
 **Set up the webhook (dogfood/default):**
-1. On the **control-plane** service set `GITHUB_WEBHOOK_SECRET` (HMAC secret; the
-   endpoint is **fail-closed** — unset ⇒ every webhook is rejected).
+1. For a fresh install, deploy the App template with a generated HMAC secret:
+   ```sh
+   SECRET=$(openssl rand -hex 32)
+   npx zeabur@latest template deploy -i=false -c 1E1Y97 \
+     --project-id <PROJECT_ID> \
+     --var PUBLIC_DOMAIN=my-council \
+     --var CLAUDE_CODE_OAUTH_TOKEN=<token> \
+     --var GITHUB_WEBHOOK_SECRET=$SECRET
+   ```
+   Template source lives in `zeabur-template.app.yaml`; use
+   `-f zeabur-template.app.yaml` instead of `-c 1E1Y97` when deploying an
+   unpublished local edit.
+   For an existing deployment, set `GITHUB_WEBHOOK_SECRET` on the **control-plane**
+   service to that value, then restart the control-plane. The endpoint is
+   **fail-closed** — unset ⇒ every webhook is rejected.
 2. Optionally set `OABCP_COUNCIL_PRESET` (`lite`/`quick`/`standard`/`full`, default
    `lite`) as the global default, and `OABCP_COUNCIL_ROSTER` (default `chair,rev1,rev2`).
 3. Point a webhook at `POST <plane>/api/v1/github_webhooks` (content-type JSON, the
@@ -91,10 +110,15 @@ review on one path:
    App webhook (required if you want App-identity posting) or a plain repo webhook
    (fine for PAT posting).
 
+For the App-bot track, continue to §3 after the webhook is configured. For a PAT-backed
+webhook track, `GH_TOKEN` on the chair is enough for write-back.
+
 On a trigger the plane convenes a council and posts a **pointer** trigger (PR ref +
 optional angle assignment, *not* the diff — the plane makes **zero GitHub calls**, ADR
 004); reviewers **self-fetch** (`gh pr diff`); the chair posts one verdict with its own
-`gh`. Re-deliveries are idempotent (one open council per PR).
+`gh`. Public repos can be fetched anonymously; private repos need read access on the
+reviewer pods (for example a read-only reviewer credential, or the separate per-role
+App token path). Re-deliveries are idempotent (one open council per PR).
 
 **Per-PR review depth:** add a `review:<preset>` label (`review:lite` … `review:full`)
 to a PR — it overrides the global default for that PR (read from the webhook payload, no
@@ -143,6 +167,12 @@ and `gh auth login`s as the App, refreshing before the 1-hour expiry. Mirrors
 `multi-agent-review-ops/github-apps` (same pre_boot + `gh auth login --with-token` +
 refresher recipe).
 
+This pod-local posting path is separate from the control-plane's optional
+`GITHUB_APP_*` env vars. You do **not** need `GITHUB_APP_ID`,
+`GITHUB_APP_INSTALLATION_ID`, or `GITHUB_APP_PRIVATE_KEY` on the control-plane for the
+chair to post as the App; those env vars only enable the separate
+`/v1/sessions/:id/github-token` operator capability.
+
 **Prereqs:** a GitHub App (perms `Pull requests: write`, `Contents: read`), installed on
 the target repo(s); note its **App ID**, **installation ID**, and a generated **private
 key** (`.pem`).
@@ -161,8 +191,8 @@ service without one, mount a volume at `/home/node` first — dashboard or the
    npx zeabur@latest service exec --id $CHAIR -- sh -c 'mkdir -p /home/node/bin; cat > /home/node/bin/get-gh-app-token.sh' < scripts/get-gh-app-token.sh
    npx zeabur@latest service exec --id $CHAIR -- sh -c 'chmod 600 /home/node/.github-app.pem; chmod +x /home/node/bin/get-gh-app-token.sh; chown node:node /home/node/.github-app.pem /home/node/bin/get-gh-app-token.sh'
    ```
-2. **Remove `GH_TOKEN`** from the chair service — `gh` prefers the env token over the
-   App auth, so it must go:
+2. **Remove `GH_TOKEN`** from the chair service if it was ever set — `gh` prefers the
+   env token over the App auth, so it must go:
    ```sh
    npx zeabur@latest variable delete --id $CHAIR --delete-keys GH_TOKEN -y -i=false
    ```
@@ -173,8 +203,8 @@ service without one, mount a volume at `/home/node` first — dashboard or the
 
 **Verify:** in the chair pod, `HOME=/home/node gh auth status` shows
 `Logged in … account zeabur-council[bot]`; trigger a `/review` and the verdict is
-authored by the App. Reviewers don't write to the PR, so they keep self-fetching with
-their own `gh` and need no change.
+authored by the App. Reviewers don't write to the PR, but they still need enough
+read access to self-fetch private repo diffs.
 
 > Validation/runbook: [github-app-validation.md](github-app-validation.md). The plane's
 > `/v1/sessions/:id/github-token` endpoint is a separate north/operator capability and is
@@ -183,7 +213,7 @@ their own `gh` and need no change.
 ---
 
 ## Image hosting
-The template references `docker.io/canyu/openab-control-plane:<version>` (public).
+The templates reference `docker.io/canyu/openab-control-plane:<version>` (public).
 Images build + push via `.github/workflows/release.yml` on a `v*` tag
 (`git tag v0.1.1 && git push origin v0.1.1` → `:0.1.1` + `:latest`). Bump the
-template's `image:` tag to the release you want.
+template `image:` tags to the release you want.

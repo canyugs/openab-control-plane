@@ -12,24 +12,39 @@ verdict side-effects. Bots are stock OpenAB pods speaking the gateway protocol.
 Stand up a working PR-review council and get your first verdict in a few minutes.
 
 **1. Deploy** — one control-plane + 3 stock OpenAB Claude pods (1 chair + 2 reviewers).
-First gather: a Claude token from `claude setup-token`, a Zeabur project id (from the
-dashboard URL or `zeabur project list`), and either a fine-grained GitHub PAT
-(`pull_requests: write` + `contents: read`) or a GitHub App setup for clean bot
-attribution:
+First gather: a Claude token from `claude setup-token` and a Zeabur project id (from
+the dashboard URL or `zeabur project list`), then pick one template:
+
+- **PAT quickstart:** `zeabur-template.pat.yaml`; verdicts are authored by the PAT
+  owner. Published template code: `Z7TQIR`.
+- **GitHub App webhook track:** `zeabur-template.app.yaml`; PR events arrive through
+  a webhook, and verdicts are authored by the App bot after the chair volume is
+  provisioned. Published template code: `1E1Y97`.
 
 ```sh
-npx zeabur@latest template deploy -f zeabur-template.yaml \
+npx zeabur@latest template deploy -c Z7TQIR \
   --project-id <PROJECT_ID> \
   --var PUBLIC_DOMAIN=my-council \
   --var CLAUDE_CODE_OAUTH_TOKEN=<OAUTH_TOKEN> \
   --var GH_TOKEN=<PAT>
 ```
 
-Omit `GH_TOKEN` to run the council without PR write-back — it still deliberates and
-produces a verdict, but won't post it to GitHub. The plane comes up at
-`https://my-council.zeabur.app`; Zeabur exposes its auto-generated API key as the
-`PASSWORD` env var on the control-plane service (referenced by `OABCP_API_KEY`) —
-copy it from the dashboard's **Variables** tab.
+For the App route:
+
+```sh
+SECRET=$(openssl rand -hex 32)
+npx zeabur@latest template deploy -c 1E1Y97 \
+  --project-id <PROJECT_ID> \
+  --var PUBLIC_DOMAIN=my-council \
+  --var CLAUDE_CODE_OAUTH_TOKEN=<OAUTH_TOKEN> \
+  --var GITHUB_WEBHOOK_SECRET=$SECRET
+```
+
+The plane comes up at `https://my-council.zeabur.app`; Zeabur exposes its
+auto-generated API key as the `PASSWORD` env var on the control-plane service
+(referenced by `OABCP_API_KEY`) — copy it from the dashboard's **Variables** tab.
+When developing from this repository, use `-f zeabur-template.pat.yaml` or
+`-f zeabur-template.app.yaml` instead of `-c`.
 
 **2a. Review a PR on demand** (needs `node`):
 
@@ -40,15 +55,15 @@ PLANE=https://my-council.zeabur.app KEY=<OABCP_API_KEY> \
 
 The chair posts a single verdict comment on the PR; `--watch` streams session progress and prints the verdict when the session closes.
 
-**2b. Auto-review every PR** (CodeRabbit-style) — set `GITHUB_WEBHOOK_SECRET` on the
-plane and point a webhook at `POST <plane>/api/v1/github_webhooks` (subscribe to Pull
-requests + Issue comments). A PR opened / reopened / ready-for-review, or a write-ish
-commenter's `/review` comment, then **convenes a real council automatically** and the
-chair posts one verdict comment back. This repository's dogfood install uses this
-webhook/App track only; it does not carry a repo-local council Action, so one PR event
-cannot convene twice. By default the chair can post via a `GH_TOKEN` PAT; to post as a
-clean App bot (`zeabur-council[bot]`, not your account) do the **pod-local App-identity
-upgrade** ([deploy.md §3](docs/deploy.md)). Per-PR depth: add a
+**2b. Auto-review every PR** (CodeRabbit-style) — deploy the App template or set
+`GITHUB_WEBHOOK_SECRET` on an existing plane, then point a webhook at
+`POST <plane>/api/v1/github_webhooks` (subscribe to Pull requests + Issue comments).
+A PR opened / reopened / ready-for-review, or a write-ish commenter's `/review`
+comment, then **convenes a real council automatically** and the chair posts one
+verdict comment back. This repository's dogfood install uses this webhook/App track
+only; it does not carry a repo-local council Action, so one PR event cannot convene
+twice. To post as a clean App bot (`zeabur-council[bot]`, not your account), do the
+**pod-local App-identity upgrade** ([deploy.md §3](docs/deploy.md)). Per-PR depth: add a
 `review:lite|quick|standard|full` label. **Ask a follow-up:** a write-ish commenter can
 comment `/ask <question>` (or `@`-mention the bot when `OABCP_BOT_HANDLE` is set) and a
 solo session answers in the thread. Guides: [deploy.md](docs/deploy.md) ·
