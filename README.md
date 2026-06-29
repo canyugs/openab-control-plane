@@ -66,7 +66,7 @@ solo session answers in the thread. Guides:
 - [Deploy & install](docs/deploy.md) — quick-start (PAT) + App-identity upgrade + trigger paths
 - [GitHub App validation](docs/github-app-validation.md) — App identity setup + L3 runbook
 - [PR review steering](skills/pr-review/SKILL.md) — reviewer + chair output format (source of truth)
-- [Decision records (ADRs)](docs/adr/) — 001 three-planes · 002 identity-scope · 003 steering-delivery · 004 bot-identity · 005 cost-governance
+- [Decision records (ADRs)](docs/adr/) — architecture decisions, including ADR 007 OAB Father/controllers
 - Enterprise hardening — consolidated requirements: issue #29
 
 ## Layout
