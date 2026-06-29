@@ -51,5 +51,6 @@ A 3-bot council deployed entirely from the template reviewed `canyugs/council-de
 posted the verdict, applied `council-reviewed`. See [deploy.md](deploy.md) to reproduce.
 
 ## Known gaps (see TODO.md)
-Auto-trigger (no PR webhook yet — open session manually/script), large-diff chunking,
-benchmark/eval, GitHub-App identity (to review own PRs + clean `[bot]` attribution).
+Auto-trigger now runs through the GitHub App/repo webhook; the copied GitHub Action is
+only an external install option. Remaining gaps: large-diff chunking, benchmark/eval,
+and multi-installation App identity for hosted/customer repos.

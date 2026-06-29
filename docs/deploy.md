@@ -3,7 +3,7 @@
 One-command deploy of a multi-agent PR-review council: a control plane plus stock
 OpenAB Claude pods (1 chair + 2 reviewers) that deliberate and post a verdict.
 
-There are two install tiers:
+There are two identity tiers:
 
 - **Quick start (PAT)** — deploy + review in a few minutes. The chair posts the
   verdict using a personal access token, so comments are authored by *your* account.
@@ -64,25 +64,24 @@ That's the whole quick path: **deploy → run a review → verdict on the PR.**
 convened; the *identity* the chair posts under (PAT or App bot) is the chair pod's
 `gh` auth (§1 = PAT, §3 = App) and is independent of the trigger.
 
+For this repository's dogfood deployment, the automatic trigger is the **GitHub App
+webhook only**. There is no repo-local `.github/workflows/council-review.yml`, and
+`COUNCIL_PLANE` / `COUNCIL_KEY` are not part of dogfood. That keeps automatic PR
+review on one path:
+
+`pull_request` / `/review` webhook → `POST <plane>/api/v1/github_webhooks` → council
+
 | Trigger (pick one for auto) | How | Setup |
 |------|-----|-------|
-| **GitHub Action** (easiest) | drop `examples/pr-review.yml` into the repo → PR open/update fires it | copy 1 file + 2 secrets |
 | **GitHub App / repo webhook** | PR event or `/review` comment hits the plane directly | create an App/webhook + secret |
+| **Copied GitHub Action** | drop `examples/pr-review.yml` into an external repo → PR open/update fires it | copy 1 file + 2 secrets |
 | `scripts/open-council.sh` | manual, on demand (terminal / CI) | none |
 
-> **Use the Action *or* the webhook for auto — not both on one repo, or a PR convenes
-> two councils.** Both call the same convene (pointer trigger, bots self-fetch, ADR 004).
+> **Use the copied Action *or* the webhook for auto — not both on one repo, or a PR
+> convenes two councils.** Both call the same convene (pointer trigger, bots self-fetch,
+> ADR 004).
 
-**Set up the GitHub Action (easiest):** copy [`examples/pr-review.yml`](../examples/pr-review.yml)
-to the target repo's `.github/workflows/`, and set two repo secrets:
-```sh
-gh secret set COUNCIL_PLANE --body "https://my-council.zeabur.app"
-gh secret set COUNCIL_KEY   --body "<OABCP_API_KEY>"
-```
-On a PR it POSTs `<plane>/v1/review {repo, pr}` — the plane convenes a council and the
-chair posts the verdict. (Any CI / script can hit `/v1/review` the same way.)
-
-**Set up the webhook (alternative):**
+**Set up the webhook (dogfood/default):**
 1. On the **control-plane** service set `GITHUB_WEBHOOK_SECRET` (HMAC secret; the
    endpoint is **fail-closed** — unset ⇒ every webhook is rejected).
 2. Optionally set `OABCP_COUNCIL_PRESET` (`lite`/`quick`/`standard`/`full`, default
@@ -112,6 +111,24 @@ thread (zero plane GitHub calls); multi-turn just re-asks. Only **write-ish** co
 `owner/repo`; unset = allow all) to ignore webhooks from any other repo. Note `/ask`/
 `@mention` is additionally permission-gated as above; a plain `/review` comment is not,
 so anyone who can comment can convene one review council (bounded — one council per PR).
+
+**Set up the copied Action (external/PAT track):** copy
+[`examples/pr-review.yml`](../examples/pr-review.yml) to the target repo's
+`.github/workflows/`, and set two repo secrets:
+```sh
+gh secret set COUNCIL_PLANE --body "https://my-council.zeabur.app"
+gh secret set COUNCIL_KEY   --body "<OABCP_API_KEY>"
+```
+On a PR it POSTs `<plane>/v1/review {repo, pr}` — the plane convenes a council and the
+chair posts the verdict. This is an install option for repos that do not want to create
+a webhook/App, not the dogfood route for this repository. Any trusted CI/script can hit
+`/v1/review` the same way for manual or custom automation.
+
+**Manual fallback / troubleshooting:** use `scripts/open-council.sh owner/repo#123
+--watch` from a trusted terminal or CI job when the webhook is down or a PR needs a
+rerun. It convenes via REST, then the chair posts asynchronously. If a review stalls,
+check the plane/chair logs; `OABCP_SESSION_TIMEOUT_SECS` defaults to 900s and the
+watchdog force-closes sessions that never reach a normal terminal verdict.
 
 ---
 
@@ -163,18 +180,6 @@ their own `gh` and need no change.
 > **not** used by this posting path (ADR 004 — identity is pod-local).
 
 ---
-
-## Manual / fallback review (GitHub Action)
-`.github/workflows/council-review.yml` is the PAT-track manual path — Actions → *Run
-workflow*, or a fallback if the webhook is down. `workflow_dispatch`-only (the auto
-`pull_request` trigger moved to the webhook so they don't double-convene). Set:
-```sh
-gh secret set COUNCIL_PLANE --body "https://my-council.zeabur.app"
-gh secret set COUNCIL_KEY   --body "<OABCP_API_KEY>"
-```
-It convenes via REST and exits; the chair posts asynchronously. No review? Check the
-Action run log, then plane/chair logs — a session that never reaches quorum is
-force-closed by the 900s watchdog.
 
 ## Image hosting
 The template references `docker.io/canyu/openab-control-plane:<version>` (public).

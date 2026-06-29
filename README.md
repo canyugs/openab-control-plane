@@ -13,8 +13,9 @@ Stand up a working PR-review council and get your first verdict in a few minutes
 
 **1. Deploy** — one control-plane + 3 stock OpenAB Claude pods (1 chair + 2 reviewers).
 First gather: a Claude token from `claude setup-token`, a Zeabur project id (from the
-dashboard URL or `zeabur project list`), and — optionally — a fine-grained GitHub PAT
-with `pull_requests: write` + `contents: read` so the chair can post verdicts:
+dashboard URL or `zeabur project list`), and either a fine-grained GitHub PAT
+(`pull_requests: write` + `contents: read`) or a GitHub App setup for clean bot
+attribution:
 
 ```sh
 npx zeabur@latest template deploy -f zeabur-template.yaml \
@@ -42,18 +43,16 @@ The chair posts a single verdict comment on the PR; `--watch` streams session pr
 **2b. Auto-review every PR** (CodeRabbit-style) — set `GITHUB_WEBHOOK_SECRET` on the
 plane and point a webhook at `POST <plane>/api/v1/github_webhooks` (subscribe to Pull
 requests + Issue comments). A PR opened / reopened / ready-for-review, or a `/review`
-comment, then **convenes a real council automatically** (no per-repo workflow to copy)
-and the chair posts one verdict comment back. By default it posts via your `GH_TOKEN`
-PAT; to post as a clean App bot (`zeabur-council[bot]`, not your account) do the
-**pod-local App-identity upgrade** ([deploy.md §3](docs/deploy.md)). Per-PR depth: add a
+comment, then **convenes a real council automatically** and the chair posts one verdict
+comment back. This repository's dogfood install uses this webhook/App track only; it
+does not carry a repo-local council Action, so one PR event cannot convene twice. By
+default the chair can post via a `GH_TOKEN` PAT; to post as a clean App bot
+(`zeabur-council[bot]`, not your account) do the **pod-local App-identity upgrade**
+([deploy.md §3](docs/deploy.md)). Per-PR depth: add a
 `review:lite|quick|standard|full` label. **Ask a follow-up:** a write-ish reviewer can
 comment `/ask <question>` (or `@`-mention the bot when `OABCP_BOT_HANDLE` is set) and a
-solo session answers in the thread. Guides:
-[deploy.md](docs/deploy.md) · [github-app-validation.md](docs/github-app-validation.md).
-
-> `.github/workflows/council-review.yml` is a **manual fallback** now
-> (`workflow_dispatch` only) — the automatic `pull_request` trigger moved to the webhook
-> to avoid double-convening. Use it, or `open-council.sh`, to re-review on demand.
+solo session answers in the thread. Guides: [deploy.md](docs/deploy.md) ·
+[github-app-validation.md](docs/github-app-validation.md).
 
 ## Docs
 
@@ -62,8 +61,8 @@ solo session answers in the thread. Guides:
 - [Architecture](docs/architecture.md) — north/core/south model, source layout
 - [Configuration](docs/config-reference.md) — all env vars and seed format
 - [PR Review Flow](docs/flow.md) — end-to-end council flow for PR review
-- [Template page](TEMPLATE.md) — one-page deploy + auto-review (GitHub Action) onboarding
-- [Deploy & install](docs/deploy.md) — quick-start (PAT) + App-identity upgrade + trigger paths
+- [Template page](TEMPLATE.md) — one-page deploy + trigger-track onboarding
+- [Deploy & install](docs/deploy.md) — quick-start (PAT), App/webhook dogfood route, and copied-Action option
 - [GitHub App validation](docs/github-app-validation.md) — App identity setup + L3 runbook
 - [PR review steering](skills/pr-review/SKILL.md) — reviewer + chair output format (source of truth)
 - [Decision records (ADRs)](docs/adr/) — 001 three-planes · 002 identity-scope · 003 steering-delivery · 004 bot-identity · 005 cost-governance

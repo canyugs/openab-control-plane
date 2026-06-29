@@ -25,8 +25,10 @@ All configuration is via environment variables. No config file needed.
 
 Optional — lets the chair post verdicts as a **GitHub App bot identity** (per-role
 scoped tokens: chair `pull_requests:write`, reviewers read-only) and lets GitHub
-trigger reviews via webhook. Without these, use the PAT track (`GH_TOKEN` on the chair
-pod + the `council-review.yml` Action) — see [deploy.md](deploy.md).
+trigger reviews via webhook. This is the dogfood route for this repository. Without
+these, external target repos can still use the PAT track (`GH_TOKEN` on the chair pod +
+a copied [`examples/pr-review.yml`](../examples/pr-review.yml) workflow) — see
+[deploy.md](deploy.md).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
