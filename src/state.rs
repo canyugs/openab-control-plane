@@ -113,7 +113,7 @@ impl AppState {
         // ponytail: one extra store read per delivery; fine at council scale.
         if let Ok(Some(s)) = self.store.session(session_id) {
             if matches!(
-                SessionState::from_str(&s.state),
+                SessionState::from_db_str(&s.state),
                 SessionState::Closed | SessionState::Aborted
             ) {
                 return false;

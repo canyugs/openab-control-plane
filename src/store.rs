@@ -48,7 +48,7 @@ impl SessionState {
             SessionState::Aborted => "aborted",
         }
     }
-    pub fn from_str(s: &str) -> SessionState {
+    pub fn from_db_str(s: &str) -> SessionState {
         match s {
             "deliberating" => SessionState::Deliberating,
             "quorum" => SessionState::Quorum,

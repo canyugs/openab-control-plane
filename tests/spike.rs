@@ -195,7 +195,7 @@ async fn single_bot_parity_thread_react_streaming() {
     let addr = spawn_server().await;
     let base = addr.to_string();
     let (bot_id, tok) = register_bot(&base, "solo", "chair").await;
-    let session = open_session(&base, &[bot_id.clone()], None, 0).await;
+    let session = open_session(&base, std::slice::from_ref(&bot_id), None, 0).await;
 
     let ws = connect(addr, &tok).await;
     let (mut w, mut r) = ws.split();
