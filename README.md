@@ -62,6 +62,7 @@ solo session answers in the thread. Guides:
 - [Architecture](docs/architecture.md) — north/core/south model, source layout
 - [Configuration](docs/config-reference.md) — all env vars and seed format
 - [PR Review Flow](docs/flow.md) — end-to-end council flow for PR review
+- [Template page](TEMPLATE.md) — one-page deploy + auto-review (GitHub Action) onboarding
 - [Deploy & install](docs/deploy.md) — quick-start (PAT) + App-identity upgrade + trigger paths
 - [GitHub App validation](docs/github-app-validation.md) — App identity setup + L3 runbook
 - [PR review steering](skills/pr-review/SKILL.md) — reviewer + chair output format (source of truth)

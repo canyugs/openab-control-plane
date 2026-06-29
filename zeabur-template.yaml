@@ -5,9 +5,11 @@ metadata:
   name: OpenAB Review Council
 spec:
   description: |
-    A multi-agent PR-review council on the OpenAB gateway: a control plane plus
-    stock OpenAB Claude pods (one chair + two reviewers) that deliberate and post
-    a verdict. One click, no manual bot registration.
+    A self-hosted, CodeRabbit-style PR-review council: a control plane + 3 stock
+    OpenAB Claude pods (1 chair + 2 reviewers) deliberate on a PR and post one
+    verdict. Runs on your own Claude subscription (claude setup-token); no per-bot
+    registration. After deploy, drop examples/pr-review.yml into your repo + set 2
+    secrets to auto-review every PR. See TEMPLATE.md.
   icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/github.svg
   tags:
     - AI
