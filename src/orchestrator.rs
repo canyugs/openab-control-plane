@@ -108,12 +108,13 @@ fn chair_latest_settled(state: &Arc<AppState>, session_id: &str, bot: &str) -> O
         .messages(session_id)
         .ok()?
         .into_iter()
-        .filter(|m| m.author_id.as_deref() == Some(bot))
-        .filter(|m| {
+        .rfind(|m| {
+            if m.author_id.as_deref() != Some(bot) {
+                return false;
+            }
             let t = m.content.trim();
             !t.is_empty() && t != "…"
         })
-        .next_back()
         .map(|m| m.content)
 }
 
@@ -333,7 +334,7 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
     // a "…" stub). Edits still apply (the verdict can finish filling) and
     // reactions are harmless (delivery is already gated in deliver_event).
     let closed = matches!(
-        SessionState::from_str(&session.state),
+        SessionState::from_db_str(&session.state),
         SessionState::Closed | SessionState::Aborted
     );
     match reply.command.as_deref() {
@@ -468,16 +469,17 @@ impl Ctx for OrchCtx<'_> {
             .messages(&self.session.id)
             .ok()?
             .into_iter()
-            .filter(|m| m.author_id.as_deref() == Some(bot))
-            .filter(|m| {
+            .rfind(|m| {
+                if m.author_id.as_deref() != Some(bot) {
+                    return false;
+                }
                 let t = m.content.trim();
                 !t.is_empty() && t != "…"
             })
-            .next_back()
             .map(|m| m.content)
     }
     fn state(&self) -> SessionState {
-        SessionState::from_str(&self.session.state)
+        SessionState::from_db_str(&self.session.state)
     }
 }
 
@@ -535,12 +537,13 @@ fn relay_settled(state: &Arc<AppState>, session: &Session, from: &str, to: &str)
     let msgs = state.store.messages(&session.id)?;
     let Some(msg) = msgs
         .into_iter()
-        .filter(|m| m.author_id.as_deref() == Some(from))
-        .filter(|m| {
+        .rfind(|m| {
+            if m.author_id.as_deref() != Some(from) {
+                return false;
+            }
             let t = m.content.trim();
             !t.is_empty() && t != "…"
         })
-        .next_back()
     else {
         return Ok(());
     };
@@ -631,7 +634,7 @@ mod tests {
         let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
         let latecomer = store.register_bot("late", "reviewer", "h2", "t2").unwrap();
         let session = store
-            .create_session("t", None, 0, Some(&chair.id), &[chair.id.clone()], "council")
+            .create_session("t", None, 0, Some(&chair.id), std::slice::from_ref(&chair.id), "council")
             .unwrap();
         store.advance_state(&session.id, SessionState::Open, SessionState::Deliberating).unwrap();
         // history exists before the latecomer joins
@@ -705,7 +708,7 @@ mod tests {
         let state = AppState::new(store.clone());
         let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
         let session = store
-            .create_session("t", None, 0, Some(&chair.id), &[chair.id.clone()], "council")
+            .create_session("t", None, 0, Some(&chair.id), std::slice::from_ref(&chair.id), "council")
             .unwrap();
 
         // a bot id that was never POST /v1/bots'd must not enter the roster
@@ -722,7 +725,7 @@ mod tests {
         let member = store.register_bot("member", "chair", "h1", "t1").unwrap();
         let outsider = store.register_bot("outsider", "reviewer", "h2", "t2").unwrap();
         let session = store
-            .create_session("t", None, 0, Some(&member.id), &[member.id.clone()], "council")
+            .create_session("t", None, 0, Some(&member.id), std::slice::from_ref(&member.id), "council")
             .unwrap();
 
         // outsider holds a valid token but is not in the roster → reply dropped
@@ -756,7 +759,7 @@ mod tests {
         assert!(store.active_sessions_before(crate::store::now_ms() + 1).unwrap().contains(&session.id));
         assert!(force_close_timeout(&state, &session.id).unwrap(), "stuck session is closed");
         assert_eq!(
-            SessionState::from_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
             SessionState::Closed,
         );
         // once-only: a second fire (or a normal close racing) is a no-op, and the
