@@ -172,12 +172,16 @@ fn review_open_session_action(
     tracing::info!(preset = %preset, quorum, "convene preset resolved");
     let trigger_ref = pr_trigger_ref(repo, num);
     let trigger = render_trigger(repo, num, &assignment);
+    let chair_bot = eff_roster
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow!("assign_angles produced empty roster"))?;
     Ok(OpenSessionAction {
         title: "council".into(),
         trigger_ref: Some(trigger_ref),
-        roster: eff_roster.clone(),
+        roster: eff_roster,
         quorum_n: quorum,
-        chair_bot: Some(eff_roster[0].clone()),
+        chair_bot: Some(chair_bot),
         mode: "council".into(),
         prompt: trigger,
     })
@@ -211,6 +215,8 @@ pub fn render_ask_trigger(repo: &str, num: u64, question: &str) -> String {
 /// Answer a follow-up on a PR with a **solo** session (ADR 006): one bot (the chair —
 /// the only writer) self-fetches the PR + thread, answers, and posts a NEW comment.
 /// Cheaper than a council and the right shape for a single answer; no GitHub I/O here.
+/// The controller dedups by the comment-scoped trigger ref, so webhook retries return
+/// the active solo session instead of opening duplicate answers for the same comment.
 pub async fn convene_ask(
     state: &Arc<AppState>,
     repo: &str,

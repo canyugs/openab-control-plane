@@ -77,10 +77,26 @@ fn validate_open_session(state: &Arc<AppState>, action: &OpenSessionAction) -> R
     if action.quorum_n < 0 {
         bail!("open_session action quorum_n must be non-negative");
     }
+    match action.mode.as_str() {
+        "council" | "solo" | "pipeline" => {}
+        mode => bail!("open_session action has unknown mode '{mode}'"),
+    }
     if let Some(chair) = action.chair_bot.as_deref() {
         if !action.roster.iter().any(|bot| bot == chair) {
             bail!("open_session action chair_bot must be in roster");
         }
+    }
+    let reviewer_capacity = action
+        .roster
+        .iter()
+        .filter(|bot| Some(bot.as_str()) != action.chair_bot.as_deref())
+        .count();
+    if action.quorum_n as usize > reviewer_capacity {
+        bail!(
+            "open_session action quorum_n ({}) exceeds reviewer count ({})",
+            action.quorum_n,
+            reviewer_capacity
+        );
     }
     for bot in &action.roster {
         if state.store.bot(bot)?.is_none() {
@@ -162,6 +178,24 @@ mod tests {
     }
 
     #[test]
+    fn open_session_action_skips_blank_prompt() {
+        let state = state_with_bots();
+        let mut action = review_action();
+        action.trigger_ref = Some("github:pr/o/r#blank".into());
+        action.prompt = " \n ".into();
+
+        let result = execute(&state, ControllerAction::OpenSession(action)).unwrap();
+        let ControllerActionResult::SessionOpened { session_id, .. } = result;
+
+        let session = state.store.session(&session_id).unwrap().unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&session.state),
+            SessionState::Open
+        );
+        assert!(state.store.messages(&session_id).unwrap().is_empty());
+    }
+
+    #[test]
     fn open_session_action_validates_roster_and_chair_identity() {
         let state = state_with_bots();
 
@@ -178,5 +212,24 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("chair_bot must be in roster"));
+    }
+
+    #[test]
+    fn open_session_action_validates_quorum_and_mode() {
+        let state = state_with_bots();
+
+        let mut too_high = review_action();
+        too_high.quorum_n = 2;
+        assert!(execute(&state, ControllerAction::OpenSession(too_high))
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds reviewer count"));
+
+        let mut bad_mode = review_action();
+        bad_mode.mode = "mystery".into();
+        assert!(execute(&state, ControllerAction::OpenSession(bad_mode))
+            .unwrap_err()
+            .to_string()
+            .contains("unknown mode"));
     }
 }
