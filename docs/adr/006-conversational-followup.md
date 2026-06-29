@@ -70,19 +70,18 @@ What exists today constrains the design:
    triggering comment id so a re-delivered webhook doesn't double-answer (extend the
    `active_session_for_trigger` check to the comment-scoped key).
 
-6. **Permission + allowlist become load-bearing here — gate before shipping.** Today the
-   webhook has no per-repo allowlist (#11) and no commenter-permission gate (#12). For
-   `/review` the blast radius is bounded; for `@mention` Q&A it is **token spend on
-   demand**, so the follow-up path MUST require the commenter be a repo
-   collaborator/write and the repo be on the allowlist. These move from "before
-   production" to **blocking for this feature**.
+6. **Permission + allowlist become load-bearing here.** Comment-command triggers
+   (`/review`, `/ask`, `@mention`) require a write-ish GitHub commenter
+   (`OWNER`/`MEMBER`/`COLLABORATOR`), and `OABCP_ALLOWED_REPOS` provides the per-repo
+   allowlist hook. Production deployments should set that allowlist; deeper
+   CODEOWNERS/team policy remains enterprise hardening.
 
 ## Consequences
 
 - **New:** a `parse_trigger` arm + `question` field; a `convene_ask` (solo + pointer)
-  in `src/council.rs`; a `pr-ask-trigger-pointer.tmpl`; comment-id idempotency; the
-  permission/allowlist gate (#11/#12) as a prerequisite. The session/message model and
-  `Solo` coordinator are reused unchanged.
+  in `src/council.rs`; a `pr-ask-trigger-pointer.tmpl`; comment-id idempotency; and
+  the comment-command permission / repo-allowlist guardrails. The session/message model
+  and `Solo` coordinator are reused unchanged.
 - **Plane stays thin** (ADR 001): it routes the mention and opens a solo session; it
   does not read GitHub, post, or hold conversation state. The bot self-fetches and
   the chair posts — same trust/credential boundary as review.

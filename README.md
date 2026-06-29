@@ -42,14 +42,14 @@ The chair posts a single verdict comment on the PR; `--watch` streams session pr
 
 **2b. Auto-review every PR** (CodeRabbit-style) — set `GITHUB_WEBHOOK_SECRET` on the
 plane and point a webhook at `POST <plane>/api/v1/github_webhooks` (subscribe to Pull
-requests + Issue comments). A PR opened / reopened / ready-for-review, or a `/review`
-comment, then **convenes a real council automatically** and the chair posts one verdict
-comment back. This repository's dogfood install uses this webhook/App track only; it
-does not carry a repo-local council Action, so one PR event cannot convene twice. By
-default the chair can post via a `GH_TOKEN` PAT; to post as a clean App bot
-(`zeabur-council[bot]`, not your account) do the **pod-local App-identity upgrade**
-([deploy.md §3](docs/deploy.md)). Per-PR depth: add a
-`review:lite|quick|standard|full` label. **Ask a follow-up:** a write-ish reviewer can
+requests + Issue comments). A PR opened / reopened / ready-for-review, or a write-ish
+commenter's `/review` comment, then **convenes a real council automatically** and the
+chair posts one verdict comment back. This repository's dogfood install uses this
+webhook/App track only; it does not carry a repo-local council Action, so one PR event
+cannot convene twice. By default the chair can post via a `GH_TOKEN` PAT; to post as a
+clean App bot (`zeabur-council[bot]`, not your account) do the **pod-local App-identity
+upgrade** ([deploy.md §3](docs/deploy.md)). Per-PR depth: add a
+`review:lite|quick|standard|full` label. **Ask a follow-up:** a write-ish commenter can
 comment `/ask <question>` (or `@`-mention the bot when `OABCP_BOT_HANDLE` is set) and a
 solo session answers in the thread. Guides: [deploy.md](docs/deploy.md) ·
 [github-app-validation.md](docs/github-app-validation.md).

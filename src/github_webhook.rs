@@ -104,6 +104,15 @@ fn parse_ask_comment(comment: &str, handle: Option<&str>) -> Option<String> {
     None
 }
 
+/// Match a slash command only when the command is exact or followed by whitespace, so
+/// `/reviewer` does not trigger `/review`.
+fn starts_with_slash_command(comment: &str, command: &str) -> bool {
+    let Some(rest) = comment.strip_prefix(command) else {
+        return false;
+    };
+    rest.is_empty() || rest.starts_with(char::is_whitespace)
+}
+
 /// Extract a `review:<preset>` label name (the part after `review:`) from a payload
 /// `labels` array, if present. Validation of the preset name happens in `council`.
 fn preset_from_labels(labels: &Value) -> Option<String> {
@@ -130,7 +139,8 @@ pub fn verify_signature(secret: &str, body: &[u8], signature_header: Option<&str
 
 /// Decide whether a webhook should open a review session:
 ///   - `pull_request` opened / reopened / ready_for_review → auto-review.
-///   - `issue_comment` created on a PR whose body starts with `/review` → on-demand.
+///   - `issue_comment` created by a write-ish user on a PR whose body starts with
+///     `/review` → on-demand.
 ///
 /// Everything else → `None`.
 pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
@@ -164,7 +174,11 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
             let repo = body["repository"]["full_name"].as_str()?.to_string();
             let pr_number = body["issue"]["number"].as_u64()?;
             let cmd = comment.trim();
-            if cmd.starts_with("/review") {
+            if starts_with_slash_command(cmd, "/review") {
+                let assoc = body["comment"]["author_association"].as_str().unwrap_or("");
+                if !can_command(assoc) {
+                    return None;
+                }
                 return Some(WebhookTrigger {
                     repo,
                     pr_number,
@@ -383,7 +397,7 @@ mod tests {
             "action": "created",
             "repository": { "full_name": "o/r" },
             "issue": { "number": 1, "pull_request": { "url": "u" }, "labels": [{"name":"review:quick"}] },
-            "comment": { "body": "/review" }
+            "comment": { "body": "/review", "author_association": "OWNER" }
         });
         assert_eq!(parse_trigger("issue_comment", &ic).unwrap().preset.as_deref(), Some("quick"));
         // no review: label → None
@@ -406,16 +420,48 @@ mod tests {
     }
 
     #[test]
-    fn review_command_on_pr_triggers() {
+    fn review_command_on_pr_triggers_for_write_user() {
         let body = json!({
             "action": "created",
             "repository": { "full_name": "canyugs/ocp" },
             "issue": { "number": 12, "pull_request": { "url": "https://api.github.com/repos/canyugs/ocp/pulls/12" } },
-            "comment": { "body": "/review please" }
+            "comment": { "body": "/review please", "author_association": "MEMBER" }
         });
         let t = parse_trigger("issue_comment", &body).expect("should trigger");
         assert_eq!(t.pr_number, 12);
         assert_eq!(t.reason, "/review");
+    }
+
+    #[test]
+    fn review_command_is_gated_to_write_user() {
+        let body = |assoc: &str| {
+            json!({
+                "action": "created",
+                "repository": { "full_name": "canyugs/ocp" },
+                "issue": { "number": 12, "pull_request": { "url": "u" } },
+                "comment": { "body": "/review please", "author_association": assoc }
+            })
+        };
+        assert!(parse_trigger("issue_comment", &body("COLLABORATOR")).is_some());
+        assert!(parse_trigger("issue_comment", &body("OWNER")).is_some());
+        assert!(parse_trigger("issue_comment", &body("CONTRIBUTOR")).is_none());
+        assert!(parse_trigger("issue_comment", &body("NONE")).is_none());
+
+        let missing_assoc = json!({
+            "action": "created",
+            "repository": { "full_name": "canyugs/ocp" },
+            "issue": { "number": 12, "pull_request": { "url": "u" } },
+            "comment": { "body": "/review please" }
+        });
+        assert!(parse_trigger("issue_comment", &missing_assoc).is_none());
+
+        let different_command = json!({
+            "action": "created",
+            "repository": { "full_name": "canyugs/ocp" },
+            "issue": { "number": 12, "pull_request": { "url": "u" } },
+            "comment": { "body": "/reviewer please", "author_association": "OWNER" }
+        });
+        assert!(parse_trigger("issue_comment", &different_command).is_none());
     }
 
     #[test]
