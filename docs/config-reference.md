@@ -17,7 +17,7 @@ All configuration is via environment variables. No config file needed.
 | `OABCP_COUNCIL_ROSTER` | `chair,rev1,rev2` | Webhook-convened council roster (comma-separated; `[0]` is the chair, the rest review). Should match the bots seeded via `OABCP_BOTS` |
 | `OABCP_COUNCIL_PRESET` | _(none)_ | Default webhook-convened review preset: `lite` (1 angle), `quick` (3), `standard` (5), `full` (7). Angles are round-robined onto the reviewers (extras trimmed, quorum = participants). Unset = generic review (every reviewer covers everything). A per-PR `review:<preset>` label overrides this. Mirrors `open-council.sh --preset` |
 | `OABCP_BOT_HANDLE` | _(none)_ | The App bot's GitHub handle (e.g. `zeabur-council`) for conversational follow-ups (ADR 006). When set, a PR comment that `@mention`s it is answered by a solo session. Unset → only the explicit `/ask` command works, not `@mention` |
-| `OABCP_ALLOWED_REPOS` | _(allow all)_ | Comma-separated `owner/repo` allowlist for webhook triggers. Unset/empty = allow all; when set, a webhook from any other repo is acked and ignored. (Follow-up `/ask`/`@mention` is *additionally* gated to write-ish commenters by `author_association`.) |
+| `OABCP_ALLOWED_REPOS` | _(allow all)_ | Comma-separated `owner/repo` allowlist for webhook triggers. Unset/empty = allow all; when set, a webhook from any other repo is acked and ignored. Comment commands (`/review`, `/ask`, `@mention`) are additionally gated to write-ish commenters by `author_association`. |
 | `GH_OUTPUT` | _(off)_ | Set to `1` to enable GitHub PR side-effects (comment, label, review) via `gh` CLI |
 | `RUST_LOG` | `info` | Log level filter (standard `tracing` env filter syntax) |
 
@@ -35,7 +35,7 @@ a copied [`examples/pr-review.yml`](../examples/pr-review.yml) workflow) — see
 | `GITHUB_APP_ID` | _(none)_ | GitHub App id. The plane mints a short-lived App JWT → per-role installation token; a pod fetches its scoped token via `/v1/sessions/:id/github-token` |
 | `GITHUB_APP_INSTALLATION_ID` | _(none)_ | Installation the tokens are minted against (single-install today) |
 | `GITHUB_APP_PRIVATE_KEY` | _(none)_ | The App's PEM private key — held only by the plane; pods never see it |
-| `GITHUB_WEBHOOK_SECRET` | _(none)_ | HMAC secret for `POST /api/v1/github_webhooks`. **Fail-closed**: unset = every webhook is rejected. Opens a session on a PR `opened`/`reopened`/`ready_for_review`, or a `/review` comment on a PR |
+| `GITHUB_WEBHOOK_SECRET` | _(none)_ | HMAC secret for `POST /api/v1/github_webhooks`. **Fail-closed**: unset = every webhook is rejected. Opens a session on a PR `opened`/`reopened`/`ready_for_review`, or a write-ish user's `/review` comment on a PR |
 | `GITHUB_API_BASE` | `https://api.github.com` | Override the GitHub API base URL (e.g. GitHub Enterprise Server, or a test endpoint) |
 
 ## Bot pods (set on OpenAB containers, not the plane)

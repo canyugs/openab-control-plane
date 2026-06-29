@@ -108,9 +108,10 @@ thread (zero plane GitHub calls); multi-turn just re-asks. Only **write-ish** co
 (`author_association` OWNER/MEMBER/COLLABORATOR) can ask — it's on-demand token spend.
 
 **Restricting who/what can trigger:** set `OABCP_ALLOWED_REPOS` (comma-separated
-`owner/repo`; unset = allow all) to ignore webhooks from any other repo. Note `/ask`/
-`@mention` is additionally permission-gated as above; a plain `/review` comment is not,
-so anyone who can comment can convene one review council (bounded — one council per PR).
+`owner/repo`; unset = allow all) to ignore webhooks from any other repo. Comment
+commands (`/review`, `/ask`, `@mention`) are permission-gated to write-ish GitHub
+commenters (`author_association` OWNER/MEMBER/COLLABORATOR). Pull-request lifecycle
+events are gated by the webhook signature and optional repo allowlist.
 
 **Set up the copied Action (external/PAT track):** copy
 [`examples/pr-review.yml`](../examples/pr-review.yml) to the target repo's
