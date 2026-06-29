@@ -259,7 +259,7 @@ fn ensure_no_duplicate_active_trigger_refs(conn: &Connection) -> Result<()> {
     let duplicates = rows.collect::<std::result::Result<Vec<_>, _>>()?;
     if !duplicates.is_empty() {
         bail!(
-            "cannot add active trigger_ref uniqueness index; duplicate active trigger_ref rows exist: {}",
+            "cannot add active trigger_ref uniqueness index; duplicate active trigger_ref rows exist: {}. Set duplicate sessions to 'closed' or 'aborted' before restarting to recover.",
             duplicates.join(", ")
         );
     }

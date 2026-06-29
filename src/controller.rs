@@ -41,8 +41,8 @@ fn open_session(
     action: OpenSessionAction,
 ) -> Result<ControllerActionResult> {
     if let Some(trigger_ref) = action.trigger_ref.as_deref() {
-        // Idempotent retry wins over re-validation: the active session is the
-        // source of truth even if the retried action's roster/config drifted.
+        // Idempotent retry: return the existing session without re-validating.
+        // The active session is the source of truth even if retried config drifted.
         if let Some(existing) = state.store.active_session_for_trigger(trigger_ref)? {
             return Ok(ControllerActionResult::SessionOpened {
                 session_id: existing,

@@ -225,7 +225,6 @@ pub async fn convene_ask(
     comment_id: Option<u64>,
 ) -> Result<String> {
     let action = ask_open_session_action(repo, num, question, comment_id)?;
-    // The comment-scoped trigger ref makes webhook retries return the active ask.
     let result = controller::execute(state, ControllerAction::OpenSession(action))?;
     Ok(session_id(result))
 }
