@@ -10,7 +10,7 @@ The intuition: LGTM is the worthless part of review; the value is catching the i
 
 ## Why it fits OCP
 
-- The **engine mostly exists**: webhook/GHA trigger → multi-agent council → chair aggregates a severity-graded verdict (red/yellow/green is already produced). What's missing is the **commercial layer**: metering (count red/yellow per account), billing (Stripe), multi-tenant auth (per-user keys / OAuth) — which is exactly [ROADMAP](../ROADMAP.md) **Phase 4** (multi-tenant auth + audit log), plus a metering layer that doesn't exist yet.
+- The **engine mostly exists**: webhook/GHA trigger → multi-agent council → chair aggregates a severity-graded verdict (red/yellow/green is already produced). What's missing is the **commercial layer**: metering (count red/yellow per account), billing (Stripe), multi-tenant auth (per-user keys / OAuth) — which is exactly [roadmap](roadmap.md) **Phase 4** (multi-tenant auth + audit log), plus a metering layer that doesn't exist yet.
 - It makes **cost governance existential, not optional.** If you charge a flat/bundled price but pay per-PR compute, then [ADR 005](adr/005-cost-governance-roster-swap.md)'s cheap-default + escalate-on-irreversibility *is* your margin control: cheap model on green-likely PRs, escalate only when it matters. The "no BYOK, we absorb model cost" choice is the *reason* the Tier-2 roster-swap work matters.
 
 ## Prior art — nobody in code review prices on outcome
@@ -57,7 +57,7 @@ Red/yellow then becomes the **value narrative**, not the raw **billing hook**.
 
 1. **Adverse incentive** — paying per finding rewards false positives / nitpick inflation, which destroys the very value prop. (Mitigation: accept-to-bill, above.)
 2. **Unit-economics inversion** — COGS is per-PR (every review burns tokens); revenue is per-finding. A clean repo = full compute, $0 revenue. Clean big customers cost the most. (Mitigation: ADR 005 cost governance; possibly a per-PR or per-seat floor so red/yellow is the *value story* over a base, not the sole meter.)
-3. **Self-adjudicated severity = trust** — if the vendor's agent sets severity and severity sets price, precision stops being nice-to-have and becomes the moat. The [ROADMAP](../ROADMAP.md) Evaluation/Benchmark work (CodeReviewBench etc.) moves from "future" to "core."
+3. **Self-adjudicated severity = trust** — if the vendor's agent sets severity and severity sets price, precision stops being nice-to-have and becomes the moat. The [roadmap](roadmap.md) Evaluation/Benchmark work (CodeReviewBench etc.) moves from "future" to "core."
 
 ## Billing unit → decided in ADR 006
 

@@ -23,7 +23,7 @@ Pick one trigger track per target repo:
    - `PUBLIC_DOMAIN` — e.g. `my-council` → `my-council.zeabur.app`
    - `CLAUDE_CODE_OAUTH_TOKEN` — from `claude setup-token`
    - `GH_TOKEN` — a fine-grained PAT (`pull_requests: write`, `contents: read`)
-2. **Add the copied Action** — copy [`examples/pr-review.yml`](examples/pr-review.yml) into the
+2. **Add the copied Action** — copy [`examples/pr-review.yml`](../examples/pr-review.yml) into the
    target repo's `.github/workflows/`, and set two repo secrets:
    ```sh
    gh secret set COUNCIL_PLANE --body "https://my-council.zeabur.app"
@@ -50,7 +50,7 @@ trigger with no per-repo file:
    `GH_TOKEN` (pod-local App auth), set `GITHUB_WEBHOOK_SECRET` on the plane, and point
    the App's webhook at `POST <plane>/api/v1/github_webhooks`.
 
-Step-by-step: [docs/deploy.md](docs/deploy.md) §3 + [docs/github-app-validation.md](docs/github-app-validation.md).
+Step-by-step: [deploy.md](deploy.md) §3 + [github-app-validation.md](github-app-validation.md).
 
 ---
 
@@ -64,4 +64,4 @@ Step-by-step: [docs/deploy.md](docs/deploy.md) §3 + [docs/github-app-validation
   `review:quick` / `review:standard` / `review:full` **label** to a PR for 3 / 5 / 7
   angles, or set `OABCP_COUNCIL_PRESET` on the plane to change the global default.
 
-Full guide: [docs/deploy.md](docs/deploy.md) · [README](README.md).
+Full guide: [deploy.md](deploy.md) · [README](../README.md).

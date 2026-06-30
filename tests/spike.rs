@@ -5,7 +5,7 @@
 
 use futures_util::{SinkExt, StreamExt};
 use openab_control_plane::store::{SqliteStore, Store};
-use openab_control_plane::{build_router, state::AppState};
+use openab_control_plane::{build_router, orchestrator, state::AppState};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -14,15 +14,20 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 async fn spawn_server() -> SocketAddr {
+    let (addr, _) = spawn_server_with_state().await;
+    addr
+}
+
+async fn spawn_server_with_state() -> (SocketAddr, Arc<AppState>) {
     let store: Arc<dyn Store> = Arc::new(SqliteStore::memory().unwrap());
     let state = AppState::new(store);
-    let app = build_router(state);
+    let app = build_router(state.clone());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    addr
+    (addr, state)
 }
 
 async fn register_bot(base: &str, name: &str, role: &str) -> (String, String) {
@@ -480,10 +485,10 @@ fn spawn_text_done_bot(addr: SocketAddr, token: String, session: String, role: R
     })
 }
 
-/// Chair that synthesizes proactively: on the client trigger it opens the thread
-/// and immediately posts its verdict + `[done]`. It does NOT wait for a `system`
-/// quorum prompt — which never comes when a reviewer stays silent. This is what
-/// the real #4 chair did (it judged it had enough from the diff).
+/// Chair that synthesizes proactively if it sees the client trigger. Newer council
+/// routing does not mention the chair on the opening trigger, but the trigger is
+/// still delivered as context; this bot mirrors the old failure mode where a chair
+/// responded too early anyway.
 fn spawn_chair_proactive_bot(addr: SocketAddr, token: String, session: String) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let ws = connect(addr, &token).await;
@@ -525,17 +530,12 @@ fn spawn_reviewer_no_done_bot(addr: SocketAddr, token: String, session: String, 
     })
 }
 
-/// Live-found on canyugs/openab-control-plane#4 (2026-06-27): on a real PR one
-/// reviewer deliberated but never emitted a done-signal, so the 2-of-2 reviewer
-/// quorum was never reached. The chair synthesized the verdict and signalled done
-/// — but the close was gated on the `Quorum` state, so the session hung until the
-/// 900s watchdog (plus a duplicate-ack chatter storm). The chair holds closing
-/// authority: its `[done]` must close from `Deliberating` too. Here NEITHER
-/// reviewer signals (quorum is unreachable with quorum_n=2); the chair's `[done]`
-/// must still close. Pre-fix, this would hang to the timeout.
+/// A chair that replies to the opening trigger must not be able to close the
+/// council before reviewer quorum. The session remains active for the watchdog
+/// liveness fallback to close with whatever work is already in the thread.
 #[tokio::test]
-async fn chair_done_closes_without_full_quorum() {
-    let addr = spawn_server().await;
+async fn chair_done_before_quorum_waits_for_watchdog() {
+    let (addr, state) = spawn_server_with_state().await;
     let base = addr.to_string();
     let (chair_id, chair_tok) = register_bot(&base, "chair", "chair").await;
     let (rev0_id, rev0_tok) = register_bot(&base, "rev0", "reviewer").await;
@@ -551,23 +551,34 @@ async fn chair_done_closes_without_full_quorum() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     post_client(&base, &session, "review this").await;
 
-    let mut closed = false;
     let mut last = json!({});
-    for _ in 0..60 {
+    for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         last = get_session(&base, &session).await;
-        if last["session"]["state"] == "closed" { closed = true; break; }
+        if last["messages"].as_array().unwrap().iter()
+            .any(|m| m["content"].as_str().unwrap_or("").contains("VERDICT"))
+        {
+            break;
+        }
     }
-    hc.abort(); h0.abort(); h1.abort();
 
-    // No reviewer ever signalled done, so a 2-of-2 quorum was never reachable —
-    // the close could ONLY have come from the chair's authority over Deliberating.
-    assert!(closed, "chair's [done] must close without a full reviewer quorum: {last}");
+    assert_eq!(
+        last["session"]["state"], "deliberating",
+        "chair early [done] must not close before reviewer quorum: {last}",
+    );
     assert!(
         last["messages"].as_array().unwrap().iter()
             .any(|m| m["content"].as_str().unwrap_or("").contains("VERDICT")),
-        "chair's verdict missing from closed session",
+        "chair's early verdict should be preserved for timeout synthesis",
     );
+
+    assert!(
+        orchestrator::force_close_timeout(&state, &session).unwrap(),
+        "watchdog primitive should force-close the stuck council",
+    );
+    last = get_session(&base, &session).await;
+    hc.abort(); h0.abort(); h1.abort();
+    assert_eq!(last["session"]["state"], "closed", "watchdog did not close session: {last}");
 }
 
 async fn read_response<S>(r: &mut S, req: &str) -> Value

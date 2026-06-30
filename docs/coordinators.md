@@ -26,7 +26,7 @@ The split is already clean in `orchestrator.rs`:
 | roster auth, closed-gate, command dispatch (`handle_reply`) | what a done-signal (🆗) means |
 | store message, fanout, emit north, ack (`on_send`) | when/whether to relay a bot's final to another |
 | thread upsert (`on_create_topic`) | when quorum is reached + what message prompts whom |
-| deliver the trigger to the roster (`post_client_message`) | *who is mentioned* (prompted to act) on the trigger — `starters` (council: all; pipeline: stage 0) |
+| deliver the trigger to the roster (`post_client_message`) | *who is mentioned* (prompted to act) on the trigger — `starters` (council: reviewers first; solo: lone bot; pipeline: stage 0) |
 | store reaction, emit, ack (`on_reaction`) | what closes the session + what the verdict is |
 | edit (`on_edit`), backfill (`add_to_roster`), `deliver_event` | — |
 
@@ -156,11 +156,11 @@ impl Coordinator for QuorumCouncil {
             a.push(Action::Transition { from: Deliberating, to: Quorum });
             if let Some(c) = chair {
                 a.push(Action::Prompt { to: c.into(),
-                    content: "Quorum reached. Chair, please render the verdict.".into() });
+                    content: "Quorum reached. Chair, synthesize the final verdict, complete any side effect required by the opening trigger, and only then end your final message with [done]. Do not send [done] before the required side effect succeeds.".into() });
             }
         }
         // 3. chair's own done in Quorum → close with its final as verdict (maybe_close_verdict)
-        if Some(bot) == chair {
+        if Some(bot) == chair && cx.state() == Quorum {
             a.push(Action::Close { from: Quorum, verdict: cx.latest_settled(bot).unwrap_or_default() });
         }
         a
@@ -254,7 +254,7 @@ per event on the hot path — opt-in only.
 3. ✅ **`Pipeline` — a structurally-different (non-fan-in) mode.** Done:
    sequential handoff stage0→…→stageN, `tests/spike.rs::pipeline_three_stages_closes_in_order`
    proves in-order close over the wire. Generalization cost was **smaller than
-   predicted**: it needed a `starters(roster)` kickoff hook (so only stage 0 is
+   predicted**: it needed a `starters(roster, chair)` kickoff hook (so only stage 0 is
    @mentioned on the trigger; others wait), **not** `on_reply`/`on_join` or a
    `Goal` enum — `on_done` + ordered roster (`ORDER BY rowid`) sufficed. Debate
    (multi-round) is the mode that would force `on_reply` + round state; build it

@@ -9,7 +9,7 @@ spec:
     OpenAB Claude pods (1 chair + 2 reviewers) deliberate on a PR and post one
     verdict. Runs on your own Claude subscription (claude setup-token); no per-bot
     registration. After deploy, drop examples/pr-review.yml into your repo + set 2
-    secrets to auto-review every PR. See TEMPLATE.md.
+    secrets to auto-review every PR. See docs/template.md.
   icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/github.svg
   tags:
     - AI

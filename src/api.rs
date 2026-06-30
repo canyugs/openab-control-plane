@@ -4,9 +4,10 @@
 
 use crate::identity;
 use crate::orchestrator;
+use crate::session::{reviewers, DONE_EMOJI};
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -14,6 +15,7 @@ use axum::{Json, Router};
 use futures::Stream;
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio_stream::wrappers::BroadcastStream;
@@ -22,8 +24,10 @@ use tokio_stream::StreamExt;
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/bots", post(register_bot))
-        .route("/v1/sessions", post(open_session))
+        .route("/v1/sessions", get(list_sessions).post(open_session))
+        .route("/v1/session-log", get(session_log_by_query))
         .route("/v1/sessions/:id", get(get_session))
+        .route("/v1/sessions/:id/log", get(session_log_by_id))
         .route("/v1/sessions/:id/messages", post(post_message))
         .route("/v1/sessions/:id/roster", post(add_roster))
         .route("/v1/sessions/:id/stream", get(stream_session))
@@ -115,6 +119,217 @@ async fn open_session(
 }
 
 #[derive(Deserialize)]
+struct ListSessions {
+    #[serde(default)]
+    trigger_ref: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+fn validate_state_filter(state: Option<&str>) -> Result<Option<&str>, StatusCode> {
+    match state {
+        None => Ok(None),
+        Some("open" | "deliberating" | "quorum" | "closed" | "aborted") => Ok(state),
+        Some(_) => Err(StatusCode::BAD_REQUEST),
+    }
+}
+
+async fn list_sessions(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(req): Query<ListSessions>,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_auth(&state, &headers)?;
+    let state_filter = validate_state_filter(req.state.as_deref())?;
+    let limit = req.limit.unwrap_or(20).clamp(1, 100);
+    let sessions = state
+        .store
+        .list_sessions(req.trigger_ref.as_deref(), state_filter, limit)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!({ "sessions": sessions, "limit": limit })))
+}
+
+#[derive(Deserialize)]
+struct SessionLogQuery {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    trigger_ref: Option<String>,
+    #[serde(default)]
+    tail_chars: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct SessionLogParams {
+    #[serde(default)]
+    tail_chars: Option<usize>,
+}
+
+async fn session_log_by_query(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(req): Query<SessionLogQuery>,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_auth(&state, &headers)?;
+    let session = match (req.id.as_deref(), req.trigger_ref.as_deref()) {
+        (Some(id), _) => state
+            .store
+            .session(id)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .ok_or(StatusCode::NOT_FOUND)?,
+        (None, Some(trigger_ref)) => state
+            .store
+            .list_sessions(Some(trigger_ref), None, 1)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .into_iter()
+            .next()
+            .ok_or(StatusCode::NOT_FOUND)?,
+        (None, None) => return Err(StatusCode::BAD_REQUEST),
+    };
+    let body = render_session_log(&state, &session, req.tail_chars)?;
+    Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body))
+}
+
+async fn session_log_by_id(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(req): Query<SessionLogParams>,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_auth(&state, &headers)?;
+    let session = state
+        .store
+        .session(&id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let body = render_session_log(&state, &session, req.tail_chars)?;
+    Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body))
+}
+
+fn render_session_log(
+    state: &Arc<AppState>,
+    session: &crate::store::Session,
+    tail_chars: Option<usize>,
+) -> Result<String, StatusCode> {
+    let tail_chars = tail_chars.unwrap_or(1200).clamp(80, 12000);
+    let roster = state
+        .store
+        .roster(&session.id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let messages = state
+        .store
+        .messages(&session.id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let reactions = state
+        .store
+        .reactions(&session.id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut reactions_by_message: HashMap<String, Vec<String>> = HashMap::new();
+    let mut done_bots = BTreeSet::new();
+    for reaction in &reactions {
+        reactions_by_message
+            .entry(reaction.message_id.clone())
+            .or_default()
+            .push(format!("{}:{}", reaction.bot_id, reaction.emoji));
+        if reaction.emoji == DONE_EMOJI {
+            done_bots.insert(reaction.bot_id.clone());
+        }
+    }
+    let reviewer_ids = reviewers(&roster, session.chair_bot.as_deref());
+    let done_reviewers = reviewer_ids
+        .iter()
+        .filter(|bot| done_bots.contains(*bot))
+        .count();
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "session {} state={} mode={} trigger_ref={}\n",
+        session.id,
+        session.state,
+        session.mode,
+        session.trigger_ref.as_deref().unwrap_or("-"),
+    ));
+    out.push_str(&format!(
+        "created_at={} closed_at={} chair={} quorum={}/{} reviewers_done={}/{}\n",
+        session.created_at,
+        session
+            .closed_at
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        session.chair_bot.as_deref().unwrap_or("-"),
+        done_reviewers,
+        session.quorum_n,
+        done_reviewers,
+        reviewer_ids.len(),
+    ));
+    out.push_str(&format!("roster: {}\n", roster.join(", ")));
+    out.push_str(&format!(
+        "done_bots: {}\n",
+        if done_bots.is_empty() {
+            "-".to_string()
+        } else {
+            done_bots.into_iter().collect::<Vec<_>>().join(", ")
+        }
+    ));
+    out.push_str(&format!(
+        "messages={} reactions={}\n\n",
+        messages.len(),
+        reactions.len()
+    ));
+
+    for msg in messages {
+        let author = match msg.author_kind.as_str() {
+            "bot" => format!("bot:{}", msg.author_id.as_deref().unwrap_or("-")),
+            other => other.to_string(),
+        };
+        let msg_reactions = reactions_by_message
+            .get(&msg.id)
+            .map(|items| items.join(", "))
+            .unwrap_or_else(|| "-".to_string());
+        let done_text = if msg.author_kind == "bot" && is_done_text(&msg.content) {
+            " done_text=true"
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "[{}] {} {} len={} reactions=[{}]{}\n",
+            msg.created_at,
+            msg.id,
+            author,
+            msg.content.chars().count(),
+            msg_reactions,
+            done_text,
+        ));
+        out.push_str(&indent(&tail_text(&msg.content, tail_chars)));
+        out.push_str("\n\n");
+    }
+
+    Ok(out)
+}
+
+fn is_done_text(text: &str) -> bool {
+    let t = text.trim();
+    t == DONE_EMOJI || t.ends_with("[done]")
+}
+
+fn tail_text(text: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text.to_string();
+    }
+    let tail: String = chars[chars.len() - max_chars..].iter().collect();
+    format!("...{tail}")
+}
+
+fn indent(text: &str) -> String {
+    text.lines()
+        .map(|line| format!("    {line}\n"))
+        .collect::<String>()
+}
+
+#[derive(Deserialize)]
 struct PostMessage {
     content: String,
 }
@@ -167,7 +382,8 @@ async fn get_session(
         .ok_or(StatusCode::NOT_FOUND)?;
     let messages = state.store.messages(&id).unwrap_or_default();
     let roster = state.store.roster(&id).unwrap_or_default();
-    Ok(Json(json!({ "session": session, "messages": messages, "roster": roster })))
+    let reactions = state.store.reactions(&id).unwrap_or_default();
+    Ok(Json(json!({ "session": session, "messages": messages, "roster": roster, "reactions": reactions })))
 }
 
 #[derive(Deserialize)]
