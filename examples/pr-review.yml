@@ -9,48 +9,74 @@
 #   COUNCIL_PLANE = https://<your-plane-domain>     (your deployed control-plane)
 #   COUNCIL_KEY   = the control-plane OABCP_API_KEY (the PASSWORD var)
 #
-# On a PR opened/updated it asks the plane to convene a council; the chair posts
-# one verdict comment back (as the chair pod's identity — PAT by default, or the
-# App bot if you did the App-identity upgrade). The plane self-fetches the diff, so
-# this job just fires one request and exits.
+# On a PR opened/updated, a write-ish user's `/review` PR comment, or a manual
+# workflow dispatch, it asks the plane to convene a council. The chair posts one
+# verdict comment back (as the chair pod's identity — PAT by default, or the App bot
+# if you did the App-identity upgrade). The plane self-fetches the diff, so this job
+# just fires one request and exits.
 #
 # Use EITHER this copied Action OR the GitHub App webhook — not both on the same repo,
 # or a PR convenes two councils. See docs/deploy.md.
 name: Council Review
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       pr:
         description: PR number to review
         required: true
 
-concurrency:
-  group: council-review-${{ github.event.pull_request.number || github.event.inputs.pr }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
   pull-requests: read
+  issues: read
 
 jobs:
   review:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # Fork PRs can't read repo secrets — skip the event path for them (same-repo PRs
-    # and manual dispatch still run).
+    # Fork pull_request events cannot read repo secrets. issue_comment events run in
+    # the base repo context, so gate them to write-ish users and exact `/review`
+    # commands before applying the job-level concurrency group.
     if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        (github.event.comment.body == '/review' || startsWith(github.event.comment.body, '/review ')) &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    concurrency:
+      group: council-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pr }}
+      cancel-in-progress: true
     steps:
       - name: Convene review council
         env:
           PLANE: ${{ secrets.COUNCIL_PLANE }}
           KEY: ${{ secrets.COUNCIL_KEY }}
-          PR: ${{ github.event.pull_request.number || github.event.inputs.pr }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pr }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
+          if [ "${EVENT_NAME}" = "issue_comment" ]; then
+            comment_body="$(
+              python3 - <<'PY'
+          import json
+          import os
+          with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
+              event = json.load(f)
+          print(event.get("comment", {}).get("body", ""), end="")
+          PY
+            )"
+            trimmed="$(printf '%s' "${comment_body}" | sed -e 's/^[[:space:]]*//')"
+            if [[ ! "${trimmed}" =~ ^/review([[:space:]]|$) ]]; then
+              echo "::notice::PR comment is not a /review command — skipping council review"
+              exit 0
+            fi
+          fi
           if [ -z "${PLANE:-}" ] || [ -z "${KEY:-}" ]; then
             echo "::notice::COUNCIL_PLANE / COUNCIL_KEY not set — skipping council review"
             exit 0

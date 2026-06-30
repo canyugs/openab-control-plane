@@ -110,10 +110,12 @@ Automatic review through GitHub:
 
 - Use exactly one automatic trigger per repository: webhook or copied Action, not both.
 - For the PAT track, copy `examples/pr-review.yml` into the target repo and set
-  `COUNCIL_PLANE` / `COUNCIL_KEY` secrets.
+  `COUNCIL_PLANE` / `COUNCIL_KEY` secrets. It runs on PR open/update/reopen/ready,
+  a write-ish user's `/review` PR comment, or `workflow_dispatch`.
 - For the webhook track, configure `GITHUB_WEBHOOK_SECRET`, point the GitHub App
   or repo webhook at `https://<domain>/api/v1/github_webhooks`, and subscribe to
-  Pull requests and Issue comments.
+  Pull requests and Issue comments. It runs on PR open/reopen/ready-for-review and
+  a write-ish user's `/review` PR comment.
 
 Review depth is controlled by labels:
 

@@ -80,7 +80,7 @@ review on one path:
 | Trigger (pick one for auto) | How | Setup |
 |------|-----|-------|
 | **GitHub App / repo webhook** | PR event or `/review` comment hits the plane directly | create an App/webhook + secret |
-| **Copied GitHub Action** | drop `examples/pr-review.yml` into an external repo → PR open/update fires it | copy 1 file + 2 secrets |
+| **Copied GitHub Action** | drop `examples/pr-review.yml` into an external repo → PR open/update/reopen/ready or `/review` comment fires it | copy 1 file + 2 secrets |
 | `scripts/open-council.sh` | manual, on demand (terminal / CI) | none |
 
 > **Use the copied Action *or* the webhook for auto — not both on one repo, or a PR
@@ -144,10 +144,12 @@ events are gated by the webhook signature and optional repo allowlist.
 gh secret set COUNCIL_PLANE --body "https://my-council.zeabur.app"
 gh secret set COUNCIL_KEY   --body "<OABCP_API_KEY>"
 ```
-On a PR it POSTs `<plane>/v1/review {repo, pr}` — the plane convenes a council and the
-chair posts the verdict. This is an install option for repos that do not want to create
-a webhook/App, not the dogfood route for this repository. Any trusted CI/script can hit
-`/v1/review` the same way for manual or custom automation.
+On a PR open/update/reopen/ready-for-review event, a write-ish user's `/review`
+PR comment, or a `workflow_dispatch` run with a PR number, it POSTs
+`<plane>/v1/review {repo, pr}`. The plane convenes a council and the chair posts
+the verdict. This is an install option for repos that do not want to create a
+webhook/App, not the dogfood route for this repository. Any trusted CI/script can
+hit `/v1/review` the same way for manual or custom automation.
 
 **Manual fallback / troubleshooting:** use `scripts/open-council.sh owner/repo#123
 --watch` from a trusted terminal or CI job when the webhook is down or a PR needs a
