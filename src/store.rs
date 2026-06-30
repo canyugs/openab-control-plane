@@ -138,6 +138,12 @@ pub trait Store: Send + Sync {
     /// Add a bot to a session roster. Returns true if newly added (false if it
     /// was already a member) — the caller backfills history only on a fresh join.
     fn add_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool>;
+    /// Replace one session roster member with another, preserving the roster row
+    /// position. The caller validates both ids and handles backfill.
+    fn replace_session_bot(&self, session_id: &str, old_bot_id: &str, new_bot_id: &str) -> Result<bool>;
+    /// Update the authoritative chair identity for a session. Used when replacing
+    /// the current chair with another chair-capable bot.
+    fn set_session_chair(&self, session_id: &str, chair_bot: &str) -> Result<()>;
     fn set_state(&self, session_id: &str, state: SessionState) -> Result<()>;
     fn advance_state(&self, session_id: &str, from: SessionState, to: SessionState) -> Result<bool>;
     /// Close from *any* non-terminal state (the liveness watchdog — the current
@@ -151,6 +157,11 @@ pub trait Store: Send + Sync {
     /// webhook-driven creation idempotent: GitHub re-delivers on 5xx, so a retried
     /// PR event must not open a second council for the same PR.
     fn active_session_for_trigger(&self, trigger_ref: &str) -> Result<Option<String>>;
+
+    /// Runtime standing council override. None means use `OABCP_COUNCIL_ROSTER`
+    /// or the built-in default.
+    fn standing_roster(&self) -> Result<Option<Vec<String>>>;
+    fn set_standing_roster(&self, roster: &[String]) -> Result<()>;
 
     fn upsert_thread(&self, session_id: &str, root_message_id: Option<&str>) -> Result<String>;
     fn thread_for_session(&self, session_id: &str) -> Result<Option<String>>;
@@ -176,9 +187,10 @@ pub trait Store: Send + Sync {
     /// Durable per-bot outbox (offline delivery). Frames queued here are flushed
     /// in `seq` order when the bot is connected; a disconnected bot keeps them
     /// and gets them on reconnect. `ack_outbox` removes a delivered frame.
-    fn enqueue_outbox(&self, bot_id: &str, frame: &str) -> Result<()>;
+    fn enqueue_outbox(&self, bot_id: &str, session_id: &str, frame: &str) -> Result<()>;
     fn pending_outbox(&self, bot_id: &str) -> Result<Vec<(i64, String)>>;
     fn ack_outbox(&self, seq: i64) -> Result<()>;
+    fn purge_outbox_for_session_bot(&self, session_id: &str, bot_id: &str) -> Result<()>;
 
     /// Per-`session × role` GitHub installation-token cache (Principle: Agent
     /// Identity). The plane mints a scoped token once per (session, role) and reuses
@@ -229,9 +241,13 @@ CREATE TABLE IF NOT EXISTS reactions (
 );
 CREATE TABLE IF NOT EXISTS outbox (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    bot_id TEXT NOT NULL, frame TEXT NOT NULL, created_at INTEGER NOT NULL
+    bot_id TEXT NOT NULL, session_id TEXT, frame TEXT NOT NULL, created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_bot ON outbox(bot_id, seq);
+CREATE INDEX IF NOT EXISTS idx_outbox_session_bot ON outbox(session_id, bot_id);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY, value TEXT NOT NULL
+);
 -- KNOWN GAP (#4): `token` is stored in plaintext. GitHub installation tokens are
 -- short-lived (≤1h) bearer credentials; until encryption-at-rest lands (AES-GCM with
 -- a KMS-derived key) the DB file itself must be access-controlled. Fast-follow.
@@ -247,6 +263,11 @@ CREATE TABLE IF NOT EXISTS installation_tokens (
 /// ponytail: no migration framework; one guarded ALTER per added column.
 fn migrate(conn: &Connection) -> Result<()> {
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'council'", []);
+    let _ = conn.execute("ALTER TABLE outbox ADD COLUMN session_id TEXT", []);
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_outbox_session_bot ON outbox(session_id, bot_id)",
+        [],
+    )?;
     ensure_no_duplicate_active_trigger_refs(conn)?;
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_active_trigger_ref
@@ -603,6 +624,26 @@ impl Store for SqliteStore {
         Ok(n == 1)
     }
 
+    fn replace_session_bot(&self, session_id: &str, old_bot_id: &str, new_bot_id: &str) -> Result<bool> {
+        let c = self.conn.lock().unwrap();
+        let n = c.execute(
+            "UPDATE session_bots
+             SET bot_id = ?3
+             WHERE session_id = ?1 AND bot_id = ?2",
+            params![session_id, old_bot_id, new_bot_id],
+        )?;
+        Ok(n == 1)
+    }
+
+    fn set_session_chair(&self, session_id: &str, chair_bot: &str) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "UPDATE sessions SET chair_bot = ?2 WHERE id = ?1",
+            params![session_id, chair_bot],
+        )?;
+        Ok(())
+    }
+
     fn set_state(&self, session_id: &str, state: SessionState) -> Result<()> {
         let closed_at = if matches!(state, SessionState::Closed | SessionState::Aborted) {
             Some(now_ms())
@@ -671,6 +712,32 @@ impl Store for SqliteStore {
     fn active_session_for_trigger(&self, trigger_ref: &str) -> Result<Option<String>> {
         let c = self.conn.lock().unwrap();
         Ok(Self::active_session_for_trigger_locked(&c, trigger_ref)?.map(|session| session.id))
+    }
+
+    fn standing_roster(&self) -> Result<Option<Vec<String>>> {
+        let c = self.conn.lock().unwrap();
+        let value = c
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'council_roster'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        value
+            .map(|raw| serde_json::from_str(&raw).context("decode council_roster setting"))
+            .transpose()
+    }
+
+    fn set_standing_roster(&self, roster: &[String]) -> Result<()> {
+        let value = serde_json::to_string(roster)?;
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO settings (key, value)
+             VALUES ('council_roster', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![value],
+        )?;
+        Ok(())
     }
 
     fn upsert_thread(&self, session_id: &str, root_message_id: Option<&str>) -> Result<String> {
@@ -798,11 +865,11 @@ impl Store for SqliteStore {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    fn enqueue_outbox(&self, bot_id: &str, frame: &str) -> Result<()> {
+    fn enqueue_outbox(&self, bot_id: &str, session_id: &str, frame: &str) -> Result<()> {
         let c = self.conn.lock().unwrap();
         c.execute(
-            "INSERT INTO outbox (bot_id, frame, created_at) VALUES (?1, ?2, ?3)",
-            params![bot_id, frame, now_ms()],
+            "INSERT INTO outbox (bot_id, session_id, frame, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![bot_id, session_id, frame, now_ms()],
         )?;
         Ok(())
     }
@@ -818,6 +885,15 @@ impl Store for SqliteStore {
     fn ack_outbox(&self, seq: i64) -> Result<()> {
         let c = self.conn.lock().unwrap();
         c.execute("DELETE FROM outbox WHERE seq = ?1", params![seq])?;
+        Ok(())
+    }
+
+    fn purge_outbox_for_session_bot(&self, session_id: &str, bot_id: &str) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "DELETE FROM outbox WHERE session_id = ?1 AND bot_id = ?2",
+            params![session_id, bot_id],
+        )?;
         Ok(())
     }
 

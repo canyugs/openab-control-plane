@@ -142,7 +142,7 @@ impl AppState {
         // Durable path: queue then flush. A disconnected bot keeps the frame and
         // gets it on reconnect (flush_outbox) instead of losing it.
         let frame = serde_json::to_string(&event).unwrap();
-        if self.store.enqueue_outbox(bot_id, &frame).is_err() {
+        if self.store.enqueue_outbox(bot_id, session_id, &frame).is_err() {
             return self.send_to_bot(bot_id, frame); // fall back to best-effort
         }
         self.flush_outbox(bot_id)

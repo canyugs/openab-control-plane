@@ -24,8 +24,9 @@ pub fn pr_trigger_ref(repo: &str, num: u64) -> String {
     format!("github:pr/{repo}#{num}")
 }
 
-/// Standing council roster (env `OABCP_COUNCIL_ROSTER`, comma-separated; default
-/// matches the seeded `OABCP_BOTS`). `roster[0]` is the chair; the rest review.
+/// Env/default standing council roster (`OABCP_COUNCIL_ROSTER`, comma-separated;
+/// default matches the seeded `OABCP_BOTS`). `roster[0]` is the chair; the rest
+/// review. A runtime DB override may replace this via `runtime_council_roster`.
 pub fn council_roster() -> Vec<String> {
     std::env::var("OABCP_COUNCIL_ROSTER")
         .ok()
@@ -37,6 +38,16 @@ pub fn council_roster() -> Vec<String> {
         })
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| vec!["chair".into(), "rev1".into(), "rev2".into()])
+}
+
+/// Effective standing roster used by webhook/ask convene paths. A DB override
+/// lets operators replace bots without restarting the control-plane; env remains
+/// the fallback and bootstrap source.
+pub fn runtime_council_roster(state: &Arc<AppState>) -> Result<(Vec<String>, &'static str)> {
+    match state.store.standing_roster()? {
+        Some(roster) => Ok((roster, "override")),
+        None => Ok((council_roster(), "env")),
+    }
 }
 
 /// Default preset when neither a PR label nor the global env selects one.
@@ -150,17 +161,27 @@ pub async fn convene_for_pr(
     num: u64,
     label_preset: Option<String>,
 ) -> Result<String> {
-    let action = review_open_session_action(repo, num, label_preset)?;
+    let (roster, _) = runtime_council_roster(state)?;
+    let action = review_open_session_action_with_roster(repo, num, label_preset, roster)?;
     let result = controller::execute(state, ControllerAction::OpenSession(action))?;
     Ok(session_id(result))
 }
 
+#[cfg(test)]
 fn review_open_session_action(
     repo: &str,
     num: u64,
     label_preset: Option<String>,
 ) -> Result<OpenSessionAction> {
-    let roster = council_roster();
+    review_open_session_action_with_roster(repo, num, label_preset, council_roster())
+}
+
+fn review_open_session_action_with_roster(
+    repo: &str,
+    num: u64,
+    label_preset: Option<String>,
+    roster: Vec<String>,
+) -> Result<OpenSessionAction> {
     if roster.is_empty() {
         return Err(anyhow!("empty council roster"));
     }
@@ -224,18 +245,20 @@ pub async fn convene_ask(
     question: &str,
     comment_id: Option<u64>,
 ) -> Result<String> {
-    let action = ask_open_session_action(repo, num, question, comment_id)?;
+    let (roster, _) = runtime_council_roster(state)?;
+    let action = ask_open_session_action_with_roster(repo, num, question, comment_id, roster)?;
     let result = controller::execute(state, ControllerAction::OpenSession(action))?;
     Ok(session_id(result))
 }
 
-fn ask_open_session_action(
+fn ask_open_session_action_with_roster(
     repo: &str,
     num: u64,
     question: &str,
     comment_id: Option<u64>,
+    roster: Vec<String>,
 ) -> Result<OpenSessionAction> {
-    let chair = council_roster()
+    let chair = roster
         .into_iter()
         .next()
         .ok_or_else(|| anyhow!("empty council roster"))?;
