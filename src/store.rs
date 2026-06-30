@@ -94,10 +94,23 @@ pub struct Reaction {
 
 /// Backing-service seam (design §6c). All callers depend on this, not on SQLite.
 pub trait Store: Send + Sync {
-    fn register_bot(&self, name: &str, role: &str, token_hash: &str, token_plain: &str) -> Result<Bot>;
+    fn register_bot(
+        &self,
+        name: &str,
+        role: &str,
+        token_hash: &str,
+        token_plain: &str,
+    ) -> Result<Bot>;
     /// Idempotent insert with a caller-chosen id (= name for a seeded roster, so
     /// pods can fetch /bot-config/<name>). Returns true if newly inserted.
-    fn seed_bot(&self, id: &str, name: &str, role: &str, token_hash: &str, token_plain: &str) -> Result<bool>;
+    fn seed_bot(
+        &self,
+        id: &str,
+        name: &str,
+        role: &str,
+        token_hash: &str,
+        token_plain: &str,
+    ) -> Result<bool>;
     fn bot_by_token_hash(&self, token_hash: &str) -> Result<Option<Bot>>;
     fn bot(&self, id: &str) -> Result<Option<Bot>>;
     /// Plaintext token, for serving /bot-config to a stock OAB pod (spike
@@ -140,12 +153,18 @@ pub trait Store: Send + Sync {
     fn add_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool>;
     /// Replace one session roster member with another, preserving the roster row
     /// position. The caller validates both ids and handles backfill.
-    fn replace_session_bot(&self, session_id: &str, old_bot_id: &str, new_bot_id: &str) -> Result<bool>;
+    fn replace_session_bot(
+        &self,
+        session_id: &str,
+        old_bot_id: &str,
+        new_bot_id: &str,
+    ) -> Result<bool>;
     /// Update the authoritative chair identity for a session. Used when replacing
     /// the current chair with another chair-capable bot.
     fn set_session_chair(&self, session_id: &str, chair_bot: &str) -> Result<()>;
     fn set_state(&self, session_id: &str, state: SessionState) -> Result<()>;
-    fn advance_state(&self, session_id: &str, from: SessionState, to: SessionState) -> Result<bool>;
+    fn advance_state(&self, session_id: &str, from: SessionState, to: SessionState)
+        -> Result<bool>;
     /// Close from *any* non-terminal state (the liveness watchdog — the current
     /// state is unknown when a timeout fires). CAS so only one caller wins;
     /// returns true if this call performed the close.
@@ -262,7 +281,10 @@ CREATE TABLE IF NOT EXISTS installation_tokens (
 /// `ALTER` errors with "duplicate column" once the column is present — ignored.
 /// ponytail: no migration framework; one guarded ALTER per added column.
 fn migrate(conn: &Connection) -> Result<()> {
-    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'council'", []);
+    let _ = conn.execute(
+        "ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'council'",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE outbox ADD COLUMN session_id TEXT", []);
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_outbox_session_bot ON outbox(session_id, bot_id)",
@@ -334,14 +356,18 @@ impl SqliteStore {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
-        Ok(SqliteStore { conn: Mutex::new(conn) })
+        Ok(SqliteStore {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn memory() -> Result<SqliteStore> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
-        Ok(SqliteStore { conn: Mutex::new(conn) })
+        Ok(SqliteStore {
+            conn: Mutex::new(conn),
+        })
     }
 
     fn thread_locked(&self, c: &Connection, session_id: &str) -> Result<Option<String>> {
@@ -383,17 +409,34 @@ impl SqliteStore {
 }
 
 impl Store for SqliteStore {
-    fn register_bot(&self, name: &str, role: &str, token_hash: &str, token_plain: &str) -> Result<Bot> {
+    fn register_bot(
+        &self,
+        name: &str,
+        role: &str,
+        token_hash: &str,
+        token_plain: &str,
+    ) -> Result<Bot> {
         let id = new_id("bot");
         let c = self.conn.lock().unwrap();
         c.execute(
             "INSERT INTO bots (id, name, role, token_hash, token_plain) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![id, name, role, token_hash, token_plain],
         )?;
-        Ok(Bot { id, name: name.to_string(), role: role.to_string() })
+        Ok(Bot {
+            id,
+            name: name.to_string(),
+            role: role.to_string(),
+        })
     }
 
-    fn seed_bot(&self, id: &str, name: &str, role: &str, token_hash: &str, token_plain: &str) -> Result<bool> {
+    fn seed_bot(
+        &self,
+        id: &str,
+        name: &str,
+        role: &str,
+        token_hash: &str,
+        token_plain: &str,
+    ) -> Result<bool> {
         let c = self.conn.lock().unwrap();
         let n = c.execute(
             "INSERT OR IGNORE INTO bots (id, name, role, token_hash, token_plain) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -419,7 +462,13 @@ impl Store for SqliteStore {
             .query_row(
                 "SELECT id, name, role FROM bots WHERE token_hash = ?1",
                 params![token_hash],
-                |r| Ok(Bot { id: r.get(0)?, name: r.get(1)?, role: r.get(2)? }),
+                |r| {
+                    Ok(Bot {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        role: r.get(2)?,
+                    })
+                },
             )
             .optional()?;
         Ok(bot)
@@ -431,7 +480,13 @@ impl Store for SqliteStore {
             .query_row(
                 "SELECT id, name, role FROM bots WHERE id = ?1",
                 params![id],
-                |r| Ok(Bot { id: r.get(0)?, name: r.get(1)?, role: r.get(2)? }),
+                |r| {
+                    Ok(Bot {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        role: r.get(2)?,
+                    })
+                },
             )
             .optional()?;
         Ok(bot)
@@ -634,7 +689,12 @@ impl Store for SqliteStore {
         Ok(n == 1)
     }
 
-    fn replace_session_bot(&self, session_id: &str, old_bot_id: &str, new_bot_id: &str) -> Result<bool> {
+    fn replace_session_bot(
+        &self,
+        session_id: &str,
+        old_bot_id: &str,
+        new_bot_id: &str,
+    ) -> Result<bool> {
         let c = self.conn.lock().unwrap();
         let n = c.execute(
             "UPDATE session_bots
@@ -956,9 +1016,14 @@ mod tests {
         let pr = "https://api.github.com/repos/o/r/pulls/1";
         assert!(store.active_session_for_trigger(pr).unwrap().is_none());
 
-        let s = store.create_session("Review o/r#1", Some(pr), 0, None, &[], "council").unwrap();
+        let s = store
+            .create_session("Review o/r#1", Some(pr), 0, None, &[], "council")
+            .unwrap();
         // an open session with this trigger is found → webhook retry is idempotent
-        assert_eq!(store.active_session_for_trigger(pr).unwrap().as_deref(), Some(s.id.as_str()));
+        assert_eq!(
+            store.active_session_for_trigger(pr).unwrap().as_deref(),
+            Some(s.id.as_str())
+        );
 
         // once closed, the same PR can open a fresh council (e.g. a later push)
         store.set_state(&s.id, SessionState::Closed).unwrap();
@@ -994,14 +1059,7 @@ mod tests {
         assert!(!deduped);
 
         let (second, deduped) = store
-            .create_session_deduped(
-                "Review o/r#2 retry",
-                Some(trigger),
-                0,
-                None,
-                &[],
-                "council",
-            )
+            .create_session_deduped("Review o/r#2 retry", Some(trigger), 0, None, &[], "council")
             .unwrap();
         assert!(deduped);
         assert_eq!(second.id, first.id);
@@ -1058,8 +1116,12 @@ mod tests {
     #[test]
     fn reactions_returns_only_the_requested_session() {
         let store = SqliteStore::memory().unwrap();
-        let s1 = store.create_session("one", None, 0, None, &[], "council").unwrap();
-        let s2 = store.create_session("two", None, 0, None, &[], "council").unwrap();
+        let s1 = store
+            .create_session("one", None, 0, None, &[], "council")
+            .unwrap();
+        let s2 = store
+            .create_session("two", None, 0, None, &[], "council")
+            .unwrap();
         let m1 = store
             .add_message(&s1.id, None, "bot", Some("rev1"), "done", None)
             .unwrap();
@@ -1101,7 +1163,9 @@ mod tests {
             .unwrap();
         assert_eq!(active, vec!["s2"]);
         let stale_state: String = conn
-            .query_row("SELECT state FROM sessions WHERE id = 's1'", [], |r| r.get(0))
+            .query_row("SELECT state FROM sessions WHERE id = 's1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(stale_state, "aborted");
     }

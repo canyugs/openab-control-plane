@@ -10,6 +10,11 @@ BOT_AGENTS="${BOT_AGENTS:-}"
 IMAGE="${IMAGE:-}"
 AGENT_IMAGES="${AGENT_IMAGES:-}"
 AGENT_SECRETS="${AGENT_SECRETS:-}"
+EXTRA_SECRETS="${EXTRA_SECRETS:-}"
+STEERING_FILE="${STEERING_FILE:-}"
+STEERING_CONFIGMAP="${STEERING_CONFIGMAP:-openab-pr-review-steering}"
+STEERING_KEY="${STEERING_KEY:-openab-pr-review.md}"
+STEERING_MOUNT_PATH="${STEERING_MOUNT_PATH:-}"
 CONTROL_PLANE_SERVICE="${CONTROL_PLANE_SERVICE:-control-plane}"
 CONTROL_PLANE_PORT="${CONTROL_PLANE_PORT:-8090}"
 CONFIG_BASE_URL="${CONFIG_BASE_URL:-}"
@@ -44,10 +49,20 @@ Options:
   --secret-key <key>         Secret key name. Default: same as --credential-env.
   --agent-secret <spec>      Per-agent credential. Repeatable.
                              Format: agent=secret-name:ENV_NAME[:secret-key].
+  --extra-secret <spec>      Secret exposed to every bot. Repeatable.
+                             Format: secret-name:ENV_NAME[:secret-key].
   --chair-bot <name>         Bot name that receives chair-only env. Default: chair.
   --chair-credential-env <n> Env var exposed only to the chair bot.
   --chair-secret-name <n>    Kubernetes Secret carrying the chair-only credential.
   --chair-secret-key <key>   Secret key name. Default: same as --chair-credential-env.
+  --steering-file <path>     Create/update a ConfigMap from this steering file and
+                             mount it into each bot. Kiro defaults to
+                             /home/agent/.kiro/steering; other agents default to
+                             /home/node/AGENTS.md.
+  --steering-configmap <n>   ConfigMap name for --steering-file.
+  --steering-key <name>      ConfigMap key / mounted file name. Default: openab-pr-review.md.
+  --steering-mount-path <p>  Override mount path. A *.md path is mounted as one file;
+                             any other path is mounted as a directory.
   --namespace <name>         Kubernetes namespace. Default: oabcp-local.
   --context <name>           Expected kubectl context. Default: docker-desktop.
   --any-context              Do not enforce the kubectl context.
@@ -60,6 +75,8 @@ Options:
 Environment:
   KUBE_NAMESPACE, KUBE_CONTEXT, BOT_NAMES, AGENT, BOT_AGENTS, IMAGE,
   AGENT_IMAGES, AGENT_SECRETS, REPLICAS, CONFIG_BASE_URL,
+  EXTRA_SECRETS, STEERING_FILE, STEERING_CONFIGMAP, STEERING_KEY,
+  STEERING_MOUNT_PATH,
   CREDENTIAL_ENV, SECRET_NAME, SECRET_KEY,
   CHAIR_BOT, CHAIR_CREDENTIAL_ENV, CHAIR_SECRET_NAME, CHAIR_SECRET_KEY.
 
@@ -85,6 +102,12 @@ Examples:
     --agent-secret claude=claude-oauth:CLAUDE_CODE_OAUTH_TOKEN \
     --chair-secret-name gh-token \
     --chair-credential-env GH_TOKEN
+
+  scripts/dev-deploy-bots.sh \
+    --agent kiro \
+    --agent-secret kiro=kiro-api:KIRO_API_KEY \
+    --extra-secret gh-token:GH_TOKEN \
+    --steering-file docs/steering/pr-review.md
 USAGE
 }
 
@@ -179,11 +202,77 @@ append_secret_env_entry() {
   local env_name="$1"
   local secret_name="$2"
   local secret_key="$3"
+  if [[ ",${env_names:-}," == *",$env_name,"* ]]; then
+    die "duplicate env var '$env_name' in bot deployment"
+  fi
+  env_names="${env_names:+$env_names,}$env_name"
   env_entries="${env_entries}            - name: $env_name
               valueFrom:
                 secretKeyRef:
                   name: $secret_name
                   key: $secret_key
+"
+}
+
+append_secret_spec_env_entries() {
+  local raw_spec spec secret_name env_name secret_key rest
+  local -a specs=()
+  [[ -n "$EXTRA_SECRETS" ]] || return
+  IFS=',' read -r -a specs <<<"$EXTRA_SECRETS"
+  for raw_spec in "${specs[@]}"; do
+    spec=$(printf '%s' "$raw_spec" | xargs)
+    [[ -n "$spec" ]] || continue
+    [[ "$spec" == *:* ]] ||
+      die "invalid --extra-secret '$spec' (expected secret-name:ENV_NAME[:secret-key])"
+    secret_name="${spec%%:*}"
+    rest="${spec#*:}"
+    env_name="${rest%%:*}"
+    if [[ "$rest" == *:* ]]; then
+      secret_key="${rest#*:}"
+    else
+      secret_key="$env_name"
+    fi
+    [[ -n "$secret_name" ]] || die "--extra-secret has an empty secret name"
+    [[ -n "$env_name" ]] || die "--extra-secret has an empty env name"
+    [[ -n "$secret_key" ]] || die "--extra-secret has an empty secret key"
+    kubectl -n "$KUBE_NAMESPACE" get secret "$secret_name" >/dev/null ||
+      die "secret '$secret_name' does not exist in namespace '$KUBE_NAMESPACE'"
+    append_secret_env_entry "$env_name" "$secret_name" "$secret_key"
+  done
+}
+
+default_steering_mount_path_for_agent() {
+  case "$1" in
+    kiro) echo "/home/agent/.kiro/steering" ;;
+    *) echo "/home/node/AGENTS.md" ;;
+  esac
+}
+
+build_steering_yaml() {
+  local bot_agent="$1"
+  local mount_path
+  steering_volume_mount_yaml=""
+  steering_volume_yaml=""
+  [[ -n "$STEERING_FILE" ]] || return
+  mount_path="${STEERING_MOUNT_PATH:-$(default_steering_mount_path_for_agent "$bot_agent")}"
+  if [[ "$mount_path" == *.md ]]; then
+    steering_volume_mount_yaml="          volumeMounts:
+            - name: openab-steering
+              mountPath: $mount_path
+              subPath: $STEERING_KEY
+              readOnly: true
+"
+  else
+    steering_volume_mount_yaml="          volumeMounts:
+            - name: openab-steering
+              mountPath: $mount_path
+              readOnly: true
+"
+  fi
+  steering_volume_yaml="      volumes:
+        - name: openab-steering
+          configMap:
+            name: $STEERING_CONFIGMAP
 "
 }
 
@@ -209,6 +298,8 @@ while [[ $# -gt 0 ]]; do
     --secret-key=*) SECRET_KEY="${1#*=}"; shift ;;
     --agent-secret) AGENT_SECRETS="${AGENT_SECRETS:+$AGENT_SECRETS,}${2:?--agent-secret needs a value}"; shift 2 ;;
     --agent-secret=*) AGENT_SECRETS="${AGENT_SECRETS:+$AGENT_SECRETS,}${1#*=}"; shift ;;
+    --extra-secret) EXTRA_SECRETS="${EXTRA_SECRETS:+$EXTRA_SECRETS,}${2:?--extra-secret needs a value}"; shift 2 ;;
+    --extra-secret=*) EXTRA_SECRETS="${EXTRA_SECRETS:+$EXTRA_SECRETS,}${1#*=}"; shift ;;
     --chair-bot) CHAIR_BOT="${2:?--chair-bot needs a value}"; shift 2 ;;
     --chair-bot=*) CHAIR_BOT="${1#*=}"; shift ;;
     --chair-credential-env) CHAIR_CREDENTIAL_ENV="${2:?--chair-credential-env needs a value}"; shift 2 ;;
@@ -228,6 +319,14 @@ while [[ $# -gt 0 ]]; do
     --port=*) CONTROL_PLANE_PORT="${1#*=}"; shift ;;
     --config-base-url) CONFIG_BASE_URL="${2:?--config-base-url needs a value}"; shift 2 ;;
     --config-base-url=*) CONFIG_BASE_URL="${1#*=}"; shift ;;
+    --steering-file) STEERING_FILE="${2:?--steering-file needs a value}"; shift 2 ;;
+    --steering-file=*) STEERING_FILE="${1#*=}"; shift ;;
+    --steering-configmap) STEERING_CONFIGMAP="${2:?--steering-configmap needs a value}"; shift 2 ;;
+    --steering-configmap=*) STEERING_CONFIGMAP="${1#*=}"; shift ;;
+    --steering-key) STEERING_KEY="${2:?--steering-key needs a value}"; shift 2 ;;
+    --steering-key=*) STEERING_KEY="${1#*=}"; shift ;;
+    --steering-mount-path) STEERING_MOUNT_PATH="${2:?--steering-mount-path needs a value}"; shift 2 ;;
+    --steering-mount-path=*) STEERING_MOUNT_PATH="${1#*=}"; shift ;;
     --no-wait) WAIT_ROLLOUT=0; shift ;;
     --delete) DELETE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -271,7 +370,19 @@ if [[ -n "$CHAIR_SECRET_NAME" || -n "$CHAIR_CREDENTIAL_ENV" || -n "$CHAIR_SECRET
     die "secret '$CHAIR_SECRET_NAME' does not exist in namespace '$KUBE_NAMESPACE'"
 fi
 
+if [[ -n "$STEERING_FILE" ]]; then
+  [[ -f "$STEERING_FILE" ]] || die "steering file '$STEERING_FILE' does not exist"
+  [[ -n "$STEERING_CONFIGMAP" ]] || die "--steering-configmap cannot be empty"
+  [[ -n "$STEERING_KEY" ]] || die "--steering-key cannot be empty"
+fi
+
 kubectl create namespace "$KUBE_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+if [[ -n "$STEERING_FILE" ]]; then
+  kubectl -n "$KUBE_NAMESPACE" create configmap "$STEERING_CONFIGMAP" \
+    "--from-file=$STEERING_KEY=$STEERING_FILE" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+fi
 
 IFS=',' read -r -a bots <<<"$BOT_NAMES"
 for raw_bot in "${bots[@]}"; do
@@ -287,6 +398,7 @@ for raw_bot in "${bots[@]}"; do
     config_url="http://$CONTROL_PLANE_SERVICE:$CONTROL_PLANE_PORT/bot-config/$bot?agent=$bot_agent"
   fi
   env_entries=""
+  env_names=""
   if [[ -n "$SECRET_NAME" ]]; then
     append_secret_env_entry "$CREDENTIAL_ENV" "$SECRET_NAME" "$SECRET_KEY"
   else
@@ -297,6 +409,7 @@ for raw_bot in "${bots[@]}"; do
       append_secret_env_entry "$AGENT_CREDENTIAL_ENV" "$AGENT_SECRET_NAME" "$AGENT_SECRET_KEY"
     fi
   fi
+  append_secret_spec_env_entries
   if [[ "$bot" == "$CHAIR_BOT" && -n "$CHAIR_SECRET_NAME" ]]; then
     append_secret_env_entry "$CHAIR_CREDENTIAL_ENV" "$CHAIR_SECRET_NAME" "$CHAIR_SECRET_KEY"
   fi
@@ -305,6 +418,7 @@ for raw_bot in "${bots[@]}"; do
     env_yaml="          env:
 $env_entries"
   fi
+  build_steering_yaml "$bot_agent"
 
   echo "applying OpenAB bot deployment: $bot ($bot_agent, $bot_image)"
   kubectl -n "$KUBE_NAMESPACE" apply -f - >/dev/null <<YAML
@@ -337,6 +451,8 @@ spec:
             - -c
             - $config_url
 $env_yaml
+$steering_volume_mount_yaml
+$steering_volume_yaml
 YAML
 
   # Local OCP DBs are often recreated, which changes /bot-config tokens without

@@ -2,9 +2,8 @@ PR Review Council — {{REPO}} #{{NUM}} "{{TITLE}}"
 
 Fetch and review the PR yourself — the diff is NOT inlined below (it may be large).
 
-Role gate — follow exactly:
-- If your bot name is `chair`: do ONLY the Chair instructions. Do not review an angle, do not fetch the diff on the opening turn, and do not end with [done] until OCP later says quorum was reached.
-- If your bot name is not `chair`: do ONLY the Reviewers instructions. Never create or edit `/tmp/verdict.md`, never run `gh pr comment`, `gh pr review`, or `gh pr edit`, and never follow the Chair instructions.
+OCP sends each participant a recipient-specific task derived from this trigger.
+Standing protocol and report style may be preloaded from docs/steering/pr-review.md.
 
 {{ANGLE_ASSIGNMENT}}
 Reviewers: read the PR with your own tools, then post your findings in THIS thread
@@ -35,3 +34,6 @@ Chair quorum turn:
   4. Only after the PR comment update succeeds, end your final message with [done].
 
 The [done] token (on its own, at the end of your last message) is how the council records that you are finished — it is what closes the session. Send it exactly once, when truly done.
+
+Final reports should follow the OpenAB-style shape: verdict line, What This PR Does,
+How It Works, Findings, Finding Details, What's Good, Baseline Check, and Review Metadata.

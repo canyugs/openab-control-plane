@@ -145,7 +145,12 @@ impl GitHubApp {
                 };
                 let api_base = std::env::var("GITHUB_API_BASE")
                     .unwrap_or_else(|_| "https://api.github.com".into());
-                Some(GitHubApp::from_parts(app_id, normalize_pem(&raw), installation_id, api_base))
+                Some(GitHubApp::from_parts(
+                    app_id,
+                    normalize_pem(&raw),
+                    installation_id,
+                    api_base,
+                ))
             }
             // Partial config is also an operator error, not a silent downgrade.
             _ => {
@@ -165,11 +170,14 @@ impl GitHubApp {
     pub fn app_jwt(&self) -> Result<String> {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
         let now = unix_secs();
-        let claims = Claims { iat: now - 60, exp: now + 9 * 60, iss: self.app_id.clone() };
+        let claims = Claims {
+            iat: now - 60,
+            exp: now + 9 * 60,
+            iss: self.app_id.clone(),
+        };
         let key = EncodingKey::from_rsa_pem(self.private_key_pem.as_bytes())
             .context("GITHUB_APP_PRIVATE_KEY is not a valid RSA PEM")?;
-        encode(&Header::new(Algorithm::RS256), &claims, &key)
-            .context("signing App JWT failed")
+        encode(&Header::new(Algorithm::RS256), &claims, &key).context("signing App JWT failed")
     }
 
     /// Exchange the App JWT for a **per-role scoped** installation access token:
@@ -197,7 +205,10 @@ impl GitHubApp {
         // Check status before parsing: an error response may not be the JSON shape we
         // expect, and a parse failure there would mask the real HTTP error.
         let status = resp.status();
-        let raw = resp.text().await.context("read access_tokens response body")?;
+        let raw = resp
+            .text()
+            .await
+            .context("read access_tokens response body")?;
         if !status.is_success() {
             return Err(anyhow!("GitHub access_tokens returned {status}: {raw}"));
         }
@@ -206,7 +217,11 @@ impl GitHubApp {
             .as_str()
             .ok_or_else(|| anyhow!("access_tokens response had no `token`: {body}"))?
             .to_string();
-        Ok(MintedToken { token, expires_at: crate::store::now_ms() + TOKEN_TTL_MS, role })
+        Ok(MintedToken {
+            token,
+            expires_at: crate::store::now_ms() + TOKEN_TTL_MS,
+            role,
+        })
     }
 }
 
@@ -220,14 +235,21 @@ fn normalize_pem(raw: &str) -> String {
         return s.replace("\\n", "\n");
     }
     use base64::{engine::general_purpose::STANDARD, Engine};
-    match STANDARD.decode(s).ok().and_then(|b| String::from_utf8(b).ok()) {
+    match STANDARD
+        .decode(s)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+    {
         Some(decoded) if decoded.contains("-----BEGIN") => decoded,
         _ => s.to_string(),
     }
 }
 
 fn unix_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 #[cfg(test)]

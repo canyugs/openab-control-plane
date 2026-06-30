@@ -93,10 +93,13 @@ kubectl -n oabcp-local create secret generic kiro-api \
   --from-literal=KIRO_API_KEY=<KIRO_API_KEY>
 ```
 
-Then deploy the three bot pods:
+Then deploy the three bot pods with the portable review steering mounted into
+Kiro's native steering directory:
 
 ```sh
-scripts/dev-deploy-bots.sh --agent kiro
+scripts/dev-deploy-bots.sh \
+  --agent kiro \
+  --steering-file docs/steering/pr-review.md
 ```
 
 The script auto-detects the `kiro-api` secret when it exists and uses
@@ -138,15 +141,15 @@ local image. Any CLI permission/trust switch belongs in the agent profile `args`
 the deploy script does not infer a bypass flag for unknown CLIs.
 
 CLI compatibility has two layers. The profile can open the CLI's tool/sandbox
-permissions, but it cannot force the CLI to accept trigger-embedded council
-steering. For example, Kiro connects through ACP and `--trust-all-tools` opens
-tool use, but local smoke tests showed it may still reject the PR-review council
-prompt as role-routing/prompt-injection. Use a CLI that accepts delegated PR
-review prompts, or move the standing rules into that CLI's own steering layer
-(`pre_seed`, `CLAUDE.md`, `.kiro/steering/`, etc.) instead of relying only on the
-trigger body.
+permissions, but standing review rules should live in the CLI's native steering
+layer (`pre_seed`, `CLAUDE.md`, `.kiro/steering/`, `AGENTS.md`, etc.) instead of
+being repeated in every trigger. `scripts/dev-deploy-bots.sh --steering-file`
+creates a ConfigMap from [steering/pr-review.md](steering/pr-review.md). By
+default it mounts to `/home/agent/.kiro/steering` for Kiro and
+`/home/node/AGENTS.md` for other agent profiles. The OCP trigger then carries
+only the runtime PR ref, current recipient task, and focus assignment.
 
-If the test should also let the chair write PR comments, sync your local
+If the test only needs the chair to write PR comments, sync your local
 `gh auth token` into a Kubernetes Secret and inject it only into the chair:
 
 ```sh
@@ -158,9 +161,24 @@ scripts/dev-deploy-bots.sh \
   --chair-credential-env GH_TOKEN
 ```
 
-This is a local development shortcut. The production GitHub App path should keep
-using the chair pod's App identity setup from
-[install-github-app.md](install-github-app.md), not a shared user PAT.
+Self-fetch PR reviews also need reviewer-side GitHub read access. For local
+testing, inject the same token into all bots and rely on steering/direct tasks to
+keep reviewers read-only:
+
+```sh
+scripts/dev-sync-gh-token-secret.sh
+
+scripts/dev-deploy-bots.sh \
+  --agent kiro \
+  --agent-secret kiro=kiro-api:KIRO_API_KEY \
+  --extra-secret gh-token:GH_TOKEN \
+  --steering-file docs/steering/pr-review.md
+```
+
+This is a local development shortcut. Production should use the GitHub App path
+from [install-github-app.md](install-github-app.md) or session-scoped per-role
+tokens, so reviewers get read-only credentials and only the chair gets write
+scope.
 
 To scale the bots down without deleting their deployments:
 
@@ -190,8 +208,9 @@ scripts/dev-sync-gh-token-secret.sh
 scripts/dev-deploy-bots.sh \
   --agent kiro \
   --config-base-url http://host.docker.internal:18090 \
-  --chair-secret-name gh-token \
-  --chair-credential-env GH_TOKEN
+  --agent-secret kiro=kiro-api:KIRO_API_KEY \
+  --extra-secret gh-token:GH_TOKEN \
+  --steering-file docs/steering/pr-review.md
 ```
 
 For webhook testing with host OCP, run the tunnel pod against the host service:

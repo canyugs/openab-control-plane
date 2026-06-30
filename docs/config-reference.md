@@ -57,7 +57,7 @@ skipped. Switching provider = change `OABCP_AGENT_COMMAND` + set that provider's
 | `GROK_CODE_XAI_API_KEY` | Grok (xAI) | |
 | `KIRO_API_KEY` | Kiro | |
 | `COPILOT_GITHUB_TOKEN` | GitHub Copilot | Optional PAT |
-| `GH_TOKEN` | — | GitHub PAT for PR operations. **Set only on the chair pod** to prevent duplicate comments |
+| `GH_TOKEN` | — | GitHub token for PR operations. Reviewers need read access for self-fetch (`gh pr diff` / checkout); the chair needs write access for the single verdict comment. In production, prefer per-role GitHub App/session tokens over one shared PAT |
 
 **"Use your own login" = token form only.** Your own subscription login *is*
 supported — *as a token*: `claude setup-token` mints `CLAUDE_CODE_OAUTH_TOKEN` from
@@ -118,6 +118,13 @@ do not guarantee the CLI will accept trigger-embedded council steering. If a CLI
 rejects role-routed prompts, seed the standing rules through that CLI's native
 steering mechanism or OAB `pre_seed`.
 
+The portable steering source is [steering/pr-review.md](steering/pr-review.md).
+It defines role resolution, prompt-injection boundaries, reviewer read-only
+rules, `[done]`, and the OpenAB-style final report shape. Local Kubernetes
+deployments can mount it with `scripts/dev-deploy-bots.sh --steering-file`; Kiro
+defaults to `/home/agent/.kiro/steering`, while AGENTS.md-style CLIs default to
+`/home/node/AGENTS.md`.
+
 The pod must run the matching agent image and carry that provider's key. OCP only
 serves the OpenAB config; it does not install a CLI into the container and does
 not create credentials. Keep the axes separate:
@@ -127,7 +134,9 @@ not create credentials. Keep the axes separate:
 | OAB `[agent]` command/args | `OABCP_AGENT_PROFILES` or built-in profile | `kiro-cli acp --trust-all-tools` |
 | Bot image | deployment/template/service image | `ghcr.io/openabdev/openab:0.9.0-beta.3-kiro` |
 | Model credential | bot pod env/Secret | `KIRO_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` |
-| PR write credential | chair pod only | `GH_TOKEN` or pod-local GitHub App setup |
+| PR read credential | reviewer pods | read-only App/session token or local `GH_TOKEN` shortcut for `gh pr diff` |
+| PR write credential | chair pod only | write-scoped App/session token or local `GH_TOKEN` shortcut |
+| Review steering | bot pod filesystem / OAB pre_seed | `docs/steering/pr-review.md` |
 
 For local Kubernetes testing, `scripts/dev-deploy-bots.sh` can wire these per bot:
 
@@ -136,14 +145,16 @@ scripts/dev-deploy-bots.sh \
   --bot-agents chair=kiro,rev1=claude,rev2=claude \
   --agent-secret kiro=kiro-api:KIRO_API_KEY \
   --agent-secret claude=claude-oauth:CLAUDE_CODE_OAUTH_TOKEN \
-  --chair-secret-name gh-token \
-  --chair-credential-env GH_TOKEN
+  --extra-secret gh-token:GH_TOKEN \
+  --steering-file docs/steering/pr-review.md
 ```
 
 Use `--agent-images agent=image,...` for custom profiles without a built-in local
-image. **Mixing is the default** when the template or deployment wires each pod
-with a different `?agent=`; for a uniform council, set `OABCP_AGENT_COMMAND` and
-drop the per-pod param.
+image. `--extra-secret gh-token:GH_TOKEN` is a local shortcut that gives reviewers
+enough access to self-fetch; production should replace it with read-only
+reviewer credentials and write-only chair credentials. **Mixing is the default**
+when the template or deployment wires each pod with a different `?agent=`; for a
+uniform council, set `OABCP_AGENT_COMMAND` and drop the per-pod param.
 
 ## Roster format
 

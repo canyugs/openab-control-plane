@@ -40,7 +40,11 @@ fn text_type() -> String {
 
 impl Content {
     pub fn text(s: impl Into<String>) -> Content {
-        Content { content_type: "text".into(), text: s.into(), attachments: vec![] }
+        Content {
+            content_type: "text".into(),
+            text: s.into(),
+            attachments: vec![],
+        }
     }
 }
 
