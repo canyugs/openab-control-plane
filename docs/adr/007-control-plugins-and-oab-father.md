@@ -146,7 +146,9 @@ templates:
 
 This is a sketch, not the committed schema. The important decision is the
 boundary: the manifest describes what must be installed and authorized; OCP core
-continues to enforce runtime invariants.
+continues to enforce runtime invariants. See
+[ADR 008](008-external-controller-protocol.md) for the proposed external
+controller event/action protocol.
 
 ## Boundaries
 
@@ -178,8 +180,9 @@ continues to enforce runtime invariants.
 ## Deferred
 
 - Final manifest schema and validation rules.
-- Whether plugin policy is compiled Rust, external webhook callbacks, WASM, or a
-  constrained declarative policy language.
+- Whether plugin policy is compiled Rust, external HTTP controllers, WASM, or a
+  constrained declarative policy language. ADR 008 proposes external HTTP as the
+  first stable boundary.
 - A first-class plugin registry.
 - OAB Father UI/API shape.
 - Migration of the current PR-review implementation into a fully packaged

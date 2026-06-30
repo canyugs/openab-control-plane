@@ -148,7 +148,9 @@ POST /v1/review
 | Watchdog | The timeout fallback that closes stale non-terminal sessions |
 
 See [ADR 007](docs/adr/007-control-plugins-and-oab-father.md) for the
-Control Plugin / OAB Father direction.
+Control Plugin / OAB Father direction, and
+[ADR 008](docs/adr/008-external-controller-protocol.md) for the proposed
+external controller protocol.
 
 ## Source Map
 
@@ -171,7 +173,9 @@ Control Plugin / OAB Father direction.
 - [docs/coordinators.md](docs/coordinators.md) for the coordinator seam.
 - [docs/config-reference.md](docs/config-reference.md) for environment variables.
 - [docs/roadmap.md](docs/roadmap.md) for planned work and known gaps.
-- [docs/adr/](docs/adr/) for decision records.
+- [docs/adr/](docs/adr/) for decision records, including
+  [ADR 007](docs/adr/007-control-plugins-and-oab-father.md) and
+  [ADR 008](docs/adr/008-external-controller-protocol.md).
 
 ## Develop
 
