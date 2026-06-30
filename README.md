@@ -93,6 +93,11 @@ npx zeabur@latest template deploy -c 1E1Y97 \
 When developing unpublished template changes from this repository, use
 `-f zeabur-template-pat-Z7TQIR.yaml` or `-f zeabur-template-app-1E1Y97.yaml` instead of `-c`.
 
+Claude is only the template default. OCP serves agent profiles dynamically through
+`/bot-config/<bot>?agent=<profile>`; switching or mixing CLIs means updating the
+agent profile (`OABCP_AGENT_PROFILES` for command/args/permissions), the bot
+image, and the pod Secret carrying that CLI's credential.
+
 Full install docs:
 
 - [docs/install-pat.md](docs/install-pat.md) for the PAT copied Action path.
@@ -191,8 +196,10 @@ external controller protocol.
 | `src/store.rs` | SQLite store and domain types |
 | `src/ws.rs` | south gateway server for OpenAB pods |
 | `scripts/open-council.sh` | manual PR review client |
+| `scripts/dev-run-host-ocp.sh` | local host OCP runner for Docker Desktop bot pods |
 | `scripts/dev-deploy-bots.sh` | local Kubernetes OpenAB bot pod deployment |
 | `scripts/dev-tunnel-k8s.sh` | local Kubernetes cloudflared tunnel to OCP |
+| `scripts/dev-sync-gh-token-secret.sh` | local chair-only GitHub token Secret helper |
 | `examples/pr-review.yml` | copied Action option for external repos |
 
 ## Docs

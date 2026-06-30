@@ -296,6 +296,9 @@ mod tests {
         assert!(t.contains("canyugs/ocp #7"));
         // pointer trigger tells bots to self-fetch; the diff is NOT inlined
         assert!(t.contains("gh pr diff 7 --repo canyugs/ocp"));
+        assert!(t.contains("Role gate"));
+        assert!(t.contains("If your bot name is `chair`"));
+        assert!(t.contains("If your bot name is not `chair`"));
         assert!(t.contains("OpenAB Council review started"));
         assert!(!t.contains("===== DIFF ====="));
         assert!(!t.contains("{{"));

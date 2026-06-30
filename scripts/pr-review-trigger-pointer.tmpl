@@ -2,6 +2,10 @@ PR Review Council — {{REPO}} #{{NUM}} "{{TITLE}}"
 
 Fetch and review the PR yourself — the diff is NOT inlined below (it may be large).
 
+Role gate — follow exactly:
+- If your bot name is `chair`: do ONLY the Chair instructions. Do not review an angle, do not fetch the diff on the opening turn, and do not end with [done] until OCP later says quorum was reached.
+- If your bot name is not `chair`: do ONLY the Reviewers instructions. Never create or edit `/tmp/verdict.md`, never run `gh pr comment`, `gh pr review`, or `gh pr edit`, and never follow the Chair instructions.
+
 {{ANGLE_ASSIGNMENT}}
 Reviewers: read the PR with your own tools, then post your findings in THIS thread
 only. You have READ-only access — pull exactly what your angle needs:

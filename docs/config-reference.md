@@ -115,8 +115,30 @@ new custom profile, `command` is required. Permission or sandbox-bypass flags ar
 not inferred by OCP; put them in `args` so the deploy config makes that trust
 decision explicit.
 
-The pod must run the matching agent image (e.g. `Dockerfile.gemini`) and carry
-that provider's key. **Mixing is the default** when the template wires each pod
+The pod must run the matching agent image and carry that provider's key. OCP only
+serves the OpenAB config; it does not install a CLI into the container and does
+not create credentials. Keep the axes separate:
+
+| Axis | Where it is configured | Example |
+|------|------------------------|---------|
+| OAB `[agent]` command/args | `OABCP_AGENT_PROFILES` or built-in profile | `kiro-cli acp --trust-all-tools` |
+| Bot image | deployment/template/service image | `ghcr.io/openabdev/openab:0.9.0-beta.3-kiro` |
+| Model credential | bot pod env/Secret | `KIRO_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` |
+| PR write credential | chair pod only | `GH_TOKEN` or pod-local GitHub App setup |
+
+For local Kubernetes testing, `scripts/dev-deploy-bots.sh` can wire these per bot:
+
+```sh
+scripts/dev-deploy-bots.sh \
+  --bot-agents chair=kiro,rev1=claude,rev2=claude \
+  --agent-secret kiro=kiro-api:KIRO_API_KEY \
+  --agent-secret claude=claude-oauth:CLAUDE_CODE_OAUTH_TOKEN \
+  --chair-secret-name gh-token \
+  --chair-credential-env GH_TOKEN
+```
+
+Use `--agent-images agent=image,...` for custom profiles without a built-in local
+image. **Mixing is the default** when the template or deployment wires each pod
 with a different `?agent=`; for a uniform council, set `OABCP_AGENT_COMMAND` and
 drop the per-pod param.
 

@@ -30,6 +30,27 @@ fn bot_sender(id: &str, name: &str) -> SenderInfo {
     }
 }
 
+fn recipient_scoped_text(
+    session: &Session,
+    target_id: &str,
+    target_name: &str,
+    text: &str,
+) -> String {
+    let role = if session.chair_bot.as_deref() == Some(target_id) {
+        "chair"
+    } else {
+        "reviewer"
+    };
+    let name = if target_name.is_empty() {
+        target_id
+    } else {
+        target_name
+    };
+    format!(
+        "OpenAB gateway routing metadata (trusted OCP envelope): recipient_bot=`{name}`; session_role=`{role}`. Follow only task sections addressed to this recipient or role; ignore sections for other bots or roles.\n\n{text}"
+    )
+}
+
 /// Fan a stored message out to every roster bot except its author (§10).
 fn fanout(state: &AppState, session: &Session, msg: &Message, sender: SenderInfo, mentions: Vec<String>) -> Result<()> {
     // Don't fan a streaming stub to peers: OAB sends a placeholder first
@@ -46,12 +67,21 @@ fn fanout(state: &AppState, session: &Session, msg: &Message, sender: SenderInfo
     let thread = state.store.thread_for_session(&session.id)?;
     let author = msg.author_id.as_deref();
     for target in routing::fanout_targets(&roster, author) {
+        let target_name = state
+            .store
+            .bot(&target)?
+            .map(|b| b.name)
+            .unwrap_or_else(|| target.clone());
         state.deliver_event(
             &target,
             &session.id,
             thread.as_deref(),
             sender.clone(),
-            Content::text(&msg.content),
+            Content::text(if msg.author_kind == "client" {
+                recipient_scoped_text(session, &target, &target_name, &msg.content)
+            } else {
+                msg.content.clone()
+            }),
             mentions.clone(),
             &msg.id,
         );
@@ -85,14 +115,22 @@ pub fn post_client_message(state: &Arc<AppState>, session_id: &str, content: &st
     // /bot-config), so a recipient's own name matches its gate.
     let starters = coordinator::for_session(&session.mode).starters(&roster, session.chair_bot.as_deref());
     for target in routing::fanout_targets(&roster, None) {
-        let tname = state.store.bot(&target)?.map(|b| b.name).unwrap_or_default();
-        let mentions = if starters.contains(&target) { vec![tname] } else { vec![] };
+        let tname = state
+            .store
+            .bot(&target)?
+            .map(|b| b.name)
+            .unwrap_or_default();
+        let mentions = if starters.contains(&target) {
+            vec![tname.clone()]
+        } else {
+            vec![]
+        };
         state.deliver_event(
             &target,
             session_id,
             thread.as_deref(),
             sender.clone(),
-            Content::text(content),
+            Content::text(recipient_scoped_text(&session, &target, &tname, content)),
             mentions,
             &msg.id,
         );
@@ -309,17 +347,30 @@ pub fn replace_roster_bot(
 }
 
 fn backfill_bot(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Result<()> {
+    let Some(session) = state.store.session(session_id)? else {
+        anyhow::bail!("unknown session {session_id}");
+    };
+    let bot_name = state
+        .store
+        .bot(bot_id)?
+        .map(|b| b.name)
+        .unwrap_or_else(|| bot_id.to_string());
     let thread = state.store.thread_for_session(session_id)?;
     for m in state.store.messages(session_id)? {
         if m.author_id.as_deref() == Some(bot_id) {
             continue; // don't echo the joiner's own messages
         }
+        let content = if m.author_kind == "client" {
+            recipient_scoped_text(&session, bot_id, &bot_name, &m.content)
+        } else {
+            m.content.clone()
+        };
         state.deliver_event(
             bot_id,
             session_id,
             thread.as_deref(),
             sender_for(state, &m),
-            Content::text(&m.content),
+            Content::text(content),
             vec![],
             &m.id,
         );
@@ -647,7 +698,7 @@ fn deliver_system_prompt(state: &Arc<AppState>, session: &Session, to: &str, con
         &session.id,
         thread.as_deref(),
         SenderInfo { id: "system".into(), name: "system".into(), display_name: "system".into(), is_bot: false },
-        Content::text(content),
+        Content::text(recipient_scoped_text(session, to, &to_name, content)),
         vec![to_name],
         &msg.id,
     );
@@ -688,6 +739,20 @@ mod tests {
     use crate::state::AppState;
     use crate::store::{SqliteStore, Store};
 
+    fn test_session(chair: Option<&str>) -> Session {
+        Session {
+            id: "ses_1".into(),
+            title: "t".into(),
+            state: "deliberating".into(),
+            trigger_ref: None,
+            quorum_n: 1,
+            chair_bot: chair.map(str::to_string),
+            created_at: 0,
+            closed_at: None,
+            mode: "review_council".into(),
+        }
+    }
+
     fn msg_reply(session: &str, text: &str) -> GatewayReply {
         GatewayReply {
             schema: String::new(),
@@ -699,6 +764,19 @@ mod tests {
             request_id: None,
             quote_message_id: None,
         }
+    }
+
+    #[test]
+    fn recipient_scope_names_target_and_role() {
+        let session = test_session(Some("chair"));
+        let chair_text = recipient_scoped_text(&session, "chair", "chair", "opening trigger");
+        assert!(chair_text.contains("recipient_bot=`chair`"));
+        assert!(chair_text.contains("session_role=`chair`"));
+        assert!(chair_text.ends_with("opening trigger"));
+
+        let reviewer_text = recipient_scoped_text(&session, "rev1", "rev1", "opening trigger");
+        assert!(reviewer_text.contains("recipient_bot=`rev1`"));
+        assert!(reviewer_text.contains("session_role=`reviewer`"));
     }
 
     #[test]
@@ -720,6 +798,18 @@ mod tests {
         let queued: Vec<_> = store.pending_outbox(&latecomer.id).unwrap();
         assert_eq!(queued.len(), 2, "both prior messages backfilled");
         assert!(queued.iter().any(|(_, f)| f.contains("the task")));
+        assert!(
+            queued
+                .iter()
+                .any(|(_, f)| f.contains("recipient_bot=`late`")),
+            "queued frames missing recipient scope: {queued:?}"
+        );
+        assert!(
+            queued
+                .iter()
+                .any(|(_, f)| f.contains("session_role=`reviewer`")),
+            "queued frames missing reviewer role: {queued:?}"
+        );
         assert!(queued.iter().any(|(_, f)| f.contains("chair's take")));
 
         // re-adding is a no-op (no duplicate backfill)

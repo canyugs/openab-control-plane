@@ -114,6 +114,45 @@ That `working_dir` matters: the Kiro OpenAB image uses `/home/agent`, while the
 Claude image uses `/home/node`. A missing working directory can surface as a
 spawn `No such file or directory` error even when the CLI exists in `PATH`.
 
+Mixed CLI councils use two independent settings:
+
+- OCP agent profiles decide the served `[agent]` command, args, working directory,
+  and inherited env names.
+- Bot deployments decide which OpenAB image and Kubernetes Secret each pod gets.
+
+For example, this runs a Kiro chair with Claude reviewers:
+
+```sh
+scripts/dev-run-host-ocp.sh \
+  --agent-profiles-json '{"kiro":{"args":["acp","--trust-all-tools"]}}'
+
+scripts/dev-deploy-bots.sh \
+  --bot-agents chair=kiro,rev1=claude,rev2=claude \
+  --config-base-url http://host.docker.internal:18090 \
+  --agent-secret kiro=kiro-api:KIRO_API_KEY \
+  --agent-secret claude=claude-oauth:CLAUDE_CODE_OAUTH_TOKEN
+```
+
+Use `--agent-images agent=image,...` when a profile does not have a built-in
+local image. Any CLI permission/trust switch belongs in the agent profile `args`;
+the deploy script does not infer a bypass flag for unknown CLIs.
+
+If the test should also let the chair write PR comments, sync your local
+`gh auth token` into a Kubernetes Secret and inject it only into the chair:
+
+```sh
+scripts/dev-sync-gh-token-secret.sh
+
+scripts/dev-deploy-bots.sh \
+  --agent kiro \
+  --chair-secret-name gh-token \
+  --chair-credential-env GH_TOKEN
+```
+
+This is a local development shortcut. The production GitHub App path should keep
+using the chair pod's App identity setup from
+[install-github-app.md](install-github-app.md), not a shared user PAT.
+
 To scale the bots down without deleting their deployments:
 
 ```sh
@@ -131,19 +170,25 @@ still test the bot execution path by running OCP on the host and pointing bot
 pods at it:
 
 ```sh
-OABCP_ADDR=127.0.0.1:18090 \
-OABCP_DB=/tmp/oabcp-local.db \
-OABCP_BOTS=chair:chair,rev1:reviewer,rev2:reviewer \
-OABCP_WS_URL=ws://host.docker.internal:18090/ws \
-cargo run
+scripts/dev-run-host-ocp.sh
 ```
 
 In another terminal:
 
 ```sh
+scripts/dev-sync-gh-token-secret.sh
+
 scripts/dev-deploy-bots.sh \
   --agent kiro \
-  --config-base-url http://host.docker.internal:18090
+  --config-base-url http://host.docker.internal:18090 \
+  --chair-secret-name gh-token \
+  --chair-credential-env GH_TOKEN
+```
+
+For webhook testing with host OCP, run the tunnel pod against the host service:
+
+```sh
+scripts/dev-tunnel-k8s.sh --origin-url http://host.docker.internal:18090
 ```
 
 Custom or experimental CLIs should be configured as OCP agent profiles, not by

@@ -6,13 +6,20 @@ KUBE_NAMESPACE="${KUBE_NAMESPACE:-oabcp-local}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-docker-desktop}"
 BOT_NAMES="${BOT_NAMES:-chair,rev1,rev2}"
 AGENT="${AGENT:-claude}"
+BOT_AGENTS="${BOT_AGENTS:-}"
 IMAGE="${IMAGE:-}"
+AGENT_IMAGES="${AGENT_IMAGES:-}"
+AGENT_SECRETS="${AGENT_SECRETS:-}"
 CONTROL_PLANE_SERVICE="${CONTROL_PLANE_SERVICE:-control-plane}"
 CONTROL_PLANE_PORT="${CONTROL_PLANE_PORT:-8090}"
 CONFIG_BASE_URL="${CONFIG_BASE_URL:-}"
 CREDENTIAL_ENV="${CREDENTIAL_ENV:-}"
 SECRET_NAME="${SECRET_NAME:-}"
 SECRET_KEY="${SECRET_KEY:-}"
+CHAIR_BOT="${CHAIR_BOT:-chair}"
+CHAIR_CREDENTIAL_ENV="${CHAIR_CREDENTIAL_ENV:-}"
+CHAIR_SECRET_NAME="${CHAIR_SECRET_NAME:-}"
+CHAIR_SECRET_KEY="${CHAIR_SECRET_KEY:-}"
 REPLICAS="${REPLICAS:-1}"
 WAIT_ROLLOUT=1
 CHECK_CONTEXT=1
@@ -27,12 +34,20 @@ Usage:
 
 Options:
   --agent <profile>          Agent profile passed to /bot-config?agent=. Default: claude.
-  --image <image>            OpenAB image. Defaults for claude and kiro profiles.
+  --bot-agents <map>         Per-bot agents, e.g. chair=kiro,rev1=claude.
+  --image <image>            OpenAB image for every bot. Defaults for claude and kiro profiles.
+  --agent-images <map>       Per-agent images, e.g. kiro=ghcr.io/...:kiro,cursor=...
   --bots <a,b,c>             Bot deployment names. Default: chair,rev1,rev2.
   --replicas <n>             Replicas per bot deployment. Default: 1.
   --credential-env <name>    Env var exposed to OpenAB, from a Kubernetes Secret.
   --secret-name <name>       Kubernetes Secret name carrying the credential.
   --secret-key <key>         Secret key name. Default: same as --credential-env.
+  --agent-secret <spec>      Per-agent credential. Repeatable.
+                             Format: agent=secret-name:ENV_NAME[:secret-key].
+  --chair-bot <name>         Bot name that receives chair-only env. Default: chair.
+  --chair-credential-env <n> Env var exposed only to the chair bot.
+  --chair-secret-name <n>    Kubernetes Secret carrying the chair-only credential.
+  --chair-secret-key <key>   Secret key name. Default: same as --chair-credential-env.
   --namespace <name>         Kubernetes namespace. Default: oabcp-local.
   --context <name>           Expected kubectl context. Default: docker-desktop.
   --any-context              Do not enforce the kubectl context.
@@ -43,8 +58,10 @@ Options:
   --delete                   Delete all local OpenAB bot deployments.
 
 Environment:
-  KUBE_NAMESPACE, KUBE_CONTEXT, BOT_NAMES, AGENT, IMAGE, REPLICAS,
-  CONFIG_BASE_URL, CREDENTIAL_ENV, SECRET_NAME, SECRET_KEY.
+  KUBE_NAMESPACE, KUBE_CONTEXT, BOT_NAMES, AGENT, BOT_AGENTS, IMAGE,
+  AGENT_IMAGES, AGENT_SECRETS, REPLICAS, CONFIG_BASE_URL,
+  CREDENTIAL_ENV, SECRET_NAME, SECRET_KEY,
+  CHAIR_BOT, CHAIR_CREDENTIAL_ENV, CHAIR_SECRET_NAME, CHAIR_SECRET_KEY.
 
 Examples:
   kubectl -n oabcp-local create secret generic kiro-api \
@@ -54,6 +71,20 @@ Examples:
     --agent kiro \
     --secret-name kiro-api \
     --credential-env KIRO_API_KEY
+
+  scripts/dev-deploy-bots.sh \
+    --agent kiro \
+    --secret-name kiro-api \
+    --credential-env KIRO_API_KEY \
+    --chair-secret-name gh-token \
+    --chair-credential-env GH_TOKEN
+
+  scripts/dev-deploy-bots.sh \
+    --bot-agents chair=kiro,rev1=claude,rev2=claude \
+    --agent-secret kiro=kiro-api:KIRO_API_KEY \
+    --agent-secret claude=claude-oauth:CLAUDE_CODE_OAUTH_TOKEN \
+    --chair-secret-name gh-token \
+    --chair-credential-env GH_TOKEN
 USAGE
 }
 
@@ -74,12 +105,93 @@ default_image_for_agent() {
   esac
 }
 
+lookup_csv_map() {
+  local map="$1"
+  local key="$2"
+  local default_value="${3:-}"
+  local entry entry_key entry_value
+  IFS=',' read -r -a entries <<<"$map"
+  for entry in "${entries[@]}"; do
+    entry=$(printf '%s' "$entry" | xargs)
+    [[ -n "$entry" ]] || continue
+    [[ "$entry" == *"="* ]] || die "invalid mapping '$entry' (expected key=value)"
+    entry_key=$(printf '%s' "${entry%%=*}" | xargs)
+    entry_value="${entry#*=}"
+    if [[ "$entry_key" == "$key" ]]; then
+      printf '%s' "$entry_value"
+      return
+    fi
+  done
+  printf '%s' "$default_value"
+}
+
+image_for_agent() {
+  local agent="$1"
+  local image
+  if [[ -n "$IMAGE" ]]; then
+    printf '%s' "$IMAGE"
+    return
+  fi
+  image=$(lookup_csv_map "$AGENT_IMAGES" "$agent" "")
+  if [[ -z "$image" ]]; then
+    image=$(default_image_for_agent "$agent")
+  fi
+  printf '%s' "$image"
+}
+
+resolve_agent_secret() {
+  local agent="$1"
+  local spec rest
+  AGENT_SECRET_NAME=""
+  AGENT_CREDENTIAL_ENV=""
+  AGENT_SECRET_KEY=""
+
+  spec=$(lookup_csv_map "$AGENT_SECRETS" "$agent" "")
+  # Common local convenience: use the kiro-api secret when it already exists.
+  if [[ -z "$spec" && "$agent" == "kiro" ]] &&
+    kubectl -n "$KUBE_NAMESPACE" get secret kiro-api >/dev/null 2>&1; then
+    spec="kiro-api:KIRO_API_KEY:KIRO_API_KEY"
+  fi
+  [[ -n "$spec" ]] || return
+  [[ "$spec" == *:* ]] ||
+    die "invalid --agent-secret for '$agent' (expected agent=secret-name:ENV_NAME[:secret-key])"
+
+  AGENT_SECRET_NAME="${spec%%:*}"
+  rest="${spec#*:}"
+  AGENT_CREDENTIAL_ENV="${rest%%:*}"
+  if [[ "$rest" == *:* ]]; then
+    AGENT_SECRET_KEY="${rest#*:}"
+  else
+    AGENT_SECRET_KEY="$AGENT_CREDENTIAL_ENV"
+  fi
+
+  [[ -n "$AGENT_SECRET_NAME" ]] || die "agent secret for '$agent' has an empty secret name"
+  [[ -n "$AGENT_CREDENTIAL_ENV" ]] || die "agent secret for '$agent' has an empty env name"
+  [[ -n "$AGENT_SECRET_KEY" ]] || die "agent secret for '$agent' has an empty secret key"
+}
+
+append_secret_env_entry() {
+  local env_name="$1"
+  local secret_name="$2"
+  local secret_key="$3"
+  env_entries="${env_entries}            - name: $env_name
+              valueFrom:
+                secretKeyRef:
+                  name: $secret_name
+                  key: $secret_key
+"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --agent) AGENT="${2:?--agent needs a value}"; shift 2 ;;
     --agent=*) AGENT="${1#*=}"; shift ;;
+    --bot-agents) BOT_AGENTS="${2:?--bot-agents needs a value}"; shift 2 ;;
+    --bot-agents=*) BOT_AGENTS="${1#*=}"; shift ;;
     --image) IMAGE="${2:?--image needs a value}"; shift 2 ;;
     --image=*) IMAGE="${1#*=}"; shift ;;
+    --agent-images) AGENT_IMAGES="${2:?--agent-images needs a value}"; shift 2 ;;
+    --agent-images=*) AGENT_IMAGES="${1#*=}"; shift ;;
     --bots) BOT_NAMES="${2:?--bots needs a value}"; shift 2 ;;
     --bots=*) BOT_NAMES="${1#*=}"; shift ;;
     --replicas) REPLICAS="${2:?--replicas needs a value}"; shift 2 ;;
@@ -90,6 +202,16 @@ while [[ $# -gt 0 ]]; do
     --secret-name=*) SECRET_NAME="${1#*=}"; shift ;;
     --secret-key) SECRET_KEY="${2:?--secret-key needs a value}"; shift 2 ;;
     --secret-key=*) SECRET_KEY="${1#*=}"; shift ;;
+    --agent-secret) AGENT_SECRETS="${AGENT_SECRETS:+$AGENT_SECRETS,}${2:?--agent-secret needs a value}"; shift 2 ;;
+    --agent-secret=*) AGENT_SECRETS="${AGENT_SECRETS:+$AGENT_SECRETS,}${1#*=}"; shift ;;
+    --chair-bot) CHAIR_BOT="${2:?--chair-bot needs a value}"; shift 2 ;;
+    --chair-bot=*) CHAIR_BOT="${1#*=}"; shift ;;
+    --chair-credential-env) CHAIR_CREDENTIAL_ENV="${2:?--chair-credential-env needs a value}"; shift 2 ;;
+    --chair-credential-env=*) CHAIR_CREDENTIAL_ENV="${1#*=}"; shift ;;
+    --chair-secret-name) CHAIR_SECRET_NAME="${2:?--chair-secret-name needs a value}"; shift 2 ;;
+    --chair-secret-name=*) CHAIR_SECRET_NAME="${1#*=}"; shift ;;
+    --chair-secret-key) CHAIR_SECRET_KEY="${2:?--chair-secret-key needs a value}"; shift 2 ;;
+    --chair-secret-key=*) CHAIR_SECRET_KEY="${1#*=}"; shift ;;
     --namespace) KUBE_NAMESPACE="${2:?--namespace needs a value}"; shift 2 ;;
     --namespace=*) KUBE_NAMESPACE="${1#*=}"; shift ;;
     --context) KUBE_CONTEXT="${2:?--context needs a value}"; shift 2 ;;
@@ -121,21 +243,11 @@ if [[ "$DELETE" == "1" ]]; then
   exit 0
 fi
 
-if [[ -z "$IMAGE" ]]; then
-  IMAGE=$(default_image_for_agent "$AGENT")
-fi
-[[ -n "$IMAGE" ]] || die "no default image for agent '$AGENT'; pass --image"
-
 if [[ -z "$SECRET_KEY" && -n "$CREDENTIAL_ENV" ]]; then
   SECRET_KEY="$CREDENTIAL_ENV"
 fi
-
-# Common local convenience: use the kiro-api secret when it already exists.
-if [[ "$AGENT" == "kiro" && -z "$SECRET_NAME" ]] &&
-  kubectl -n "$KUBE_NAMESPACE" get secret kiro-api >/dev/null 2>&1; then
-  SECRET_NAME="kiro-api"
-  CREDENTIAL_ENV="${CREDENTIAL_ENV:-KIRO_API_KEY}"
-  SECRET_KEY="${SECRET_KEY:-KIRO_API_KEY}"
+if [[ -z "$CHAIR_SECRET_KEY" && -n "$CHAIR_CREDENTIAL_ENV" ]]; then
+  CHAIR_SECRET_KEY="$CHAIR_CREDENTIAL_ENV"
 fi
 
 if [[ -n "$SECRET_NAME" || -n "$CREDENTIAL_ENV" || -n "$SECRET_KEY" ]]; then
@@ -146,14 +258,12 @@ if [[ -n "$SECRET_NAME" || -n "$CREDENTIAL_ENV" || -n "$SECRET_KEY" ]]; then
     die "secret '$SECRET_NAME' does not exist in namespace '$KUBE_NAMESPACE'"
 fi
 
-credential_env_yaml=""
-if [[ -n "$SECRET_NAME" ]]; then
-  credential_env_yaml="          env:
-            - name: $CREDENTIAL_ENV
-              valueFrom:
-                secretKeyRef:
-                  name: $SECRET_NAME
-                  key: $SECRET_KEY"
+if [[ -n "$CHAIR_SECRET_NAME" || -n "$CHAIR_CREDENTIAL_ENV" || -n "$CHAIR_SECRET_KEY" ]]; then
+  [[ -n "$CHAIR_SECRET_NAME" ]] || die "--chair-secret-name is required when chair credential env is set"
+  [[ -n "$CHAIR_CREDENTIAL_ENV" ]] || die "--chair-credential-env is required when chair secret is set"
+  [[ -n "$CHAIR_SECRET_KEY" ]] || die "--chair-secret-key is required when chair secret is set"
+  kubectl -n "$KUBE_NAMESPACE" get secret "$CHAIR_SECRET_NAME" >/dev/null ||
+    die "secret '$CHAIR_SECRET_NAME' does not exist in namespace '$KUBE_NAMESPACE'"
 fi
 
 kubectl create namespace "$KUBE_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
@@ -162,13 +272,36 @@ IFS=',' read -r -a bots <<<"$BOT_NAMES"
 for raw_bot in "${bots[@]}"; do
   bot=$(printf '%s' "$raw_bot" | xargs)
   [[ -n "$bot" ]] || continue
+  bot_agent=$(lookup_csv_map "$BOT_AGENTS" "$bot" "$AGENT")
+  bot_image=$(image_for_agent "$bot_agent")
+  [[ -n "$bot_image" ]] ||
+    die "no default image for agent '$bot_agent' (bot '$bot'); pass --image or --agent-images"
   if [[ -n "$CONFIG_BASE_URL" ]]; then
-    config_url="${CONFIG_BASE_URL%/}/bot-config/$bot?agent=$AGENT"
+    config_url="${CONFIG_BASE_URL%/}/bot-config/$bot?agent=$bot_agent"
   else
-    config_url="http://$CONTROL_PLANE_SERVICE:$CONTROL_PLANE_PORT/bot-config/$bot?agent=$AGENT"
+    config_url="http://$CONTROL_PLANE_SERVICE:$CONTROL_PLANE_PORT/bot-config/$bot?agent=$bot_agent"
+  fi
+  env_entries=""
+  if [[ -n "$SECRET_NAME" ]]; then
+    append_secret_env_entry "$CREDENTIAL_ENV" "$SECRET_NAME" "$SECRET_KEY"
+  else
+    resolve_agent_secret "$bot_agent"
+    if [[ -n "$AGENT_SECRET_NAME" ]]; then
+      kubectl -n "$KUBE_NAMESPACE" get secret "$AGENT_SECRET_NAME" >/dev/null ||
+        die "secret '$AGENT_SECRET_NAME' does not exist in namespace '$KUBE_NAMESPACE'"
+      append_secret_env_entry "$AGENT_CREDENTIAL_ENV" "$AGENT_SECRET_NAME" "$AGENT_SECRET_KEY"
+    fi
+  fi
+  if [[ "$bot" == "$CHAIR_BOT" && -n "$CHAIR_SECRET_NAME" ]]; then
+    append_secret_env_entry "$CHAIR_CREDENTIAL_ENV" "$CHAIR_SECRET_NAME" "$CHAIR_SECRET_KEY"
+  fi
+  env_yaml=""
+  if [[ -n "$env_entries" ]]; then
+    env_yaml="          env:
+$env_entries"
   fi
 
-  echo "applying OpenAB bot deployment: $bot ($AGENT, $IMAGE)"
+  echo "applying OpenAB bot deployment: $bot ($bot_agent, $bot_image)"
   kubectl -n "$KUBE_NAMESPACE" apply -f - >/dev/null <<YAML
 apiVersion: apps/v1
 kind: Deployment
@@ -191,14 +324,14 @@ spec:
     spec:
       containers:
         - name: openab
-          image: $IMAGE
+          image: $bot_image
           imagePullPolicy: IfNotPresent
           command:
             - openab
             - run
             - -c
             - $config_url
-$credential_env_yaml
+$env_yaml
 YAML
 
   if [[ "$WAIT_ROLLOUT" == "1" && "$REPLICAS" != "0" ]]; then

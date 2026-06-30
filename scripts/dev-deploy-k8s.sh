@@ -31,6 +31,13 @@ Options:
   --any-context           Do not enforce the kubectl context.
   --api-key <value>       Local north API key. Default: local-test-key.
   --webhook-secret <val>  GitHub webhook secret. Default: preserve existing or generate.
+  --agent-command <p>     Default /bot-config agent profile when ?agent= is absent.
+  --agent-profiles-json <j>
+                          JSON object overriding or adding OAB agent profiles.
+  --agent-profiles-file <p>
+                          Read OABCP_AGENT_PROFILES JSON from a file.
+  --agent-working-dir <d> Force [agent].working_dir for served bot configs.
+  --agent-inherit-env <c> Extra env names appended to [agent].inherit_env.
   --no-wait              Do not wait for rollout completion.
   --skip-image-id-check  Do not compare the pod imageID with the local Docker image.
 
@@ -66,6 +73,26 @@ while [[ $# -gt 0 ]]; do
     --api-key=*) OABCP_API_KEY="${1#*=}"; shift ;;
     --webhook-secret) WEBHOOK_SECRET="${2:?--webhook-secret needs a value}"; shift 2 ;;
     --webhook-secret=*) WEBHOOK_SECRET="${1#*=}"; shift ;;
+    --agent-command) OABCP_AGENT_COMMAND="${2:?--agent-command needs a value}"; shift 2 ;;
+    --agent-command=*) OABCP_AGENT_COMMAND="${1#*=}"; shift ;;
+    --agent-profiles-json) OABCP_AGENT_PROFILES="${2:?--agent-profiles-json needs a value}"; shift 2 ;;
+    --agent-profiles-json=*) OABCP_AGENT_PROFILES="${1#*=}"; shift ;;
+    --agent-profiles-file)
+      profile_file="${2:?--agent-profiles-file needs a path}"
+      [[ -r "$profile_file" ]] || die "agent profiles file is not readable: $profile_file"
+      OABCP_AGENT_PROFILES="$(<"$profile_file")"
+      shift 2
+      ;;
+    --agent-profiles-file=*)
+      profile_file="${1#*=}"
+      [[ -r "$profile_file" ]] || die "agent profiles file is not readable: $profile_file"
+      OABCP_AGENT_PROFILES="$(<"$profile_file")"
+      shift
+      ;;
+    --agent-working-dir) OABCP_AGENT_WORKING_DIR="${2:?--agent-working-dir needs a value}"; shift 2 ;;
+    --agent-working-dir=*) OABCP_AGENT_WORKING_DIR="${1#*=}"; shift ;;
+    --agent-inherit-env) OABCP_AGENT_INHERIT_ENV="${2:?--agent-inherit-env needs a value}"; shift 2 ;;
+    --agent-inherit-env=*) OABCP_AGENT_INHERIT_ENV="${1#*=}"; shift ;;
     --no-wait) WAIT_ROLLOUT=0; shift ;;
     --skip-image-id-check) CHECK_IMAGE_ID=0; shift ;;
     -h|--help) usage; exit 0 ;;
