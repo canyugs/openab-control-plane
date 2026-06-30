@@ -13,29 +13,60 @@ spec:
   readme: |
     # OpenAB Review Council (PAT)
 
-    This template deploys a control plane plus 3 stock OpenAB Claude pods (1 chair
-    + 2 reviewers). The chair uses your fine-grained PAT to post the verdict.
+    Use this template when you want the fastest install path: a copied GitHub
+    Action triggers the council, and the chair posts the verdict with your
+    fine-grained PAT.
+
+    It deploys a control plane plus 3 stock OpenAB Claude pods (1 chair + 2
+    reviewers). No per-bot setup is needed; every pod uses the same Claude Code
+    OAuth token.
 
     ## Required variables
 
     - `PUBLIC_DOMAIN`: the control-plane domain, for example `my-council`.
     - `CLAUDE_CODE_OAUTH_TOKEN`: from `claude setup-token`.
-    - `GH_TOKEN`: fine-grained PAT with `Pull requests: write` and `Contents: read`.
+    - `GH_TOKEN`: fine-grained PAT for the chair. Grant the target repo
+      `Pull requests: Read and write` and `Contents: Read-only`.
 
-    ## After deploy
+    ## Install the copied Action
 
-    1. Open the control-plane service variables and copy `OABCP_API_KEY` / `PASSWORD`.
-    2. Copy `examples/pr-review.yml` into the target repo at `.github/workflows/pr-review.yml`.
-    3. Set the target repo secrets:
+    1. Deploy this template and wait until `control-plane`, `chair`, `rev1`, and
+       `rev2` are running.
+    2. Open the `control-plane` service variables and copy `OABCP_API_KEY`; it is
+       the generated `PASSWORD` value.
+    3. Copy `examples/pr-review.yml` from the source repo into the target repo at
+       `.github/workflows/pr-review.yml`:
+       `https://github.com/canyugs/openab-control-plane/blob/main/examples/pr-review.yml`
+    4. Set the target repo secrets:
 
        ```sh
        gh secret set COUNCIL_PLANE --body "https://my-council.zeabur.app"
        gh secret set COUNCIL_KEY --body "<OABCP_API_KEY>"
        ```
 
+    ## Triggers
+
+    - Automatic: PR opened, updated, reopened, or marked ready for review.
+    - Manual: an OWNER / MEMBER / COLLABORATOR comments `/review` on the PR.
+    - Manual fallback: run the copied workflow with `workflow_dispatch` and a PR
+      number.
+
+    The chair posts one verdict comment as the PAT owner.
+
+    ## Verify
+
+    1. Open or update a PR in the target repo.
+    2. Confirm the target repo's `Council Review` GitHub Action succeeds.
+    3. Check the PR for one council verdict comment.
+    4. If there is no verdict, check the `control-plane` and `chair` service logs.
+
     Use this PAT template or the GitHub App webhook template, not both on one repo,
     or one PR event can convene two councils.
-  icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/github.svg
+
+    For private repos, reviewer pods also need read access to fetch the PR diff.
+    Public repos work anonymously. Full guide:
+    `https://github.com/canyugs/openab-control-plane/blob/main/docs/template.md`
+  icon: https://cdn-console.zeabur.com/f/6qNF8/ocp-icon.webp
   tags:
     - AI
     - Developer Tools
@@ -54,7 +85,7 @@ spec:
       description: Fine-grained PAT so the chair can comment/label/approve PRs.
   services:
     - name: control-plane
-      icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/github.svg
+      icon: https://cdn-console.zeabur.com/f/6qNF8/ocp-icon.webp
       template: PREBUILT_V2
       domainKey: PUBLIC_DOMAIN
       spec:
@@ -87,7 +118,7 @@ spec:
             default: chair:chair,rev1:reviewer,rev2:reviewer
 
     - name: chair
-      icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/anthropic.svg
+      icon: https://cdn-console.zeabur.com/f/0Ewi6/openab-icon.webp
       template: PREBUILT_V2
       dependencies:
         - control-plane
@@ -109,7 +140,7 @@ spec:
             default: ${GH_TOKEN}
 
     - name: rev1
-      icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/anthropic.svg
+      icon: https://cdn-console.zeabur.com/f/0Ewi6/openab-icon.webp
       template: PREBUILT_V2
       dependencies:
         - control-plane
@@ -126,7 +157,7 @@ spec:
             default: ${CLAUDE_CODE_OAUTH_TOKEN}
 
     - name: rev2
-      icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/anthropic.svg
+      icon: https://cdn-console.zeabur.com/f/0Ewi6/openab-icon.webp
       template: PREBUILT_V2
       dependencies:
         - control-plane

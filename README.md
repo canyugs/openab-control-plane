@@ -64,8 +64,8 @@ chair and two reviewers. Pick one install track per repository:
 
 | Track | Template | Best for |
 |---|---|---|
-| PAT + copied Action | `zeabur-template.pat.yaml` / code `Z7TQIR` | Fast external quickstart; verdicts are authored by the PAT owner |
-| GitHub App webhook | `zeabur-template.app.yaml` / code `1E1Y97` | Dogfood and team installs; PR events arrive through webhook and the chair can post as the App bot |
+| PAT + copied Action | `zeabur-template-pat-Z7TQIR.yaml` / code `Z7TQIR` | Fast external quickstart; verdicts are authored by the PAT owner |
+| GitHub App webhook | `zeabur-template-app-1E1Y97.yaml` / code `1E1Y97` | Dogfood and team installs; PR events arrive through webhook and the chair can post as the App bot |
 
 PAT quickstart:
 
@@ -89,7 +89,7 @@ npx zeabur@latest template deploy -c 1E1Y97 \
 ```
 
 When developing unpublished template changes from this repository, use
-`-f zeabur-template.pat.yaml` or `-f zeabur-template.app.yaml` instead of `-c`.
+`-f zeabur-template-pat-Z7TQIR.yaml` or `-f zeabur-template-app-1E1Y97.yaml` instead of `-c`.
 
 Full install docs:
 
