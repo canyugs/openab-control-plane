@@ -89,7 +89,35 @@ Expected:
 
 ## Expose Local OCP To GitHub
 
-Keep the `kubectl port-forward` running, then open a second terminal:
+The scripted path is preferred when testing the `zeabur-council` GitHub App. It
+starts the local port-forward if needed, starts a Cloudflare quick tunnel, points
+the App webhook at the tunnel URL, and restores the original App webhook URL when
+you stop it.
+
+```sh
+scripts/dev-webhook.sh --quick \
+  --key-path /Users/can/Downloads/zeabur-council.2026-06-27.private-key.pem
+```
+
+This updates the App-level webhook, so it affects every installation of the
+`zeabur-council` GitHub App while the script is running.
+
+To use a fixed tunnel hostname instead of a quick tunnel:
+
+```sh
+scripts/dev-webhook.sh \
+  --url https://<fixed-host> \
+  --key-path /Users/can/Downloads/zeabur-council.2026-06-27.private-key.pem
+```
+
+To inspect the current App webhook config without changing it:
+
+```sh
+scripts/dev-webhook.sh --check \
+  --key-path /Users/can/Downloads/zeabur-council.2026-06-27.private-key.pem
+```
+
+Manual equivalent: keep the `kubectl port-forward` running, then open a second terminal:
 
 ```sh
 cloudflared tunnel --url http://localhost:8090
