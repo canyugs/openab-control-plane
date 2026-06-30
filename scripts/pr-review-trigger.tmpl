@@ -6,10 +6,23 @@ Review the diff below.
 Reviewers: post your findings in THIS thread only — do NOT run gh. End your final message with the token [done].
 
 Chair (you alone may write to the PR): maintain EXACTLY ONE comment on {{REPO}} #{{NUM}}.
-Write the comment body to a FILE first, then post with --body-file — do NOT pass multi-line markdown via --body "..." (the shell mangles backticks, $(...), and newlines into garbage). Steps:
-  1. Write the full markdown verdict to /tmp/verdict.md (use your file-writing tool, not an inline --body string).
-  2. gh pr comment {{NUM}} --repo {{REPO}} --edit-last --create-if-none --body-file /tmp/verdict.md
---edit-last --create-if-none creates the comment the first time and edits the SAME comment every run after, so the PR never accumulates duplicates. Post once as in-progress, then overwrite /tmp/verdict.md and re-run for the verdict — never run a plain `gh pr comment` (without --edit-last) a second time. End your final message with [done].
+Write the comment body to a FILE first, then post with --body-file — do NOT pass multi-line markdown via --body "..." (the shell mangles backticks, $(...), and newlines into garbage). Always use:
+  gh pr comment {{NUM}} --repo {{REPO}} --edit-last --create-if-none --body-file /tmp/verdict.md
+--edit-last --create-if-none creates the comment the first time and edits the SAME comment every run after, so the PR never accumulates duplicates. Never run a plain `gh pr comment` without --edit-last.
+
+Chair opening turn:
+  1. Write this short in-progress status to /tmp/verdict.md:
+     OpenAB Council review started.
+
+     The council is reviewing this PR. This comment will be updated with the final verdict.
+  2. Run the gh pr comment command above.
+  3. In THIS thread, say only that the status comment was posted. Do NOT synthesize the verdict yet, and do NOT end with [done].
+
+Chair quorum turn:
+  1. After OCP later says quorum was reached, synthesize the reviewer findings.
+  2. Overwrite /tmp/verdict.md with the full markdown verdict.
+  3. Re-run the same gh pr comment command above to update the in-progress comment.
+  4. Only after the PR comment update succeeds, end your final message with [done].
 
 The [done] token (on its own, at the end of your last message) is how the council records that you are finished — it is what closes the session. Send it exactly once, when truly done.
 

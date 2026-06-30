@@ -1,8 +1,8 @@
 # PR Review Council — end-to-end flow
 
 What happens when the council reviews a PR, as built and dogfooded in the webhook
-path. Deploy/usage commands live in `template.md` and `deploy.md`; this file
-describes the runtime flow.
+path. Install commands live in `install-pat.md` and `install-github-app.md`; this
+file describes the runtime flow.
 
 ## Topology
 
@@ -32,23 +32,27 @@ SQLite: bots, sessions, roster, messages, reactions, outbox
    write-ish commenter's `/review`, or `POST /v1/review {repo, pr, preset?}` asks
    the plane to review a PR.
 2. **Open** — the controller creates a session with
-   `trigger_ref="github:pr/owner/repo#N"`, `mode="council"`, `chair_bot=chair`,
-   and `quorum_n` equal to the assigned reviewers. Re-delivery dedupes while a
-   non-terminal session with the same `trigger_ref` exists.
+   `trigger_ref="github:pr/owner/repo#N"`, `mode="review_council"`,
+   `chair_bot=chair`, and `quorum_n` equal to the assigned reviewers.
+   Re-delivery dedupes while a non-terminal session with the same `trigger_ref`
+   exists.
 3. **Pointer trigger** — the plane posts a PR pointer trigger, not an inlined
    diff. Bots self-fetch PR context with `gh` according to the prompt and their
    assigned review angles.
-4. **Fanout / starters** — every roster member receives the trigger for history,
-   but only coordinator-selected starters are @mentioned. For `council`, starters
-   are reviewers first; the chair receives context but waits for the quorum prompt.
+4. **Fanout / starters** — every roster member receives the trigger for history.
+   For `review_council`, the chair and reviewers are @mentioned on the opening
+   trigger. The chair's opening turn posts/updates a short "OpenAB Council review
+   started" PR status comment and does not send `[done]`; reviewers start
+   fetching the diff.
 5. **Review** — reviewers post findings and signal done with `[done]` or the
    gateway done reaction (`🆗`). The plane records done as a reaction and relays
    each reviewer's settled final message to the chair.
 6. **Quorum** — when reviewer done count reaches `quorum_n`, state moves
    `deliberating → quorum`. The plane prompts the chair to synthesize the final
    verdict and complete whatever side effect the opening trigger required.
-7. **Chair side effect** — the chair writes the PR verdict/comment as configured
-   by the deployment profile and prompt. The plane does not run `gh` itself.
+7. **Chair side effect** — the chair updates the same PR comment with the final
+   verdict as configured by the deployment profile and prompt. The plane does not
+   run `gh` itself.
 8. **Close** — the chair's `[done]` in `quorum` closes the session and emits the
    north `verdict` and `state:closed` events. A chair `[done]` in `deliberating`
    is ignored so an opening-trigger response cannot close the review early.

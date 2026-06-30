@@ -31,12 +31,14 @@ The dogfood path is GitHub webhook driven:
 
 1. GitHub sends `pull_request` or `issue_comment` to
    `POST /api/v1/github_webhooks`.
-2. OCP opens a `council` session with `chair`, `rev1`, `rev2`.
+2. OCP opens a `review_council` session with `chair`, `rev1`, `rev2`.
 3. The trigger is a PR pointer, not an inlined diff. Bots self-fetch the PR.
-4. Reviewers are mentioned first and produce findings.
+4. The chair and reviewers are mentioned. The chair posts/updates a short
+   "OpenAB Council review started" PR status comment from its pod; reviewers
+   produce findings.
 5. Reviewer `[done]` / `🆗` counts toward quorum.
 6. After reviewer quorum, OCP prompts the chair.
-7. The chair posts/updates the PR verdict from its pod, then sends `[done]`.
+7. The chair updates the same PR comment with the verdict, then sends `[done]`.
 8. OCP closes the session. If bots stall, the watchdog force-closes later.
 
 A chair `[done]` before reviewer quorum is intentionally ignored. This prevents
@@ -93,8 +95,8 @@ When developing unpublished template changes from this repository, use
 
 Full install docs:
 
-- [docs/template.md](docs/template.md) for the two trigger tracks.
-- [docs/deploy.md](docs/deploy.md) for PAT, webhook, and App setup.
+- [docs/install-pat.md](docs/install-pat.md) for the PAT copied Action path.
+- [docs/install-github-app.md](docs/install-github-app.md) for the GitHub App webhook path.
 - [docs/github-app-validation.md](docs/github-app-validation.md) for App identity validation.
 
 ## Run A Review

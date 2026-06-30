@@ -9,7 +9,7 @@ spec:
     control plane + 3 stock OpenAB Claude pods deliberate on a PR and post one
     verdict as your GitHub account. After deploy, copy examples/pr-review.yml into
     the target repo and set COUNCIL_PLANE / COUNCIL_KEY. Do not also configure the
-    webhook trigger on the same repo. See docs/template.md.
+    webhook trigger on the same repo. See docs/install-pat.md.
   readme: |
     # OpenAB Review Council (PAT)
 
@@ -65,7 +65,7 @@ spec:
 
     For private repos, reviewer pods also need read access to fetch the PR diff.
     Public repos work anonymously. Full guide:
-    `https://github.com/canyugs/openab-control-plane/blob/main/docs/template.md`
+    `https://github.com/canyugs/openab-control-plane/blob/main/docs/install-pat.md`
   icon: https://cdn-console.zeabur.com/f/6qNF8/ocp-icon.webp
   tags:
     - AI
@@ -90,7 +90,7 @@ spec:
       domainKey: PUBLIC_DOMAIN
       spec:
         source:
-          image: docker.io/canyu/openab-control-plane:0.1.11
+          image: docker.io/canyu/openab-control-plane:0.1.12
         ports:
           - id: web
             port: 8090

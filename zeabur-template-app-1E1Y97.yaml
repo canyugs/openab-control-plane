@@ -74,7 +74,7 @@ spec:
     reviewer credentials or use the separate per-role App token path.
 
     Full guide:
-    `https://github.com/canyugs/openab-control-plane/blob/main/docs/template.md`
+    `https://github.com/canyugs/openab-control-plane/blob/main/docs/install-github-app.md`
   icon: https://cdn-console.zeabur.com/f/6qNF8/ocp-icon.webp
   tags:
     - AI
@@ -99,7 +99,7 @@ spec:
       domainKey: PUBLIC_DOMAIN
       spec:
         source:
-          image: docker.io/canyu/openab-control-plane:0.1.11
+          image: docker.io/canyu/openab-control-plane:0.1.12
         ports:
           - id: web
             port: 8090

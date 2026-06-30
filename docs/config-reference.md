@@ -27,7 +27,7 @@ All configuration is via environment variables. No config file needed.
 Optional operator capability — lets the **plane** mint per-role scoped installation
 tokens through `POST /v1/sessions/:id/github-token` (chair `pull_requests:write`,
 reviewers read-only). This is not required for the dogfood pod-local App posting path
-in [deploy.md](deploy.md) §3; that path stores the App key on the chair pod's
+in [install-github-app.md](install-github-app.md); that path stores the App key on the chair pod's
 `/home/node` volume and authenticates `gh` in the chair's `pre_boot` hook.
 
 | Variable | Default | Description |
@@ -133,7 +133,8 @@ identity), the pod's `/bot-config/<name>` fetch URL (the running container), and
 **Change the chair** — reorder `OABCP_COUNCIL_ROSTER` so the desired bot is `[0]`.
 Only the chair gets the `pre_boot` App hook + PR write, so the new chair pod needs
 the write setup: a `GH_TOKEN` (PAT track) or the App key on its volume (App track) —
-see [deploy.md](deploy.md).
+see [install-pat.md](install-pat.md) or
+[install-github-app.md](install-github-app.md).
 
 **Just want fewer bots on a small PR** — don't change composition; use a smaller
 preset (`review:lite` label or `OABCP_COUNCIL_PRESET`). Idle reviewers are trimmed
