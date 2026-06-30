@@ -261,7 +261,13 @@ case "$MODE" in
     TARGET_URL=$(wait_for_quick_tunnel_url "$CLOUDFLARED_LOG")
     ;;
   url)
-    [[ "$RESTORE_ON_EXIT" == "" ]] && RESTORE_ON_EXIT=0
+    if [[ "$RESTORE_ON_EXIT" == "" ]]; then
+      if [[ "$WAIT_AFTER_PATCH" == "1" ]]; then
+        RESTORE_ON_EXIT=1
+      else
+        RESTORE_ON_EXIT=0
+      fi
+    fi
     ;;
 esac
 
