@@ -59,6 +59,24 @@ SQLite: bots, sessions, roster, messages, reactions, outbox
 9. **Watchdog fallback** — if reviewers or the chair stall, the liveness watchdog
    force-closes stale sessions with the work already present in the thread.
 
+## Dynamic Replacement
+
+OCP supports two replacement scopes:
+
+- **Future sessions / webhook reviews** — `POST /v1/council/roster/replace`
+  updates the DB-backed standing roster override. Future PR webhooks and `/ask`
+  sessions use this override; if no override exists, OCP falls back to
+  `OABCP_COUNCIL_ROSTER`.
+- **Active sessions** — `POST /v1/sessions/:id/roster/replace` swaps one current
+  roster member for another registered bot. The replacement keeps the old bot's
+  roster position, receives backfilled history, and future fanout uses the new
+  roster.
+
+Replacing a bot is one-for-one. The replacement must already be registered and
+must not already be in the target roster. Replacing the current chair requires a
+bot registered with `role=chair`. OCP purges pending outbox frames for the removed
+bot in that session so an offline bot cannot reconnect and continue stale work.
+
 ## Follow-Up Comments
 
 Conversational follow-up is separate from a full review:

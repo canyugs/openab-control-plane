@@ -30,6 +30,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/v1/sessions/:id/log", get(session_log_by_id))
         .route("/v1/sessions/:id/messages", post(post_message))
         .route("/v1/sessions/:id/roster", post(add_roster))
+        .route("/v1/sessions/:id/roster/replace", post(replace_roster))
+        .route("/v1/council/roster", get(get_council_roster).put(put_council_roster))
+        .route("/v1/council/roster/replace", post(replace_council_roster))
         .route("/v1/sessions/:id/stream", get(stream_session))
         // Convene a PR review by ref — the trivial primitive a droppable GitHub
         // Action (or any CI) calls: POST {repo, pr, preset?}. Same convene as the
@@ -351,6 +354,12 @@ struct AddRoster {
     bot_id: String,
 }
 
+#[derive(Deserialize)]
+struct ReplaceRoster {
+    old_bot_id: String,
+    new_bot_id: String,
+}
+
 async fn add_roster(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -367,6 +376,128 @@ async fn add_roster(
             Ok((StatusCode::CONFLICT, Json(json!({ "added": false, "rejected": reason }))).into_response())
         }
     }
+}
+
+async fn replace_roster(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<ReplaceRoster>,
+) -> Result<axum::response::Response, StatusCode> {
+    check_auth(&state, &headers)?;
+    use orchestrator::Replacement::*;
+    match orchestrator::replace_roster_bot(&state, &id, &req.old_bot_id, &req.new_bot_id)
+        .map_err(|_| StatusCode::NOT_FOUND)?
+    {
+        Replaced => {
+            let roster = state.store.roster(&id).unwrap_or_default();
+            Ok(Json(json!({
+                "replaced": true,
+                "old_bot_id": req.old_bot_id,
+                "new_bot_id": req.new_bot_id,
+                "roster": roster,
+            })).into_response())
+        }
+        Noop => Ok(Json(json!({ "replaced": false, "noop": true })).into_response()),
+        Rejected(reason) => Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "replaced": false, "rejected": reason })),
+        )
+            .into_response()),
+    }
+}
+
+#[derive(Deserialize)]
+struct PutCouncilRoster {
+    roster: Vec<String>,
+}
+
+async fn get_council_roster(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_auth(&state, &headers)?;
+    let (roster, source) = crate::council::runtime_council_roster(&state)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!({ "roster": roster, "source": source })))
+}
+
+async fn put_council_roster(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<PutCouncilRoster>,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_auth(&state, &headers)?;
+    validate_standing_roster(&state, &req.roster)?;
+    state
+        .store
+        .set_standing_roster(&req.roster)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    state.emit_north("council_roster", "-", json!({ "roster": req.roster }));
+    Ok(Json(json!({ "roster": req.roster, "source": "override" })))
+}
+
+async fn replace_council_roster(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<ReplaceRoster>,
+) -> Result<axum::response::Response, StatusCode> {
+    check_auth(&state, &headers)?;
+    if req.old_bot_id == req.new_bot_id {
+        let (roster, source) = crate::council::runtime_council_roster(&state)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        return Ok(Json(json!({ "replaced": false, "noop": true, "roster": roster, "source": source })).into_response());
+    }
+    let (mut roster, _) = crate::council::runtime_council_roster(&state)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(idx) = roster.iter().position(|bot| bot == &req.old_bot_id) else {
+        return Ok((StatusCode::CONFLICT, Json(json!({ "replaced": false, "rejected": "old bot not in roster" }))).into_response());
+    };
+    if roster.iter().any(|bot| bot == &req.new_bot_id) {
+        return Ok((StatusCode::CONFLICT, Json(json!({ "replaced": false, "rejected": "replacement already in roster" }))).into_response());
+    }
+    roster[idx] = req.new_bot_id.clone();
+    validate_standing_roster(&state, &roster)?;
+    state
+        .store
+        .set_standing_roster(&roster)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    state.emit_north(
+        "council_roster_replace",
+        "-",
+        json!({ "old_bot": req.old_bot_id, "new_bot": req.new_bot_id, "roster": roster }),
+    );
+    Ok(Json(json!({
+        "replaced": true,
+        "old_bot_id": req.old_bot_id,
+        "new_bot_id": req.new_bot_id,
+        "roster": roster,
+        "source": "override",
+    })).into_response())
+}
+
+fn validate_standing_roster(state: &Arc<AppState>, roster: &[String]) -> Result<(), StatusCode> {
+    if roster.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut seen = BTreeSet::new();
+    for (idx, bot_id) in roster.iter().enumerate() {
+        if bot_id.trim().is_empty() || !seen.insert(bot_id.as_str()) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        let bot = state
+            .store
+            .bot(bot_id)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .ok_or(StatusCode::NOT_FOUND)?;
+        if idx == 0 && bot.role != "chair" {
+            return Err(StatusCode::CONFLICT);
+        }
+        if idx > 0 && bot.role == "chair" {
+            return Err(StatusCode::CONFLICT);
+        }
+    }
+    Ok(())
 }
 
 async fn get_session(

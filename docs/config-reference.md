@@ -109,13 +109,29 @@ random token is generated once per bot, stored, and served inline by
 (`INSERT OR IGNORE`): restarts and already-present bots are skipped, so tokens
 stay stable across reboots as long as the DB volume persists.
 
-## Add / remove a bot (change the standing council)
+## Add / remove / replace a bot (change the standing council)
 
 Three things carry a bot's name and **must stay aligned**: `OABCP_BOTS` (seeds the
 identity), the pod's `/bot-config/<name>` fetch URL (the running container), and
 `OABCP_COUNCIL_ROSTER` (who the webhook actually convenes). `OABCP_BOTS` ≠
 `OABCP_COUNCIL_ROSTER`: the first decides *which identities exist*, the second
 *which of them form a council*.
+
+`OABCP_COUNCIL_ROSTER` is the boot/default roster. Runtime changes are stored in
+the control-plane DB and override the env value for future webhook and `/ask`
+sessions:
+
+```sh
+curl -H "Authorization: Bearer $KEY" "$PLANE/v1/council/roster"
+
+curl -X POST -H "Authorization: Bearer $KEY" -H "content-type: application/json" \
+  "$PLANE/v1/council/roster/replace" \
+  -d '{"old_bot_id":"rev1","new_bot_id":"rev3"}'
+```
+
+Use `PUT /v1/council/roster {"roster":["chair","rev1","rev3"]}` to set the full
+standing roster. The first bot must be registered with `role=chair`; every bot
+must already exist via `OABCP_BOTS` or `POST /v1/bots`.
 
 **Add a reviewer (e.g. `rev3`)** — all three, names matching:
 1. control-plane env: `OABCP_BOTS` += `rev3:reviewer`, `OABCP_COUNCIL_ROSTER` += `rev3`.
@@ -141,8 +157,22 @@ preset (`review:lite` label or `OABCP_COUNCIL_PRESET`). Idle reviewers are trimm
 automatically (quorum = participants).
 
 **Mid-session (runtime) add** — `POST /v1/sessions/:id/roster {bot_id}` or chair
-`[[recruit:<id>]]` (below). Admission-gated, capped by `OABCP_MAX_ROSTER`. **Removal
-mid-session is not supported.**
+`[[recruit:<id>]]` (below). Admission-gated, capped by `OABCP_MAX_ROSTER`.
+
+**Mid-session (runtime) replace** — replace a failed/quota-exhausted bot without
+waiting for restart:
+
+```sh
+curl -X POST -H "Authorization: Bearer $KEY" -H "content-type: application/json" \
+  "$PLANE/v1/sessions/$SESSION/roster/replace" \
+  -d '{"old_bot_id":"rev1","new_bot_id":"rev3"}'
+```
+
+The replacement must already be registered and must not already be in that
+session. OCP preserves roster position, purges pending outbox frames for the old
+bot in that session, backfills the new bot with prior messages, and ignores later
+replies from the removed bot. Replacing the current chair requires a replacement
+registered with `role=chair`. Pure removal mid-session is still not supported.
 
 ## Self-recruitment (`[[recruit:<id>]]`)
 

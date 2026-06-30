@@ -156,6 +156,10 @@ GET  /v1/session-log?trigger_ref=...
 GET  /v1/sessions/:id/stream
 POST /v1/sessions/:id/messages
 POST /v1/sessions/:id/roster
+POST /v1/sessions/:id/roster/replace
+GET  /v1/council/roster
+PUT  /v1/council/roster
+POST /v1/council/roster/replace
 POST /v1/review
 ```
 

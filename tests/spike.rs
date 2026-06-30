@@ -423,6 +423,61 @@ async fn chair_recruits_through_admission_gate() {
     assert!(!roster.contains(&sneaky_id), "a reviewer's recruit must be denied: {roster:?}");
 }
 
+#[tokio::test]
+async fn dynamic_replace_api_updates_session_and_standing_roster() {
+    let (addr, state) = spawn_server_with_state().await;
+    let base = addr.to_string();
+    let (chair_id, _) = register_bot(&base, "chair", "chair").await;
+    let (old_id, _) = register_bot(&base, "old", "reviewer").await;
+    let (new_id, _) = register_bot(&base, "new", "reviewer").await;
+    let session = open_session(&base, &[chair_id.clone(), old_id.clone()], Some(&chair_id), 1).await;
+
+    post_client(&base, &session, "review this").await;
+    assert!(!state.store.pending_outbox(&old_id).unwrap().is_empty());
+
+    let replace: Value = reqwest::Client::new()
+        .post(format!("http://{base}/v1/sessions/{session}/roster/replace"))
+        .json(&json!({ "old_bot_id": old_id.clone(), "new_bot_id": new_id.clone() }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(replace["replaced"], true);
+    assert_eq!(replace["roster"], json!([chair_id.clone(), new_id.clone()]));
+    assert!(state.store.pending_outbox(&old_id).unwrap().is_empty());
+    assert!(
+        state.store.pending_outbox(&new_id).unwrap().iter().any(|(_, frame)| frame.contains("review this")),
+        "replacement bot should receive backfilled history",
+    );
+
+    let standing: Value = reqwest::Client::new()
+        .put(format!("http://{base}/v1/council/roster"))
+        .json(&json!({ "roster": [chair_id.clone(), new_id.clone()] }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(standing["source"], "override");
+    assert_eq!(standing["roster"], json!([chair_id.clone(), new_id.clone()]));
+
+    let review: Value = reqwest::Client::new()
+        .post(format!("http://{base}/v1/review"))
+        .json(&json!({ "repo": "o/r", "pr": 99 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let review_session = review["session_id"].as_str().unwrap();
+    let opened = get_session(&base, review_session).await;
+    assert_eq!(opened["roster"], json!([chair_id, new_id]));
+}
+
 /// The live `openabdev/openab#1187` fix: real bots signal completion in message
 /// TEXT (`[done]`), not via the `add_reaction` 🆗 the quorum path counts. Prove a
 /// council closes on text done-signals with ZERO reactions sent.

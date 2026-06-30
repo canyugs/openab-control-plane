@@ -187,6 +187,14 @@ pub enum Admission {
     Rejected(&'static str),
 }
 
+/// Outcome of a dynamic one-for-one roster replacement.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Replacement {
+    Replaced,
+    Noop,
+    Rejected(&'static str),
+}
+
 /// Pure admission policy → unit-tested; `add_to_roster` supplies the live values.
 /// `Added` is provisional approval — the caller still performs the insert+backfill.
 fn admit(known: bool, already_member: bool, roster_len: usize, max: usize) -> Admission {
@@ -235,6 +243,72 @@ pub fn add_to_roster(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> R
     if !state.store.add_session_bot(session_id, bot_id)? {
         return Ok(Admission::AlreadyMember);
     }
+    backfill_bot(state, session_id, bot_id)?;
+    state.emit_north("roster_add", session_id, json!({ "bot": bot_id }));
+    Ok(Admission::Added)
+}
+
+/// Replace one session roster member with another without changing roster size.
+/// The new bot is backfilled with the session history, while pending frames for the
+/// removed bot in this session are purged so an offline bot can't rejoin later and
+/// keep working on a task it no longer owns.
+pub fn replace_roster_bot(
+    state: &Arc<AppState>,
+    session_id: &str,
+    old_bot_id: &str,
+    new_bot_id: &str,
+) -> Result<Replacement> {
+    if old_bot_id == new_bot_id {
+        return Ok(Replacement::Noop);
+    }
+    let Some(session) = state.store.session(session_id)? else {
+        anyhow::bail!("unknown session {session_id}");
+    };
+    if matches!(
+        SessionState::from_db_str(&session.state),
+        SessionState::Closed | SessionState::Aborted
+    ) {
+        return Ok(Replacement::Rejected("terminal session"));
+    }
+
+    let roster = state.store.roster(session_id)?;
+    if !roster.iter().any(|b| b == old_bot_id) {
+        return Ok(Replacement::Rejected("old bot not in roster"));
+    }
+    if roster.iter().any(|b| b == new_bot_id) {
+        return Ok(Replacement::Rejected("replacement already in roster"));
+    }
+    let Some(old_bot) = state.store.bot(old_bot_id)? else {
+        return Ok(Replacement::Rejected("old bot not registered"));
+    };
+    let Some(new_bot) = state.store.bot(new_bot_id)? else {
+        return Ok(Replacement::Rejected("unknown replacement bot"));
+    };
+    let replacing_chair = session.chair_bot.as_deref() == Some(old_bot_id);
+    if replacing_chair && new_bot.role != "chair" {
+        return Ok(Replacement::Rejected("replacement is not chair-capable"));
+    }
+    if !replacing_chair && new_bot.role != old_bot.role {
+        return Ok(Replacement::Rejected("replacement role mismatch"));
+    }
+
+    if !state.store.replace_session_bot(session_id, old_bot_id, new_bot_id)? {
+        return Ok(Replacement::Rejected("old bot not in roster"));
+    }
+    if replacing_chair {
+        state.store.set_session_chair(session_id, new_bot_id)?;
+    }
+    state.store.purge_outbox_for_session_bot(session_id, old_bot_id)?;
+    backfill_bot(state, session_id, new_bot_id)?;
+    state.emit_north(
+        "roster_replace",
+        session_id,
+        json!({ "old_bot": old_bot_id, "new_bot": new_bot_id, "chair": replacing_chair }),
+    );
+    Ok(Replacement::Replaced)
+}
+
+fn backfill_bot(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Result<()> {
     let thread = state.store.thread_for_session(session_id)?;
     for m in state.store.messages(session_id)? {
         if m.author_id.as_deref() == Some(bot_id) {
@@ -250,8 +324,7 @@ pub fn add_to_roster(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> R
             &m.id,
         );
     }
-    state.emit_north("roster_add", session_id, json!({ "bot": bot_id }));
-    Ok(Admission::Added)
+    Ok(())
 }
 
 /// Extract a self-recruit target from a bot's message: `[[recruit:<bot_id>]]`.
@@ -652,6 +725,72 @@ mod tests {
         // re-adding is a no-op (no duplicate backfill)
         assert_eq!(add_to_roster(&state, &session.id, &latecomer.id).unwrap(), Admission::AlreadyMember);
         assert_eq!(store.pending_outbox(&latecomer.id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn replace_roster_bot_backfills_new_member_and_purges_old_outbox() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let old = store.register_bot("old", "reviewer", "h2", "t2").unwrap();
+        let new = store.register_bot("new", "reviewer", "h3", "t3").unwrap();
+        let session = store
+            .create_session("t", None, 1, Some(&chair.id), &[chair.id.clone(), old.id.clone()], "council")
+            .unwrap();
+        store.advance_state(&session.id, SessionState::Open, SessionState::Deliberating).unwrap();
+        let msg = store.add_message(&session.id, None, "client", None, "review this", None).unwrap();
+
+        // The old bot is offline, so the task is waiting in its durable outbox.
+        state.deliver_event(
+            &old.id,
+            &session.id,
+            None,
+            SenderInfo { id: "client".into(), name: "client".into(), display_name: "client".into(), is_bot: false },
+            Content::text("review this"),
+            vec![],
+            &msg.id,
+        );
+        assert_eq!(store.pending_outbox(&old.id).unwrap().len(), 1);
+
+        assert_eq!(
+            replace_roster_bot(&state, &session.id, &old.id, &new.id).unwrap(),
+            Replacement::Replaced,
+        );
+        assert_eq!(store.roster(&session.id).unwrap(), vec![chair.id.clone(), new.id.clone()]);
+        assert!(store.pending_outbox(&old.id).unwrap().is_empty(), "removed bot must not receive stale session frames later");
+        let queued = store.pending_outbox(&new.id).unwrap();
+        assert_eq!(queued.len(), 1, "replacement gets backfilled history");
+        assert!(queued[0].1.contains("review this"));
+
+        handle_reply(&state, &old.id, msg_reply(&session.id, "stale reply")).unwrap();
+        assert!(
+            store.messages(&session.id).unwrap().iter().all(|m| m.content != "stale reply"),
+            "removed bot replies must be ignored",
+        );
+    }
+
+    #[test]
+    fn replace_roster_bot_updates_chair_only_with_chair_capable_bot() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let chair2 = store.register_bot("chair2", "chair", "h2", "t2").unwrap();
+        let reviewer = store.register_bot("rev", "reviewer", "h3", "t3").unwrap();
+        let session = store
+            .create_session("t", None, 0, Some(&chair.id), std::slice::from_ref(&chair.id), "council")
+            .unwrap();
+
+        assert_eq!(
+            replace_roster_bot(&state, &session.id, &chair.id, &reviewer.id).unwrap(),
+            Replacement::Rejected("replacement is not chair-capable"),
+        );
+        assert_eq!(
+            replace_roster_bot(&state, &session.id, &chair.id, &chair2.id).unwrap(),
+            Replacement::Replaced,
+        );
+        let session = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(session.chair_bot.as_deref(), Some(chair2.id.as_str()));
+        assert_eq!(store.roster(&session.id).unwrap(), vec![chair2.id]);
     }
 
     #[test]
