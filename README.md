@@ -199,7 +199,7 @@ external controller protocol.
 | `scripts/dev-run-host-ocp.sh` | local host OCP runner for Docker Desktop bot pods |
 | `scripts/dev-deploy-bots.sh` | local Kubernetes OpenAB bot pod deployment |
 | `scripts/dev-tunnel-k8s.sh` | local Kubernetes cloudflared tunnel to OCP |
-| `scripts/dev-sync-gh-token-secret.sh` | local chair-only GitHub token Secret helper |
+| `scripts/dev-sync-gh-token-secret.sh` | local GitHub token Secret helper for bot pod tests |
 | `examples/pr-review.yml` | copied Action option for external repos |
 
 ## Docs
