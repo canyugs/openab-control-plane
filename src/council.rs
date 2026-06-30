@@ -182,7 +182,7 @@ fn review_open_session_action(
         roster: eff_roster,
         quorum_n: quorum,
         chair_bot: Some(chair_bot),
-        mode: "council".into(),
+        mode: "review_council".into(),
         prompt: trigger,
     })
 }
@@ -273,8 +273,15 @@ mod tests {
         assert!(t.contains("canyugs/ocp #7"));
         // pointer trigger tells bots to self-fetch; the diff is NOT inlined
         assert!(t.contains("gh pr diff 7 --repo canyugs/ocp"));
+        assert!(t.contains("OpenAB Council review started"));
         assert!(!t.contains("===== DIFF ====="));
         assert!(!t.contains("{{"));
+    }
+
+    #[test]
+    fn review_session_uses_review_council_mode() {
+        let action = review_open_session_action("o/r", 1, None).unwrap();
+        assert_eq!(action.mode, "review_council");
     }
 
     #[test]

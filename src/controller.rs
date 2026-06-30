@@ -86,7 +86,7 @@ fn validate_open_session(state: &Arc<AppState>, action: &OpenSessionAction) -> R
         bail!("open_session action quorum_n must be non-negative");
     }
     match action.mode.as_str() {
-        "council" | "solo" | "pipeline" => {}
+        "council" | "review_council" | "solo" | "pipeline" => {}
         mode => bail!("open_session action has unknown mode '{mode}'"),
     }
     if let Some(chair) = action.chair_bot.as_deref() {

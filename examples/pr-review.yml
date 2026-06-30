@@ -16,7 +16,7 @@
 # just fires one request and exits.
 #
 # Use EITHER this copied Action OR the GitHub App webhook — not both on the same repo,
-# or a PR convenes two councils. See docs/deploy.md.
+# or a PR convenes two councils. See docs/install-pat.md.
 name: Council Review
 on:
   pull_request:

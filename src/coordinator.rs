@@ -115,6 +115,25 @@ impl Coordinator for QuorumCouncil {
     }
 }
 
+/// PR-review council lifecycle: same quorum/close policy as `QuorumCouncil`, but
+/// the chair is also prompted on the opening trigger so it can create the
+/// in-progress PR comment before reviewers finish.
+pub struct ReviewCouncil;
+
+impl Coordinator for ReviewCouncil {
+    fn kind(&self) -> &'static str {
+        "review_council"
+    }
+
+    fn starters(&self, roster: &[String], _chair: Option<&str>) -> Vec<String> {
+        roster.to_vec()
+    }
+
+    fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
+        QuorumCouncil.on_done(cx, bot)
+    }
+}
+
 /// Single-bot lifecycle: the lone bot's own done closes the session directly.
 /// A 1-bot "council" has zero reviewers (roster minus chair = ∅), so quorum is
 /// never reachable and `QuorumCouncil` would hang — `Solo` is that fix.
@@ -176,6 +195,7 @@ impl Coordinator for Pipeline {
 /// to a policy; a new mode is a new arm + impl, nothing else changes.
 pub fn for_session(mode: &str) -> Box<dyn Coordinator> {
     match mode {
+        "review_council" => Box::new(ReviewCouncil),
         "solo" => Box::new(Solo),
         "pipeline" => Box::new(Pipeline),
         _ => Box::new(QuorumCouncil),
@@ -227,6 +247,7 @@ mod tests {
     #[test]
     fn for_session_dispatches_mode() {
         assert_eq!(for_session("solo").kind(), "solo");
+        assert_eq!(for_session("review_council").kind(), "review_council");
         assert_eq!(for_session("council").kind(), "quorum_council");
         assert_eq!(for_session("anything-else").kind(), "quorum_council");
     }
@@ -303,6 +324,12 @@ mod tests {
             QuorumCouncil.starters(&roster, Some("chair")),
             vec!["rev0".to_string(), "rev1".to_string()]
         );
+    }
+
+    #[test]
+    fn review_council_starters_include_chair_for_status_comment() {
+        let roster = vec!["chair".into(), "rev0".into(), "rev1".into()];
+        assert_eq!(ReviewCouncil.starters(&roster, Some("chair")), roster);
     }
 
     #[test]
