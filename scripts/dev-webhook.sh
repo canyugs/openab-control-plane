@@ -240,9 +240,11 @@ cleanup() {
   fi
   if [[ -n "${CLOUDFLARED_PID:-}" ]]; then
     kill "$CLOUDFLARED_PID" >/dev/null 2>&1 || true
+    wait "$CLOUDFLARED_PID" >/dev/null 2>&1 || true
   fi
   if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
     kill "$PORT_FORWARD_PID" >/dev/null 2>&1 || true
+    wait "$PORT_FORWARD_PID" >/dev/null 2>&1 || true
   fi
   if [[ -n "${TMP_DIR:-}" ]]; then
     rm -rf "$TMP_DIR"

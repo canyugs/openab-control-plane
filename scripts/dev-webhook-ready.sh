@@ -114,6 +114,7 @@ cleanup() {
   trap - EXIT INT TERM
   if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
     kill "$PORT_FORWARD_PID" >/dev/null 2>&1 || true
+    wait "$PORT_FORWARD_PID" >/dev/null 2>&1 || true
   fi
   if [[ -n "${TMP_DIR:-}" ]]; then
     rm -rf "$TMP_DIR"

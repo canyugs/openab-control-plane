@@ -58,7 +58,9 @@ scripts/dev-deploy-k8s.sh --image openab-control-plane:dev-<sha>-<timestamp>
 
 The deploy script creates or updates the namespace, deployment, service, local
 API key, bot roster, and webhook secret. It also forces a rollout restart, because
-local dev often rebuilds the same `:local` tag.
+local dev often rebuilds the same `:local` tag. It fails if the running pod
+`imageID` does not match the local Docker image, because that means Docker
+Desktop Kubernetes is still running an older binary.
 
 Smoke check the webhook path. This starts a temporary port-forward if one is
 needed:
@@ -78,12 +80,120 @@ synthetic `pull_request.synchronize` webhook with the local secret and verifies
 that OCP returns `triggered:true`. Run it before pushing a test commit or asking
 GitHub to redeliver a webhook.
 
+## Run Local OpenAB Bot Pods
+
+OCP alone is not enough for an end-to-end review. The bot pods are the southbound
+execution layer: they fetch `/bot-config/<name>`, connect to `/ws`, run the
+selected CLI, and post replies back to OCP.
+
+For the current Kiro local test, create a Kubernetes Secret first:
+
+```sh
+kubectl -n oabcp-local create secret generic kiro-api \
+  --from-literal=KIRO_API_KEY=<KIRO_API_KEY>
+```
+
+Then deploy the three bot pods:
+
+```sh
+scripts/dev-deploy-bots.sh --agent kiro
+```
+
+The script auto-detects the `kiro-api` secret when it exists and uses
+`ghcr.io/openabdev/openab:0.9.0-beta.3-kiro`. The Kiro built-in agent profile
+serves:
+
+```toml
+[agent]
+command = "kiro-cli"
+args = ["acp", "--trust-all-tools"]
+working_dir = "/home/agent"
+```
+
+That `working_dir` matters: the Kiro OpenAB image uses `/home/agent`, while the
+Claude image uses `/home/node`. A missing working directory can surface as a
+spawn `No such file or directory` error even when the CLI exists in `PATH`.
+
+To scale the bots down without deleting their deployments:
+
+```sh
+scripts/dev-deploy-bots.sh --replicas 0
+```
+
+To remove them:
+
+```sh
+scripts/dev-deploy-bots.sh --delete
+```
+
+If Docker Desktop Kubernetes cannot see a freshly built local OCP image, you can
+still test the bot execution path by running OCP on the host and pointing bot
+pods at it:
+
+```sh
+OABCP_ADDR=127.0.0.1:18090 \
+OABCP_DB=/tmp/oabcp-local.db \
+OABCP_BOTS=chair:chair,rev1:reviewer,rev2:reviewer \
+OABCP_WS_URL=ws://host.docker.internal:18090/ws \
+cargo run
+```
+
+In another terminal:
+
+```sh
+scripts/dev-deploy-bots.sh \
+  --agent kiro \
+  --config-base-url http://host.docker.internal:18090
+```
+
+Custom or experimental CLIs should be configured as OCP agent profiles, not by
+editing Rust code. Put command args, permission/trust flags, working directory,
+and extra inherited env vars in `OABCP_AGENT_PROFILES`; see
+[config-reference.md](config-reference.md).
+
 ## Expose Local OCP To GitHub
 
-The scripted path is preferred when testing the `zeabur-council` GitHub App. It
-starts the local port-forward if needed, starts a Cloudflare quick tunnel, points
-the App webhook at the tunnel URL, and restores the original App webhook URL when
-you stop it.
+There are two local tunnel options.
+
+The Kubernetes-native path is preferred for end-to-end local review testing. It
+runs cloudflared inside the same namespace as OCP, so cloudflared reaches OCP
+through `http://control-plane:8090` and no host-side port-forward is needed:
+
+```sh
+scripts/dev-tunnel-k8s.sh
+```
+
+The script prints:
+
+```text
+tunnel URL: https://<host>.trycloudflare.com
+webhook URL: https://<host>.trycloudflare.com/api/v1/github_webhooks
+```
+
+Cloudflare quick tunnel DNS can take a few seconds to reach your local resolver.
+If a first `curl` says it cannot resolve the host, retry after a short wait.
+
+Patch the GitHub App webhook to that URL:
+
+```sh
+scripts/dev-webhook.sh \
+  --url https://<host>.trycloudflare.com/api/v1/github_webhooks \
+  --key-path /Users/can/Downloads/zeabur-council.2026-06-27.private-key.pem
+```
+
+Then probe the same public route GitHub will use:
+
+```sh
+scripts/dev-webhook-ready.sh \
+  --url https://<host>.trycloudflare.com/api/v1/github_webhooks \
+  --repo canyugs/openab-control-plane \
+  --pr 53
+```
+
+The older host-side scripted path is still useful when you do not want a tunnel
+pod in Kubernetes. It starts a local port-forward if needed, starts a Cloudflare
+quick tunnel on the host, points the App webhook at the tunnel URL, and restores
+the original App webhook URL when you stop it.
 
 ```sh
 scripts/dev-webhook.sh --quick \
@@ -115,7 +225,7 @@ scripts/dev-app-deliveries.sh \
   --key-path /Users/can/Downloads/zeabur-council.2026-06-27.private-key.pem
 ```
 
-Manual equivalent: keep the `kubectl port-forward` running, then open a second terminal:
+Manual host-side equivalent: keep the `kubectl port-forward` running, then open a second terminal:
 
 ```sh
 cloudflared tunnel --url http://localhost:8090

@@ -9,9 +9,15 @@ OABCP_API_KEY="${OABCP_API_KEY:-local-test-key}"
 OABCP_BOTS="${OABCP_BOTS:-chair:chair,rev1:reviewer,rev2:reviewer}"
 OABCP_COUNCIL_ROSTER="${OABCP_COUNCIL_ROSTER:-chair,rev1,rev2}"
 OABCP_ADDR="${OABCP_ADDR:-0.0.0.0:8090}"
+OABCP_WS_URL="${OABCP_WS_URL:-ws://control-plane:8090/ws}"
+OABCP_AGENT_COMMAND="${OABCP_AGENT_COMMAND:-}"
+OABCP_AGENT_PROFILES="${OABCP_AGENT_PROFILES:-}"
+OABCP_AGENT_WORKING_DIR="${OABCP_AGENT_WORKING_DIR:-}"
+OABCP_AGENT_INHERIT_ENV="${OABCP_AGENT_INHERIT_ENV:-}"
 REMOTE_PORT="${REMOTE_PORT:-8090}"
 WAIT_ROLLOUT=1
 CHECK_CONTEXT=1
+CHECK_IMAGE_ID=1
 
 usage() {
   cat <<'USAGE'
@@ -26,10 +32,13 @@ Options:
   --api-key <value>       Local north API key. Default: local-test-key.
   --webhook-secret <val>  GitHub webhook secret. Default: preserve existing or generate.
   --no-wait              Do not wait for rollout completion.
+  --skip-image-id-check  Do not compare the pod imageID with the local Docker image.
 
 Environment:
   IMAGE, KUBE_NAMESPACE, KUBE_CONTEXT, OABCP_API_KEY,
-  GITHUB_WEBHOOK_SECRET, OABCP_BOTS, OABCP_COUNCIL_ROSTER.
+  GITHUB_WEBHOOK_SECRET, OABCP_BOTS, OABCP_COUNCIL_ROSTER, OABCP_WS_URL,
+  OABCP_AGENT_COMMAND, OABCP_AGENT_PROFILES, OABCP_AGENT_WORKING_DIR,
+  OABCP_AGENT_INHERIT_ENV.
 USAGE
 }
 
@@ -58,6 +67,7 @@ while [[ $# -gt 0 ]]; do
     --webhook-secret) WEBHOOK_SECRET="${2:?--webhook-secret needs a value}"; shift 2 ;;
     --webhook-secret=*) WEBHOOK_SECRET="${1#*=}"; shift ;;
     --no-wait) WAIT_ROLLOUT=0; shift ;;
+    --skip-image-id-check) CHECK_IMAGE_ID=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -119,6 +129,8 @@ spec:
               value: "$OABCP_BOTS"
             - name: OABCP_COUNCIL_ROSTER
               value: "$OABCP_COUNCIL_ROSTER"
+            - name: OABCP_WS_URL
+              value: "$OABCP_WS_URL"
 ---
 apiVersion: v1
 kind: Service
@@ -135,6 +147,21 @@ spec:
       targetPort: $REMOTE_PORT
 YAML
 
+kubectl -n "$KUBE_NAMESPACE" set env deployment/control-plane \
+  OABCP_AGENT_COMMAND- \
+  OABCP_AGENT_PROFILES- \
+  OABCP_AGENT_WORKING_DIR- \
+  OABCP_AGENT_INHERIT_ENV- >/dev/null || true
+
+optional_env=()
+[[ -n "$OABCP_AGENT_COMMAND" ]] && optional_env+=("OABCP_AGENT_COMMAND=$OABCP_AGENT_COMMAND")
+[[ -n "$OABCP_AGENT_PROFILES" ]] && optional_env+=("OABCP_AGENT_PROFILES=$OABCP_AGENT_PROFILES")
+[[ -n "$OABCP_AGENT_WORKING_DIR" ]] && optional_env+=("OABCP_AGENT_WORKING_DIR=$OABCP_AGENT_WORKING_DIR")
+[[ -n "$OABCP_AGENT_INHERIT_ENV" ]] && optional_env+=("OABCP_AGENT_INHERIT_ENV=$OABCP_AGENT_INHERIT_ENV")
+if [[ "${#optional_env[@]}" -gt 0 ]]; then
+  kubectl -n "$KUBE_NAMESPACE" set env deployment/control-plane "${optional_env[@]}" >/dev/null
+fi
+
 # Recreate the pod even when the image tag did not change; this catches the common
 # local dev case where openab-control-plane:local was rebuilt in place.
 kubectl -n "$KUBE_NAMESPACE" rollout restart deployment/control-plane >/dev/null
@@ -148,6 +175,23 @@ fi
 
 kubectl -n "$KUBE_NAMESPACE" get pods -l app=control-plane \
   -o custom-columns=NAME:.metadata.name,READY:.status.containerStatuses[0].ready,IMAGE:.spec.containers[0].image,IMAGE_ID:.status.containerStatuses[0].imageID,STATUS:.status.phase
+
+if [[ "$CHECK_IMAGE_ID" == "1" ]] && command -v docker >/dev/null 2>&1; then
+  local_image_id=$(docker image inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null || true)
+  if [[ -n "$local_image_id" ]]; then
+    pod_image_ids=$(kubectl -n "$KUBE_NAMESPACE" get pods -l app=control-plane \
+      -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.status.containerStatuses[0].imageID}{"\n"}{end}')
+    if [[ "$pod_image_ids" != *"$local_image_id"* ]]; then
+      echo >&2
+      echo "error: Kubernetes is not running the local Docker image for $IMAGE" >&2
+      echo "local Docker image: $local_image_id" >&2
+      echo "pod image IDs:" >&2
+      printf '%s\n' "$pod_image_ids" >&2
+      echo "The webhook readiness probe would likely test an old binary." >&2
+      exit 1
+    fi
+  fi
+fi
 
 echo
 echo "next: scripts/dev-webhook-ready.sh"

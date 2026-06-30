@@ -191,6 +191,8 @@ external controller protocol.
 | `src/store.rs` | SQLite store and domain types |
 | `src/ws.rs` | south gateway server for OpenAB pods |
 | `scripts/open-council.sh` | manual PR review client |
+| `scripts/dev-deploy-bots.sh` | local Kubernetes OpenAB bot pod deployment |
+| `scripts/dev-tunnel-k8s.sh` | local Kubernetes cloudflared tunnel to OCP |
 | `examples/pr-review.yml` | copied Action option for external repos |
 
 ## Docs
