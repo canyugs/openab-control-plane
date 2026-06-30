@@ -140,8 +140,8 @@ side_effects:
     exactly_one: true
 
 templates:
-  - zeabur-template.app.yaml
-  - zeabur-template.pat.yaml
+  - zeabur-template-app-1E1Y97.yaml
+  - zeabur-template-pat-Z7TQIR.yaml
 ```
 
 This is a sketch, not the committed schema. The important decision is the

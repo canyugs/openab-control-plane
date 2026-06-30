@@ -41,7 +41,7 @@ npx zeabur@latest template deploy -i=false -c Z7TQIR \
   --var CLAUDE_CODE_OAUTH_TOKEN=<token> \
   --var GH_TOKEN=<pat>
 ```
-Template source lives in `zeabur-template.pat.yaml`; use `-f zeabur-template.pat.yaml`
+Template source lives in `zeabur-template-pat-Z7TQIR.yaml`; use `-f zeabur-template-pat-Z7TQIR.yaml`
 instead of `-c Z7TQIR` when deploying an unpublished local edit.
 
 The plane comes up at `https://my-council.zeabur.app`. Its API key is the
@@ -97,8 +97,8 @@ review on one path:
      --var CLAUDE_CODE_OAUTH_TOKEN=<token> \
      --var GITHUB_WEBHOOK_SECRET=$SECRET
    ```
-   Template source lives in `zeabur-template.app.yaml`; use
-   `-f zeabur-template.app.yaml` instead of `-c 1E1Y97` when deploying an
+   Template source lives in `zeabur-template-app-1E1Y97.yaml`; use
+   `-f zeabur-template-app-1E1Y97.yaml` instead of `-c 1E1Y97` when deploying an
    unpublished local edit.
    For an existing deployment, set `GITHUB_WEBHOOK_SECRET` on the **control-plane**
    service to that value, then restart the control-plane. The endpoint is

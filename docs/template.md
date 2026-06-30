@@ -19,7 +19,7 @@ Pick **one** trigger track per target repo:
 
 ## Track 1 — PAT + copied Action (external quickstart)
 
-1. **Deploy template code `Z7TQIR`** (source: `zeabur-template.pat.yaml`) with:
+1. **Deploy template code `Z7TQIR`** (source: `zeabur-template-pat-Z7TQIR.yaml`) with:
    - `PUBLIC_DOMAIN` — e.g. `my-council` -> `my-council.zeabur.app`
    - `CLAUDE_CODE_OAUTH_TOKEN` — from `claude setup-token`
    - `GH_TOKEN` — a fine-grained PAT (`pull_requests: write`, `contents: read`)
@@ -54,7 +54,7 @@ trigger with no per-repo workflow file:
 
 1. **Create a GitHub App** (perms `Pull requests: write`, `Contents: read`; events:
    Pull requests + Issue comments), install it on the repo, generate a private key.
-2. **Deploy template code `1E1Y97`** (source: `zeabur-template.app.yaml`) with
+2. **Deploy template code `1E1Y97`** (source: `zeabur-template-app-1E1Y97.yaml`) with
    `PUBLIC_DOMAIN`, `CLAUDE_CODE_OAUTH_TOKEN`, and a generated
    `GITHUB_WEBHOOK_SECRET`.
    ```sh
