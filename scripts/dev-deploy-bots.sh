@@ -110,6 +110,11 @@ lookup_csv_map() {
   local key="$2"
   local default_value="${3:-}"
   local entry entry_key entry_value
+  local -a entries=()
+  if [[ -z "$map" ]]; then
+    printf '%s' "$default_value"
+    return
+  fi
   IFS=',' read -r -a entries <<<"$map"
   for entry in "${entries[@]}"; do
     entry=$(printf '%s' "$entry" | xargs)
@@ -333,6 +338,12 @@ spec:
             - $config_url
 $env_yaml
 YAML
+
+  # Local OCP DBs are often recreated, which changes /bot-config tokens without
+  # changing the Deployment spec. Restart so pods refetch config on every run.
+  if [[ "$REPLICAS" != "0" ]]; then
+    kubectl -n "$KUBE_NAMESPACE" rollout restart "deployment/$bot" >/dev/null
+  fi
 
   if [[ "$WAIT_ROLLOUT" == "1" && "$REPLICAS" != "0" ]]; then
     kubectl -n "$KUBE_NAMESPACE" rollout status "deployment/$bot" --timeout=180s

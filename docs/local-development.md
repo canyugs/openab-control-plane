@@ -137,6 +137,15 @@ Use `--agent-images agent=image,...` when a profile does not have a built-in
 local image. Any CLI permission/trust switch belongs in the agent profile `args`;
 the deploy script does not infer a bypass flag for unknown CLIs.
 
+CLI compatibility has two layers. The profile can open the CLI's tool/sandbox
+permissions, but it cannot force the CLI to accept trigger-embedded council
+steering. For example, Kiro connects through ACP and `--trust-all-tools` opens
+tool use, but local smoke tests showed it may still reject the PR-review council
+prompt as role-routing/prompt-injection. Use a CLI that accepts delegated PR
+review prompts, or move the standing rules into that CLI's own steering layer
+(`pre_seed`, `CLAUDE.md`, `.kiro/steering/`, etc.) instead of relying only on the
+trigger body.
+
 If the test should also let the chair write PR comments, sync your local
 `gh auth token` into a Kubernetes Secret and inject it only into the chair:
 

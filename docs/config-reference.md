@@ -113,7 +113,10 @@ trust/permission flags:
 For an existing built-in profile, omitted fields keep their built-in value. For a
 new custom profile, `command` is required. Permission or sandbox-bypass flags are
 not inferred by OCP; put them in `args` so the deploy config makes that trust
-decision explicit.
+decision explicit. Those flags only grant the CLI permission to use tools; they
+do not guarantee the CLI will accept trigger-embedded council steering. If a CLI
+rejects role-routed prompts, seed the standing rules through that CLI's native
+steering mechanism or OAB `pre_seed`.
 
 The pod must run the matching agent image and carry that provider's key. OCP only
 serves the OpenAB config; it does not install a CLI into the container and does

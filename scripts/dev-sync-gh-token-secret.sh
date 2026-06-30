@@ -68,7 +68,8 @@ trap cleanup EXIT INT TERM
 
 umask 077
 TOKEN_FILE="$TMP_DIR/token"
-gh auth token >"$TOKEN_FILE"
+TOKEN=$(gh auth token)
+printf '%s' "$TOKEN" >"$TOKEN_FILE"
 [[ -s "$TOKEN_FILE" ]] || die "gh auth token returned an empty token"
 
 kubectl create namespace "$KUBE_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
