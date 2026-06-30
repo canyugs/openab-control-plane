@@ -153,6 +153,9 @@ Useful north endpoints:
 
 ```text
 POST /v1/bots
+GET  /v1/bots?role=...&provider=...&capability=...&connected=true&enabled=true&health=...
+POST /v1/bots/discover
+PATCH /v1/bots/:id
 POST /v1/sessions
 GET  /v1/sessions?trigger_ref=...&state=...&limit=20
 GET  /v1/sessions/:id
@@ -209,6 +212,8 @@ external controller protocol.
 - [docs/design.md](docs/design.md) for OCP's ownership boundary.
 - [docs/coordinators.md](docs/coordinators.md) for the coordinator seam.
 - [docs/config-reference.md](docs/config-reference.md) for environment variables.
+- [docs/bot-operations.md](docs/bot-operations.md) for reducing, adding, or
+  replacing council bots and providers.
 - [docs/roadmap.md](docs/roadmap.md) for planned work and known gaps.
 - [docs/adr/](docs/adr/) for decision records, including
   [ADR 007](docs/adr/007-control-plugins-and-oab-father.md) and

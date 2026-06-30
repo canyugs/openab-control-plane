@@ -29,6 +29,10 @@ pub struct AppState {
     /// Webhook HMAC secret (`x-hub-signature-256`). None = the webhook endpoint
     /// rejects every request (403) — a missing secret is fail-closed, not fail-open.
     pub github_webhook_secret: Option<String>,
+    /// Scoped bootstrap token for `/v1/bots/discover`. None = discovery disabled.
+    pub bot_discovery_token: Option<String>,
+    /// Public/internal base URL returned by `/v1/bots/discover` for `/bot-config`.
+    pub config_base_url: String,
     /// Serializes installation-token minting so concurrent requests for the same
     /// `(session, role)` can't each mint a distinct live token (check-then-act race).
     /// Coarse (one lock for all mints) but mints are rare at council scale; make it
@@ -38,6 +42,25 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(store: Arc<dyn Store>) -> Arc<AppState> {
+        Self::new_with_options(
+            store,
+            std::env::var("OABCP_API_KEY").ok(),
+            GitHubApp::from_env(),
+            std::env::var("GITHUB_WEBHOOK_SECRET").ok(),
+            std::env::var("OABCP_BOT_DISCOVERY_TOKEN").ok(),
+            std::env::var("OABCP_CONFIG_BASE_URL")
+                .unwrap_or_else(|_| "http://control-plane.zeabur.internal:8090".to_string()),
+        )
+    }
+
+    pub fn new_with_options(
+        store: Arc<dyn Store>,
+        api_key: Option<String>,
+        github_app: Option<GitHubApp>,
+        github_webhook_secret: Option<String>,
+        bot_discovery_token: Option<String>,
+        config_base_url: String,
+    ) -> Arc<AppState> {
         let (north_tx, _) = broadcast::channel(1024);
         Arc::new(AppState {
             store,
@@ -45,9 +68,11 @@ impl AppState {
             conn_seq: AtomicU64::new(0),
             north_tx,
             platform: "feishu".into(),
-            api_key: std::env::var("OABCP_API_KEY").ok(),
-            github_app: GitHubApp::from_env(),
-            github_webhook_secret: std::env::var("GITHUB_WEBHOOK_SECRET").ok(),
+            api_key,
+            github_app,
+            github_webhook_secret,
+            bot_discovery_token,
+            config_base_url,
             github_mint_lock: tokio::sync::Mutex::new(()),
         })
     }
