@@ -1,60 +1,93 @@
 # PR Review Council — end-to-end flow
 
-What actually happens when the council reviews a PR, as built and verified
-(2026-06-26). Deploy/usage commands live in `TEMPLATE.md`; this is the flow.
+What happens when the council reviews a PR, as built and dogfooded in the webhook
+path. Deploy/usage commands live in `template.md` and `deploy.md`; this file
+describes the runtime flow.
 
 ## Topology
+
+```text
+GitHub webhook / north API
+        |
+        v
+control-plane ── gateway /ws ── chair  (stock OpenAB pod, PR write credential when enabled)
+      |                       ├─ rev1   (stock OpenAB pod)
+      |                       └─ rev2   (stock OpenAB pod)
+      v
+SQLite: bots, sessions, roster, messages, reactions, outbox
 ```
-  you ──REST/SSE──▶ control-plane ──gateway /ws──▶ chair  (stock OpenAB Claude pod, has PR write auth)
-                         │                        ├─▶ rev1   (stock pod, no write auth)
-                         │                        └─▶ rev2   (stock pod, no write auth)
-                         └─ SQLite (/data): bots, sessions, roster, outbox
+
+- Pods are stock OpenAB pods. They dial out to the plane over `/ws`.
+- The plane seeds the roster at boot from `OABCP_BOTS`, usually
+  `chair:chair,rev1:reviewer,rev2:reviewer`.
+- The chair is the only actor expected to write to GitHub. It may post through a
+  PAT profile or pod-local GitHub App auth; the plane itself does not post PR
+  comments.
+- Reviewers have no PR write token. On pointer triggers they still need GitHub
+  read access for private repos.
+
+## Full Review
+
+1. **Trigger** — a PR `opened` / `reopened` / `ready_for_review` webhook, a
+   write-ish commenter's `/review`, or `POST /v1/review {repo, pr, preset?}` asks
+   the plane to review a PR.
+2. **Open** — the controller creates a session with
+   `trigger_ref="github:pr/owner/repo#N"`, `mode="council"`, `chair_bot=chair`,
+   and `quorum_n` equal to the assigned reviewers. Re-delivery dedupes while a
+   non-terminal session with the same `trigger_ref` exists.
+3. **Pointer trigger** — the plane posts a PR pointer trigger, not an inlined
+   diff. Bots self-fetch PR context with `gh` according to the prompt and their
+   assigned review angles.
+4. **Fanout / starters** — every roster member receives the trigger for history,
+   but only coordinator-selected starters are @mentioned. For `council`, starters
+   are reviewers first; the chair receives context but waits for the quorum prompt.
+5. **Review** — reviewers post findings and signal done with `[done]` or the
+   gateway done reaction (`🆗`). The plane records done as a reaction and relays
+   each reviewer's settled final message to the chair.
+6. **Quorum** — when reviewer done count reaches `quorum_n`, state moves
+   `deliberating → quorum`. The plane prompts the chair to synthesize the final
+   verdict and complete whatever side effect the opening trigger required.
+7. **Chair side effect** — the chair writes the PR verdict/comment as configured
+   by the deployment profile and prompt. The plane does not run `gh` itself.
+8. **Close** — the chair's `[done]` in `quorum` closes the session and emits the
+   north `verdict` and `state:closed` events. A chair `[done]` in `deliberating`
+   is ignored so an opening-trigger response cannot close the review early.
+9. **Watchdog fallback** — if reviewers or the chair stall, the liveness watchdog
+   force-closes stale sessions with the work already present in the thread.
+
+## Follow-Up Comments
+
+Conversational follow-up is separate from a full review:
+
+1. A write-ish commenter posts `/ask <question>`, or `@mentions` the bot when
+   `OABCP_BOT_HANDLE` is configured.
+2. The webhook opens a comment-scoped `solo` session with
+   `trigger_ref="github:ask/owner/repo#N@comment_id"`.
+3. The chair self-fetches PR context and posts a new PR comment answer.
+4. The chair sends `[done]`; `Solo` closes directly.
+
+This was dogfooded on PR #43: a `/ask` comment opened a solo session, the chair
+answered as `zeabur-council[bot]`, and the session closed.
+
+## Debugging
+
+Use the north API instead of reading SQLite directly once deployed:
+
+```sh
+curl -H "Authorization: Bearer $KEY" \
+  "$PLANE/v1/sessions?trigger_ref=github%3Apr%2Fowner%2Frepo%2343"
+
+curl -H "Authorization: Bearer $KEY" \
+  "$PLANE/v1/session-log?trigger_ref=github%3Aask%2Fowner%2Frepo%2343%4012345"
 ```
-- Pods are **stock** `ghcr.io/openabdev/openab:*-claude` — no fork. They dial OUT to the plane.
-- The plane **seeds the roster at boot** (`OABCP_BOTS=chair:chair,rev1:reviewer,rev2:reviewer`),
-  giving each bot `id=name`, so pods fetch a static `…/bot-config/<name>` and connect. No manual registration.
 
-## The flow
-1. **Open** — `POST /v1/sessions {roster:[chair,rev1,rev2], quorum_n:2, chair_bot:chair, trigger_ref:"github:pr/owner/repo#N"}`.
-2. **Trigger** — `POST /v1/sessions/:id/messages` with the review task. For webhook
-   and `--self-fetch` PR reviews, the trigger carries a pointer (`owner/repo#N`), not
-   the diff; bots fetch the PR with their own `gh`. The plane @mentions each roster
-   bot so none are gated out.
-3. **Fan-out** — the plane delivers the trigger to every bot except the author
-   (`routing.rs`); a forum thread is opened (`channel_type=supergroup`).
-4. **Review** — rev1/rev2 each post findings in the thread, then react 🆗
-   (OpenAB's default `emoji_done` = 🆗 = the plane's `DONE_EMOJI`). On each done-signal
-   the plane relays that reviewer's final message to the chair.
-5. **Quorum** — when reviewers-who-🆗 ≥ `quorum_n` (`session.rs`), state →
-   `quorum`; the plane prompts the chair to render the verdict.
-6. **Verdict + side-effects** — the chair (the only pod with PR write auth)
-   synthesizes the verdict and acts on the PR via `gh`:
-   - in-progress comment → `gh pr comment`
-   - verdict comment → `gh pr comment`
-   - `gh pr edit --add-label council-reviewed`
-   - approve/request-changes → `gh pr review` *(see caveat)*
-   then reacts 🆗.
-7. **Close** — the chair's done-signal in `quorum` advances state → `closed`; the
-   plane emits the `verdict` SSE event and gates further chatter (`deliver_event` +
-   `handle_reply` refuse post-close sends). The verdict is also at `GET /v1/sessions/:id`.
+`GET /v1/sessions/:id` returns the session, messages, roster, and reactions.
+`GET /v1/sessions/:id/log` returns a text timeline useful for quick dogfood
+investigation.
 
-## Identity model (why chair-only `gh`)
-- Only the **chair** has PR write auth: either a fine-grained `GH_TOKEN` PAT or
-  pod-local GitHub App auth (`zeabur-council[bot]`). Reviewers have no write token →
-  they physically can't write to the PR, so no duplicate comments. On pointer
-  triggers they still need GitHub read access; public repos work anonymously, while
-  private repos need a read-only reviewer credential or the separate per-role App
-  token path.
-- **Self-review caveat:** GitHub blocks approve/request-changes on your *own* PR. The
-  token's account must differ from the PR author for `gh pr review --approve` to land;
-  comments + labels always work. Reviewing others' PRs is unaffected.
+## Boundary
 
-## Verified
-A 3-bot council deployed entirely from the template reviewed `canyugs/council-demo#1`
-(a planted tax-base bug): `deliberating → quorum → closed`, chair caught the bug,
-posted the verdict, applied `council-reviewed`. See [deploy.md](deploy.md) to reproduce.
-
-## Known gaps (see TODO.md)
-Auto-trigger now runs through the GitHub App/repo webhook; the copied GitHub Action is
-only an external install option. Remaining gaps: large-diff chunking, benchmark/eval,
-and multi-installation App identity for hosted/customer repos.
+OCP is the runtime kernel: sessions, roster, fanout, coordinator policy,
+delivery, durable state, auth, and liveness. PR review is the first control
+plugin/profile on top of that runtime. See
+[ADR 007](adr/007-control-plugins-and-oab-father.md).

@@ -9,7 +9,7 @@ spec:
     control plane + 3 stock OpenAB Claude pods deliberate on a PR and post one
     verdict as your GitHub account. After deploy, copy examples/pr-review.yml into
     the target repo and set COUNCIL_PLANE / COUNCIL_KEY. Do not also configure the
-    webhook trigger on the same repo.
+    webhook trigger on the same repo. See docs/template.md.
   readme: |
     # OpenAB Review Council (PAT)
 

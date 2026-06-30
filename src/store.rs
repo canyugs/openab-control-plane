@@ -85,6 +85,13 @@ pub struct Message {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reaction {
+    pub message_id: String,
+    pub bot_id: String,
+    pub emoji: String,
+}
+
 /// Backing-service seam (design §6c). All callers depend on this, not on SQLite.
 pub trait Store: Send + Sync {
     fn register_bot(&self, name: &str, role: &str, token_hash: &str, token_plain: &str) -> Result<Bot>;
@@ -122,6 +129,12 @@ pub trait Store: Send + Sync {
         mode: &str,
     ) -> Result<(Session, bool)>;
     fn session(&self, id: &str) -> Result<Option<Session>>;
+    fn list_sessions(
+        &self,
+        trigger_ref: Option<&str>,
+        state: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Session>>;
     /// Add a bot to a session roster. Returns true if newly added (false if it
     /// was already a member) — the caller backfills history only on a fresh join.
     fn add_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool>;
@@ -157,6 +170,7 @@ pub trait Store: Send + Sync {
 
     fn add_reaction(&self, message_id: &str, bot_id: &str, emoji: &str) -> Result<()>;
     fn remove_reaction(&self, message_id: &str, bot_id: &str, emoji: &str) -> Result<()>;
+    fn reactions(&self, session_id: &str) -> Result<Vec<Reaction>>;
     fn reactors_in_session(&self, session_id: &str, emoji: &str) -> Result<Vec<String>>;
 
     /// Durable per-bot outbox (offline delivery). Frames queued here are flushed
@@ -498,6 +512,88 @@ impl Store for SqliteStore {
         Ok(s)
     }
 
+    fn list_sessions(
+        &self,
+        trigger_ref: Option<&str>,
+        state: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Session>> {
+        fn map_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
+            Ok(Session {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                state: r.get(2)?,
+                trigger_ref: r.get(3)?,
+                quorum_n: r.get(4)?,
+                chair_bot: r.get(5)?,
+                created_at: r.get(6)?,
+                closed_at: r.get(7)?,
+                mode: r.get(8)?,
+            })
+        }
+
+        let c = self.conn.lock().unwrap();
+        let limit = limit as i64;
+        let sessions = match (trigger_ref, state) {
+            (Some(trigger_ref), Some(state)) => {
+                let mut stmt = c.prepare(
+                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode
+                     FROM sessions
+                     WHERE trigger_ref = ?1 AND state = ?2
+                     ORDER BY created_at DESC, rowid DESC
+                     LIMIT ?3",
+                )?;
+                let rows: Vec<Session> = stmt
+                    .query_map(params![trigger_ref, state, limit], map_session)?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                rows
+            }
+            (Some(trigger_ref), None) => {
+                let mut stmt = c.prepare(
+                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode
+                     FROM sessions
+                     WHERE trigger_ref = ?1
+                     ORDER BY created_at DESC, rowid DESC
+                     LIMIT ?2",
+                )?;
+                let rows: Vec<Session> = stmt
+                    .query_map(params![trigger_ref, limit], map_session)?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                rows
+            }
+            (None, Some(state)) => {
+                let mut stmt = c.prepare(
+                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode
+                     FROM sessions
+                     WHERE state = ?1
+                     ORDER BY created_at DESC, rowid DESC
+                     LIMIT ?2",
+                )?;
+                let rows: Vec<Session> = stmt
+                    .query_map(params![state, limit], map_session)?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                rows
+            }
+            (None, None) => {
+                let mut stmt = c.prepare(
+                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode
+                     FROM sessions
+                     ORDER BY created_at DESC, rowid DESC
+                     LIMIT ?1",
+                )?;
+                let rows: Vec<Session> = stmt
+                    .query_map(params![limit], map_session)?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                rows
+            }
+        };
+        Ok(sessions)
+    }
+
     fn add_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool> {
         let c = self.conn.lock().unwrap();
         let n = c.execute(
@@ -564,7 +660,8 @@ impl Store for SqliteStore {
     fn roster(&self, session_id: &str) -> Result<Vec<String>> {
         let c = self.conn.lock().unwrap();
         // ORDER BY rowid = insertion order = the order roster was passed at
-        // create_session. Pipeline stage order rides on this; council ignores it.
+        // create_session. Pipeline stage order rides on this; council uses it
+        // only for stable fanout, while chair identity comes from `chair_bot`.
         let mut stmt =
             c.prepare("SELECT bot_id FROM session_bots WHERE session_id = ?1 ORDER BY rowid")?;
         let rows = stmt.query_map(params![session_id], |r| r.get::<_, String>(0))?;
@@ -669,6 +766,25 @@ impl Store for SqliteStore {
             params![message_id, bot_id, emoji],
         )?;
         Ok(())
+    }
+
+    fn reactions(&self, session_id: &str) -> Result<Vec<Reaction>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt = c.prepare(
+            "SELECT r.message_id, r.bot_id, r.emoji
+             FROM reactions r
+             JOIN messages m ON m.id = r.message_id
+             WHERE m.session_id = ?1
+             ORDER BY m.created_at, r.message_id, r.bot_id, r.emoji",
+        )?;
+        let rows = stmt.query_map(params![session_id], |r| {
+            Ok(Reaction {
+                message_id: r.get(0)?,
+                bot_id: r.get(1)?,
+                emoji: r.get(2)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     fn reactors_in_session(&self, session_id: &str, emoji: &str) -> Result<Vec<String>> {
@@ -820,6 +936,57 @@ mod tests {
             .unwrap();
         assert!(!deduped);
         assert_ne!(second.id, first.id);
+    }
+
+    #[test]
+    fn list_sessions_filters_by_trigger_state_and_limit() {
+        let store = SqliteStore::memory().unwrap();
+        let trigger = "github:pr/o/r#3";
+        let first = store
+            .create_session("Review o/r#3", Some(trigger), 0, None, &[], "council")
+            .unwrap();
+        store.set_state(&first.id, SessionState::Closed).unwrap();
+        let second = store
+            .create_session("Review o/r#3 again", Some(trigger), 0, None, &[], "council")
+            .unwrap();
+        let other = store
+            .create_session("manual", None, 0, None, &[], "solo")
+            .unwrap();
+
+        let by_trigger = store.list_sessions(Some(trigger), None, 10).unwrap();
+        assert_eq!(by_trigger.len(), 2);
+        assert_eq!(by_trigger[0].id, second.id);
+        assert_eq!(by_trigger[1].id, first.id);
+
+        let closed = store
+            .list_sessions(Some(trigger), Some("closed"), 10)
+            .unwrap();
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].id, first.id);
+
+        let latest = store.list_sessions(None, None, 1).unwrap();
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].id, other.id);
+    }
+
+    #[test]
+    fn reactions_returns_only_the_requested_session() {
+        let store = SqliteStore::memory().unwrap();
+        let s1 = store.create_session("one", None, 0, None, &[], "council").unwrap();
+        let s2 = store.create_session("two", None, 0, None, &[], "council").unwrap();
+        let m1 = store
+            .add_message(&s1.id, None, "bot", Some("rev1"), "done", None)
+            .unwrap();
+        let m2 = store
+            .add_message(&s2.id, None, "bot", Some("rev2"), "done", None)
+            .unwrap();
+        store.add_reaction(&m1.id, "rev1", "🆗").unwrap();
+        store.add_reaction(&m2.id, "rev2", "🆗").unwrap();
+
+        let reactions = store.reactions(&s1.id).unwrap();
+        assert_eq!(reactions.len(), 1);
+        assert_eq!(reactions[0].message_id, m1.id);
+        assert_eq!(reactions[0].bot_id, "rev1");
     }
 
     #[test]

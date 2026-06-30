@@ -45,19 +45,26 @@ pub trait Coordinator: Send + Sync {
     /// Roster members *prompted to act* on the opening trigger (i.e. @mentioned).
     /// Non-starters still receive the trigger as context. Default: the whole
     /// roster (council/solo fan-out). `Pipeline` starts only stage 0.
-    fn starters(&self, roster: &[String]) -> Vec<String> {
+    fn starters(&self, roster: &[String], _chair: Option<&str>) -> Vec<String> {
         roster.to_vec()
     }
 }
 
 /// v1 lifecycle: reviewers (roster minus chair) signal done; once `quorum_n` of
 /// them have, the chair synthesizes and the chair's own done closes the session.
-/// Behaviour-identical port of the previously-inline orchestrator flow.
 pub struct QuorumCouncil;
 
 impl Coordinator for QuorumCouncil {
     fn kind(&self) -> &'static str {
         "quorum_council"
+    }
+
+    fn starters(&self, roster: &[String], chair: Option<&str>) -> Vec<String> {
+        roster
+            .iter()
+            .filter(|bot| Some(bot.as_str()) != chair)
+            .cloned()
+            .collect()
     }
 
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
@@ -82,30 +89,26 @@ impl Coordinator for QuorumCouncil {
             if let Some(c) = chair {
                 actions.push(Action::Prompt {
                     to: c.to_string(),
-                    content: "Quorum reached. Chair, please render the verdict.".to_string(),
+                    content: "Quorum reached. Chair, synthesize the final verdict, complete any side effect required by the opening trigger, and only then end your final message with [done]. Do not send [done] before the required side effect succeeds.".to_string(),
                 });
             }
         }
 
-        // 3. the chair's own done closes with its final. The chair is the
-        //    coordination authority and the only writer, so its done closes from
-        //    whichever active state we're in: `Quorum` (reviewers reached it — the
-        //    designed path) or `Deliberating` (the chair synthesized before a
-        //    formal reviewer quorum). The latter is the live-found fix
-        //    (canyugs/openab-control-plane#4, 2026-06-27): on a real PR a reviewer
-        //    deliberated but never emitted a done-signal, so quorum was never
-        //    reached and the chair's verdict hung the session until the 900s
-        //    watchdog (with a duplicate-ack chatter storm). The Close CAS still
-        //    fires at most once; a stray post-close done no-ops.
-        if Some(bot) == chair {
-            let from = match cx.state() {
-                SessionState::Quorum => SessionState::Quorum,
-                _ => SessionState::Deliberating,
-            };
+        // 3. The chair's own done closes only after reviewer quorum. This prevents
+        //    an opening-trigger chair response from closing the PR review before
+        //    reviewers have contributed or before the chair has posted the PR
+        //    comment side-effect. Liveness still comes from the watchdog.
+        if Some(bot) == chair && cx.state() == SessionState::Quorum {
             actions.push(Action::Close {
-                from,
+                from: SessionState::Quorum,
                 verdict: cx.latest_settled(bot).unwrap_or_default(),
             });
+        } else if Some(bot) == chair {
+            tracing::debug!(
+                bot,
+                state = ?cx.state(),
+                "chair done ignored before reviewer quorum"
+            );
         }
 
         actions
@@ -141,7 +144,7 @@ impl Coordinator for Pipeline {
         "pipeline"
     }
 
-    fn starters(&self, roster: &[String]) -> Vec<String> {
+    fn starters(&self, roster: &[String], _chair: Option<&str>) -> Vec<String> {
         roster.first().cloned().into_iter().collect()
     }
 
@@ -242,13 +245,11 @@ mod tests {
         }
     }
 
-    /// Live-found (canyugs/openab-control-plane#4, 2026-06-27): a reviewer never
-    /// emitted a done-signal, so the 2-of-2 reviewer quorum was never reached and
-    /// the session never entered `Quorum`. The chair synthesized the verdict and
-    /// signalled done anyway — its close must fire from `Deliberating`, on the
-    /// chair's authority, not hang until the watchdog.
+    /// The chair may see the opening trigger as context, but it must not be able
+    /// to close the council from `Deliberating`. It should wait for reviewer
+    /// quorum and the explicit system prompt before writing the PR verdict.
     #[test]
-    fn quorum_council_chair_done_closes_from_deliberating_without_quorum() {
+    fn quorum_council_chair_done_does_not_close_before_quorum() {
         let cx = FakeCtx {
             quorum_n: 2,                // both reviewers must signal for a quorum…
             reactors: vec![],           // …but none did → quorum unreachable
@@ -260,14 +261,7 @@ mod tests {
             .into_iter()
             .filter(|a| matches!(a, Action::Close { .. }))
             .collect();
-        assert_eq!(closes.len(), 1, "chair's done emits exactly one Close");
-        match &closes[0] {
-            Action::Close { from, verdict } => {
-                assert_eq!(*from, SessionState::Deliberating, "closes from Deliberating, not Quorum");
-                assert_eq!(verdict, "VERDICT");
-            }
-            _ => unreachable!(),
-        }
+        assert!(closes.is_empty(), "chair done before quorum must not close");
     }
 
     /// The designed path is unchanged: once reviewers reached quorum (state is
@@ -294,9 +288,21 @@ mod tests {
     #[test]
     fn pipeline_starts_only_stage_zero() {
         let roster = vec!["a".into(), "b".into(), "c".into()];
-        assert_eq!(Pipeline.starters(&roster), vec!["a".to_string()]);
-        // council/solo (default) start everyone
-        assert_eq!(QuorumCouncil.starters(&roster), roster);
+        assert_eq!(Pipeline.starters(&roster, None), vec!["a".to_string()]);
+        assert_eq!(
+            QuorumCouncil.starters(&roster, Some("a")),
+            vec!["b".to_string(), "c".to_string()]
+        );
+        assert_eq!(Solo.starters(&roster, None), roster);
+    }
+
+    #[test]
+    fn quorum_council_starters_excludes_chair_by_identity_not_position() {
+        let roster = vec!["rev0".into(), "chair".into(), "rev1".into()];
+        assert_eq!(
+            QuorumCouncil.starters(&roster, Some("chair")),
+            vec!["rev0".to_string(), "rev1".to_string()]
+        );
     }
 
     #[test]
