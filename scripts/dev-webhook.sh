@@ -25,6 +25,7 @@ PORT_FORWARD_PID=""
 CLOUDFLARED_PID=""
 CLOUDFLARED_LOG=""
 PORT_FORWARD_LOG=""
+TMP_DIR=""
 ORIGINAL_URL=""
 PATCHED=0
 
@@ -167,13 +168,20 @@ local_reachable() {
   [[ "$code" != "000" ]]
 }
 
+ensure_tmp_dir() {
+  if [[ -z "$TMP_DIR" ]]; then
+    TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/oabcp-dev-webhook.XXXXXX")
+  fi
+}
+
 start_port_forward_if_needed() {
   [[ "$START_PORT_FORWARD" == "1" ]] || return 0
   if local_reachable; then
     return 0
   fi
   need kubectl
-  PORT_FORWARD_LOG=$(mktemp "${TMPDIR:-/tmp}/oabcp-port-forward.XXXXXX.log")
+  ensure_tmp_dir
+  PORT_FORWARD_LOG="$TMP_DIR/port-forward.log"
   local port
   port=$(local_port)
   echo "starting port-forward: $KUBE_NAMESPACE/service/$KUBE_SERVICE $port:$REMOTE_PORT"
@@ -236,6 +244,9 @@ cleanup() {
   if [[ -n "${PORT_FORWARD_PID:-}" ]]; then
     kill "$PORT_FORWARD_PID" >/dev/null 2>&1 || true
   fi
+  if [[ -n "${TMP_DIR:-}" ]]; then
+    rm -rf "$TMP_DIR"
+  fi
   exit "$status"
 }
 trap cleanup EXIT INT TERM
@@ -254,7 +265,8 @@ case "$MODE" in
     need cloudflared
     [[ "$RESTORE_ON_EXIT" == "" ]] && RESTORE_ON_EXIT=1
     start_port_forward_if_needed
-    CLOUDFLARED_LOG=$(mktemp "${TMPDIR:-/tmp}/oabcp-cloudflared.XXXXXX.log")
+    ensure_tmp_dir
+    CLOUDFLARED_LOG="$TMP_DIR/cloudflared.log"
     echo "starting cloudflared quick tunnel: $LOCAL_URL"
     cloudflared tunnel --url "$LOCAL_URL" >"$CLOUDFLARED_LOG" 2>&1 &
     CLOUDFLARED_PID=$!

@@ -133,6 +133,13 @@ https://<cloudflared-host>/api/v1/github_webhooks
 Use the same `WEBHOOK_SECRET` value in your GitHub webhook settings. Subscribe
 to Pull requests and Issue comments.
 
+With the App webhook pointed at local OCP, these GitHub actions should open a
+local session:
+
+- comment `/review` on a PR;
+- push a commit to an open PR branch (`pull_request.synchronize`);
+- open, reopen, or mark a draft PR ready for review.
+
 For direct north API calls through the tunnel:
 
 ```sh

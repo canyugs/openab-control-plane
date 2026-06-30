@@ -138,7 +138,7 @@ pub fn verify_signature(secret: &str, body: &[u8], signature_header: Option<&str
 }
 
 /// Decide whether a webhook should open a review session:
-///   - `pull_request` opened / reopened / ready_for_review → auto-review.
+///   - `pull_request` opened / reopened / ready_for_review / synchronize → auto-review.
 ///   - `issue_comment` created by a write-ish user on a PR whose body starts with
 ///     `/review` → on-demand.
 ///
@@ -148,7 +148,7 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
     match event {
         "pull_request" => {
             let action = body["action"].as_str()?;
-            if !matches!(action, "opened" | "reopened" | "ready_for_review") {
+            if !matches!(action, "opened" | "reopened" | "ready_for_review" | "synchronize") {
                 return None;
             }
             let pr = &body["pull_request"];
@@ -381,6 +381,20 @@ mod tests {
         assert_eq!(t.installation_id, Some(99));
         assert_eq!(t.reason, "auto");
         assert_eq!(t.preset, None); // no review:<preset> label
+    }
+
+    #[test]
+    fn pull_request_synchronize_triggers_auto_review() {
+        let body = json!({
+            "action": "synchronize",
+            "installation": { "id": 99 },
+            "repository": { "full_name": "canyugs/ocp" },
+            "pull_request": { "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7" }
+        });
+        let t = parse_trigger("pull_request", &body).expect("should trigger");
+        assert_eq!(t.repo, "canyugs/ocp");
+        assert_eq!(t.pr_number, 7);
+        assert_eq!(t.reason, "auto");
     }
 
     #[test]
