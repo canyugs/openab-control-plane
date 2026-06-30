@@ -5,7 +5,7 @@
 //! so the swap touches only this file. ponytail: one impl for now, but the seam
 //! is deliberate (see design §6c "12-factor posture").
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
@@ -280,23 +280,31 @@ fn migrate(conn: &Connection) -> Result<()> {
 
 fn ensure_no_duplicate_active_trigger_refs(conn: &Connection) -> Result<()> {
     let mut stmt = conn.prepare(
-        "SELECT trigger_ref, COUNT(*)
+        "SELECT trigger_ref
          FROM sessions
          WHERE trigger_ref IS NOT NULL AND state NOT IN ('closed', 'aborted')
          GROUP BY trigger_ref
          HAVING COUNT(*) > 1
-         ORDER BY trigger_ref
-         LIMIT 5",
+         ORDER BY trigger_ref",
     )?;
-    let rows = stmt.query_map([], |r| {
-        Ok(format!("{} ({})", r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-    })?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
     let duplicates = rows.collect::<std::result::Result<Vec<_>, _>>()?;
-    if !duplicates.is_empty() {
-        bail!(
-            "cannot add active trigger_ref uniqueness index; duplicate active trigger_ref rows exist: {}. Set duplicate sessions to 'closed' or 'aborted' before restarting to recover.",
-            duplicates.join(", ")
-        );
+    for trigger_ref in duplicates {
+        let mut sessions = conn.prepare(
+            "SELECT id
+             FROM sessions
+             WHERE trigger_ref = ?1 AND state NOT IN ('closed', 'aborted')
+             ORDER BY created_at DESC, id DESC",
+        )?;
+        let ids = sessions
+            .query_map(params![trigger_ref], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for stale in ids.iter().skip(1) {
+            conn.execute(
+                "UPDATE sessions SET state = 'aborted', closed_at = ?2 WHERE id = ?1",
+                params![stale, now_ms()],
+            )?;
+        }
     }
     Ok(())
 }
@@ -352,7 +360,9 @@ impl SqliteStore {
         Ok(c.query_row(
             "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode
              FROM sessions
-             WHERE trigger_ref = ?1 AND state NOT IN ('closed', 'aborted')",
+             WHERE trigger_ref = ?1 AND state NOT IN ('closed', 'aborted')
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1",
             params![trigger_ref],
             |r| {
                 Ok(Session {
@@ -1066,7 +1076,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_active_trigger_ref_preflight_reports_clear_error() {
+    fn duplicate_active_trigger_ref_preflight_aborts_stale_duplicates() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         conn.execute_batch(
@@ -1077,9 +1087,22 @@ mod tests {
         )
         .unwrap();
 
-        let err = ensure_no_duplicate_active_trigger_refs(&conn).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("duplicate active trigger_ref rows"));
-        assert!(msg.contains("dup (2)"));
+        ensure_no_duplicate_active_trigger_refs(&conn).unwrap();
+        let active: Vec<String> = conn
+            .prepare(
+                "SELECT id FROM sessions
+                 WHERE trigger_ref = 'dup' AND state NOT IN ('closed', 'aborted')
+                 ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(active, vec!["s2"]);
+        let stale_state: String = conn
+            .query_row("SELECT state FROM sessions WHERE id = 's1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stale_state, "aborted");
     }
 }
