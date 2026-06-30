@@ -214,3 +214,7 @@ The spike tests drive mock bots over the real gateway wire and cover 1/3/5-bot
 councils, solo follow-up, pipeline handoff, text `[done]`, and close-path
 regressions. GitHub App L3 tests are present but ignored unless run with real App
 credentials.
+
+For fast webhook development without deploying to Zeabur, run OCP on Docker
+Desktop Kubernetes and expose it through a temporary Cloudflare Tunnel. See
+[docs/local-development.md](docs/local-development.md).
