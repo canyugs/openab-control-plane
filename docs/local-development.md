@@ -31,61 +31,52 @@ docker-desktop
 
 The release workflow currently publishes an amd64 image for Zeabur. On Apple
 Silicon, Docker Desktop Kubernetes is arm64, so build a local image instead of
-pulling the release tag:
+pulling the release tag.
 
 ```sh
-docker buildx build --platform linux/arm64 --load \
-  -t openab-control-plane:local .
+scripts/dev-build-image.sh
 ```
 
-On an amd64 machine, use `--platform linux/amd64`.
+The script builds a unique `openab-control-plane:dev-...` tag and also updates
+`openab-control-plane:local`. On an amd64 machine, use:
+
+```sh
+scripts/dev-build-image.sh --platform linux/amd64
+```
 
 ## Run OCP On Docker Desktop Kubernetes
 
 ```sh
-WEBHOOK_SECRET=$(openssl rand -hex 32)
-
-kubectl create namespace oabcp-local
-
-kubectl -n oabcp-local create deployment control-plane \
-  --image=openab-control-plane:local \
-  --port=8090
-
-kubectl -n oabcp-local set env deployment/control-plane \
-  OABCP_ADDR=0.0.0.0:8090 \
-  OABCP_API_KEY=local-test-key \
-  GITHUB_WEBHOOK_SECRET="$WEBHOOK_SECRET" \
-  OABCP_BOTS=chair:chair,rev1:reviewer,rev2:reviewer \
-  OABCP_COUNCIL_ROSTER=chair,rev1,rev2
-
-kubectl -n oabcp-local patch deployment control-plane \
-  -p '{"spec":{"template":{"spec":{"containers":[{"name":"openab-control-plane","imagePullPolicy":"Never"}]}}}}'
-
-kubectl -n oabcp-local rollout status deployment/control-plane --timeout=120s
-kubectl -n oabcp-local expose deployment control-plane \
-  --type=ClusterIP \
-  --port=8090 \
-  --target-port=8090
+scripts/dev-deploy-k8s.sh --image openab-control-plane:local
 ```
 
-Forward the north API locally:
+If you want to run a unique tag printed by `dev-build-image.sh`, pass it directly:
 
 ```sh
-kubectl -n oabcp-local port-forward service/control-plane 8090:8090
+scripts/dev-deploy-k8s.sh --image openab-control-plane:dev-<sha>-<timestamp>
 ```
 
-Smoke check:
+The deploy script creates or updates the namespace, deployment, service, local
+API key, bot roster, and webhook secret. It also forces a rollout restart, because
+local dev often rebuilds the same `:local` tag.
+
+Smoke check the webhook path. This starts a temporary port-forward if one is
+needed:
 
 ```sh
-curl -H "Authorization: Bearer local-test-key" \
-  http://127.0.0.1:8090/v1/council/roster
+scripts/dev-webhook-ready.sh --action synchronize --repo canyugs/openab-control-plane --pr 53
 ```
 
-Expected:
+Expected output:
 
-```json
-{"roster":["chair","rev1","rev2"],"source":"env"}
+```text
+webhook ready: session <session_id>
 ```
+
+This check is intentionally stronger than `kubectl rollout status`: it signs a
+synthetic `pull_request.synchronize` webhook with the local secret and verifies
+that OCP returns `triggered:true`. Run it before pushing a test commit or asking
+GitHub to redeliver a webhook.
 
 ## Expose Local OCP To GitHub
 
@@ -117,6 +108,13 @@ scripts/dev-webhook.sh --check \
   --key-path /Users/can/Downloads/zeabur-council.2026-06-27.private-key.pem
 ```
 
+To inspect recent App webhook deliveries:
+
+```sh
+scripts/dev-app-deliveries.sh \
+  --key-path /Users/can/Downloads/zeabur-council.2026-06-27.private-key.pem
+```
+
 Manual equivalent: keep the `kubectl port-forward` running, then open a second terminal:
 
 ```sh
@@ -139,6 +137,16 @@ local session:
 - comment `/review` on a PR;
 - push a commit to an open PR branch (`pull_request.synchronize`);
 - open, reopen, or mark a draft PR ready for review.
+
+Before triggering those actions, run the webhook readiness probe through the same
+route GitHub will use. For a Cloudflare tunnel URL:
+
+```sh
+scripts/dev-webhook-ready.sh \
+  --url https://<cloudflared-host>/api/v1/github_webhooks \
+  --repo canyugs/openab-control-plane \
+  --pr 53
+```
 
 For direct north API calls through the tunnel:
 
