@@ -15,27 +15,26 @@ All configuration is via environment variables. No config file needed.
 | `OABCP_SESSION_TIMEOUT_SECS` | `900` | Liveness watchdog deadline. A session still active this many seconds after creation is force-closed (verdict notes absentees) so a silent/dead reviewer can't hang it forever. Anchored on `created_at` (no last-activity reset) — raise for legitimately long councils |
 | `OABCP_MAX_ROSTER` | `16` | Admission quota — max bots in a session roster. Mid-session adds (`POST /v1/sessions/:id/roster`) beyond this are rejected (`409`). Bounds roster growth; applies to dynamic adds, not the initial roster at open |
 | `OABCP_COUNCIL_ROSTER` | `chair,rev1,rev2` | Webhook-convened council roster (comma-separated; `[0]` is the chair, the rest review). Should match the bots seeded via `OABCP_BOTS` |
-| `OABCP_COUNCIL_PRESET` | _(none)_ | Default webhook-convened review preset: `lite` (1 angle), `quick` (3), `standard` (5), `full` (7). Angles are round-robined onto the reviewers (extras trimmed, quorum = participants). Unset = generic review (every reviewer covers everything). A per-PR `review:<preset>` label overrides this. Mirrors `open-council.sh --preset` |
+| `OABCP_COUNCIL_PRESET` | `lite` | Default webhook-convened review preset: `lite` (1 angle), `quick` (3), `standard` (5), `full` (7). Angles are round-robined onto the reviewers (extras trimmed, quorum = participants). A per-PR `review:<preset>` label overrides this. Mirrors `open-council.sh --preset`; `open-council.sh` itself stays generic unless `--preset` is passed |
 | `OABCP_BOT_HANDLE` | _(none)_ | The App bot's GitHub handle (e.g. `zeabur-council`) for conversational follow-ups (ADR 006). When set, a PR comment that `@mention`s it is answered by a solo session. Unset → only the explicit `/ask` command works, not `@mention` |
 | `OABCP_ALLOWED_REPOS` | _(allow all)_ | Comma-separated `owner/repo` allowlist for webhook triggers. Unset/empty = allow all; when set, a webhook from any other repo is acked and ignored. Comment commands (`/review`, `/ask`, `@mention`) are additionally gated to write-ish commenters by `author_association`. |
+| `GITHUB_WEBHOOK_SECRET` | _(none)_ | HMAC secret for `POST /api/v1/github_webhooks`. **Fail-closed**: unset = every webhook is rejected. Opens a session on a PR `opened`/`reopened`/`ready_for_review`, or a write-ish user's `/review` comment on a PR |
 | `GH_OUTPUT` | _(off)_ | Set to `1` to enable GitHub PR side-effects (comment, label, review) via `gh` CLI |
 | `RUST_LOG` | `info` | Log level filter (standard `tracing` env filter syntax) |
 
-## GitHub App + webhook (identity track, optional)
+## Plane-minted GitHub App tokens (optional)
 
-Optional — lets the chair post verdicts as a **GitHub App bot identity** (per-role
-scoped tokens: chair `pull_requests:write`, reviewers read-only) and lets GitHub
-trigger reviews via webhook. This is the dogfood route for this repository. Without
-these, external target repos can still use the PAT track (`GH_TOKEN` on the chair pod +
-a copied [`examples/pr-review.yml`](../examples/pr-review.yml) workflow) — see
-[deploy.md](deploy.md).
+Optional operator capability — lets the **plane** mint per-role scoped installation
+tokens through `POST /v1/sessions/:id/github-token` (chair `pull_requests:write`,
+reviewers read-only). This is not required for the dogfood pod-local App posting path
+in [deploy.md](deploy.md) §3; that path stores the App key on the chair pod's
+`/home/node` volume and authenticates `gh` in the chair's `pre_boot` hook.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GITHUB_APP_ID` | _(none)_ | GitHub App id. The plane mints a short-lived App JWT → per-role installation token; a pod fetches its scoped token via `/v1/sessions/:id/github-token` |
 | `GITHUB_APP_INSTALLATION_ID` | _(none)_ | Installation the tokens are minted against (single-install today) |
 | `GITHUB_APP_PRIVATE_KEY` | _(none)_ | The App's PEM private key — held only by the plane; pods never see it |
-| `GITHUB_WEBHOOK_SECRET` | _(none)_ | HMAC secret for `POST /api/v1/github_webhooks`. **Fail-closed**: unset = every webhook is rejected. Opens a session on a PR `opened`/`reopened`/`ready_for_review`, or a write-ish user's `/review` comment on a PR |
 | `GITHUB_API_BASE` | `https://api.github.com` | Override the GitHub API base URL (e.g. GitHub Enterprise Server, or a test endpoint) |
 
 ## Bot pods (set on OpenAB containers, not the plane)

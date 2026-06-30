@@ -1,0 +1,143 @@
+# yaml-language-server: $schema=https://schema.zeabur.app/template.json
+apiVersion: zeabur.com/v1
+kind: Template
+metadata:
+  name: OpenAB Review Council (PAT)
+spec:
+  description: |
+    PAT quickstart for a self-hosted, CodeRabbit-style PR-review council: a
+    control plane + 3 stock OpenAB Claude pods deliberate on a PR and post one
+    verdict as your GitHub account. After deploy, copy examples/pr-review.yml into
+    the target repo and set COUNCIL_PLANE / COUNCIL_KEY. Do not also configure the
+    webhook trigger on the same repo. See docs/template.md.
+  readme: |
+    # OpenAB Review Council (PAT)
+
+    This template deploys a control plane plus 3 stock OpenAB Claude pods (1 chair
+    + 2 reviewers). The chair uses your fine-grained PAT to post the verdict.
+
+    ## Required variables
+
+    - `PUBLIC_DOMAIN`: the control-plane domain, for example `my-council`.
+    - `CLAUDE_CODE_OAUTH_TOKEN`: from `claude setup-token`.
+    - `GH_TOKEN`: fine-grained PAT with `Pull requests: write` and `Contents: read`.
+
+    ## After deploy
+
+    1. Open the control-plane service variables and copy `OABCP_API_KEY` / `PASSWORD`.
+    2. Copy `examples/pr-review.yml` into the target repo at `.github/workflows/pr-review.yml`.
+    3. Set the target repo secrets:
+
+       ```sh
+       gh secret set COUNCIL_PLANE --body "https://my-council.zeabur.app"
+       gh secret set COUNCIL_KEY --body "<OABCP_API_KEY>"
+       ```
+
+    Use this PAT template or the GitHub App webhook template, not both on one repo,
+    or one PR event can convene two councils.
+  icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/github.svg
+  tags:
+    - AI
+    - Developer Tools
+  variables:
+    - key: PUBLIC_DOMAIN
+      type: DOMAIN
+      name: Control plane domain
+      description: Public domain for the control plane's REST/SSE API.
+    - key: CLAUDE_CODE_OAUTH_TOKEN
+      type: PASSWORD
+      name: Claude Code OAuth Token
+      description: Agent auth for every pod. From `claude setup-token` (or use ANTHROPIC_API_KEY).
+    - key: GH_TOKEN
+      type: PASSWORD
+      name: GitHub Token (chair only)
+      description: Fine-grained PAT so the chair can comment/label/approve PRs.
+  services:
+    - name: control-plane
+      icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/github.svg
+      template: PREBUILT_V2
+      domainKey: PUBLIC_DOMAIN
+      spec:
+        source:
+          image: docker.io/canyu/openab-control-plane:0.1.11
+        ports:
+          - id: web
+            port: 8090
+            type: HTTP
+        healthCheck:
+          type: HTTP
+          port: web
+          http:
+            path: /healthz
+        volumes:
+          - id: data
+            dir: /data
+        env:
+          OABCP_ADDR:
+            default: 0.0.0.0:8090
+          OABCP_DB:
+            default: /data/plane.db
+          OABCP_API_KEY:
+            default: ${PASSWORD}
+            expose: true
+            readonly: true
+          OABCP_WS_URL:
+            default: ws://control-plane.zeabur.internal:8090/ws
+          OABCP_BOTS:
+            default: chair:chair,rev1:reviewer,rev2:reviewer
+
+    - name: chair
+      icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/anthropic.svg
+      template: PREBUILT_V2
+      dependencies:
+        - control-plane
+      spec:
+        source:
+          image: ghcr.io/openabdev/openab:0.9.0-beta.3-claude
+          command:
+            - openab
+            - run
+            - -c
+            - http://control-plane.zeabur.internal:8090/bot-config/chair
+        volumes:
+          - id: home
+            dir: /home/node
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN:
+            default: ${CLAUDE_CODE_OAUTH_TOKEN}
+          GH_TOKEN:
+            default: ${GH_TOKEN}
+
+    - name: rev1
+      icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/anthropic.svg
+      template: PREBUILT_V2
+      dependencies:
+        - control-plane
+      spec:
+        source:
+          image: ghcr.io/openabdev/openab:0.9.0-beta.3-claude
+          command:
+            - openab
+            - run
+            - -c
+            - http://control-plane.zeabur.internal:8090/bot-config/rev1
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN:
+            default: ${CLAUDE_CODE_OAUTH_TOKEN}
+
+    - name: rev2
+      icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/anthropic.svg
+      template: PREBUILT_V2
+      dependencies:
+        - control-plane
+      spec:
+        source:
+          image: ghcr.io/openabdev/openab:0.9.0-beta.3-claude
+          command:
+            - openab
+            - run
+            - -c
+            - http://control-plane.zeabur.internal:8090/bot-config/rev2
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN:
+            default: ${CLAUDE_CODE_OAUTH_TOKEN}

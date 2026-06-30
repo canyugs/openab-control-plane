@@ -2,14 +2,46 @@
 apiVersion: zeabur.com/v1
 kind: Template
 metadata:
-  name: OpenAB Review Council
+  name: OpenAB Review Council (GitHub App)
 spec:
   description: |
-    A self-hosted, CodeRabbit-style PR-review council: a control plane + 3 stock
-    OpenAB Claude pods (1 chair + 2 reviewers) deliberate on a PR and post one
-    verdict. Runs on your own Claude subscription (claude setup-token); no per-bot
-    registration. After deploy, drop examples/pr-review.yml into your repo + set 2
-    secrets to auto-review every PR. See docs/template.md.
+    GitHub App webhook install for a self-hosted, CodeRabbit-style PR-review
+    council: a control plane + 3 stock OpenAB Claude pods deliberate on a PR and
+    post one verdict as your GitHub App bot. After deploy, point the App webhook at
+    /api/v1/github_webhooks and provision the chair volume with the App private key.
+    Do not also install the copied Action on the same repo.
+  readme: |
+    # OpenAB Review Council (GitHub App)
+
+    This template deploys a control plane plus 3 stock OpenAB Claude pods (1 chair
+    + 2 reviewers). PR events arrive through a GitHub App webhook, and the chair
+    can post as your App bot after you provision its persistent volume.
+
+    ## Required variables
+
+    - `PUBLIC_DOMAIN`: the control-plane domain, for example `my-council`.
+    - `CLAUDE_CODE_OAUTH_TOKEN`: from `claude setup-token`.
+    - `GITHUB_WEBHOOK_SECRET`: random HMAC secret, for example from `openssl rand -hex 32`.
+
+    ## After deploy
+
+    1. Create a GitHub App with `Pull requests: write` and `Contents: read`.
+    2. Subscribe it to Pull requests and Issue comments.
+    3. Set the webhook URL to `https://my-council.zeabur.app/api/v1/github_webhooks`.
+    4. Use the same `GITHUB_WEBHOOK_SECRET` value as the App webhook secret.
+    5. Install the App on the target repo.
+    6. Edit `scripts/get-gh-app-token.sh` with the App ID and installation ID.
+    7. Upload the App private key and token-minter script to the chair service at `/home/node`.
+    8. Restart the chair service and verify `HOME=/home/node gh auth status` shows the bot account.
+
+    Use this GitHub App template or the PAT template, not both on one repo, or one
+    PR event can convene two councils. The control plane does not need
+    `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, or `GITHUB_APP_PRIVATE_KEY` for
+    this pod-local posting path.
+
+    For private repos, reviewer pods also need GitHub read access to self-fetch the
+    PR diff. Public repos work anonymously; private repos should add read-only
+    reviewer credentials or use the separate per-role App token path.
   icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/github.svg
   tags:
     - AI
@@ -20,13 +52,13 @@ spec:
       name: Control plane domain
       description: Public domain for the control plane's REST/SSE API.
     - key: CLAUDE_CODE_OAUTH_TOKEN
-      type: STRING
+      type: PASSWORD
       name: Claude Code OAuth Token
       description: Agent auth for every pod. From `claude setup-token` (or use ANTHROPIC_API_KEY).
-    - key: GH_TOKEN
-      type: STRING
-      name: GitHub Token (chair only, optional)
-      description: Fine-grained PAT so the chair can comment/label/approve PRs. Leave blank to run without PR write-back.
+    - key: GITHUB_WEBHOOK_SECRET
+      type: PASSWORD
+      name: GitHub Webhook Secret
+      description: HMAC secret used by POST /api/v1/github_webhooks. Use the same value in the GitHub App webhook settings.
   services:
     - name: control-plane
       icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/github.svg
@@ -34,7 +66,7 @@ spec:
       domainKey: PUBLIC_DOMAIN
       spec:
         source:
-          image: docker.io/canyu/openab-control-plane:0.1.9
+          image: docker.io/canyu/openab-control-plane:0.1.11
         ports:
           - id: web
             port: 8090
@@ -60,6 +92,8 @@ spec:
             default: ws://control-plane.zeabur.internal:8090/ws
           OABCP_BOTS:
             default: chair:chair,rev1:reviewer,rev2:reviewer
+          GITHUB_WEBHOOK_SECRET:
+            default: ${GITHUB_WEBHOOK_SECRET}
 
     - name: chair
       icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/anthropic.svg
@@ -74,19 +108,12 @@ spec:
             - run
             - -c
             - http://control-plane.zeabur.internal:8090/bot-config/chair
-        # Persist HOME so an optional GitHub App upgrade (key on PV + the
-        # bot-config pre_boot hook → gh auth login as the App) survives restarts.
         volumes:
           - id: home
             dir: /home/node
         env:
           CLAUDE_CODE_OAUTH_TOKEN:
             default: ${CLAUDE_CODE_OAUTH_TOKEN}
-          # Out-of-box PR write-back uses this PAT. To upgrade to App identity
-          # (zeabur-council[bot]): put the key on the volume + remove GH_TOKEN so
-          # gh uses the App auth from the pre_boot hook instead of this env token.
-          GH_TOKEN:
-            default: ${GH_TOKEN}
 
     - name: rev1
       icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/anthropic.svg

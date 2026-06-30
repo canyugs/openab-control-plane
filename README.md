@@ -59,19 +59,37 @@ repositories the webhook will serve.
 
 ## Deploy
 
-The current template deploys one control plane plus three stock OpenAB Claude pods:
-one chair and two reviewers.
+The templates deploy one control plane plus three stock OpenAB Claude pods: one
+chair and two reviewers. Pick one install track per repository:
+
+| Track | Template | Best for |
+|---|---|---|
+| PAT + copied Action | `zeabur-template.pat.yaml` / code `Z7TQIR` | Fast external quickstart; verdicts are authored by the PAT owner |
+| GitHub App webhook | `zeabur-template.app.yaml` / code `1E1Y97` | Dogfood and team installs; PR events arrive through webhook and the chair can post as the App bot |
+
+PAT quickstart:
 
 ```sh
-npx zeabur@latest template deploy -f zeabur-template.yaml \
+npx zeabur@latest template deploy -c Z7TQIR \
   --project-id <PROJECT_ID> \
   --var PUBLIC_DOMAIN=my-council \
   --var CLAUDE_CODE_OAUTH_TOKEN=<OAUTH_TOKEN> \
   --var GH_TOKEN=<PAT>
 ```
 
-Use a fine-grained `GH_TOKEN` for the PAT quickstart. For clean bot attribution,
-upgrade the chair pod to pod-local GitHub App auth and leave `GH_TOKEN` out.
+GitHub App webhook track:
+
+```sh
+SECRET=$(openssl rand -hex 32)
+npx zeabur@latest template deploy -c 1E1Y97 \
+  --project-id <PROJECT_ID> \
+  --var PUBLIC_DOMAIN=my-council \
+  --var CLAUDE_CODE_OAUTH_TOKEN=<OAUTH_TOKEN> \
+  --var GITHUB_WEBHOOK_SECRET=$SECRET
+```
+
+When developing unpublished template changes from this repository, use
+`-f zeabur-template.pat.yaml` or `-f zeabur-template.app.yaml` instead of `-c`.
 
 Full install docs:
 
@@ -90,11 +108,12 @@ PLANE=https://my-council.zeabur.app KEY=<OABCP_API_KEY> \
 
 Automatic review through GitHub:
 
-- Configure `GITHUB_WEBHOOK_SECRET` on the control-plane service.
-- Point the GitHub App or repo webhook at
-  `https://<domain>/api/v1/github_webhooks`.
-- Subscribe to Pull requests and Issue comments.
 - Use exactly one automatic trigger per repository: webhook or copied Action, not both.
+- For the PAT track, copy `examples/pr-review.yml` into the target repo and set
+  `COUNCIL_PLANE` / `COUNCIL_KEY` secrets.
+- For the webhook track, configure `GITHUB_WEBHOOK_SECRET`, point the GitHub App
+  or repo webhook at `https://<domain>/api/v1/github_webhooks`, and subscribe to
+  Pull requests and Issue comments.
 
 Review depth is controlled by labels:
 

@@ -23,6 +23,8 @@ SQLite: bots, sessions, roster, messages, reactions, outbox
 - The chair is the only actor expected to write to GitHub. It may post through a
   PAT profile or pod-local GitHub App auth; the plane itself does not post PR
   comments.
+- Reviewers have no PR write token. On pointer triggers they still need GitHub
+  read access for private repos.
 
 ## Full Review
 
