@@ -278,19 +278,20 @@ pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bo
     {
         tracing::warn!("revoke github tokens for {session_id} failed: {e}");
     }
+    let session = state.store.session(session_id)?;
     let roster = state.store.roster(session_id)?;
     let done: std::collections::HashSet<String> = state
         .store
         .reactors_in_session(session_id, DONE_EMOJI)?
         .into_iter()
         .collect();
-    let absent: Vec<&str> = roster
+    let absent: Vec<String> = roster
         .iter()
-        .map(String::as_str)
-        .filter(|b| !done.contains(*b))
+        .filter(|bot| !done.contains(bot.as_str()))
+        .cloned()
         .collect();
     let note = format!(
-        "⏱️ Session closed by timeout — {}/{} signaled done.{}",
+        "TIMEOUT: session closed by watchdog — {}/{} signaled done.{}",
         done.len(),
         roster.len(),
         if absent.is_empty() {
@@ -301,15 +302,26 @@ pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bo
     );
     // If the chair already synthesized a verdict (the live #1187 case: produced
     // but never cleanly closed), surface it — don't bury it under the timeout note.
-    let chair_final = state
-        .store
-        .session(session_id)?
-        .and_then(|s| s.chair_bot)
+    let chair_final = session
+        .as_ref()
+        .and_then(|s| s.chair_bot.clone())
         .and_then(|chair| chair_latest_settled(state, session_id, &chair));
     let verdict = match chair_final {
         Some(v) => format!("{note}\n\n{v}"),
         None => format!("{note} (No verdict synthesized; reviews are in the thread.)"),
     };
+    state.emit_north(
+        "timeout",
+        session_id,
+        json!({
+            "reason": "timeout",
+            "done": done.len(),
+            "total": roster.len(),
+            "absent": absent,
+            "trigger_ref": session.as_ref().and_then(|s| s.trigger_ref.clone()),
+            "verdict": verdict.clone(),
+        }),
+    );
     state.emit_north(
         "verdict",
         session_id,

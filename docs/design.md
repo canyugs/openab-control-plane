@@ -128,9 +128,12 @@ Consequence — an honest self-assessment of the modes:
   only to patch a 1-bot hang the plane *itself* introduced by taking over quorum.)
 - **Both halves are real now.** Safety was always there; liveness landed as the
   `force_close_timeout` watchdog — a session-level deadline (`OABCP_SESSION_TIMEOUT_SECS`,
-  default 15 min) forces `Close` with reviews-in-hand, naming absentees, so a silent
-  reviewer can't hang `QuorumCouncil` forever (the steering version's flaky-attendance
-  failure). This is structurally impossible in pure prose — a dead bot can't run its
+  default 10 min) forces `Close` with a `TIMEOUT` verdict and reviews-in-hand,
+  naming absentees, so a silent reviewer can't hang `QuorumCouncil` forever (the
+  steering version's flaky-attendance failure). It also emits a structured north
+  `timeout` event so app shims/controllers can turn the close into a product-specific
+  notification without moving side effects into the kernel. This is structurally
+  impossible in pure prose — a dead bot can't run its
   own "wait 30 min then proceed" — which is exactly why it's the plane's job. By the
   decomposition theorem (every property = safety ∧ liveness), only now is OCP a
   *complete* guarantee layer rather than half of one.

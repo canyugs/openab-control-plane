@@ -57,7 +57,32 @@ SQLite: bots, sessions, roster, messages, reactions, outbox
    north `verdict` and `state:closed` events. A chair `[done]` in `deliberating`
    is ignored so an opening-trigger response cannot close the review early.
 9. **Watchdog fallback** — if reviewers or the chair stall, the liveness watchdog
-   force-closes stale sessions with the work already present in the thread.
+   force-closes stale sessions with a `TIMEOUT` verdict and the work already
+   present in the thread. Default deadline is 10 minutes
+   (`OABCP_SESSION_TIMEOUT_SECS=600`).
+
+The watchdog emits a structured north event when it wins the close CAS:
+
+```json
+{
+  "type": "timeout",
+  "session_id": "ses_...",
+  "payload": {
+    "reason": "timeout",
+    "done": 1,
+    "total": 3,
+    "absent": ["rev1", "rev2"],
+    "trigger_ref": "github:pr/owner/repo#43",
+    "verdict": "TIMEOUT: session closed by watchdog ..."
+  }
+}
+```
+
+It also emits the normal `verdict` event with `payload.reason="timeout"` and the
+normal `state:closed` event. PR-visible notification is still an app-shim or
+controller side effect: a GitHub notifier can subscribe/poll the north API and
+turn the `timeout` event into a PR comment without moving GitHub writes into the
+runtime kernel.
 
 ## Dynamic Replacement
 
