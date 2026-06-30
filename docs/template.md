@@ -30,15 +30,17 @@ Pick **one** trigger track per target repo:
      --var CLAUDE_CODE_OAUTH_TOKEN=<OAUTH_TOKEN> \
      --var GH_TOKEN=<PAT>
    ```
-2. **Add the copied Action** — copy [`examples/pr-review.yml`](../examples/pr-review.yml) into the
-   target repo's `.github/workflows/`, and set two repo secrets:
+2. **Add the copied Action** — copy [`examples/pr-review.yml`](../examples/pr-review.yml)
+   into the target repo's `.github/workflows/`, and set two repo secrets:
    ```sh
    gh secret set COUNCIL_PLANE --body "https://my-council.zeabur.app"
    gh secret set COUNCIL_KEY   --body "<PASSWORD from the control-plane service>"
    ```
 
-Open a PR and it is reviewed automatically. The chair posts the verdict as the
-PAT owner.
+Open/update/reopen/mark-ready a PR and it is reviewed automatically. A write-ish
+user can also comment `/review` on the PR to run it manually, or use
+`workflow_dispatch` with a PR number. The chair posts the verdict as the PAT
+owner.
 
 The control-plane repository itself does **not** install this workflow for
 dogfood; it uses Track 2 so the only automatic trigger is the GitHub App webhook.
@@ -68,6 +70,10 @@ trigger with no per-repo workflow file:
    `GITHUB_WEBHOOK_SECRET`.
 4. **Wire the chair's App posting identity** — put the App key + token-minter on
    the chair volume and restart the chair.
+
+PR open/reopen/ready-for-review events run automatically. A write-ish user can
+also comment `/review` on the PR to run a manual full review through the same
+webhook path.
 
 For private repos, reviewer pods also need GitHub read access to self-fetch the PR
 diff. Public repos work anonymously; private repos should add read-only reviewer
