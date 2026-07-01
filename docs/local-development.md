@@ -149,8 +149,11 @@ default it mounts to `/home/agent/.kiro/steering` for Kiro and
 `/home/node/AGENTS.md` for other agent profiles. The OCP trigger then carries
 only the runtime PR ref, current recipient task, and focus assignment.
 
-If the test only needs the chair to write PR comments, sync your local
-`gh auth token` into a Kubernetes Secret and inject it only into the chair:
+### Local GitHub Credentials
+
+If the test only needs the chair to write PR comments with your local account,
+sync your local `gh auth token` into a Kubernetes Secret and inject it only into
+the chair:
 
 ```sh
 scripts/dev-sync-gh-token-secret.sh
@@ -161,9 +164,9 @@ scripts/dev-deploy-bots.sh \
   --chair-credential-env GH_TOKEN
 ```
 
-Self-fetch PR reviews also need reviewer-side GitHub read access. For local
-testing, inject the same token into all bots and rely on steering/direct tasks to
-keep reviewers read-only:
+Self-fetch PR reviews also need reviewer-side GitHub read access. For a quick
+PAT shortcut, inject the same local token into every bot and rely on
+steering/direct tasks to keep reviewers read-only:
 
 ```sh
 scripts/dev-sync-gh-token-secret.sh
@@ -179,6 +182,35 @@ This is a local development shortcut. Production should use the GitHub App path
 from [install-github-app.md](install-github-app.md) or session-scoped per-role
 tokens, so reviewers get read-only credentials and only the chair gets write
 scope.
+
+For a local GitHub App posting test, keep `GH_TOKEN` off the chair. Put the App
+private key plus token-minter into a chair-only Secret, and inject `GH_TOKEN`
+only into reviewers for PR self-fetch:
+
+```sh
+scripts/dev-sync-gh-app-secret.sh \
+  --key-path /path/to/app.private-key.pem \
+  --app-id <APP_ID> \
+  --installation-id <INSTALLATION_ID>
+
+scripts/dev-sync-gh-token-secret.sh
+
+scripts/dev-deploy-bots.sh \
+  --agent kiro \
+  --config-base-url http://host.docker.internal:18090 \
+  --agent-secret kiro=kiro-api:KIRO_API_KEY \
+  --bot-secret rev1=gh-token:GH_TOKEN \
+  --bot-secret rev2=gh-token:GH_TOKEN \
+  --chair-github-app-secret github-app-chair \
+  --steering-file docs/steering/pr-review.md
+```
+
+Verify the chair is not using a PAT:
+
+```sh
+kubectl -n oabcp-local exec deploy/chair -- sh -lc 'test -z "${GH_TOKEN:-}"'
+kubectl -n oabcp-local exec deploy/chair -- sh -lc 'HOME=/home/agent gh auth status'
+```
 
 To scale the bots down without deleting their deployments:
 
@@ -209,7 +241,9 @@ scripts/dev-deploy-bots.sh \
   --agent kiro \
   --config-base-url http://host.docker.internal:18090 \
   --agent-secret kiro=kiro-api:KIRO_API_KEY \
-  --extra-secret gh-token:GH_TOKEN \
+  --bot-secret rev1=gh-token:GH_TOKEN \
+  --bot-secret rev2=gh-token:GH_TOKEN \
+  --chair-github-app-secret github-app-chair \
   --steering-file docs/steering/pr-review.md
 ```
 

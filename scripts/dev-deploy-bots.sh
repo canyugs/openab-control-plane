@@ -11,6 +11,7 @@ IMAGE="${IMAGE:-}"
 AGENT_IMAGES="${AGENT_IMAGES:-}"
 AGENT_SECRETS="${AGENT_SECRETS:-}"
 EXTRA_SECRETS="${EXTRA_SECRETS:-}"
+BOT_SECRETS="${BOT_SECRETS:-}"
 STEERING_FILE="${STEERING_FILE:-}"
 STEERING_CONFIGMAP="${STEERING_CONFIGMAP:-openab-pr-review-steering}"
 STEERING_KEY="${STEERING_KEY:-openab-pr-review.md}"
@@ -25,6 +26,8 @@ CHAIR_BOT="${CHAIR_BOT:-chair}"
 CHAIR_CREDENTIAL_ENV="${CHAIR_CREDENTIAL_ENV:-}"
 CHAIR_SECRET_NAME="${CHAIR_SECRET_NAME:-}"
 CHAIR_SECRET_KEY="${CHAIR_SECRET_KEY:-}"
+CHAIR_GITHUB_APP_SECRET="${CHAIR_GITHUB_APP_SECRET:-}"
+CHAIR_GITHUB_APP_HOME="${CHAIR_GITHUB_APP_HOME:-}"
 REPLICAS="${REPLICAS:-1}"
 WAIT_ROLLOUT=1
 CHECK_CONTEXT=1
@@ -51,10 +54,18 @@ Options:
                              Format: agent=secret-name:ENV_NAME[:secret-key].
   --extra-secret <spec>      Secret exposed to every bot. Repeatable.
                              Format: secret-name:ENV_NAME[:secret-key].
+  --bot-secret <spec>        Secret exposed to one bot. Repeatable.
+                             Format: bot=secret-name:ENV_NAME[:secret-key].
   --chair-bot <name>         Bot name that receives chair-only env. Default: chair.
   --chair-credential-env <n> Env var exposed only to the chair bot.
   --chair-secret-name <n>    Kubernetes Secret carrying the chair-only credential.
   --chair-secret-key <key>   Secret key name. Default: same as --chair-credential-env.
+  --chair-github-app-secret <n>
+                             Chair-only Secret created by dev-sync-gh-app-secret.sh.
+                             Mounts .github-app.pem and bin/get-gh-app-token.sh.
+  --chair-github-app-home <p>
+                             Home/working dir for App files. Defaults by agent
+                             (/home/agent for kiro, /home/node otherwise).
   --steering-file <path>     Create/update a ConfigMap from this steering file and
                              mount it into each bot. Kiro defaults to
                              /home/agent/.kiro/steering; other agents default to
@@ -75,10 +86,11 @@ Options:
 Environment:
   KUBE_NAMESPACE, KUBE_CONTEXT, BOT_NAMES, AGENT, BOT_AGENTS, IMAGE,
   AGENT_IMAGES, AGENT_SECRETS, REPLICAS, CONFIG_BASE_URL,
-  EXTRA_SECRETS, STEERING_FILE, STEERING_CONFIGMAP, STEERING_KEY,
-  STEERING_MOUNT_PATH,
+  EXTRA_SECRETS, BOT_SECRETS, STEERING_FILE, STEERING_CONFIGMAP,
+  STEERING_KEY, STEERING_MOUNT_PATH,
   CREDENTIAL_ENV, SECRET_NAME, SECRET_KEY,
-  CHAIR_BOT, CHAIR_CREDENTIAL_ENV, CHAIR_SECRET_NAME, CHAIR_SECRET_KEY.
+  CHAIR_BOT, CHAIR_CREDENTIAL_ENV, CHAIR_SECRET_NAME, CHAIR_SECRET_KEY,
+  CHAIR_GITHUB_APP_SECRET, CHAIR_GITHUB_APP_HOME.
 
 Examples:
   kubectl -n oabcp-local create secret generic kiro-api \
@@ -106,7 +118,9 @@ Examples:
   scripts/dev-deploy-bots.sh \
     --agent kiro \
     --agent-secret kiro=kiro-api:KIRO_API_KEY \
-    --extra-secret gh-token:GH_TOKEN \
+    --bot-secret rev1=gh-token:GH_TOKEN \
+    --bot-secret rev2=gh-token:GH_TOKEN \
+    --chair-github-app-secret github-app-chair \
     --steering-file docs/steering/pr-review.md
 USAGE
 }
@@ -180,7 +194,7 @@ resolve_agent_secret() {
     kubectl -n "$KUBE_NAMESPACE" get secret kiro-api >/dev/null 2>&1; then
     spec="kiro-api:KIRO_API_KEY:KIRO_API_KEY"
   fi
-  [[ -n "$spec" ]] || return
+  [[ -n "$spec" ]] || return 0
   [[ "$spec" == *:* ]] ||
     die "invalid --agent-secret for '$agent' (expected agent=secret-name:ENV_NAME[:secret-key])"
 
@@ -217,7 +231,7 @@ append_secret_env_entry() {
 append_secret_spec_env_entries() {
   local raw_spec spec secret_name env_name secret_key rest
   local -a specs=()
-  [[ -n "$EXTRA_SECRETS" ]] || return
+  [[ -n "$EXTRA_SECRETS" ]] || return 0
   IFS=',' read -r -a specs <<<"$EXTRA_SECRETS"
   for raw_spec in "${specs[@]}"; do
     spec=$(printf '%s' "$raw_spec" | xargs)
@@ -241,6 +255,46 @@ append_secret_spec_env_entries() {
   done
 }
 
+append_bot_secret_entries() {
+  local bot="$1"
+  local raw_spec spec spec_bot rest secret_name env_name secret_key secret_rest
+  local -a specs=()
+  [[ -n "$BOT_SECRETS" ]] || return 0
+  IFS=',' read -r -a specs <<<"$BOT_SECRETS"
+  for raw_spec in "${specs[@]}"; do
+    spec=$(printf '%s' "$raw_spec" | xargs)
+    [[ -n "$spec" ]] || continue
+    [[ "$spec" == *"="* ]] ||
+      die "invalid --bot-secret '$spec' (expected bot=secret-name:ENV_NAME[:secret-key])"
+    spec_bot=$(printf '%s' "${spec%%=*}" | xargs)
+    [[ "$spec_bot" == "$bot" ]] || continue
+    rest="${spec#*=}"
+    [[ "$rest" == *:* ]] ||
+      die "invalid --bot-secret '$spec' (expected bot=secret-name:ENV_NAME[:secret-key])"
+    secret_name="${rest%%:*}"
+    secret_rest="${rest#*:}"
+    env_name="${secret_rest%%:*}"
+    if [[ "$secret_rest" == *:* ]]; then
+      secret_key="${secret_rest#*:}"
+    else
+      secret_key="$env_name"
+    fi
+    [[ -n "$secret_name" ]] || die "--bot-secret has an empty secret name"
+    [[ -n "$env_name" ]] || die "--bot-secret has an empty env name"
+    [[ -n "$secret_key" ]] || die "--bot-secret has an empty secret key"
+    kubectl -n "$KUBE_NAMESPACE" get secret "$secret_name" >/dev/null ||
+      die "secret '$secret_name' does not exist in namespace '$KUBE_NAMESPACE'"
+    append_secret_env_entry "$env_name" "$secret_name" "$secret_key"
+  done
+}
+
+default_home_for_agent() {
+  case "$1" in
+    kiro) echo "/home/agent" ;;
+    *) echo "/home/node" ;;
+  esac
+}
+
 default_steering_mount_path_for_agent() {
   case "$1" in
     kiro) echo "/home/agent/.kiro/steering" ;;
@@ -251,28 +305,55 @@ default_steering_mount_path_for_agent() {
 build_steering_yaml() {
   local bot_agent="$1"
   local mount_path
-  steering_volume_mount_yaml=""
-  steering_volume_yaml=""
-  [[ -n "$STEERING_FILE" ]] || return
+  [[ -n "$STEERING_FILE" ]] || return 0
   mount_path="${STEERING_MOUNT_PATH:-$(default_steering_mount_path_for_agent "$bot_agent")}"
   if [[ "$mount_path" == *.md ]]; then
-    steering_volume_mount_yaml="          volumeMounts:
-            - name: openab-steering
+    volume_mount_entries="${volume_mount_entries}            - name: openab-steering
               mountPath: $mount_path
               subPath: $STEERING_KEY
               readOnly: true
 "
   else
-    steering_volume_mount_yaml="          volumeMounts:
-            - name: openab-steering
+    volume_mount_entries="${volume_mount_entries}            - name: openab-steering
               mountPath: $mount_path
               readOnly: true
 "
   fi
-  steering_volume_yaml="      volumes:
-        - name: openab-steering
+  volume_entries="${volume_entries}        - name: openab-steering
           configMap:
             name: $STEERING_CONFIGMAP
+"
+}
+
+build_chair_github_app_yaml() {
+  local bot="$1"
+  local bot_agent="$2"
+  local home
+  [[ "$bot" == "$CHAIR_BOT" ]] || return 0
+  [[ -n "$CHAIR_GITHUB_APP_SECRET" ]] || return 0
+  home="${CHAIR_GITHUB_APP_HOME:-$(default_home_for_agent "$bot_agent")}"
+  volume_mount_entries="${volume_mount_entries}            - name: github-app-key
+              mountPath: $home/.github-app.pem
+              subPath: .github-app.pem
+              readOnly: true
+            - name: github-app-bin
+              mountPath: $home/bin
+              readOnly: true
+"
+  volume_entries="${volume_entries}        - name: github-app-key
+          secret:
+            secretName: $CHAIR_GITHUB_APP_SECRET
+            items:
+              - key: .github-app.pem
+                path: .github-app.pem
+                mode: 0444
+        - name: github-app-bin
+          secret:
+            secretName: $CHAIR_GITHUB_APP_SECRET
+            items:
+              - key: get-gh-app-token.sh
+                path: get-gh-app-token.sh
+                mode: 0555
 "
 }
 
@@ -300,6 +381,8 @@ while [[ $# -gt 0 ]]; do
     --agent-secret=*) AGENT_SECRETS="${AGENT_SECRETS:+$AGENT_SECRETS,}${1#*=}"; shift ;;
     --extra-secret) EXTRA_SECRETS="${EXTRA_SECRETS:+$EXTRA_SECRETS,}${2:?--extra-secret needs a value}"; shift 2 ;;
     --extra-secret=*) EXTRA_SECRETS="${EXTRA_SECRETS:+$EXTRA_SECRETS,}${1#*=}"; shift ;;
+    --bot-secret) BOT_SECRETS="${BOT_SECRETS:+$BOT_SECRETS,}${2:?--bot-secret needs a value}"; shift 2 ;;
+    --bot-secret=*) BOT_SECRETS="${BOT_SECRETS:+$BOT_SECRETS,}${1#*=}"; shift ;;
     --chair-bot) CHAIR_BOT="${2:?--chair-bot needs a value}"; shift 2 ;;
     --chair-bot=*) CHAIR_BOT="${1#*=}"; shift ;;
     --chair-credential-env) CHAIR_CREDENTIAL_ENV="${2:?--chair-credential-env needs a value}"; shift 2 ;;
@@ -308,6 +391,10 @@ while [[ $# -gt 0 ]]; do
     --chair-secret-name=*) CHAIR_SECRET_NAME="${1#*=}"; shift ;;
     --chair-secret-key) CHAIR_SECRET_KEY="${2:?--chair-secret-key needs a value}"; shift 2 ;;
     --chair-secret-key=*) CHAIR_SECRET_KEY="${1#*=}"; shift ;;
+    --chair-github-app-secret) CHAIR_GITHUB_APP_SECRET="${2:?--chair-github-app-secret needs a value}"; shift 2 ;;
+    --chair-github-app-secret=*) CHAIR_GITHUB_APP_SECRET="${1#*=}"; shift ;;
+    --chair-github-app-home) CHAIR_GITHUB_APP_HOME="${2:?--chair-github-app-home needs a value}"; shift 2 ;;
+    --chair-github-app-home=*) CHAIR_GITHUB_APP_HOME="${1#*=}"; shift ;;
     --namespace) KUBE_NAMESPACE="${2:?--namespace needs a value}"; shift 2 ;;
     --namespace=*) KUBE_NAMESPACE="${1#*=}"; shift ;;
     --context) KUBE_CONTEXT="${2:?--context needs a value}"; shift 2 ;;
@@ -375,6 +462,10 @@ if [[ -n "$STEERING_FILE" ]]; then
   [[ -n "$STEERING_CONFIGMAP" ]] || die "--steering-configmap cannot be empty"
   [[ -n "$STEERING_KEY" ]] || die "--steering-key cannot be empty"
 fi
+if [[ -n "$CHAIR_GITHUB_APP_SECRET" ]]; then
+  kubectl -n "$KUBE_NAMESPACE" get secret "$CHAIR_GITHUB_APP_SECRET" >/dev/null ||
+    die "secret '$CHAIR_GITHUB_APP_SECRET' does not exist in namespace '$KUBE_NAMESPACE'"
+fi
 
 kubectl create namespace "$KUBE_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
@@ -410,6 +501,7 @@ for raw_bot in "${bots[@]}"; do
     fi
   fi
   append_secret_spec_env_entries
+  append_bot_secret_entries "$bot"
   if [[ "$bot" == "$CHAIR_BOT" && -n "$CHAIR_SECRET_NAME" ]]; then
     append_secret_env_entry "$CHAIR_CREDENTIAL_ENV" "$CHAIR_SECRET_NAME" "$CHAIR_SECRET_KEY"
   fi
@@ -418,7 +510,20 @@ for raw_bot in "${bots[@]}"; do
     env_yaml="          env:
 $env_entries"
   fi
+  volume_mount_entries=""
+  volume_entries=""
   build_steering_yaml "$bot_agent"
+  build_chair_github_app_yaml "$bot" "$bot_agent"
+  volume_mount_yaml=""
+  volume_yaml=""
+  if [[ -n "$volume_mount_entries" ]]; then
+    volume_mount_yaml="          volumeMounts:
+$volume_mount_entries"
+  fi
+  if [[ -n "$volume_entries" ]]; then
+    volume_yaml="      volumes:
+$volume_entries"
+  fi
 
   echo "applying OpenAB bot deployment: $bot ($bot_agent, $bot_image)"
   kubectl -n "$KUBE_NAMESPACE" apply -f - >/dev/null <<YAML
@@ -451,8 +556,8 @@ spec:
             - -c
             - $config_url
 $env_yaml
-$steering_volume_mount_yaml
-$steering_volume_yaml
+$volume_mount_yaml
+$volume_yaml
 YAML
 
   # Local OCP DBs are often recreated, which changes /bot-config tokens without

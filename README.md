@@ -200,6 +200,7 @@ external controller protocol.
 | `scripts/dev-deploy-bots.sh` | local Kubernetes OpenAB bot pod deployment |
 | `scripts/dev-tunnel-k8s.sh` | local Kubernetes cloudflared tunnel to OCP |
 | `scripts/dev-sync-gh-token-secret.sh` | local GitHub token Secret helper for bot pod tests |
+| `scripts/dev-sync-gh-app-secret.sh` | local GitHub App key/minter Secret helper for chair tests |
 | `examples/pr-review.yml` | copied Action option for external repos |
 
 ## Docs

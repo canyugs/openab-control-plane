@@ -135,7 +135,7 @@ not create credentials. Keep the axes separate:
 | Bot image | deployment/template/service image | `ghcr.io/openabdev/openab:0.9.0-beta.3-kiro` |
 | Model credential | bot pod env/Secret | `KIRO_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` |
 | PR read credential | reviewer pods | read-only App/session token or local `GH_TOKEN` shortcut for `gh pr diff` |
-| PR write credential | chair pod only | write-scoped App/session token or local `GH_TOKEN` shortcut |
+| PR write credential | chair pod only | pod-local GitHub App key/minter, write-scoped App/session token, or local `GH_TOKEN` shortcut |
 | Review steering | bot pod filesystem / OAB pre_seed | `docs/steering/pr-review.md` |
 
 For local Kubernetes testing, `scripts/dev-deploy-bots.sh` can wire these per bot:
@@ -145,14 +145,18 @@ scripts/dev-deploy-bots.sh \
   --bot-agents chair=kiro,rev1=claude,rev2=claude \
   --agent-secret kiro=kiro-api:KIRO_API_KEY \
   --agent-secret claude=claude-oauth:CLAUDE_CODE_OAUTH_TOKEN \
-  --extra-secret gh-token:GH_TOKEN \
+  --bot-secret rev1=gh-token:GH_TOKEN \
+  --bot-secret rev2=gh-token:GH_TOKEN \
+  --chair-github-app-secret github-app-chair \
   --steering-file docs/steering/pr-review.md
 ```
 
 Use `--agent-images agent=image,...` for custom profiles without a built-in local
-image. `--extra-secret gh-token:GH_TOKEN` is a local shortcut that gives reviewers
-enough access to self-fetch; production should replace it with read-only
-reviewer credentials and write-only chair credentials. **Mixing is the default**
+image. `--bot-secret rev1=gh-token:GH_TOKEN` is a local shortcut that gives a
+specific reviewer enough access to self-fetch without putting `GH_TOKEN` on the
+chair. `--chair-github-app-secret github-app-chair` mounts a chair-only App key
+and minter created by `scripts/dev-sync-gh-app-secret.sh`, so the chair's
+`gh pr comment` posts as the GitHub App bot. **Mixing is the default**
 when the template or deployment wires each pod with a different `?agent=`; for a
 uniform council, set `OABCP_AGENT_COMMAND` and drop the per-pod param.
 
