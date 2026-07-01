@@ -145,7 +145,7 @@ separate:
 | Axis | Where it is configured | Example |
 |------|------------------------|---------|
 | OAB `[agent]` command/args | OpenAB `configUrl`; legacy fallback: `OABCP_AGENT_PROFILES` or built-in profile | `kiro-cli acp --trust-all-tools` |
-| Bot image | deployment/template/service image | `ghcr.io/openabdev/openab:0.9.0-beta.3-kiro` |
+| Bot image | deployment/template/service image | `ghcr.io/openabdev/openab:0.9.0-beta.6-kiro` |
 | Model credential | bot pod env/Secret | `KIRO_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` |
 | PR read credential | reviewer pods | read-only App/session token or local `GH_TOKEN` shortcut for `gh pr diff` |
 | PR write credential | chair pod only | pod-local GitHub App key/minter, write-scoped App/session token, or local `GH_TOKEN` shortcut |

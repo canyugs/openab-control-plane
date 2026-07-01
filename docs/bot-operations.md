@@ -78,7 +78,7 @@ Discovery flow:
      "role": "reviewer",
      "provider": "codex",
      "capabilities": ["review", "gh-read"],
-     "version": "openab:0.9.0-beta.3"
+     "version": "openab:0.9.0-beta.6"
    }
    ```
 

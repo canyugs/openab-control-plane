@@ -124,7 +124,7 @@ spec:
         - control-plane
       spec:
         source:
-          image: ghcr.io/openabdev/openab:0.9.0-beta.3-claude
+          image: ghcr.io/openabdev/openab:0.9.0-beta.6-claude
           command:
             - openab
             - run
@@ -146,7 +146,7 @@ spec:
         - control-plane
       spec:
         source:
-          image: ghcr.io/openabdev/openab:0.9.0-beta.3-claude
+          image: ghcr.io/openabdev/openab:0.9.0-beta.6-claude
           command:
             - openab
             - run
@@ -163,7 +163,7 @@ spec:
         - control-plane
       spec:
         source:
-          image: ghcr.io/openabdev/openab:0.9.0-beta.3-claude
+          image: ghcr.io/openabdev/openab:0.9.0-beta.6-claude
           command:
             - openab
             - run
