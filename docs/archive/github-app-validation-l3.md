@@ -1,5 +1,9 @@
 # GitHub App identity — end-to-end validation (L3)
 
+Archived note. The maintained installation path is
+[`../install-github-app.md`](../install-github-app.md); this file is only the
+historical real-network validation checklist from the initial App enablement.
+
 Tracking issue: [#9](https://github.com/canyugs/openab-control-plane/issues/9)
 
 The GitHub App identity in [PR #8](https://github.com/canyugs/openab-control-plane/pull/8)

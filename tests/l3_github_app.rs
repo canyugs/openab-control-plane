@@ -8,14 +8,14 @@
 //!   cargo test --test l3_github_app -- --ignored --nocapture
 //! ```
 //!
-//! See docs/github-app-validation.md and issue #9.
+//! See docs/archive/github-app-validation-l3.md and issue #9.
 
 use openab_control_plane::github_app::{GitHubApp, Role};
 
 fn app_or_panic() -> GitHubApp {
     GitHubApp::from_env().expect(
         "L3 needs GITHUB_APP_ID + GITHUB_APP_INSTALLATION_ID + GITHUB_APP_PRIVATE_KEY \
-         (see docs/github-app-validation.md)",
+         (see docs/archive/github-app-validation-l3.md)",
     )
 }
 
@@ -40,7 +40,7 @@ async fn try_create_review(token: &str, repo: &str, pr: &str) -> reqwest::Status
 /// Proves: the App JWT (RS256) is accepted by GitHub and the installation-token
 /// exchange works for both roles, returning distinct tokens. App env only.
 #[tokio::test]
-#[ignore = "L3: needs a real GitHub App — see docs/github-app-validation.md (#9)"]
+#[ignore = "L3: needs a real GitHub App — see docs/archive/github-app-validation-l3.md (#9)"]
 async fn l3_mints_chair_and_reviewer_tokens() {
     let app = app_or_panic();
     let chair = app
@@ -60,7 +60,7 @@ async fn l3_mints_chair_and_reviewer_tokens() {
 /// (create a review) and a reviewer token cannot (403). Needs GITHUB_TEST_REPO +
 /// GITHUB_TEST_PR pointing at an open PR the installation can access.
 #[tokio::test]
-#[ignore = "L3: needs a real GitHub App + test PR — see docs/github-app-validation.md (#9)"]
+#[ignore = "L3: needs a real GitHub App + test PR — see docs/archive/github-app-validation-l3.md (#9)"]
 async fn l3_role_scoping_chair_writes_reviewer_blocked() {
     let app = app_or_panic();
     let repo = std::env::var("GITHUB_TEST_REPO").expect("set GITHUB_TEST_REPO=owner/repo");

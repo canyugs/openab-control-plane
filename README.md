@@ -104,7 +104,6 @@ Full install docs:
 
 - [docs/install-pat.md](docs/install-pat.md) for the PAT copied Action path.
 - [docs/install-github-app.md](docs/install-github-app.md) for the GitHub App webhook path.
-- [docs/github-app-validation.md](docs/github-app-validation.md) for App identity validation.
 
 ## Run A Review
 

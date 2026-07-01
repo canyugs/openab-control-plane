@@ -12,7 +12,7 @@ LGTM is the worthless part of review; the value is catching the issue in a PR th
 author thought was perfect.
 
 A verified 2026 prior-art survey (see
-[outcome-priced-review-hypothesis.md](../outcome-priced-review-hypothesis.md) for the
+[outcome-priced-review-hypothesis.md](../archive/outcome-priced-review-hypothesis.md) for the
 full table + sources) establishes two facts:
 
 1. **No AI code-review vendor prices on outcome** — all are per-seat, per-run, or
