@@ -1,10 +1,8 @@
 //! Shared runtime: the bot connection hub (south) + north event broadcast.
 
 use crate::github_app::GitHubApp;
-use crate::protocol::{
-    ChannelInfo, Content, GatewayEvent, SenderInfo, EVENT_SCHEMA,
-};
-use crate::store::{now_ms, new_id, SessionState, Store};
+use crate::protocol::{ChannelInfo, Content, GatewayEvent, SenderInfo, EVENT_SCHEMA};
+use crate::store::{new_id, now_ms, SessionState, Store};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,7 +56,10 @@ impl AppState {
     /// `unregister_conn` so a stale disconnect can't evict a newer connection.
     pub fn register_conn(&self, bot_id: &str, tx: mpsc::UnboundedSender<String>) -> u64 {
         let gen = self.conn_seq.fetch_add(1, Ordering::Relaxed);
-        self.hub.lock().unwrap().insert(bot_id.to_string(), (gen, tx));
+        self.hub
+            .lock()
+            .unwrap()
+            .insert(bot_id.to_string(), (gen, tx));
         gen
     }
 
@@ -142,7 +143,11 @@ impl AppState {
         // Durable path: queue then flush. A disconnected bot keeps the frame and
         // gets it on reconnect (flush_outbox) instead of losing it.
         let frame = serde_json::to_string(&event).unwrap();
-        if self.store.enqueue_outbox(bot_id, session_id, &frame).is_err() {
+        if self
+            .store
+            .enqueue_outbox(bot_id, session_id, &frame)
+            .is_err()
+        {
             return self.send_to_bot(bot_id, frame); // fall back to best-effort
         }
         self.flush_outbox(bot_id)
@@ -179,7 +184,10 @@ mod tests {
         let gen1 = state.register_conn("bot_a", tx1); // new pod replaces
         assert_ne!(gen0, gen1);
         state.unregister_conn("bot_a", gen0); // old pod's late disconnect
-        assert!(state.is_connected("bot_a"), "newer connection wrongly evicted");
+        assert!(
+            state.is_connected("bot_a"),
+            "newer connection wrongly evicted"
+        );
         state.unregister_conn("bot_a", gen1); // current connection drops
         assert!(!state.is_connected("bot_a"));
     }
@@ -196,17 +204,30 @@ mod tests {
         };
         // deliver to a bot that is NOT connected → queued durably, not delivered
         let sent = state.deliver_event(
-            "bot_x", "ses_1", None, sender,
-            Content::text("hello while offline"), vec![], "msg_1",
+            "bot_x",
+            "ses_1",
+            None,
+            sender,
+            Content::text("hello while offline"),
+            vec![],
+            "msg_1",
         );
         assert!(!sent, "no live connection → nothing delivered yet");
-        assert_eq!(store.pending_outbox("bot_x").unwrap().len(), 1, "frame queued");
+        assert_eq!(
+            store.pending_outbox("bot_x").unwrap().len(),
+            1,
+            "frame queued"
+        );
 
         // bot connects → flush replays the missed frame, outbox drains
         let (tx, mut rx) = mpsc::unbounded_channel();
         state.register_conn("bot_x", tx);
         assert!(state.flush_outbox("bot_x"));
-        assert_eq!(store.pending_outbox("bot_x").unwrap().len(), 0, "outbox drained");
+        assert_eq!(
+            store.pending_outbox("bot_x").unwrap().len(),
+            0,
+            "outbox drained"
+        );
         let frame = rx.try_recv().expect("frame delivered on reconnect");
         assert!(frame.contains("hello while offline"));
     }

@@ -131,7 +131,10 @@ mod tests {
         let (_, t1) = issue(&store, "aragorn", "reviewer").unwrap();
         let (_, t2) = issue(&store, "gimli", "reviewer").unwrap();
         assert_ne!(t1, t2);
-        assert_ne!(verify(&store, &t1).unwrap().id, verify(&store, &t2).unwrap().id);
+        assert_ne!(
+            verify(&store, &t1).unwrap().id,
+            verify(&store, &t2).unwrap().id
+        );
     }
 
     // A throwaway App whose private key is invalid — fine for cache-hit tests where
@@ -168,7 +171,13 @@ mod tests {
             .cache_installation_token("ses_1", "reviewer", "ghs_r", far_future)
             .unwrap();
         revoke_session_github_tokens(&store, "ses_1").unwrap();
-        assert!(store.installation_token("ses_1", "chair").unwrap().is_none());
-        assert!(store.installation_token("ses_1", "reviewer").unwrap().is_none());
+        assert!(store
+            .installation_token("ses_1", "chair")
+            .unwrap()
+            .is_none());
+        assert!(store
+            .installation_token("ses_1", "reviewer")
+            .unwrap()
+            .is_none());
     }
 }

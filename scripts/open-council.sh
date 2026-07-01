@@ -95,9 +95,7 @@ if [[ "$ARG" =~ ^([^/]+/[^#]+)#([0-9]+)$ ]]; then
           angles.forEach((a, i) => { (assign[participating[i % participating.length]] ||= []).push(a); });
         }
         const lines = participating.map(r => `- ${r} → ${assign[r].join(", ")}`).join("\n");
-        const assignment =
-          "Angle assignment — cover ONLY the angle(s) on the row matching your bot name; ignore the rest:\n" +
-          lines;
+        const assignment = "Review focus assignment:\n" + lines;
         process.stdout.write(JSON.stringify({ roster: [chair, ...participating], quorum_n: participating.length, assignment }));
       }
     ')

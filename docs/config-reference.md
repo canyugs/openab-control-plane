@@ -11,7 +11,10 @@ All configuration is via environment variables. No config file needed.
 | `OABCP_API_KEY` | _(open)_ | Bearer token for north API authentication. Unset = no auth |
 | `OABCP_BOTS` | _(none)_ | Initial bot roster registered at boot. Format: `name:role,name:role,...` e.g. `chair:chair,rev1:reviewer,rev2:reviewer`. Idempotent — existing bots are skipped |
 | `OABCP_WS_URL` | auto-detected | WebSocket URL bots connect to. Override when the internal hostname differs from default |
-| `OABCP_AGENT_COMMAND` | `claude` | Default agent provider when a pod's `/bot-config` fetch has no `?agent=`. Set this to make a uniform single-provider council; leave default + use `?agent=` per pod to mix |
+| `OABCP_AGENT_COMMAND` | `claude` | Default agent profile when a pod's `/bot-config` fetch has no `?agent=`. Set this to make a uniform single-provider council; leave default + use `?agent=` per pod to mix |
+| `OABCP_AGENT_PROFILES` | _(built-ins)_ | JSON object for overriding or adding OpenAB agent profiles. Each profile can set `command`, `args`, `working_dir`, and `inherit_env`. Put CLI trust/permission flags in `args` |
+| `OABCP_AGENT_WORKING_DIR` | profile-specific | Force `[agent].working_dir` for every served bot config. Useful when all bot images use the same non-default home |
+| `OABCP_AGENT_INHERIT_ENV` | _(none)_ | Extra comma-separated env var names appended to `[agent].inherit_env` for custom CLIs |
 | `OABCP_SESSION_TIMEOUT_SECS` | `900` | Liveness watchdog deadline. A session still active this many seconds after creation is force-closed (verdict notes absentees) so a silent/dead reviewer can't hang it forever. Anchored on `created_at` (no last-activity reset) — raise for legitimately long councils |
 | `OABCP_MAX_ROSTER` | `16` | Admission quota — max bots in a session roster. Mid-session adds (`POST /v1/sessions/:id/roster`) beyond this are rejected (`409`). Bounds roster growth; applies to dynamic adds, not the initial roster at open |
 | `OABCP_COUNCIL_ROSTER` | `chair,rev1,rev2` | Webhook-convened council roster (comma-separated; `[0]` is the chair, the rest review). Should match the bots seeded via `OABCP_BOTS` |
@@ -39,7 +42,8 @@ in [install-github-app.md](install-github-app.md); that path stores the App key 
 
 ## Bot pods (set on OpenAB containers, not the plane)
 
-BYOK: set **one** credential matching the agent (`OABCP_AGENT_COMMAND`). Both a
+BYOK: set **one** credential matching the agent profile (`OABCP_AGENT_COMMAND`).
+Both a
 subscription token and an API key work for Claude. The served config inherits
 every var below — the pod only carries whatever you actually set; unset vars are
 skipped. Switching provider = change `OABCP_AGENT_COMMAND` + set that provider's key.
@@ -53,7 +57,7 @@ skipped. Switching provider = change `OABCP_AGENT_COMMAND` + set that provider's
 | `GROK_CODE_XAI_API_KEY` | Grok (xAI) | |
 | `KIRO_API_KEY` | Kiro | |
 | `COPILOT_GITHUB_TOKEN` | GitHub Copilot | Optional PAT |
-| `GH_TOKEN` | — | GitHub PAT for PR operations. **Set only on the chair pod** to prevent duplicate comments |
+| `GH_TOKEN` | — | GitHub token for PR operations. Reviewers need read access for self-fetch (`gh pr diff` / checkout); the chair needs write access for the single verdict comment. In production, prefer per-role GitHub App/session tokens over one shared PAT |
 
 **"Use your own login" = token form only.** Your own subscription login *is*
 supported — *as a token*: `claude setup-token` mints `CLAUDE_CODE_OAUTH_TOKEN` from
@@ -65,33 +69,96 @@ and have no validated on-pod login path. (The chair's persistent volume +
 `gh auth login` in its `pre_boot` hook authenticates **`gh`/git for PR write-back**,
 not the agent model — don't conflate the two.)
 
-## Per-bot provider (mixed councils)
+## Per-bot Agent Profile (mixed councils)
 
 Each bot is a separate pod, so each can run a different agent CLI on its own
 credential. The provider is chosen per pod via the `/bot-config` fetch URL:
 
 ```
-/bot-config/<id>?agent=gemini     # this pod runs Gemini
-/bot-config/<id>?agent=codex      # this pod runs Codex (OpenAI)
+/bot-config/<id>?agent=gemini     # this pod runs the gemini profile
+/bot-config/<id>?agent=codex      # this pod runs the codex profile
 /bot-config/<id>                  # falls back to OABCP_AGENT_COMMAND, then claude
 ```
 
-Known providers (the plane emits the matching `command` + `args`):
+Built-in profiles keep the common cases working without extra config:
 
-| `?agent=` | command + args |
-|-----------|----------------|
-| `claude` | `claude-agent-acp` |
-| `codex` | `codex-acp` |
-| `gemini` | `gemini --acp` |
-| `grok` | `grok agent stdio` |
-| `kiro` | `kiro-cli acp --trust-all-tools` |
-| `copilot` | `copilot --acp --stdio` |
-| _(anything else)_ | used verbatim as `command`, no args |
+| `?agent=` | command + args | working dir |
+|-----------|----------------|-------------|
+| `claude` | `claude-agent-acp` | `/home/node` |
+| `codex` | `codex-acp` | `/home/node` |
+| `gemini` | `gemini --acp` | `/home/node` |
+| `grok` | `grok agent stdio` | `/home/node` |
+| `kiro` | `kiro-cli acp --trust-all-tools` | `/home/agent` |
+| `copilot` | `copilot --acp --stdio` | `/home/node` |
+| _(anything else)_ | used verbatim as `command`, no args | `/home/node` |
 
-The pod must run the matching agent image (e.g. `Dockerfile.gemini`) and carry
-that provider's key. **Mixing is the default** when the template wires each pod
-with a different `?agent=`; for a uniform council, set `OABCP_AGENT_COMMAND` and
-drop the per-pod param.
+Custom profiles go in `OABCP_AGENT_PROFILES`. This is the escape hatch for a new
+CLI image, a different home directory, extra credential env vars, or required
+trust/permission flags:
+
+```json
+{
+  "cursor": {
+    "command": "cursor-agent",
+    "args": ["--acp", "--allow-all-tools"],
+    "working_dir": "/home/agent",
+    "inherit_env": ["CURSOR_API_KEY"]
+  },
+  "kiro": {
+    "args": ["acp", "--trust-all-tools", "--verbose"]
+  }
+}
+```
+
+For an existing built-in profile, omitted fields keep their built-in value. For a
+new custom profile, `command` is required. Permission or sandbox-bypass flags are
+not inferred by OCP; put them in `args` so the deploy config makes that trust
+decision explicit. Those flags only grant the CLI permission to use tools; they
+do not guarantee the CLI will accept trigger-embedded council steering. If a CLI
+rejects role-routed prompts, seed the standing rules through that CLI's native
+steering mechanism or OAB `pre_seed`.
+
+The portable steering source is [steering/pr-review.md](steering/pr-review.md).
+It defines role resolution, prompt-injection boundaries, reviewer read-only
+rules, `[done]`, and the OpenAB-style final report shape. Local Kubernetes
+deployments can mount it with `scripts/dev-deploy-bots.sh --steering-file`; Kiro
+defaults to `/home/agent/.kiro/steering`, while AGENTS.md-style CLIs default to
+`/home/node/AGENTS.md`.
+
+The pod must run the matching agent image and carry that provider's key. OCP only
+serves the OpenAB config; it does not install a CLI into the container and does
+not create credentials. Keep the axes separate:
+
+| Axis | Where it is configured | Example |
+|------|------------------------|---------|
+| OAB `[agent]` command/args | `OABCP_AGENT_PROFILES` or built-in profile | `kiro-cli acp --trust-all-tools` |
+| Bot image | deployment/template/service image | `ghcr.io/openabdev/openab:0.9.0-beta.3-kiro` |
+| Model credential | bot pod env/Secret | `KIRO_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` |
+| PR read credential | reviewer pods | read-only App/session token or local `GH_TOKEN` shortcut for `gh pr diff` |
+| PR write credential | chair pod only | pod-local GitHub App key/minter, write-scoped App/session token, or local `GH_TOKEN` shortcut |
+| Review steering | bot pod filesystem / OAB pre_seed | `docs/steering/pr-review.md` |
+
+For local Kubernetes testing, `scripts/dev-deploy-bots.sh` can wire these per bot:
+
+```sh
+scripts/dev-deploy-bots.sh \
+  --bot-agents chair=kiro,rev1=claude,rev2=claude \
+  --agent-secret kiro=kiro-api:KIRO_API_KEY \
+  --agent-secret claude=claude-oauth:CLAUDE_CODE_OAUTH_TOKEN \
+  --bot-secret rev1=gh-token:GH_TOKEN \
+  --bot-secret rev2=gh-token:GH_TOKEN \
+  --chair-github-app-secret github-app-chair \
+  --steering-file docs/steering/pr-review.md
+```
+
+Use `--agent-images agent=image,...` for custom profiles without a built-in local
+image. `--bot-secret rev1=gh-token:GH_TOKEN` is a local shortcut that gives a
+specific reviewer enough access to self-fetch without putting `GH_TOKEN` on the
+chair. `--chair-github-app-secret github-app-chair` mounts a chair-only App key
+and minter created by `scripts/dev-sync-gh-app-secret.sh`, so the chair's
+`gh pr comment` posts as the GitHub App bot. **Mixing is the default**
+when the template or deployment wires each pod with a different `?agent=`; for a
+uniform council, set `OABCP_AGENT_COMMAND` and drop the per-pod param.
 
 ## Roster format
 

@@ -33,7 +33,10 @@ pub enum Action {
     /// Deliver a system message to `to`.
     Prompt { to: String, content: String },
     /// CAS `from`→`to`; emits `state` on success.
-    Transition { from: SessionState, to: SessionState },
+    Transition {
+        from: SessionState,
+        to: SessionState,
+    },
     /// CAS `from`→Closed; emits `verdict` + `state:closed` on success.
     Close { from: SessionState, verdict: String },
 }
@@ -74,7 +77,10 @@ impl Coordinator for QuorumCouncil {
         // 1. relay a reviewer's settled final to the chair (was share_final_with_chair)
         if Some(bot) != chair {
             if let Some(c) = chair {
-                actions.push(Action::Relay { from: bot.to_string(), to: c.to_string() });
+                actions.push(Action::Relay {
+                    from: bot.to_string(),
+                    to: c.to_string(),
+                });
             }
         }
 
@@ -256,7 +262,11 @@ mod tests {
     fn solo_lone_bot_closes_directly_with_its_final() {
         let cx = ctx(&["solo"], Some("verdict"));
         let actions = Solo.on_done(&cx, "solo");
-        assert_eq!(actions.len(), 1, "solo emits exactly one Close, no quorum gate");
+        assert_eq!(
+            actions.len(),
+            1,
+            "solo emits exactly one Close, no quorum gate"
+        );
         match &actions[0] {
             Action::Close { from, verdict } => {
                 assert_eq!(*from, SessionState::Deliberating);
@@ -272,8 +282,8 @@ mod tests {
     #[test]
     fn quorum_council_chair_done_does_not_close_before_quorum() {
         let cx = FakeCtx {
-            quorum_n: 2,                // both reviewers must signal for a quorum…
-            reactors: vec![],           // …but none did → quorum unreachable
+            quorum_n: 2,      // both reviewers must signal for a quorum…
+            reactors: vec![], // …but none did → quorum unreachable
             state: SessionState::Deliberating,
             ..ctx(&["chair", "rev0", "rev1"], Some("VERDICT"))
         };

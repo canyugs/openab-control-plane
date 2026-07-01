@@ -40,7 +40,10 @@ async fn register_bot(base: &str, name: &str, role: &str) -> (String, String) {
         .json()
         .await
         .unwrap();
-    (v["bot_id"].as_str().unwrap().into(), v["token"].as_str().unwrap().into())
+    (
+        v["bot_id"].as_str().unwrap().into(),
+        v["token"].as_str().unwrap().into(),
+    )
 }
 
 async fn open_session(base: &str, roster: &[String], chair: Option<&str>, quorum_n: i64) -> String {
@@ -50,7 +53,12 @@ async fn open_session(base: &str, roster: &[String], chair: Option<&str>, quorum
             "title": "spike", "trigger_ref": "github:pr/acme/widgets#1",
             "roster": roster, "chair_bot": chair, "quorum_n": quorum_n,
         }))
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     v["session_id"].as_str().unwrap().into()
 }
 
@@ -58,33 +66,57 @@ async fn post_client(base: &str, session_id: &str, content: &str) {
     reqwest::Client::new()
         .post(format!("http://{base}/v1/sessions/{session_id}/messages"))
         .json(&json!({ "content": content }))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
 }
 
 async fn get_session(base: &str, session_id: &str) -> Value {
     reqwest::Client::new()
         .get(format!("http://{base}/v1/sessions/{session_id}"))
-        .send().await.unwrap().json().await.unwrap()
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
 }
 
 // --- wire reply builders (what a stock OAB gateway adapter emits) ---
 
-fn reply(session: &str, content: &str, command: Option<&str>, quote: Option<&str>, req: Option<&str>) -> Message {
+fn reply(
+    session: &str,
+    content: &str,
+    command: Option<&str>,
+    quote: Option<&str>,
+    req: Option<&str>,
+) -> Message {
     let mut r = json!({
         "channel": { "id": session },
         "content": { "type": "text", "text": content },
     });
-    if let Some(c) = command { r["command"] = json!(c); }
+    if let Some(c) = command {
+        r["command"] = json!(c);
+    }
     // A stock OAB gateway adapter carries the edit/reaction target in `reply_to`,
     // not `quote_message_id` (openab-core gateway.rs). Mirror that so this spike
     // exercises the real wire shape.
-    if let Some(q) = quote { r["reply_to"] = json!(q); }
-    if let Some(rq) = req { r["request_id"] = json!(rq); }
+    if let Some(q) = quote {
+        r["reply_to"] = json!(q);
+    }
+    if let Some(rq) = req {
+        r["request_id"] = json!(rq);
+    }
     Message::Text(r.to_string())
 }
 
-async fn connect(addr: SocketAddr, token: &str) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
-    let (ws, _) = connect_async(format!("ws://{addr}/ws?token={token}")).await.unwrap();
+async fn connect(
+    addr: SocketAddr,
+    token: &str,
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
+    let (ws, _) = connect_async(format!("ws://{addr}/ws?token={token}"))
+        .await
+        .unwrap();
     ws
 }
 
@@ -96,13 +128,21 @@ enum Role {
 
 /// Generic council bot: reacts to the client trigger and (chair) to the verdict
 /// prompt. Runs until aborted.
-fn spawn_panel_bot(addr: SocketAddr, token: String, session: String, name: String, role: Role) -> tokio::task::JoinHandle<()> {
+fn spawn_panel_bot(
+    addr: SocketAddr,
+    token: String,
+    session: String,
+    name: String,
+    role: Role,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let ws = connect(addr, &token).await;
         let (mut w, mut r) = ws.split();
         while let Some(Ok(msg)) = r.next().await {
             let Message::Text(t) = msg else {
-                if matches!(msg, Message::Close(_)) { break; }
+                if matches!(msg, Message::Close(_)) {
+                    break;
+                }
                 continue;
             };
             let v: Value = serde_json::from_str(&t).unwrap();
@@ -113,17 +153,51 @@ fn spawn_panel_bot(addr: SocketAddr, token: String, session: String, name: Strin
             let msg_id = v["message_id"].as_str().unwrap_or("").to_string();
             match role {
                 Role::Reviewer if sender == "client" => {
-                    w.send(reply(&session, &format!("review from {name}: LGTM"), None, None, None)).await.ok();
-                    w.send(reply(&session, "🆗", Some("add_reaction"), Some(&msg_id), None)).await.ok();
+                    w.send(reply(
+                        &session,
+                        &format!("review from {name}: LGTM"),
+                        None,
+                        None,
+                        None,
+                    ))
+                    .await
+                    .ok();
+                    w.send(reply(
+                        &session,
+                        "🆗",
+                        Some("add_reaction"),
+                        Some(&msg_id),
+                        None,
+                    ))
+                    .await
+                    .ok();
                 }
                 Role::Chair if sender == "client" => {
-                    w.send(reply(&session, "Council", Some("create_topic"), Some(&msg_id), None)).await.ok();
+                    w.send(reply(
+                        &session,
+                        "Council",
+                        Some("create_topic"),
+                        Some(&msg_id),
+                        None,
+                    ))
+                    .await
+                    .ok();
                 }
                 Role::Chair if sender == "system" => {
-                    w.send(reply(&session, "VERDICT: approved", None, None, None)).await.ok();
+                    w.send(reply(&session, "VERDICT: approved", None, None, None))
+                        .await
+                        .ok();
                     // done-signal after the verdict turn (real OAB set_done → 🆗);
                     // the plane closes the session on the chair's done, not its send.
-                    w.send(reply(&session, "🆗", Some("add_reaction"), Some(&msg_id), None)).await.ok();
+                    w.send(reply(
+                        &session,
+                        "🆗",
+                        Some("add_reaction"),
+                        Some(&msg_id),
+                        None,
+                    ))
+                    .await
+                    .ok();
                 }
                 _ => {}
             }
@@ -148,9 +222,21 @@ async fn run_council(reviewer_count: usize) {
 
     let session = open_session(&base, &roster, Some(&chair_id), reviewer_count as i64).await;
 
-    handles.push(spawn_panel_bot(addr, chair_tok, session.clone(), "gandalf".into(), Role::Chair));
+    handles.push(spawn_panel_bot(
+        addr,
+        chair_tok,
+        session.clone(),
+        "gandalf".into(),
+        Role::Chair,
+    ));
     for (_, tok, name) in &reviewers {
-        handles.push(spawn_panel_bot(addr, tok.clone(), session.clone(), name.clone(), Role::Reviewer));
+        handles.push(spawn_panel_bot(
+            addr,
+            tok.clone(),
+            session.clone(),
+            name.clone(),
+            Role::Reviewer,
+        ));
     }
     // let everyone connect before the trigger
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -168,14 +254,21 @@ async fn run_council(reviewer_count: usize) {
             break;
         }
     }
-    for h in handles { h.abort(); }
+    for h in handles {
+        h.abort();
+    }
 
-    assert!(closed, "session did not close ({reviewer_count} reviewers): {last}");
+    assert!(
+        closed,
+        "session did not close ({reviewer_count} reviewers): {last}"
+    );
 
     let messages = last["messages"].as_array().unwrap();
     // verdict present
     assert!(
-        messages.iter().any(|m| m["content"].as_str().unwrap_or("").contains("VERDICT")),
+        messages
+            .iter()
+            .any(|m| m["content"].as_str().unwrap_or("").contains("VERDICT")),
         "no verdict message"
     );
     // one-thread-per-session convergence: at most one distinct non-null thread
@@ -189,7 +282,9 @@ async fn run_council(reviewer_count: usize) {
     // every reviewer's review reached the store (fanout + persistence)
     for (_, _, name) in &reviewers {
         assert!(
-            messages.iter().any(|m| m["content"].as_str().unwrap_or("").contains(name.as_str())),
+            messages
+                .iter()
+                .any(|m| m["content"].as_str().unwrap_or("").contains(name.as_str())),
             "missing review from {name}"
         );
     }
@@ -218,17 +313,49 @@ async fn single_bot_parity_thread_react_streaming() {
     };
 
     // 1. create_topic (request_id → expect GatewayResponse.thread_id)
-    w.send(reply(&session, "Council", Some("create_topic"), Some(&trigger), Some("r1"))).await.unwrap();
-    let thread_id = read_response(&mut r, "r1").await["thread_id"].as_str().unwrap().to_string();
+    w.send(reply(
+        &session,
+        "Council",
+        Some("create_topic"),
+        Some(&trigger),
+        Some("r1"),
+    ))
+    .await
+    .unwrap();
+    let thread_id = read_response(&mut r, "r1").await["thread_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert!(!thread_id.is_empty(), "no thread_id from create_topic");
 
     // 2. status reaction
-    w.send(reply(&session, "👀", Some("add_reaction"), Some(&trigger), None)).await.unwrap();
+    w.send(reply(
+        &session,
+        "👀",
+        Some("add_reaction"),
+        Some(&trigger),
+        None,
+    ))
+    .await
+    .unwrap();
 
     // 3. streaming reply: send stub (request_id → message_id), then edit it
-    w.send(reply(&session, "thinking…", None, None, Some("r2"))).await.unwrap();
-    let message_id = read_response(&mut r, "r2").await["message_id"].as_str().unwrap().to_string();
-    w.send(reply(&session, "final answer", Some("edit_message"), Some(&message_id), None)).await.unwrap();
+    w.send(reply(&session, "thinking…", None, None, Some("r2")))
+        .await
+        .unwrap();
+    let message_id = read_response(&mut r, "r2").await["message_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    w.send(reply(
+        &session,
+        "final answer",
+        Some("edit_message"),
+        Some(&message_id),
+        None,
+    ))
+    .await
+    .unwrap();
 
     tokio::time::sleep(Duration::from_millis(150)).await;
     let s = get_session(&base, &session).await;
@@ -255,7 +382,12 @@ async fn solo_single_bot_closes() {
                 "title": "spike-solo", "roster": [bot_id.clone()],
                 "chair_bot": bot_id, "quorum_n": 0, "mode": "solo",
             }))
-            .send().await.unwrap().json().await.unwrap();
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
         v["session_id"].as_str().unwrap().into()
     };
 
@@ -273,8 +405,18 @@ async fn solo_single_bot_closes() {
             }
         }
     };
-    w.send(reply(&session, "VERDICT: solo approved", None, None, None)).await.unwrap();
-    w.send(reply(&session, "🆗", Some("add_reaction"), Some(&trigger), None)).await.unwrap();
+    w.send(reply(&session, "VERDICT: solo approved", None, None, None))
+        .await
+        .unwrap();
+    w.send(reply(
+        &session,
+        "🆗",
+        Some("add_reaction"),
+        Some(&trigger),
+        None,
+    ))
+    .await
+    .unwrap();
 
     let mut closed = false;
     let mut last = json!({});
@@ -288,7 +430,10 @@ async fn solo_single_bot_closes() {
     }
     assert!(closed, "solo session did not close: {last}");
     assert!(
-        last["messages"].as_array().unwrap().iter()
+        last["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|m| m["content"].as_str().unwrap_or("").contains("VERDICT")),
         "no verdict in closed solo session"
     );
@@ -316,13 +461,23 @@ async fn pipeline_three_stages_closes_in_order() {
                 "title": "spike-pipeline", "roster": roster,
                 "quorum_n": 0, "mode": "pipeline",
             }))
-            .send().await.unwrap().json().await.unwrap();
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
         v["session_id"].as_str().unwrap().into()
     };
 
     let mut handles = vec![];
     for (i, (_, tok)) in bots.iter().enumerate() {
-        handles.push(spawn_pipeline_bot(addr, tok.clone(), session.clone(), format!("s{i}")));
+        handles.push(spawn_pipeline_bot(
+            addr,
+            tok.clone(),
+            session.clone(),
+            format!("s{i}"),
+        ));
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
     post_client(&base, &session, "Review PR #1 through the pipeline").await;
@@ -337,31 +492,46 @@ async fn pipeline_three_stages_closes_in_order() {
             break;
         }
     }
-    for h in handles { h.abort(); }
+    for h in handles {
+        h.abort();
+    }
     assert!(closed, "pipeline did not close: {last}");
 
     // every stage ran, and strictly in order (messages are created_at-ordered)
     let messages = last["messages"].as_array().unwrap();
     let pos = |name: &str| {
-        messages.iter().position(|m| {
-            m["content"].as_str().unwrap_or("") == format!("stage {name} output")
-        })
+        messages
+            .iter()
+            .position(|m| m["content"].as_str().unwrap_or("") == format!("stage {name} output"))
     };
     let (p0, p1, p2) = (pos("s0"), pos("s1"), pos("s2"));
-    assert!(p0.is_some() && p1.is_some() && p2.is_some(), "a stage never ran: {messages:?}");
-    assert!(p0 < p1 && p1 < p2, "stages did not run in sequence: {p0:?} {p1:?} {p2:?}");
+    assert!(
+        p0.is_some() && p1.is_some() && p2.is_some(),
+        "a stage never ran: {messages:?}"
+    );
+    assert!(
+        p0 < p1 && p1 < p2,
+        "stages did not run in sequence: {p0:?} {p1:?} {p2:?}"
+    );
 }
 
 /// Pipeline stage bot: acts only when @mentioned (stage 0 on the trigger, later
 /// stages on the handoff prompt) — proving non-starters wait. Posts its stage
 /// output then the 🆗 done-signal.
-fn spawn_pipeline_bot(addr: SocketAddr, token: String, session: String, name: String) -> tokio::task::JoinHandle<()> {
+fn spawn_pipeline_bot(
+    addr: SocketAddr,
+    token: String,
+    session: String,
+    name: String,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let ws = connect(addr, &token).await;
         let (mut w, mut r) = ws.split();
         while let Some(Ok(msg)) = r.next().await {
             let Message::Text(t) = msg else {
-                if matches!(msg, Message::Close(_)) { break; }
+                if matches!(msg, Message::Close(_)) {
+                    break;
+                }
                 continue;
             };
             let v: Value = serde_json::from_str(&t).unwrap();
@@ -369,14 +539,31 @@ fn spawn_pipeline_bot(addr: SocketAddr, token: String, session: String, name: St
                 continue;
             }
             let sender = v["sender"]["id"].as_str().unwrap_or("");
-            let mentioned = v["mentions"].as_array()
+            let mentioned = v["mentions"]
+                .as_array()
                 .map(|a| a.iter().any(|m| m.as_str() == Some(name.as_str())))
                 .unwrap_or(false);
             let msg_id = v["message_id"].as_str().unwrap_or("").to_string();
             // act on my turn only: a mentioned trigger (client) or handoff (system)
             if mentioned && (sender == "client" || sender == "system") {
-                w.send(reply(&session, &format!("stage {name} output"), None, None, None)).await.ok();
-                w.send(reply(&session, "🆗", Some("add_reaction"), Some(&msg_id), None)).await.ok();
+                w.send(reply(
+                    &session,
+                    &format!("stage {name} output"),
+                    None,
+                    None,
+                    None,
+                ))
+                .await
+                .ok();
+                w.send(reply(
+                    &session,
+                    "🆗",
+                    Some("add_reaction"),
+                    Some(&msg_id),
+                    None,
+                ))
+                .await
+                .ok();
             }
         }
     })
@@ -395,7 +582,13 @@ async fn chair_recruits_through_admission_gate() {
     let (specialist_id, _) = register_bot(&base, "specialist", "reviewer").await;
     let (sneaky_id, _) = register_bot(&base, "sneaky", "reviewer").await;
 
-    let session = open_session(&base, &[chair_id.clone(), rev_id.clone()], Some(&chair_id), 1).await;
+    let session = open_session(
+        &base,
+        &[chair_id.clone(), rev_id.clone()],
+        Some(&chair_id),
+        1,
+    )
+    .await;
 
     let chair_ws = connect(addr, &chair_tok).await;
     let (mut chair_w, _cr) = chair_ws.split();
@@ -405,22 +598,51 @@ async fn chair_recruits_through_admission_gate() {
     post_client(&base, &session, "review this").await;
 
     // chair recruits the specialist (authorized) — embedded in a normal message
-    chair_w.send(reply(&session, &format!("need a security pass [[recruit:{specialist_id}]]"), None, None, None)).await.unwrap();
+    chair_w
+        .send(reply(
+            &session,
+            &format!("need a security pass [[recruit:{specialist_id}]]"),
+            None,
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
     // reviewer tries to recruit (NOT authorized) — must be denied
-    rev_w.send(reply(&session, &format!("sneaking one in [[recruit:{sneaky_id}]]"), None, None, None)).await.unwrap();
+    rev_w
+        .send(reply(
+            &session,
+            &format!("sneaking one in [[recruit:{sneaky_id}]]"),
+            None,
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
 
     // poll roster until the specialist appears
     let mut roster: Vec<String> = vec![];
     for _ in 0..50 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let s = get_session(&base, &session).await;
-        roster = s["roster"].as_array().unwrap().iter().filter_map(|v| v.as_str().map(String::from)).collect();
+        roster = s["roster"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
         if roster.contains(&specialist_id) {
             break;
         }
     }
-    assert!(roster.contains(&specialist_id), "chair's recruit must join the roster: {roster:?}");
-    assert!(!roster.contains(&sneaky_id), "a reviewer's recruit must be denied: {roster:?}");
+    assert!(
+        roster.contains(&specialist_id),
+        "chair's recruit must join the roster: {roster:?}"
+    );
+    assert!(
+        !roster.contains(&sneaky_id),
+        "a reviewer's recruit must be denied: {roster:?}"
+    );
 }
 
 #[tokio::test]
@@ -430,13 +652,21 @@ async fn dynamic_replace_api_updates_session_and_standing_roster() {
     let (chair_id, _) = register_bot(&base, "chair", "chair").await;
     let (old_id, _) = register_bot(&base, "old", "reviewer").await;
     let (new_id, _) = register_bot(&base, "new", "reviewer").await;
-    let session = open_session(&base, &[chair_id.clone(), old_id.clone()], Some(&chair_id), 1).await;
+    let session = open_session(
+        &base,
+        &[chair_id.clone(), old_id.clone()],
+        Some(&chair_id),
+        1,
+    )
+    .await;
 
     post_client(&base, &session, "review this").await;
     assert!(!state.store.pending_outbox(&old_id).unwrap().is_empty());
 
     let replace: Value = reqwest::Client::new()
-        .post(format!("http://{base}/v1/sessions/{session}/roster/replace"))
+        .post(format!(
+            "http://{base}/v1/sessions/{session}/roster/replace"
+        ))
         .json(&json!({ "old_bot_id": old_id.clone(), "new_bot_id": new_id.clone() }))
         .send()
         .await
@@ -448,7 +678,12 @@ async fn dynamic_replace_api_updates_session_and_standing_roster() {
     assert_eq!(replace["roster"], json!([chair_id.clone(), new_id.clone()]));
     assert!(state.store.pending_outbox(&old_id).unwrap().is_empty());
     assert!(
-        state.store.pending_outbox(&new_id).unwrap().iter().any(|(_, frame)| frame.contains("review this")),
+        state
+            .store
+            .pending_outbox(&new_id)
+            .unwrap()
+            .iter()
+            .any(|(_, frame)| frame.contains("review this")),
         "replacement bot should receive backfilled history",
     );
 
@@ -462,7 +697,10 @@ async fn dynamic_replace_api_updates_session_and_standing_roster() {
         .await
         .unwrap();
     assert_eq!(standing["source"], "override");
-    assert_eq!(standing["roster"], json!([chair_id.clone(), new_id.clone()]));
+    assert_eq!(
+        standing["roster"],
+        json!([chair_id.clone(), new_id.clone()])
+    );
 
     let review: Value = reqwest::Client::new()
         .post(format!("http://{base}/v1/review"))
@@ -487,7 +725,13 @@ async fn council_closes_on_text_done_signal() {
     let base = addr.to_string();
     let (chair_id, chair_tok) = register_bot(&base, "chair", "chair").await;
     let (rev_id, rev_tok) = register_bot(&base, "rev0", "reviewer").await;
-    let session = open_session(&base, &[chair_id.clone(), rev_id.clone()], Some(&chair_id), 1).await;
+    let session = open_session(
+        &base,
+        &[chair_id.clone(), rev_id.clone()],
+        Some(&chair_id),
+        1,
+    )
+    .await;
 
     let h1 = spawn_text_done_bot(addr, chair_tok, session.clone(), Role::Chair);
     let h2 = spawn_text_done_bot(addr, rev_tok, session.clone(), Role::Reviewer);
@@ -499,40 +743,77 @@ async fn council_closes_on_text_done_signal() {
     for _ in 0..60 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         last = get_session(&base, &session).await;
-        if last["session"]["state"] == "closed" { closed = true; break; }
+        if last["session"]["state"] == "closed" {
+            closed = true;
+            break;
+        }
     }
-    h1.abort(); h2.abort();
-    assert!(closed, "council must close on text [done] (no reactions sent): {last}");
+    h1.abort();
+    h2.abort();
     assert!(
-        last["messages"].as_array().unwrap().iter()
+        closed,
+        "council must close on text [done] (no reactions sent): {last}"
+    );
+    assert!(
+        last["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|m| m["content"].as_str().unwrap_or("").contains("VERDICT")),
         "verdict missing from closed session",
     );
 }
 
 /// Bot that signals completion via TEXT `[done]` only — never sends add_reaction.
-fn spawn_text_done_bot(addr: SocketAddr, token: String, session: String, role: Role) -> tokio::task::JoinHandle<()> {
+fn spawn_text_done_bot(
+    addr: SocketAddr,
+    token: String,
+    session: String,
+    role: Role,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let ws = connect(addr, &token).await;
         let (mut w, mut r) = ws.split();
         while let Some(Ok(msg)) = r.next().await {
             let Message::Text(t) = msg else {
-                if matches!(msg, Message::Close(_)) { break; }
+                if matches!(msg, Message::Close(_)) {
+                    break;
+                }
                 continue;
             };
             let v: Value = serde_json::from_str(&t).unwrap();
-            if v.get("event_type").is_none() { continue; }
+            if v.get("event_type").is_none() {
+                continue;
+            }
             let sender = v["sender"]["id"].as_str().unwrap_or("");
             let msg_id = v["message_id"].as_str().unwrap_or("").to_string();
             match role {
                 Role::Reviewer if sender == "client" => {
-                    w.send(reply(&session, "review: LGTM [done]", None, None, None)).await.ok();
+                    w.send(reply(&session, "review: LGTM [done]", None, None, None))
+                        .await
+                        .ok();
                 }
                 Role::Chair if sender == "client" => {
-                    w.send(reply(&session, "Council", Some("create_topic"), Some(&msg_id), None)).await.ok();
+                    w.send(reply(
+                        &session,
+                        "Council",
+                        Some("create_topic"),
+                        Some(&msg_id),
+                        None,
+                    ))
+                    .await
+                    .ok();
                 }
                 Role::Chair if sender == "system" => {
-                    w.send(reply(&session, "VERDICT: approved [done]", None, None, None)).await.ok();
+                    w.send(reply(
+                        &session,
+                        "VERDICT: approved [done]",
+                        None,
+                        None,
+                        None,
+                    ))
+                    .await
+                    .ok();
                 }
                 _ => {}
             }
@@ -544,21 +825,45 @@ fn spawn_text_done_bot(addr: SocketAddr, token: String, session: String, role: R
 /// routing does not mention the chair on the opening trigger, but the trigger is
 /// still delivered as context; this bot mirrors the old failure mode where a chair
 /// responded too early anyway.
-fn spawn_chair_proactive_bot(addr: SocketAddr, token: String, session: String) -> tokio::task::JoinHandle<()> {
+fn spawn_chair_proactive_bot(
+    addr: SocketAddr,
+    token: String,
+    session: String,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let ws = connect(addr, &token).await;
         let (mut w, mut r) = ws.split();
         while let Some(Ok(msg)) = r.next().await {
             let Message::Text(t) = msg else {
-                if matches!(msg, Message::Close(_)) { break; }
+                if matches!(msg, Message::Close(_)) {
+                    break;
+                }
                 continue;
             };
             let v: Value = serde_json::from_str(&t).unwrap();
-            if v.get("event_type").is_none() { continue; }
+            if v.get("event_type").is_none() {
+                continue;
+            }
             if v["sender"]["id"] == "client" {
                 let msg_id = v["message_id"].as_str().unwrap_or("").to_string();
-                w.send(reply(&session, "Council", Some("create_topic"), Some(&msg_id), None)).await.ok();
-                w.send(reply(&session, "VERDICT: approved [done]", None, None, None)).await.ok();
+                w.send(reply(
+                    &session,
+                    "Council",
+                    Some("create_topic"),
+                    Some(&msg_id),
+                    None,
+                ))
+                .await
+                .ok();
+                w.send(reply(
+                    &session,
+                    "VERDICT: approved [done]",
+                    None,
+                    None,
+                    None,
+                ))
+                .await
+                .ok();
             }
         }
     })
@@ -566,19 +871,36 @@ fn spawn_chair_proactive_bot(addr: SocketAddr, token: String, session: String) -
 
 /// Reviewer that deliberates (posts a review) but NEVER emits a done-signal —
 /// the silent reviewer that left quorum unreachable on #4.
-fn spawn_reviewer_no_done_bot(addr: SocketAddr, token: String, session: String, name: String) -> tokio::task::JoinHandle<()> {
+fn spawn_reviewer_no_done_bot(
+    addr: SocketAddr,
+    token: String,
+    session: String,
+    name: String,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let ws = connect(addr, &token).await;
         let (mut w, mut r) = ws.split();
         while let Some(Ok(msg)) = r.next().await {
             let Message::Text(t) = msg else {
-                if matches!(msg, Message::Close(_)) { break; }
+                if matches!(msg, Message::Close(_)) {
+                    break;
+                }
                 continue;
             };
             let v: Value = serde_json::from_str(&t).unwrap();
-            if v.get("event_type").is_none() { continue; }
+            if v.get("event_type").is_none() {
+                continue;
+            }
             if v["sender"]["id"] == "client" {
-                w.send(reply(&session, &format!("review from {name}: needs work"), None, None, None)).await.ok();
+                w.send(reply(
+                    &session,
+                    &format!("review from {name}: needs work"),
+                    None,
+                    None,
+                    None,
+                ))
+                .await
+                .ok();
                 // no done-signal — intentionally
             }
         }
@@ -597,8 +919,12 @@ async fn chair_done_before_quorum_waits_for_watchdog() {
     let (rev1_id, rev1_tok) = register_bot(&base, "rev1", "reviewer").await;
     // quorum_n = 2: BOTH reviewers would have to signal for a formal quorum.
     let session = open_session(
-        &base, &[chair_id.clone(), rev0_id.clone(), rev1_id.clone()], Some(&chair_id), 2,
-    ).await;
+        &base,
+        &[chair_id.clone(), rev0_id.clone(), rev1_id.clone()],
+        Some(&chair_id),
+        2,
+    )
+    .await;
 
     let hc = spawn_chair_proactive_bot(addr, chair_tok, session.clone());
     let h0 = spawn_reviewer_no_done_bot(addr, rev0_tok, session.clone(), "rev0".into());
@@ -610,7 +936,10 @@ async fn chair_done_before_quorum_waits_for_watchdog() {
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         last = get_session(&base, &session).await;
-        if last["messages"].as_array().unwrap().iter()
+        if last["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|m| m["content"].as_str().unwrap_or("").contains("VERDICT"))
         {
             break;
@@ -622,7 +951,10 @@ async fn chair_done_before_quorum_waits_for_watchdog() {
         "chair early [done] must not close before reviewer quorum: {last}",
     );
     assert!(
-        last["messages"].as_array().unwrap().iter()
+        last["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|m| m["content"].as_str().unwrap_or("").contains("VERDICT")),
         "chair's early verdict should be preserved for timeout synthesis",
     );
@@ -632,8 +964,13 @@ async fn chair_done_before_quorum_waits_for_watchdog() {
         "watchdog primitive should force-close the stuck council",
     );
     last = get_session(&base, &session).await;
-    hc.abort(); h0.abort(); h1.abort();
-    assert_eq!(last["session"]["state"], "closed", "watchdog did not close session: {last}");
+    hc.abort();
+    h0.abort();
+    h1.abort();
+    assert_eq!(
+        last["session"]["state"], "closed",
+        "watchdog did not close session: {last}"
+    );
 }
 
 async fn read_response<S>(r: &mut S, req: &str) -> Value

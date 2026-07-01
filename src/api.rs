@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
@@ -31,7 +31,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/v1/sessions/:id/messages", post(post_message))
         .route("/v1/sessions/:id/roster", post(add_roster))
         .route("/v1/sessions/:id/roster/replace", post(replace_roster))
-        .route("/v1/council/roster", get(get_council_roster).put(put_council_roster))
+        .route(
+            "/v1/council/roster",
+            get(get_council_roster).put(put_council_roster),
+        )
         .route("/v1/council/roster/replace", post(replace_council_roster))
         .route("/v1/sessions/:id/stream", get(stream_session))
         // Convene a PR review by ref — the trivial primitive a droppable GitHub
@@ -54,7 +57,9 @@ pub fn router() -> Router<Arc<AppState>> {
 }
 
 fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
-    let Some(ref key) = state.api_key else { return Ok(()) };
+    let Some(ref key) = state.api_key else {
+        return Ok(());
+    };
     let provided = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -80,7 +85,9 @@ async fn register_bot(
     check_auth(&state, &headers)?;
     let (bot, token) = identity::issue(state.store.as_ref(), &req.name, &req.role)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(json!({ "bot_id": bot.id, "token": token, "role": bot.role })))
+    Ok(Json(
+        json!({ "bot_id": bot.id, "token": token, "role": bot.role }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -369,12 +376,16 @@ async fn add_roster(
     check_auth(&state, &headers)?;
     use orchestrator::Admission::*;
     // Err = unknown session (404); admission rejection = 409 with a reason.
-    match orchestrator::add_to_roster(&state, &id, &req.bot_id).map_err(|_| StatusCode::NOT_FOUND)? {
+    match orchestrator::add_to_roster(&state, &id, &req.bot_id)
+        .map_err(|_| StatusCode::NOT_FOUND)?
+    {
         Added => Ok(Json(json!({ "added": true })).into_response()),
         AlreadyMember => Ok(Json(json!({ "added": false })).into_response()),
-        Rejected(reason) => {
-            Ok((StatusCode::CONFLICT, Json(json!({ "added": false, "rejected": reason }))).into_response())
-        }
+        Rejected(reason) => Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "added": false, "rejected": reason })),
+        )
+            .into_response()),
     }
 }
 
@@ -396,7 +407,8 @@ async fn replace_roster(
                 "old_bot_id": req.old_bot_id,
                 "new_bot_id": req.new_bot_id,
                 "roster": roster,
-            })).into_response())
+            }))
+            .into_response())
         }
         Noop => Ok(Json(json!({ "replaced": false, "noop": true })).into_response()),
         Rejected(reason) => Ok((
@@ -446,15 +458,26 @@ async fn replace_council_roster(
     if req.old_bot_id == req.new_bot_id {
         let (roster, source) = crate::council::runtime_council_roster(&state)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        return Ok(Json(json!({ "replaced": false, "noop": true, "roster": roster, "source": source })).into_response());
+        return Ok(Json(
+            json!({ "replaced": false, "noop": true, "roster": roster, "source": source }),
+        )
+        .into_response());
     }
     let (mut roster, _) = crate::council::runtime_council_roster(&state)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some(idx) = roster.iter().position(|bot| bot == &req.old_bot_id) else {
-        return Ok((StatusCode::CONFLICT, Json(json!({ "replaced": false, "rejected": "old bot not in roster" }))).into_response());
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "replaced": false, "rejected": "old bot not in roster" })),
+        )
+            .into_response());
     };
     if roster.iter().any(|bot| bot == &req.new_bot_id) {
-        return Ok((StatusCode::CONFLICT, Json(json!({ "replaced": false, "rejected": "replacement already in roster" }))).into_response());
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "replaced": false, "rejected": "replacement already in roster" })),
+        )
+            .into_response());
     }
     roster[idx] = req.new_bot_id.clone();
     validate_standing_roster(&state, &roster)?;
@@ -473,7 +496,8 @@ async fn replace_council_roster(
         "new_bot_id": req.new_bot_id,
         "roster": roster,
         "source": "override",
-    })).into_response())
+    }))
+    .into_response())
 }
 
 fn validate_standing_roster(state: &Arc<AppState>, roster: &[String]) -> Result<(), StatusCode> {
@@ -514,7 +538,9 @@ async fn get_session(
     let messages = state.store.messages(&id).unwrap_or_default();
     let roster = state.store.roster(&id).unwrap_or_default();
     let reactions = state.store.reactions(&id).unwrap_or_default();
-    Ok(Json(json!({ "session": session, "messages": messages, "roster": roster, "reactions": reactions })))
+    Ok(Json(
+        json!({ "session": session, "messages": messages, "roster": roster, "reactions": reactions }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -524,20 +550,268 @@ struct BotConfigParams {
     agent: Option<String>,
 }
 
-/// Maps a provider name to the OAB `[agent]` `command` + `args`. OAB splits the
-/// two (`config.rs`: `command: String`, `args: Vec<String>`), so multi-word
-/// invocations like `gemini --acp` must be split here. Unknown names pass
-/// through as a raw command (escape hatch for agents not in the table).
-fn agent_command(agent: &str) -> (String, Vec<&'static str>) {
-    match agent {
-        "claude" | "claude-agent-acp" => ("claude-agent-acp".into(), vec![]),
-        "codex" => ("codex-acp".into(), vec![]),
-        "gemini" => ("gemini".into(), vec!["--acp"]),
-        "grok" => ("grok".into(), vec!["agent", "stdio"]),
-        "kiro" => ("kiro-cli".into(), vec!["acp", "--trust-all-tools"]),
-        "copilot" => ("copilot".into(), vec!["--acp", "--stdio"]),
-        other => (other.to_string(), vec![]),
+const DEFAULT_AGENT_WORKING_DIR: &str = "/home/node";
+const DEFAULT_AGENT_INHERIT_ENV: &[&str] = &[
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GROK_CODE_XAI_API_KEY",
+    "KIRO_API_KEY",
+    "COPILOT_GITHUB_TOKEN",
+    "GH_TOKEN",
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AgentProfile {
+    command: String,
+    args: Vec<String>,
+    working_dir: String,
+    inherit_env: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentProfileOverride {
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    args: Option<Vec<String>>,
+    #[serde(default)]
+    working_dir: Option<String>,
+    #[serde(default)]
+    inherit_env: Option<Vec<String>>,
+}
+
+struct AgentProfileEnv {
+    overrides: Result<Option<HashMap<String, AgentProfileOverride>>, String>,
+    working_dir_override: Option<String>,
+}
+
+/// Maps a provider name to the OAB `[agent]` profile. OAB splits command and
+/// args (`config.rs`: `command: String`, `args: Vec<String>`), so multi-word ACP
+/// invocations must remain split here. Operators can override or add profiles
+/// with `OABCP_AGENT_PROFILES`; unknown names still pass through as a raw command.
+fn agent_profile(agent: &str) -> Result<AgentProfile, String> {
+    static CONFIG: OnceLock<AgentProfileEnv> = OnceLock::new();
+    let config = CONFIG.get_or_init(|| AgentProfileEnv {
+        overrides: parse_agent_profile_overrides(
+            std::env::var("OABCP_AGENT_PROFILES").ok().as_deref(),
+        ),
+        working_dir_override: std::env::var("OABCP_AGENT_WORKING_DIR").ok(),
+    });
+    let overrides = match &config.overrides {
+        Ok(overrides) => overrides.as_ref(),
+        Err(err) => return Err(err.clone()),
+    };
+    agent_profile_from_overrides(agent, overrides, config.working_dir_override.as_deref())
+}
+
+#[cfg(test)]
+fn agent_profile_from(
+    agent: &str,
+    profiles_json: Option<&str>,
+    working_dir_override: Option<&str>,
+) -> Result<AgentProfile, String> {
+    let overrides = parse_agent_profile_overrides(profiles_json)?;
+    agent_profile_from_overrides(agent, overrides.as_ref(), working_dir_override)
+}
+
+fn parse_agent_profile_overrides(
+    profiles_json: Option<&str>,
+) -> Result<Option<HashMap<String, AgentProfileOverride>>, String> {
+    profiles_json
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|raw| {
+            serde_json::from_str(raw).map_err(|err| format!("invalid OABCP_AGENT_PROFILES: {err}"))
+        })
+        .transpose()
+}
+
+fn agent_profile_from_overrides(
+    agent: &str,
+    overrides: Option<&HashMap<String, AgentProfileOverride>>,
+    working_dir_override: Option<&str>,
+) -> Result<AgentProfile, String> {
+    let mut profile = builtin_agent_profile(agent);
+
+    if let Some(overrides) = overrides {
+        if let Some(override_profile) = overrides.get(agent) {
+            let mut base = profile.unwrap_or_else(|| AgentProfile {
+                command: String::new(),
+                args: Vec::new(),
+                working_dir: DEFAULT_AGENT_WORKING_DIR.to_string(),
+                inherit_env: Vec::new(),
+            });
+            if let Some(command) = &override_profile.command {
+                base.command = command.clone();
+            }
+            if let Some(args) = &override_profile.args {
+                base.args = args.clone();
+            }
+            if let Some(working_dir) = &override_profile.working_dir {
+                base.working_dir = working_dir.clone();
+            }
+            if let Some(inherit_env) = &override_profile.inherit_env {
+                base.inherit_env = inherit_env.clone();
+            }
+            if base.command.is_empty() {
+                return Err(format!(
+                    "agent profile '{agent}' is custom and must set command"
+                ));
+            }
+            profile = Some(base);
+        }
     }
+
+    let mut profile = profile.unwrap_or_else(|| AgentProfile {
+        command: agent.to_string(),
+        args: Vec::new(),
+        working_dir: DEFAULT_AGENT_WORKING_DIR.to_string(),
+        inherit_env: Vec::new(),
+    });
+    if let Some(working_dir) = working_dir_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        profile.working_dir = working_dir.to_string();
+    }
+    Ok(profile)
+}
+
+fn builtin_agent_profile(agent: &str) -> Option<AgentProfile> {
+    match agent {
+        "claude" | "claude-agent-acp" => Some(AgentProfile {
+            command: "claude-agent-acp".into(),
+            args: vec![],
+            working_dir: "/home/node".into(),
+            inherit_env: vec![],
+        }),
+        "codex" => Some(AgentProfile {
+            command: "codex-acp".into(),
+            args: vec![],
+            working_dir: "/home/node".into(),
+            inherit_env: vec![],
+        }),
+        "gemini" => Some(AgentProfile {
+            command: "gemini".into(),
+            args: vec!["--acp".into()],
+            working_dir: "/home/node".into(),
+            inherit_env: vec![],
+        }),
+        "grok" => Some(AgentProfile {
+            command: "grok".into(),
+            args: vec!["agent".into(), "stdio".into()],
+            working_dir: "/home/node".into(),
+            inherit_env: vec![],
+        }),
+        "kiro" => Some(AgentProfile {
+            command: "kiro-cli".into(),
+            args: vec!["acp".into(), "--trust-all-tools".into()],
+            working_dir: "/home/agent".into(),
+            inherit_env: vec![],
+        }),
+        "copilot" => Some(AgentProfile {
+            command: "copilot".into(),
+            args: vec!["--acp".into(), "--stdio".into()],
+            working_dir: "/home/node".into(),
+            inherit_env: vec![],
+        }),
+        _ => None,
+    }
+}
+
+fn agent_inherit_env(profile: &AgentProfile) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut envs = Vec::new();
+    for value in DEFAULT_AGENT_INHERIT_ENV
+        .iter()
+        .map(|value| (*value).to_string())
+        .chain(profile.inherit_env.iter().cloned())
+        .chain(extra_agent_inherit_env().iter().cloned())
+    {
+        if seen.insert(value.clone()) {
+            envs.push(value);
+        }
+    }
+    envs
+}
+
+fn extra_agent_inherit_env() -> &'static [String] {
+    static INHERIT_ENV: OnceLock<Vec<String>> = OnceLock::new();
+    INHERIT_ENV.get_or_init(|| {
+        parse_extra_agent_inherit_env(std::env::var("OABCP_AGENT_INHERIT_ENV").ok().as_deref())
+    })
+}
+
+fn parse_extra_agent_inherit_env(value: Option<&str>) -> Vec<String> {
+    value
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn toml_string(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(value.len() + 2);
+    encoded.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => encoded.push_str("\\\""),
+            '\\' => encoded.push_str("\\\\"),
+            '\u{08}' => encoded.push_str("\\b"),
+            '\t' => encoded.push_str("\\t"),
+            '\n' => encoded.push_str("\\n"),
+            '\u{0c}' => encoded.push_str("\\f"),
+            '\r' => encoded.push_str("\\r"),
+            _ => {
+                let code = ch as u32;
+                if code <= 0x1f || code == 0x7f || (0x80..=0x9f).contains(&code) {
+                    if code <= 0xffff {
+                        write!(&mut encoded, "\\u{code:04X}")
+                            .expect("writing to String cannot fail");
+                    } else {
+                        write!(&mut encoded, "\\U{code:08X}")
+                            .expect("writing to String cannot fail");
+                    }
+                } else {
+                    encoded.push(ch);
+                }
+            }
+        }
+    }
+    encoded.push('"');
+    encoded
+}
+
+fn toml_array(values: &[String]) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|value| toml_string(value))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn sh_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn chair_pre_boot_hook_script(working_dir: &str) -> String {
+    format!(
+        "#!/bin/sh\nset -e\nexport HOME={home}\nif [ ! -x \"$HOME/bin/get-gh-app-token.sh\" ]; then echo \"github app auth not provisioned (no get-gh-app-token.sh); skipping\"; exit 0; fi\nauth() {{ \"$HOME/bin/get-gh-app-token.sh\" | gh auth login --with-token; }}\nauth\ngit config --global credential.helper '!gh auth git-credential' || true\n# refresh before the 1h installation-token expiry\n( while sleep 3000; do auth || true; done ) &\n",
+        home = sh_single_quote(working_dir)
+    )
 }
 
 /// Serves a stock OAB pod its full config.toml with `[gateway]` pointing back at
@@ -570,17 +844,18 @@ async fn bot_config(
         .agent
         .or_else(|| std::env::var("OABCP_AGENT_COMMAND").ok())
         .unwrap_or_else(|| "claude".into());
-    let (command, args) = agent_command(&agent);
-    let args_line = if args.is_empty() {
+    let profile = agent_profile(&agent).map_err(|err| {
+        tracing::warn!(agent = %agent, error = %err, "failed to resolve agent profile");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let args_line = if profile.args.is_empty() {
         String::new()
     } else {
-        let joined = args
-            .iter()
-            .map(|a| format!("{a:?}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("\nargs = [{joined}]")
+        format!("\nargs = {}", toml_array(&profile.args))
     };
+    let command = toml_string(&profile.command);
+    let working_dir = toml_string(&profile.working_dir);
+    let inherit_env = toml_array(&agent_inherit_env(&profile));
     // The chair writes to the PR, so it posts as the shared GitHub App (clean
     // `[bot]` attribution) — not its pod PAT. A pre_boot hook mints an installation
     // token and `gh auth login`s as the App, then refreshes before the 1h expiry
@@ -589,9 +864,13 @@ async fn bot_config(
     // (the hook env is sanitized). Reviewers don't write, so they keep GH_TOKEN.
     // Safe no-op (`on_failure = "warn"` + exit 0) until the volume is provisioned.
     let hooks_section = if bot.role == "chair" {
-        "\n[hooks.pre_boot]\non_failure = \"warn\"\ntimeout_seconds = 60\ninline = '''\n#!/bin/sh\nset -e\nexport HOME=/home/node\nif [ ! -x \"$HOME/bin/get-gh-app-token.sh\" ]; then echo \"github app auth not provisioned (no get-gh-app-token.sh); skipping\"; exit 0; fi\nauth() { \"$HOME/bin/get-gh-app-token.sh\" | gh auth login --with-token; }\nauth\ngit config --global credential.helper '!gh auth git-credential' || true\n# refresh before the 1h installation-token expiry\n( while sleep 3000; do auth || true; done ) &\n'''\n"
+        let hook_script = chair_pre_boot_hook_script(&profile.working_dir);
+        format!(
+            "\n[hooks.pre_boot]\non_failure = \"warn\"\ntimeout_seconds = 60\ninline = {}\n",
+            toml_string(&hook_script)
+        )
     } else {
-        ""
+        String::new()
     };
     let toml = format!(
         r#"[gateway]
@@ -603,9 +882,9 @@ bot_username = "{name}"
 streaming = true
 
 [agent]
-command = "{command}"{args_line}
-working_dir = "/home/node"
-inherit_env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GROK_CODE_XAI_API_KEY", "KIRO_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN"]
+command = {command}{args_line}
+working_dir = {working_dir}
+inherit_env = {inherit_env}
 
 [pool]
 max_sessions = 4
@@ -614,7 +893,13 @@ session_ttl_hours = 2
         name = bot.name,
         hooks_section = hooks_section,
     );
-    Ok(([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], toml))
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
+        toml,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -695,10 +980,15 @@ async fn github_token(
         return Err(StatusCode::FORBIDDEN);
     }
     let role = crate::github_app::Role::from_bot_role(&bot.role);
-    let token =
-        identity::github_token_for(state.store.as_ref(), app, &state.github_mint_lock, &id, role)
-            .await
-            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let token = identity::github_token_for(
+        state.store.as_ref(),
+        app,
+        &state.github_mint_lock,
+        &id,
+        role,
+    )
+    .await
+    .map_err(|_| StatusCode::BAD_GATEWAY)?;
     Ok(Json(json!({ "token": token, "role": role.as_str() })).into_response())
 }
 
@@ -723,21 +1013,132 @@ async fn stream_session(
 
 #[cfg(test)]
 mod tests {
-    use super::agent_command;
+    use super::{
+        agent_profile_from, chair_pre_boot_hook_script, parse_extra_agent_inherit_env, toml_string,
+        AgentProfile,
+    };
 
     #[test]
-    fn maps_known_providers_and_splits_args() {
-        assert_eq!(agent_command("claude"), ("claude-agent-acp".into(), vec![]));
-        assert_eq!(agent_command("codex"), ("codex-acp".into(), vec![]));
-        assert_eq!(agent_command("gemini"), ("gemini".into(), vec!["--acp"]));
+    fn maps_known_provider_profiles_and_splits_args() {
         assert_eq!(
-            agent_command("kiro"),
-            ("kiro-cli".into(), vec!["acp", "--trust-all-tools"])
+            agent_profile_from("claude", None, None).unwrap(),
+            AgentProfile {
+                command: "claude-agent-acp".into(),
+                args: vec![],
+                working_dir: "/home/node".into(),
+                inherit_env: vec![],
+            }
+        );
+        assert_eq!(
+            agent_profile_from("gemini", None, None).unwrap().args,
+            vec!["--acp"]
+        );
+        assert_eq!(
+            agent_profile_from("kiro", None, None).unwrap(),
+            AgentProfile {
+                command: "kiro-cli".into(),
+                args: vec!["acp".into(), "--trust-all-tools".into()],
+                working_dir: "/home/agent".into(),
+                inherit_env: vec![],
+            }
         );
     }
 
     #[test]
     fn unknown_agent_passes_through_as_raw_command() {
-        assert_eq!(agent_command("my-custom-acp"), ("my-custom-acp".into(), vec![]));
+        assert_eq!(
+            agent_profile_from("my-custom-acp", None, None).unwrap(),
+            AgentProfile {
+                command: "my-custom-acp".into(),
+                args: vec![],
+                working_dir: "/home/node".into(),
+                inherit_env: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn custom_agent_profile_sets_permissions_working_dir_and_env() {
+        let profiles = r#"{
+          "cursor": {
+            "command": "cursor-agent",
+            "args": ["--acp", "--allow-all-tools"],
+            "working_dir": "/home/agent",
+            "inherit_env": ["CURSOR_API_KEY"]
+          }
+        }"#;
+
+        assert_eq!(
+            agent_profile_from("cursor", Some(profiles), None).unwrap(),
+            AgentProfile {
+                command: "cursor-agent".into(),
+                args: vec!["--acp".into(), "--allow-all-tools".into()],
+                working_dir: "/home/agent".into(),
+                inherit_env: vec!["CURSOR_API_KEY".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn profile_json_can_override_builtin_args() {
+        let profiles = r#"{
+          "kiro": { "args": ["acp", "--trust-all-tools", "--verbose"] }
+        }"#;
+
+        assert_eq!(
+            agent_profile_from("kiro", Some(profiles), None)
+                .unwrap()
+                .args,
+            vec!["acp", "--trust-all-tools", "--verbose"]
+        );
+    }
+
+    #[test]
+    fn working_dir_override_applies_after_profile_resolution() {
+        assert_eq!(
+            agent_profile_from("kiro", None, Some("/workspace"))
+                .unwrap()
+                .working_dir,
+            "/workspace"
+        );
+    }
+
+    #[test]
+    fn custom_profile_requires_command() {
+        let err = agent_profile_from("custom", Some(r#"{"custom":{"args":["--acp"]}}"#), None)
+            .unwrap_err();
+        assert!(err.contains("must set command"));
+    }
+
+    #[test]
+    fn chair_hook_inline_is_toml_basic_string_safe() {
+        let script = chair_pre_boot_hook_script("/home/o'malley");
+        let encoded = toml_string(&script);
+        assert!(encoded.starts_with('"'));
+        assert!(!encoded.contains('\n'));
+        assert!(!encoded.contains("'''"));
+        assert!(encoded.contains("/home/o"));
+        assert!(encoded.contains("malley"));
+    }
+
+    #[test]
+    fn toml_string_escapes_toml_basic_string_controls() {
+        assert_eq!(
+            toml_string("quote\" slash\\ tab\t newline\n form\u{0c} carriage\r back\u{08}"),
+            "\"quote\\\" slash\\\\ tab\\t newline\\n form\\f carriage\\r back\\b\""
+        );
+        assert_eq!(
+            toml_string("\u{1f}\u{7f}\u{85}\u{9f}"),
+            "\"\\u001F\\u007F\\u0085\\u009F\""
+        );
+    }
+
+    #[test]
+    fn parses_extra_agent_inherit_env_once_ready_shape() {
+        assert_eq!(
+            parse_extra_agent_inherit_env(Some(" KIRO_API_KEY, , OPENAI_API_KEY ,GH_TOKEN ")),
+            vec!["KIRO_API_KEY", "OPENAI_API_KEY", "GH_TOKEN"]
+        );
+        assert!(parse_extra_agent_inherit_env(None).is_empty());
     }
 }

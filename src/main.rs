@@ -7,8 +7,7 @@ use std::time::Duration;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -35,7 +34,9 @@ async fn main() -> anyhow::Result<()> {
 /// manual `POST /v1/bots`. Format: `name:role,name:role` (role defaults to
 /// `reviewer`). Idempotent — restarts and existing bots are skipped.
 fn seed_roster(store: &dyn Store) -> anyhow::Result<()> {
-    let Ok(spec) = std::env::var("OABCP_BOTS") else { return Ok(()) };
+    let Ok(spec) = std::env::var("OABCP_BOTS") else {
+        return Ok(());
+    };
     for entry in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         let (name, role) = entry.split_once(':').unwrap_or((entry, "reviewer"));
         let (name, role) = (name.trim(), role.trim());
@@ -85,8 +86,7 @@ async fn shutdown_signal() {
     };
     #[cfg(unix)]
     let term = async {
-        if let Ok(mut s) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         {
             s.recv().await;
         }

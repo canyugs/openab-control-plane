@@ -130,10 +130,7 @@ fn assign_angles(roster: &[String], angles: &[&str]) -> (Vec<String>, i64, Strin
         .zip(&assigned)
         .map(|(r, a)| format!("- {} → {}", r, a.join(", ")))
         .collect();
-    let text = format!(
-        "Angle assignment — cover ONLY the angle(s) on the row matching your bot name; ignore the rest:\n{}",
-        lines.join("\n")
-    );
+    let text = format!("Review focus assignment:\n{}", lines.join("\n"));
     let mut eff = vec![roster[0].clone()];
     eff.extend(participating);
     let quorum = (eff.len() as i64 - 1).max(0);
@@ -296,6 +293,9 @@ mod tests {
         assert!(t.contains("canyugs/ocp #7"));
         // pointer trigger tells bots to self-fetch; the diff is NOT inlined
         assert!(t.contains("gh pr diff 7 --repo canyugs/ocp"));
+        assert!(t.contains("recipient-specific task"));
+        assert!(!t.contains("Role gate"));
+        assert!(!t.contains("If your bot name"));
         assert!(t.contains("OpenAB Council review started"));
         assert!(!t.contains("===== DIFF ====="));
         assert!(!t.contains("{{"));

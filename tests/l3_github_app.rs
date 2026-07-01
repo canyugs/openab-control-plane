@@ -43,8 +43,14 @@ async fn try_create_review(token: &str, repo: &str, pr: &str) -> reqwest::Status
 #[ignore = "L3: needs a real GitHub App — see docs/github-app-validation.md (#9)"]
 async fn l3_mints_chair_and_reviewer_tokens() {
     let app = app_or_panic();
-    let chair = app.mint_installation_token(Role::Chair).await.expect("mint chair token");
-    let reviewer = app.mint_installation_token(Role::Reviewer).await.expect("mint reviewer token");
+    let chair = app
+        .mint_installation_token(Role::Chair)
+        .await
+        .expect("mint chair token");
+    let reviewer = app
+        .mint_installation_token(Role::Reviewer)
+        .await
+        .expect("mint reviewer token");
     assert!(!chair.token.is_empty(), "chair token minted");
     assert!(!reviewer.token.is_empty(), "reviewer token minted");
     assert_ne!(chair.token, reviewer.token, "a distinct token per role");
@@ -60,8 +66,14 @@ async fn l3_role_scoping_chair_writes_reviewer_blocked() {
     let repo = std::env::var("GITHUB_TEST_REPO").expect("set GITHUB_TEST_REPO=owner/repo");
     let pr = std::env::var("GITHUB_TEST_PR").expect("set GITHUB_TEST_PR=<number>");
 
-    let chair = app.mint_installation_token(Role::Chair).await.expect("mint chair");
-    let reviewer = app.mint_installation_token(Role::Reviewer).await.expect("mint reviewer");
+    let chair = app
+        .mint_installation_token(Role::Chair)
+        .await
+        .expect("mint chair");
+    let reviewer = app
+        .mint_installation_token(Role::Reviewer)
+        .await
+        .expect("mint reviewer");
 
     let chair_status = try_create_review(&chair.token, &repo, &pr).await;
     let reviewer_status = try_create_review(&reviewer.token, &repo, &pr).await;

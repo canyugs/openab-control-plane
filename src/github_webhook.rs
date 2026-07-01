@@ -128,9 +128,15 @@ fn preset_from_labels(labels: &Value) -> Option<String> {
 /// Verify GitHub's `x-hub-signature-256` HMAC-SHA256 over the raw body, in constant
 /// time. Mirrors pr-agent's `verify_signature`. Returns false on any malformed input.
 pub fn verify_signature(secret: &str, body: &[u8], signature_header: Option<&str>) -> bool {
-    let Some(sig) = signature_header else { return false };
-    let Some(hex_sig) = sig.strip_prefix("sha256=") else { return false };
-    let Ok(expected) = hex::decode(hex_sig) else { return false };
+    let Some(sig) = signature_header else {
+        return false;
+    };
+    let Some(hex_sig) = sig.strip_prefix("sha256=") else {
+        return false;
+    };
+    let Ok(expected) = hex::decode(hex_sig) else {
+        return false;
+    };
     let mut mac =
         HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
     mac.update(body);
@@ -138,7 +144,7 @@ pub fn verify_signature(secret: &str, body: &[u8], signature_header: Option<&str
 }
 
 /// Decide whether a webhook should open a review session:
-///   - `pull_request` opened / reopened / ready_for_review → auto-review.
+///   - `pull_request` opened / reopened / ready_for_review / synchronize → auto-review.
 ///   - `issue_comment` created by a write-ish user on a PR whose body starts with
 ///     `/review` → on-demand.
 ///
@@ -148,10 +154,16 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
     match event {
         "pull_request" => {
             let action = body["action"].as_str()?;
-            if !matches!(action, "opened" | "reopened" | "ready_for_review") {
+            if !matches!(
+                action,
+                "opened" | "reopened" | "ready_for_review" | "synchronize"
+            ) {
                 return None;
             }
             let pr = &body["pull_request"];
+            if action != "ready_for_review" && pr["draft"].as_bool() == Some(true) {
+                return None;
+            }
             Some(WebhookTrigger {
                 repo: body["repository"]["full_name"].as_str()?.to_string(),
                 pr_number: pr["number"].as_u64()?,
@@ -229,7 +241,9 @@ pub async fn handle_webhook(
         tracing::error!("GITHUB_WEBHOOK_SECRET unset — rejecting webhook (fail-closed)");
         return Err(StatusCode::FORBIDDEN);
     };
-    let sig = headers.get("x-hub-signature-256").and_then(|v| v.to_str().ok());
+    let sig = headers
+        .get("x-hub-signature-256")
+        .and_then(|v| v.to_str().ok());
     if !verify_signature(secret, &body, sig) {
         return Err(StatusCode::FORBIDDEN);
     }
@@ -249,9 +263,15 @@ pub async fn handle_webhook(
     // 4. Per-repo allowlist (opt-in via `OABCP_ALLOWED_REPOS`; unset = allow all). A
     //    disallowed repo is acked and ignored — a signed webhook from an un-listed repo
     //    must not convene. (`/ask` is also commenter-permission-gated in parse_trigger.)
-    if !repo_allowed(&trigger.repo, std::env::var("OABCP_ALLOWED_REPOS").ok().as_deref()) {
+    if !repo_allowed(
+        &trigger.repo,
+        std::env::var("OABCP_ALLOWED_REPOS").ok().as_deref(),
+    ) {
         tracing::warn!(repo = %trigger.repo, "repo not in OABCP_ALLOWED_REPOS — ignoring webhook");
-        return Ok(Json(json!({ "ok": true, "triggered": false, "reason": "repo_not_allowed" })).into_response());
+        return Ok(
+            Json(json!({ "ok": true, "triggered": false, "reason": "repo_not_allowed" }))
+                .into_response(),
+        );
     }
 
     // 5. Conversational follow-up (ADR 006) takes the ask path: a solo session answers
@@ -268,7 +288,10 @@ pub async fn handle_webhook(
             .active_session_for_trigger(&ask_ref)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         {
-            return Ok(Json(json!({ "ok": true, "triggered": true, "session_id": existing, "deduped": true })).into_response());
+            return Ok(Json(
+                json!({ "ok": true, "triggered": true, "session_id": existing, "deduped": true }),
+            )
+            .into_response());
         }
         let question = trigger.question.clone().unwrap_or_default();
         return match crate::council::convene_ask(
@@ -293,7 +316,10 @@ pub async fn handle_webhook(
                     }),
                 );
                 tracing::info!(session = %session_id, repo = %trigger.repo, pr = trigger.pr_number, "answered follow-up from GitHub webhook");
-                Ok(Json(json!({ "ok": true, "triggered": true, "session_id": session_id })).into_response())
+                Ok(
+                    Json(json!({ "ok": true, "triggered": true, "session_id": session_id }))
+                        .into_response(),
+                )
             }
             Err(e) => {
                 tracing::error!(repo = %trigger.repo, pr = trigger.pr_number, "ask convene failed: {e:#}");
@@ -312,10 +338,20 @@ pub async fn handle_webhook(
         .active_session_for_trigger(&trigger_ref)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
-        return Ok(Json(json!({ "ok": true, "triggered": true, "session_id": existing, "deduped": true })).into_response());
+        return Ok(Json(
+            json!({ "ok": true, "triggered": true, "session_id": existing, "deduped": true }),
+        )
+        .into_response());
     }
 
-    match crate::council::convene_for_pr(&state, &trigger.repo, trigger.pr_number, trigger.preset.clone()).await {
+    match crate::council::convene_for_pr(
+        &state,
+        &trigger.repo,
+        trigger.pr_number,
+        trigger.preset.clone(),
+    )
+    .await
+    {
         Ok(session_id) => {
             state.emit_north(
                 "github_trigger",
@@ -333,7 +369,10 @@ pub async fn handle_webhook(
                 pr = trigger.pr_number, reason = %trigger.reason,
                 "convened council from GitHub webhook"
             );
-            Ok(Json(json!({ "ok": true, "triggered": true, "session_id": session_id })).into_response())
+            Ok(
+                Json(json!({ "ok": true, "triggered": true, "session_id": session_id }))
+                    .into_response(),
+            )
         }
         Err(e) => {
             // 500 lets GitHub retry a transient failure (the idempotency check above
@@ -362,7 +401,11 @@ mod tests {
         assert!(verify_signature(secret, body, Some(&good)));
         // wrong secret, tampered body, missing header, and bad prefix all fail
         assert!(!verify_signature("wrong", body, Some(&good)));
-        assert!(!verify_signature(secret, br#"{"action":"closed"}"#, Some(&good)));
+        assert!(!verify_signature(
+            secret,
+            br#"{"action":"closed"}"#,
+            Some(&good)
+        ));
         assert!(!verify_signature(secret, body, None));
         assert!(!verify_signature(secret, body, Some("md5=deadbeef")));
     }
@@ -384,6 +427,52 @@ mod tests {
     }
 
     #[test]
+    fn pull_request_synchronize_triggers_auto_review() {
+        let body = json!({
+            "action": "synchronize",
+            "installation": { "id": 99 },
+            "repository": { "full_name": "canyugs/ocp" },
+            "pull_request": { "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7" }
+        });
+        let t = parse_trigger("pull_request", &body).expect("should trigger");
+        assert_eq!(t.repo, "canyugs/ocp");
+        assert_eq!(t.pr_number, 7);
+        assert_eq!(t.reason, "auto");
+    }
+
+    #[test]
+    fn pull_request_draft_auto_events_are_ignored_until_ready_for_review() {
+        let draft_sync = json!({
+            "action": "synchronize",
+            "installation": { "id": 99 },
+            "repository": { "full_name": "canyugs/ocp" },
+            "pull_request": { "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7", "draft": true }
+        });
+        assert!(parse_trigger("pull_request", &draft_sync).is_none());
+
+        let draft_opened = json!({
+            "action": "opened",
+            "installation": { "id": 99 },
+            "repository": { "full_name": "canyugs/ocp" },
+            "pull_request": { "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7", "draft": true }
+        });
+        assert!(parse_trigger("pull_request", &draft_opened).is_none());
+
+        let ready = json!({
+            "action": "ready_for_review",
+            "installation": { "id": 99 },
+            "repository": { "full_name": "canyugs/ocp" },
+            "pull_request": { "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7", "draft": false }
+        });
+        assert_eq!(
+            parse_trigger("pull_request", &ready)
+                .expect("ready event should trigger")
+                .reason,
+            "auto",
+        );
+    }
+
+    #[test]
     fn review_label_sets_preset_from_payload() {
         // pull_request labels
         let pr = json!({
@@ -391,7 +480,13 @@ mod tests {
             "repository": { "full_name": "o/r" },
             "pull_request": { "number": 1, "url": "u", "labels": [{"name":"bug"},{"name":"review:full"}] }
         });
-        assert_eq!(parse_trigger("pull_request", &pr).unwrap().preset.as_deref(), Some("full"));
+        assert_eq!(
+            parse_trigger("pull_request", &pr)
+                .unwrap()
+                .preset
+                .as_deref(),
+            Some("full")
+        );
         // issue_comment reads the issue's labels
         let ic = json!({
             "action": "created",
@@ -399,7 +494,13 @@ mod tests {
             "issue": { "number": 1, "pull_request": { "url": "u" }, "labels": [{"name":"review:quick"}] },
             "comment": { "body": "/review", "author_association": "OWNER" }
         });
-        assert_eq!(parse_trigger("issue_comment", &ic).unwrap().preset.as_deref(), Some("quick"));
+        assert_eq!(
+            parse_trigger("issue_comment", &ic)
+                .unwrap()
+                .preset
+                .as_deref(),
+            Some("quick")
+        );
         // no review: label → None
         let none = json!({
             "action": "opened",
@@ -494,16 +595,26 @@ mod tests {
     #[test]
     fn parse_ask_comment_matches_slash_ask_and_mention() {
         // /ask with text → question is the remainder
-        assert_eq!(parse_ask_comment("/ask why is this a P1?", None).as_deref(), Some("why is this a P1?"));
+        assert_eq!(
+            parse_ask_comment("/ask why is this a P1?", None).as_deref(),
+            Some("why is this a P1?")
+        );
         // bare /ask → empty question (a ping = "look at this PR")
         assert_eq!(parse_ask_comment("/ask", None).as_deref(), Some(""));
         // @mention (handle configured) → question stripped of the mention
         assert_eq!(
-            parse_ask_comment("@zeabur-council can you suggest a fix?", Some("zeabur-council")).as_deref(),
+            parse_ask_comment(
+                "@zeabur-council can you suggest a fix?",
+                Some("zeabur-council")
+            )
+            .as_deref(),
             Some("can you suggest a fix?"),
         );
         // tolerate the [bot] suffix
-        assert_eq!(parse_ask_comment("@zeabur-council[bot] ping", Some("zeabur-council")).as_deref(), Some("ping"));
+        assert_eq!(
+            parse_ask_comment("@zeabur-council[bot] ping", Some("zeabur-council")).as_deref(),
+            Some("ping")
+        );
         // a mention with no configured handle is NOT an ask
         assert!(parse_ask_comment("@zeabur-council hi", None).is_none());
         // ordinary chatter is not an ask
