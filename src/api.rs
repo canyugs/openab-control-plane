@@ -6,15 +6,16 @@ use crate::identity;
 use crate::orchestrator;
 use crate::session::{reviewers, DONE_EMOJI};
 use crate::state::AppState;
+use crate::store::{BotInventory, BotMetadata, BotMetadataPatch};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use futures::Stream;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::sync::{Arc, OnceLock};
@@ -23,7 +24,9 @@ use tokio_stream::StreamExt;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/v1/bots", post(register_bot))
+        .route("/v1/bots", get(list_bots).post(register_bot))
+        .route("/v1/bots/discover", post(discover_bot))
+        .route("/v1/bots/:id", patch(patch_bot))
         .route("/v1/sessions", get(list_sessions).post(open_session))
         .route("/v1/session-log", get(session_log_by_query))
         .route("/v1/sessions/:id", get(get_session))
@@ -71,6 +74,41 @@ fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
     }
 }
 
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+}
+
+fn check_discovery_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
+    let Some(expected) = state.bot_discovery_token.as_deref() else {
+        return Err(StatusCode::FORBIDDEN);
+    };
+    if bearer(headers) == Some(expected) {
+        Ok(())
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
+fn is_safe_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
+fn normalize_list(values: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
+}
+
 #[derive(Deserialize)]
 struct RegisterBot {
     name: String,
@@ -88,6 +126,239 @@ async fn register_bot(
     Ok(Json(
         json!({ "bot_id": bot.id, "token": token, "role": bot.role }),
     ))
+}
+
+#[derive(Deserialize)]
+struct ListBots {
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    capability: Option<String>,
+    #[serde(default)]
+    connected: Option<bool>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    health: Option<String>,
+}
+
+async fn list_bots(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<ListBots>,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_auth(&state, &headers)?;
+    let (standing_roster, source) = crate::council::runtime_council_roster(&state)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let standing: BTreeSet<_> = standing_roster.iter().cloned().collect();
+    let standing_chair = standing_roster.first().cloned();
+    let bots = state
+        .store
+        .list_bots()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .filter(|bot| match params.role.as_ref() {
+            Some(role) => bot.role == *role,
+            None => true,
+        })
+        .filter(|bot| match params.provider.as_ref() {
+            Some(provider) => bot.provider.as_ref() == Some(provider),
+            None => true,
+        })
+        .filter(|bot| match params.capability.as_ref() {
+            Some(capability) => bot.capabilities.iter().any(|c| c == capability),
+            None => true,
+        })
+        .filter(|bot| match params.connected {
+            Some(connected) => bot.connected == connected,
+            None => true,
+        })
+        .filter(|bot| match params.enabled {
+            Some(enabled) => bot.enabled == enabled,
+            None => true,
+        })
+        .filter(|bot| match params.health.as_ref() {
+            Some(health) => bot.health == *health,
+            None => true,
+        })
+        .map(|bot| inventory_json(bot, &standing, standing_chair.as_deref()))
+        .collect::<Vec<_>>();
+    Ok(Json(json!({
+        "standing_roster": standing_roster,
+        "source": source,
+        "bots": bots,
+    })))
+}
+
+fn inventory_json(
+    bot: BotInventory,
+    standing: &BTreeSet<String>,
+    standing_chair: Option<&str>,
+) -> Value {
+    json!({
+        "id": bot.id,
+        "name": bot.name,
+        "role": bot.role,
+        "provider": bot.provider,
+        "capabilities": bot.capabilities,
+        "connected": bot.connected,
+        "enabled": bot.enabled,
+        "health": bot.health,
+        "note": bot.note,
+        "version": bot.version,
+        "runtime": bot.runtime,
+        "last_seen_ms": bot.last_seen_ms,
+        "source": bot.source,
+        "rostered": standing.contains(&bot.id),
+        "chair": standing_chair == Some(bot.id.as_str()),
+    })
+}
+
+#[derive(Deserialize)]
+struct DiscoverBot {
+    id: String,
+    #[serde(default)]
+    name: Option<String>,
+    role: String,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    runtime: Option<Value>,
+}
+
+async fn discover_bot(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<DiscoverBot>,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_discovery_auth(&state, &headers)?;
+    if !is_safe_token(&req.id) || !is_safe_token(&req.role) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if let Some(provider) = req.provider.as_deref() {
+        if !is_safe_token(provider) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+    let metadata = BotMetadata {
+        provider: req.provider,
+        capabilities: req.capabilities.map(normalize_list),
+        version: req.version,
+        runtime: req.runtime,
+    };
+    let (bot, created) = state
+        .store
+        .discover_bot(&req.id, req.name.as_deref(), &req.role, &metadata)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let inventory = state
+        .store
+        .bot_inventory(&bot.id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let config_url = bot_config_url(
+        &state.config_base_url,
+        &bot.id,
+        inventory.provider.as_deref(),
+    );
+    Ok(Json(json!({
+        "bot_id": bot.id,
+        "created": created,
+        "config_url": config_url,
+    })))
+}
+
+fn bot_config_url(base: &str, bot_id: &str, provider: Option<&str>) -> String {
+    debug_assert!(is_safe_token(bot_id));
+    let mut url = format!("{}/bot-config/{}", base.trim_end_matches('/'), bot_id);
+    if let Some(provider) = provider {
+        debug_assert!(is_safe_token(provider));
+        // `is_safe_token` restricts this to query-safe token characters.
+        url.push_str("?agent=");
+        url.push_str(provider);
+    }
+    url
+}
+
+fn nullable_field<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Deserialize)]
+struct PatchBot {
+    #[serde(default, deserialize_with = "nullable_field")]
+    provider: Option<Option<String>>,
+    #[serde(default)]
+    capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    health: Option<String>,
+    #[serde(default, deserialize_with = "nullable_field")]
+    note: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable_field")]
+    version: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable_field")]
+    runtime: Option<Option<Value>>,
+}
+
+async fn patch_bot(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<PatchBot>,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_auth(&state, &headers)?;
+    if !is_safe_token(&id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if let Some(Some(provider)) = req.provider.as_ref() {
+        if !is_safe_token(provider) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+    if let Some(health) = req.health.as_deref() {
+        if !is_safe_token(health) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+    let patch = BotMetadataPatch {
+        provider: req.provider,
+        capabilities: req.capabilities.map(normalize_list),
+        enabled: req.enabled,
+        health: req.health,
+        note: req.note,
+        version: req.version,
+        runtime: req.runtime,
+    };
+    if !state
+        .store
+        .update_bot_metadata(&id, &patch)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let bot = state
+        .store
+        .bot_inventory(&id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let (standing_roster, _) = crate::council::runtime_council_roster(&state)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let standing: BTreeSet<_> = standing_roster.iter().cloned().collect();
+    let standing_chair = standing_roster.first().cloned();
+    Ok(Json(json!({
+        "bot": inventory_json(bot, &standing, standing_chair.as_deref())
+    })))
 }
 
 #[derive(Deserialize)]
@@ -872,13 +1143,16 @@ async fn bot_config(
     } else {
         String::new()
     };
+    let ws_url = toml_string(&ws_url);
+    let token = toml_string(&token);
+    let name = toml_string(&bot.name);
     let toml = format!(
         r#"[gateway]
-url = "{ws_url}"
+url = {ws_url}
 platform = "feishu"
-token = "{token}"
+token = {token}
 allow_bot_messages = true
-bot_username = "{name}"
+bot_username = {name}
 streaming = true
 
 [agent]
@@ -890,7 +1164,6 @@ inherit_env = {inherit_env}
 max_sessions = 4
 session_ttl_hours = 2
 {hooks_section}"#,
-        name = bot.name,
         hooks_section = hooks_section,
     );
     Ok((

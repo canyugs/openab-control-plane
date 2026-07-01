@@ -21,6 +21,24 @@ async fn spawn_server() -> SocketAddr {
 async fn spawn_server_with_state() -> (SocketAddr, Arc<AppState>) {
     let store: Arc<dyn Store> = Arc::new(SqliteStore::memory().unwrap());
     let state = AppState::new(store);
+    spawn_server_with_app_state(state).await
+}
+
+async fn spawn_server_with_discovery_token(token: &str) -> SocketAddr {
+    let store: Arc<dyn Store> = Arc::new(SqliteStore::memory().unwrap());
+    let state = AppState::new_with_options(
+        store,
+        None,
+        None,
+        None,
+        Some(token.to_string()),
+        "http://control-plane.zeabur.internal:8090".to_string(),
+    );
+    let (addr, _) = spawn_server_with_app_state(state).await;
+    addr
+}
+
+async fn spawn_server_with_app_state(state: Arc<AppState>) -> (SocketAddr, Arc<AppState>) {
     let app = build_router(state.clone());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -44,6 +62,212 @@ async fn register_bot(base: &str, name: &str, role: &str) -> (String, String) {
         v["bot_id"].as_str().unwrap().into(),
         v["token"].as_str().unwrap().into(),
     )
+}
+
+#[tokio::test]
+async fn bot_inventory_discover_and_patch_metadata() {
+    let addr = spawn_server_with_discovery_token("spike-discovery-token").await;
+    let base = addr.to_string();
+    let client = reqwest::Client::new();
+
+    let discovered: Value = client
+        .post(format!("http://{base}/v1/bots/discover"))
+        .bearer_auth("spike-discovery-token")
+        .json(&json!({
+            "id": "rev-codex-1",
+            "name": "Codex reviewer",
+            "role": "reviewer",
+            "provider": "codex",
+            "capabilities": ["review", "gh-read", "review"],
+            "version": "openab:test",
+            "runtime": {
+                "kind": "kubernetes",
+                "namespace": "oabcp-local",
+                "workload": "deployment/rev-codex-1"
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(discovered["created"], true);
+    assert_eq!(discovered["bot_id"], "rev-codex-1");
+    assert!(discovered["config_url"]
+        .as_str()
+        .unwrap()
+        .ends_with("/bot-config/rev-codex-1?agent=codex"));
+
+    let filtered: Value = client
+        .get(format!(
+            "http://{base}/v1/bots?provider=codex&capability=review"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let bots = filtered["bots"].as_array().unwrap();
+    assert_eq!(bots.len(), 1);
+    assert_eq!(bots[0]["id"], "rev-codex-1");
+    assert_eq!(bots[0]["name"], "Codex reviewer");
+    assert_eq!(bots[0]["source"], "discovered");
+    assert_eq!(bots[0]["capabilities"], json!(["review", "gh-read"]));
+    assert_eq!(bots[0]["rostered"], false);
+
+    let refreshed: Value = client
+        .post(format!("http://{base}/v1/bots/discover"))
+        .bearer_auth("spike-discovery-token")
+        .json(&json!({
+            "id": "rev-codex-1",
+            "name": "Attempted rename",
+            "role": "chair",
+            "provider": "codex",
+            "capabilities": ["review"]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(refreshed["created"], false);
+    assert!(refreshed["config_url"]
+        .as_str()
+        .unwrap()
+        .ends_with("/bot-config/rev-codex-1?agent=codex"));
+
+    let after_refresh: Value = client
+        .get(format!(
+            "http://{base}/v1/bots?provider=codex&capability=review"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let bots = after_refresh["bots"].as_array().unwrap();
+    assert_eq!(bots.len(), 1);
+    assert_eq!(bots[0]["name"], "Codex reviewer");
+    assert_eq!(bots[0]["role"], "reviewer");
+    assert_eq!(bots[0]["capabilities"], json!(["review"]));
+    assert_eq!(bots[0]["version"], "openab:test");
+    assert_eq!(bots[0]["runtime"]["kind"], "kubernetes");
+
+    let partial_refreshed: Value = client
+        .post(format!("http://{base}/v1/bots/discover"))
+        .bearer_auth("spike-discovery-token")
+        .json(&json!({
+            "id": "rev-codex-1",
+            "role": "reviewer"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(partial_refreshed["created"], false);
+    assert!(partial_refreshed["config_url"]
+        .as_str()
+        .unwrap()
+        .ends_with("/bot-config/rev-codex-1?agent=codex"));
+
+    let after_partial_refresh: Value = client
+        .get(format!(
+            "http://{base}/v1/bots?provider=codex&capability=review"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let bots = after_partial_refresh["bots"].as_array().unwrap();
+    assert_eq!(bots.len(), 1);
+    assert_eq!(bots[0]["capabilities"], json!(["review"]));
+    assert_eq!(bots[0]["version"], "openab:test");
+    assert_eq!(bots[0]["runtime"]["workload"], "deployment/rev-codex-1");
+
+    let patched: Value = client
+        .patch(format!("http://{base}/v1/bots/rev-codex-1"))
+        .json(&json!({
+            "enabled": false,
+            "health": "quota_exhausted",
+            "note": "Claude weekly quota exhausted"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(patched["bot"]["enabled"], false);
+    assert_eq!(patched["bot"]["health"], "quota_exhausted");
+    assert_eq!(patched["bot"]["source"], "discovered");
+    assert_eq!(patched["bot"]["rostered"], false);
+
+    let cleared: Value = client
+        .patch(format!("http://{base}/v1/bots/rev-codex-1"))
+        .json(&json!({
+            "provider": null,
+            "note": null,
+            "version": null,
+            "runtime": null
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(cleared["bot"]["provider"], Value::Null);
+    assert_eq!(cleared["bot"]["note"], Value::Null);
+    assert_eq!(cleared["bot"]["version"], Value::Null);
+    assert_eq!(cleared["bot"]["runtime"], Value::Null);
+
+    let degraded: Value = client
+        .get(format!(
+            "http://{base}/v1/bots?enabled=false&health=quota_exhausted"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let bots = degraded["bots"].as_array().unwrap();
+    assert_eq!(bots.len(), 1);
+    assert_eq!(bots[0]["name"], "Codex reviewer");
+    assert_eq!(bots[0]["role"], "reviewer");
+    assert_eq!(bots[0]["note"], Value::Null);
+
+    client
+        .post(format!("http://{base}/v1/bots/discover"))
+        .bearer_auth("spike-discovery-token")
+        .json(&json!({
+            "id": "rev-quoted",
+            "name": "Codex \"reviewer\"\n[agent]\ncommand = \"bad\"",
+            "role": "reviewer",
+            "provider": "codex"
+        }))
+        .send()
+        .await
+        .unwrap();
+    let config = client
+        .get(format!("http://{base}/bot-config/rev-quoted?agent=codex"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(config
+        .contains("bot_username = \"Codex \\\"reviewer\\\"\\n[agent]\\ncommand = \\\"bad\\\"\""));
+    assert!(!config.lines().any(|line| line == "command = \"bad\""));
 }
 
 async fn open_session(base: &str, roster: &[String], chair: Option<&str>, quorum_n: i64) -> String {

@@ -8,6 +8,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -27,6 +28,42 @@ pub struct Bot {
     pub id: String,
     pub name: String,
     pub role: String, // "chair" | "reviewer"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BotInventory {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+    pub provider: Option<String>,
+    pub capabilities: Vec<String>,
+    pub connected: bool,
+    pub enabled: bool,
+    pub health: String,
+    pub note: Option<String>,
+    pub version: Option<String>,
+    pub runtime: Option<Value>,
+    pub last_seen_ms: Option<i64>,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BotMetadata {
+    pub provider: Option<String>,
+    pub capabilities: Option<Vec<String>>,
+    pub version: Option<String>,
+    pub runtime: Option<Value>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BotMetadataPatch {
+    pub provider: Option<Option<String>>,
+    pub capabilities: Option<Vec<String>>,
+    pub enabled: Option<bool>,
+    pub health: Option<String>,
+    pub note: Option<Option<String>>,
+    pub version: Option<Option<String>>,
+    pub runtime: Option<Option<Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -117,6 +154,16 @@ pub trait Store: Send + Sync {
     /// convenience; production injects the token via pre_seed/env, §6c).
     fn bot_token_plain(&self, id: &str) -> Result<Option<String>>;
     fn set_connected(&self, bot_id: &str, connected: bool) -> Result<()>;
+    fn list_bots(&self) -> Result<Vec<BotInventory>>;
+    fn bot_inventory(&self, id: &str) -> Result<Option<BotInventory>>;
+    fn discover_bot(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        role: &str,
+        metadata: &BotMetadata,
+    ) -> Result<(Bot, bool)>;
+    fn update_bot_metadata(&self, id: &str, patch: &BotMetadataPatch) -> Result<bool>;
 
     #[allow(clippy::too_many_arguments)]
     fn create_session(
@@ -234,7 +281,12 @@ const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS bots (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
     token_hash TEXT NOT NULL, token_plain TEXT,
-    connected INTEGER NOT NULL DEFAULT 0, last_seen INTEGER
+    connected INTEGER NOT NULL DEFAULT 0, last_seen INTEGER,
+    provider TEXT, capabilities TEXT NOT NULL DEFAULT '[]',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    health TEXT NOT NULL DEFAULT 'ok',
+    note TEXT, version TEXT, runtime TEXT,
+    source TEXT NOT NULL DEFAULT 'registered'
 );
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY, title TEXT NOT NULL, state TEXT NOT NULL,
@@ -286,6 +338,26 @@ fn migrate(conn: &Connection) -> Result<()> {
         [],
     );
     let _ = conn.execute("ALTER TABLE outbox ADD COLUMN session_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE bots ADD COLUMN provider TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE bots ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE bots ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE bots ADD COLUMN health TEXT NOT NULL DEFAULT 'ok'",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE bots ADD COLUMN note TEXT", []);
+    let _ = conn.execute("ALTER TABLE bots ADD COLUMN version TEXT", []);
+    let _ = conn.execute("ALTER TABLE bots ADD COLUMN runtime TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE bots ADD COLUMN source TEXT NOT NULL DEFAULT 'registered'",
+        [],
+    );
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_outbox_session_bot ON outbox(session_id, bot_id)",
         [],
@@ -341,6 +413,42 @@ fn is_constraint_violation(err: &anyhow::Error) -> bool {
                 }
                 _ => false,
             })
+    })
+}
+
+fn capabilities_json(capabilities: &[String]) -> String {
+    serde_json::to_string(capabilities).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn runtime_json(runtime: &Option<Value>) -> Option<String> {
+    runtime
+        .as_ref()
+        .and_then(|value| serde_json::to_string(value).ok())
+}
+
+fn parse_capabilities(raw: String) -> Vec<String> {
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+fn parse_runtime(raw: Option<String>) -> Option<Value> {
+    raw.and_then(|value| serde_json::from_str(&value).ok())
+}
+
+fn map_bot_inventory(r: &rusqlite::Row<'_>) -> rusqlite::Result<BotInventory> {
+    Ok(BotInventory {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        role: r.get(2)?,
+        provider: r.get(3)?,
+        capabilities: parse_capabilities(r.get(4)?),
+        connected: r.get::<_, i64>(5)? != 0,
+        enabled: r.get::<_, i64>(6)? != 0,
+        health: r.get(7)?,
+        note: r.get(8)?,
+        version: r.get(9)?,
+        runtime: parse_runtime(r.get(10)?),
+        last_seen_ms: r.get(11)?,
+        source: r.get(12)?,
     })
 }
 
@@ -419,7 +527,8 @@ impl Store for SqliteStore {
         let id = new_id("bot");
         let c = self.conn.lock().unwrap();
         c.execute(
-            "INSERT INTO bots (id, name, role, token_hash, token_plain) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO bots (id, name, role, token_hash, token_plain, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'registered')",
             params![id, name, role, token_hash, token_plain],
         )?;
         Ok(Bot {
@@ -439,7 +548,8 @@ impl Store for SqliteStore {
     ) -> Result<bool> {
         let c = self.conn.lock().unwrap();
         let n = c.execute(
-            "INSERT OR IGNORE INTO bots (id, name, role, token_hash, token_plain) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR IGNORE INTO bots (id, name, role, token_hash, token_plain, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'seeded')",
             params![id, name, role, token_hash, token_plain],
         )?;
         Ok(n > 0)
@@ -499,6 +609,163 @@ impl Store for SqliteStore {
             params![bot_id, connected as i64, now_ms()],
         )?;
         Ok(())
+    }
+
+    fn list_bots(&self) -> Result<Vec<BotInventory>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt = c.prepare(
+            "SELECT id, name, role, provider, capabilities, connected, enabled,
+                    health, note, version, runtime, last_seen, source
+             FROM bots
+             ORDER BY id ASC",
+        )?;
+        let bots = stmt
+            .query_map([], map_bot_inventory)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(bots)
+    }
+
+    fn bot_inventory(&self, id: &str) -> Result<Option<BotInventory>> {
+        let c = self.conn.lock().unwrap();
+        let bot = c
+            .query_row(
+                "SELECT id, name, role, provider, capabilities, connected, enabled,
+                        health, note, version, runtime, last_seen, source
+                 FROM bots
+                 WHERE id = ?1",
+                params![id],
+                map_bot_inventory,
+            )
+            .optional()?;
+        Ok(bot)
+    }
+
+    fn discover_bot(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        role: &str,
+        metadata: &BotMetadata,
+    ) -> Result<(Bot, bool)> {
+        let capabilities = metadata.capabilities.as_deref().map(capabilities_json);
+        let runtime = runtime_json(&metadata.runtime);
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let source = tx
+            .query_row("SELECT source FROM bots WHERE id = ?1", params![id], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?;
+        let inserted = if source.is_some() {
+            tx.execute(
+                "UPDATE bots
+                 SET provider = COALESCE(?2, provider),
+                     capabilities = CASE WHEN ?3 THEN ?4 ELSE capabilities END,
+                     version = COALESCE(?5, version),
+                     runtime = COALESCE(?6, runtime)
+                 WHERE id = ?1",
+                params![
+                    id,
+                    metadata.provider.as_deref(),
+                    metadata.capabilities.is_some(),
+                    capabilities.as_deref(),
+                    metadata.version.as_deref(),
+                    runtime.as_deref()
+                ],
+            )?;
+            false
+        } else {
+            let token = format!("oabct_{}", uuid::Uuid::new_v4().simple());
+            let display_name = name.unwrap_or(id);
+            tx.execute(
+                "INSERT INTO bots
+                (id, name, role, token_hash, token_plain, provider, capabilities,
+                 version, runtime, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'discovered')",
+                params![
+                    id,
+                    display_name,
+                    role,
+                    crate::identity::hash_token(&token),
+                    token.as_str(),
+                    metadata.provider.as_deref(),
+                    capabilities.as_deref().unwrap_or("[]"),
+                    metadata.version.as_deref(),
+                    runtime.as_deref()
+                ],
+            )?;
+            true
+        };
+        let bot = tx.query_row(
+            "SELECT id, name, role FROM bots WHERE id = ?1",
+            params![id],
+            |r| {
+                Ok(Bot {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    role: r.get(2)?,
+                })
+            },
+        )?;
+        tx.commit()?;
+        Ok((bot, inserted))
+    }
+
+    fn update_bot_metadata(&self, id: &str, patch: &BotMetadataPatch) -> Result<bool> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let exists = tx
+            .query_row("SELECT 1 FROM bots WHERE id = ?1", params![id], |_| Ok(()))
+            .optional()?
+            .is_some();
+        if !exists {
+            return Ok(false);
+        }
+        if let Some(provider) = &patch.provider {
+            tx.execute(
+                "UPDATE bots SET provider = ?2 WHERE id = ?1",
+                params![id, provider.as_deref()],
+            )?;
+        }
+        if let Some(capabilities) = &patch.capabilities {
+            tx.execute(
+                "UPDATE bots SET capabilities = ?2 WHERE id = ?1",
+                params![id, capabilities_json(capabilities)],
+            )?;
+        }
+        if let Some(enabled) = patch.enabled {
+            tx.execute(
+                "UPDATE bots SET enabled = ?2 WHERE id = ?1",
+                params![id, enabled as i64],
+            )?;
+        }
+        if let Some(health) = &patch.health {
+            tx.execute(
+                "UPDATE bots SET health = ?2 WHERE id = ?1",
+                params![id, health],
+            )?;
+        }
+        if let Some(note) = &patch.note {
+            tx.execute(
+                "UPDATE bots SET note = ?2 WHERE id = ?1",
+                params![id, note.as_deref()],
+            )?;
+        }
+        if let Some(version) = &patch.version {
+            tx.execute(
+                "UPDATE bots SET version = ?2 WHERE id = ?1",
+                params![id, version.as_deref()],
+            )?;
+        }
+        if let Some(runtime) = &patch.runtime {
+            let runtime = runtime.as_ref().map(serde_json::to_string).transpose()?;
+            tx.execute(
+                "UPDATE bots SET runtime = ?2 WHERE id = ?1",
+                params![id, runtime.as_deref()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
     }
 
     fn create_session(

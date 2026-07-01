@@ -15,6 +15,8 @@ All configuration is via environment variables. No config file needed.
 | `OABCP_AGENT_PROFILES` | _(built-ins)_ | JSON object for overriding or adding OpenAB agent profiles. Each profile can set `command`, `args`, `working_dir`, and `inherit_env`. Put CLI trust/permission flags in `args` |
 | `OABCP_AGENT_WORKING_DIR` | profile-specific | Force `[agent].working_dir` for every served bot config. Useful when all bot images use the same non-default home |
 | `OABCP_AGENT_INHERIT_ENV` | _(none)_ | Extra comma-separated env var names appended to `[agent].inherit_env` for custom CLIs |
+| `OABCP_BOT_DISCOVERY_TOKEN` | _(disabled)_ | Scoped bootstrap token for `POST /v1/bots/discover`. When unset, discovery registration returns `403`. This token only registers/refreshes bot inventory metadata; it cannot open sessions or change rosters |
+| `OABCP_CONFIG_BASE_URL` | `http://control-plane.zeabur.internal:8090` | Base URL read at startup and used in discovery responses when returning a `/bot-config/<id>` URL |
 | `OABCP_SESSION_TIMEOUT_SECS` | `600` | Liveness watchdog deadline. A session still active this many seconds after creation is force-closed with a `TIMEOUT` verdict and a north `timeout` event so a silent/dead reviewer can't hang it forever. Anchored on `created_at` (no last-activity reset) — raise for legitimately long councils |
 | `OABCP_MAX_ROSTER` | `16` | Admission quota — max bots in a session roster. Mid-session adds (`POST /v1/sessions/:id/roster`) beyond this are rejected (`409`). Bounds roster growth; applies to dynamic adds, not the initial roster at open |
 | `OABCP_COUNCIL_ROSTER` | `chair,rev1,rev2` | Webhook-convened council roster (comma-separated; `[0]` is the chair, the rest review). Should match the bots seeded via `OABCP_BOTS` |
@@ -199,6 +201,9 @@ curl -X POST -H "Authorization: Bearer $KEY" -H "content-type: application/json"
 Use `PUT /v1/council/roster {"roster":["chair","rev1","rev3"]}` to set the full
 standing roster. The first bot must be registered with `role=chair`; every bot
 must already exist via `OABCP_BOTS` or `POST /v1/bots`.
+
+For operational step-by-step procedures, including provider replacement and quota
+failover, see [bot-operations.md](bot-operations.md).
 
 **Add a reviewer (e.g. `rev3`)** — all three, names matching:
 1. control-plane env: `OABCP_BOTS` += `rev3:reviewer`, `OABCP_COUNCIL_ROSTER` += `rev3`.
