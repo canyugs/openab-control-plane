@@ -38,9 +38,10 @@ LocalStack/MinIO path. Two consequences:
 - OAB's `pre_seed` sets `endpoint_url` but **not `force_path_style`** (zero hits in
   the openab repo). The AWS Rust SDK then uses **virtual-host addressing**
   (`bucket.host`), so a path-style-only origin like the plane
-  (`steering.control-plane.zeabur.internal`) won't resolve. **Option ③ is blocked
-  on a one-line upstream OAB change** (`force_path_style(true)`, or auto-enable when
-  `endpoint_url` is set).
+  (`steering.control-plane.zeabur.internal`) won't resolve. Before ADR 010,
+  **Option ③ was also blocked on a one-line upstream OAB change**
+  (`force_path_style(true)`, or auto-enable when `endpoint_url` is set). After
+  ADR 010, OCP-hosted delivery is rejected regardless of that upstream detail.
 
 ## Options
 
@@ -95,7 +96,7 @@ trade — part of why ① stays the *Now* choice. pre_seed (②/③) only earns 
 steering must change often, or be **shared across more than one trigger builder** /
 delivered as a per-`$HOME` file with role-split layers — which `include_str!` can't do.
 
-## Leaning (not decided)
+## Direction after ADR 010
 
 - **Now:** keep ① — it works, and the trigger steering is already extracted to
   `scripts/pr-review-trigger.tmpl`. No rush.
