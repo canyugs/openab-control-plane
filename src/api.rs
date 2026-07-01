@@ -728,19 +728,7 @@ fn agent_inherit_env(profile: &AgentProfile) -> Vec<String> {
         .iter()
         .map(|value| (*value).to_string())
         .chain(profile.inherit_env.iter().cloned())
-        .chain(
-            std::env::var("OABCP_AGENT_INHERIT_ENV")
-                .ok()
-                .into_iter()
-                .flat_map(|value| {
-                    value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|item| !item.is_empty())
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                }),
-        )
+        .chain(extra_agent_inherit_env().iter().cloned())
     {
         if seen.insert(value.clone()) {
             envs.push(value);
@@ -749,8 +737,53 @@ fn agent_inherit_env(profile: &AgentProfile) -> Vec<String> {
     envs
 }
 
+fn extra_agent_inherit_env() -> &'static [String] {
+    static INHERIT_ENV: OnceLock<Vec<String>> = OnceLock::new();
+    INHERIT_ENV.get_or_init(|| {
+        parse_extra_agent_inherit_env(std::env::var("OABCP_AGENT_INHERIT_ENV").ok().as_deref())
+    })
+}
+
+fn parse_extra_agent_inherit_env(value: Option<&str>) -> Vec<String> {
+    value
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 fn toml_string(value: &str) -> String {
-    serde_json::to_string(value).expect("string serialization cannot fail")
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(value.len() + 2);
+    encoded.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => encoded.push_str("\\\""),
+            '\\' => encoded.push_str("\\\\"),
+            '\u{08}' => encoded.push_str("\\b"),
+            '\t' => encoded.push_str("\\t"),
+            '\n' => encoded.push_str("\\n"),
+            '\u{0c}' => encoded.push_str("\\f"),
+            '\r' => encoded.push_str("\\r"),
+            _ => {
+                let code = ch as u32;
+                if code <= 0x1f || code == 0x7f || (0x80..=0x9f).contains(&code) {
+                    write!(&mut encoded, "\\u{code:04X}").expect("writing to String cannot fail");
+                } else {
+                    encoded.push(ch);
+                }
+            }
+        }
+    }
+    encoded.push('"');
+    encoded
 }
 
 fn toml_array(values: &[String]) -> String {
@@ -974,7 +1007,10 @@ async fn stream_session(
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_profile_from, chair_pre_boot_hook_script, toml_string, AgentProfile};
+    use super::{
+        agent_profile_from, chair_pre_boot_hook_script, parse_extra_agent_inherit_env, toml_string,
+        AgentProfile,
+    };
 
     #[test]
     fn maps_known_provider_profiles_and_splits_args() {
@@ -1077,5 +1113,26 @@ mod tests {
         assert!(!encoded.contains("'''"));
         assert!(encoded.contains("/home/o"));
         assert!(encoded.contains("malley"));
+    }
+
+    #[test]
+    fn toml_string_escapes_toml_basic_string_controls() {
+        assert_eq!(
+            toml_string("quote\" slash\\ tab\t newline\n form\u{0c} carriage\r back\u{08}"),
+            "\"quote\\\" slash\\\\ tab\\t newline\\n form\\f carriage\\r back\\b\""
+        );
+        assert_eq!(
+            toml_string("\u{1f}\u{7f}\u{85}\u{9f}"),
+            "\"\\u001F\\u007F\\u0085\\u009F\""
+        );
+    }
+
+    #[test]
+    fn parses_extra_agent_inherit_env_once_ready_shape() {
+        assert_eq!(
+            parse_extra_agent_inherit_env(Some(" KIRO_API_KEY, , OPENAI_API_KEY ,GH_TOKEN ")),
+            vec!["KIRO_API_KEY", "OPENAI_API_KEY", "GH_TOKEN"]
+        );
+        assert!(parse_extra_agent_inherit_env(None).is_empty());
     }
 }
