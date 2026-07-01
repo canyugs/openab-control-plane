@@ -177,7 +177,7 @@ POST /v1/review
 | Control plugin | Product packaging around the runtime: triggers, prompts, tools, secrets, side effects, templates |
 | Chair | The synthesizer and only expected PR writer |
 | Reviewer | A bot that produces findings and contributes to quorum |
-| Watchdog | The timeout fallback that closes stale non-terminal sessions |
+| Watchdog | The timeout fallback that closes stale non-terminal sessions with a `TIMEOUT` verdict and north `timeout` event |
 
 See [ADR 007](docs/adr/007-control-plugins-and-oab-father.md) for the
 Control Plugin / OAB Father direction, and

@@ -52,13 +52,13 @@ fn seed_roster(store: &dyn Store) -> anyhow::Result<()> {
 /// prose can't make — see design "what OCP actually guarantees").
 /// ponytail: deadline is anchored on `created_at`, no last-activity reset — bump
 /// `OABCP_SESSION_TIMEOUT_SECS` or add activity tracking if long councils are
-/// legitimate. Default 900s (15 min); scan every 30s.
+/// legitimate. Default 600s (10 min); scan every 30s.
 fn spawn_watchdog(state: Arc<AppState>) {
     let timeout_secs: i64 = std::env::var("OABCP_SESSION_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
         .filter(|&n| n > 0)
-        .unwrap_or(900);
+        .unwrap_or(600);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(30));
         loop {

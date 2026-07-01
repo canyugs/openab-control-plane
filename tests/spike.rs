@@ -959,9 +959,46 @@ async fn chair_done_before_quorum_waits_for_watchdog() {
         "chair's early verdict should be preserved for timeout synthesis",
     );
 
+    let mut north = state.north_tx.subscribe();
     assert!(
         orchestrator::force_close_timeout(&state, &session).unwrap(),
         "watchdog primitive should force-close the stuck council",
+    );
+    let mut saw_timeout = false;
+    let mut saw_timeout_verdict = false;
+    while let Ok(raw) = north.try_recv() {
+        let ev: Value = serde_json::from_str(&raw).unwrap();
+        if ev["type"] == "timeout" {
+            saw_timeout = true;
+            assert_eq!(ev["payload"]["done"], 1);
+            assert_eq!(ev["payload"]["total"], 3);
+            assert_eq!(
+                ev["payload"]["absent"],
+                json!([rev0_id.clone(), rev1_id.clone()])
+            );
+            assert!(
+                ev["payload"]["verdict"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("TIMEOUT:"),
+                "timeout payload should carry a machine-recognizable verdict: {ev}",
+            );
+        }
+        if ev["type"] == "verdict" && ev["payload"]["reason"] == "timeout" {
+            saw_timeout_verdict = true;
+            assert!(
+                ev["payload"]["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("TIMEOUT:"),
+                "timeout verdict should be machine-recognizable: {ev}",
+            );
+        }
+    }
+    assert!(saw_timeout, "watchdog did not emit a timeout north event");
+    assert!(
+        saw_timeout_verdict,
+        "watchdog did not emit a timeout verdict event"
     );
     last = get_session(&base, &session).await;
     hc.abort();
