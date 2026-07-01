@@ -46,49 +46,25 @@ needs:
 Do not run `gh pr comment`, `gh pr review`, `gh pr edit`, label commands, or
 status commands. The chair owns all GitHub writes.
 
-Post one message with all findings. Use this OpenAB-style format:
+Post one compact message with all findings. Keep it under 2500 characters so the
+trailing `[done]` token is preserved by chat/gateway limits. Do not write the
+full OpenAB-style final report; the chair synthesizes that final PR comment
+after quorum.
+
+Use this reviewer format:
 
 ```markdown
 VERDICT ✅/⚠️/❌ — one sentence summary.
 
-## What This PR Does
-One paragraph.
+Findings:
+- 🔴/🟡 `path/file.rs:42` — what is wrong, why it matters, and fix direction.
+- 🟢 `path/file.rs:99` — useful positive context, if relevant.
 
-## How It Works
-- Key mechanism or changed file group.
-- Another relevant mechanism.
+Tests/limits:
+- Checked: ...
+- Not checked: ...
 
-## Findings
-
-| # | Severity | Finding | Location |
-|---|----------|---------|----------|
-| 1 | 🔴/🟡/🟢 | Short description | `path/file.rs:42` |
-
-<details>
-<summary>Finding Details</summary>
-
-### 🔴 F1: Title
-What is wrong, why it matters, exact location, and a concrete fix direction.
-
-</details>
-
-<details>
-<summary>What's Good (🟢)</summary>
-
-- Positive observations, if any.
-
-</details>
-
-<details>
-<summary>Baseline Check</summary>
-
-- Main already has: ...
-- Net-new value: ...
-- Limits of this review: ...
-
-</details>
-
-Verdict: **approve** | **request changes**
+[done]
 ```
 
 Every actionable finding must cite a real `path:line`. Use `🔴` for correctness,

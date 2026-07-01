@@ -775,7 +775,13 @@ fn toml_string(value: &str) -> String {
             _ => {
                 let code = ch as u32;
                 if code <= 0x1f || code == 0x7f || (0x80..=0x9f).contains(&code) {
-                    write!(&mut encoded, "\\u{code:04X}").expect("writing to String cannot fail");
+                    if code <= 0xffff {
+                        write!(&mut encoded, "\\u{code:04X}")
+                            .expect("writing to String cannot fail");
+                    } else {
+                        write!(&mut encoded, "\\U{code:08X}")
+                            .expect("writing to String cannot fail");
+                    }
                 } else {
                     encoded.push(ch);
                 }
