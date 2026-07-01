@@ -58,6 +58,23 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+yaml_quote() {
+  local value="$1"
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] ||
+    die "YAML scalar cannot contain newlines"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "$value"
+}
+
+append_optional_env_yaml() {
+  local name="$1"
+  local value="$2"
+  optional_env_yaml="${optional_env_yaml}            - name: $name
+              value: $(yaml_quote "$value")
+"
+}
+
 WEBHOOK_SECRET="${GITHUB_WEBHOOK_SECRET:-}"
 
 while [[ $# -gt 0 ]]; do
@@ -80,13 +97,13 @@ while [[ $# -gt 0 ]]; do
     --agent-profiles-file)
       profile_file="${2:?--agent-profiles-file needs a path}"
       [[ -r "$profile_file" ]] || die "agent profiles file is not readable: $profile_file"
-      OABCP_AGENT_PROFILES="$(<"$profile_file")"
+      OABCP_AGENT_PROFILES="$(tr -d '\r\n' <"$profile_file")"
       shift 2
       ;;
     --agent-profiles-file=*)
       profile_file="${1#*=}"
       [[ -r "$profile_file" ]] || die "agent profiles file is not readable: $profile_file"
-      OABCP_AGENT_PROFILES="$(<"$profile_file")"
+      OABCP_AGENT_PROFILES="$(tr -d '\r\n' <"$profile_file")"
       shift
       ;;
     --agent-working-dir) OABCP_AGENT_WORKING_DIR="${2:?--agent-working-dir needs a value}"; shift 2 ;;
@@ -121,6 +138,13 @@ if [[ -z "$WEBHOOK_SECRET" ]]; then
   echo "generated a new GITHUB_WEBHOOK_SECRET for the local deployment"
 fi
 
+optional_env_yaml=""
+[[ -n "$OABCP_AGENT_COMMAND" ]] && append_optional_env_yaml OABCP_AGENT_COMMAND "$OABCP_AGENT_COMMAND"
+[[ -n "$OABCP_AGENT_PROFILES" ]] && append_optional_env_yaml OABCP_AGENT_PROFILES "$OABCP_AGENT_PROFILES"
+[[ -n "$OABCP_AGENT_WORKING_DIR" ]] && append_optional_env_yaml OABCP_AGENT_WORKING_DIR "$OABCP_AGENT_WORKING_DIR"
+[[ -n "$OABCP_AGENT_INHERIT_ENV" ]] && append_optional_env_yaml OABCP_AGENT_INHERIT_ENV "$OABCP_AGENT_INHERIT_ENV"
+restart_nonce=$(date +%s)
+
 echo "applying local control-plane deployment with image: $IMAGE"
 kubectl -n "$KUBE_NAMESPACE" apply -f - >/dev/null <<YAML
 apiVersion: apps/v1
@@ -136,6 +160,8 @@ spec:
       app: control-plane
   template:
     metadata:
+      annotations:
+        oabcp.dev/restarted-at: "$restart_nonce"
       labels:
         app: control-plane
     spec:
@@ -158,6 +184,7 @@ spec:
               value: "$OABCP_COUNCIL_ROSTER"
             - name: OABCP_WS_URL
               value: "$OABCP_WS_URL"
+$optional_env_yaml
 ---
 apiVersion: v1
 kind: Service
@@ -173,25 +200,6 @@ spec:
       port: $REMOTE_PORT
       targetPort: $REMOTE_PORT
 YAML
-
-kubectl -n "$KUBE_NAMESPACE" set env deployment/control-plane \
-  OABCP_AGENT_COMMAND- \
-  OABCP_AGENT_PROFILES- \
-  OABCP_AGENT_WORKING_DIR- \
-  OABCP_AGENT_INHERIT_ENV- >/dev/null || true
-
-optional_env=()
-[[ -n "$OABCP_AGENT_COMMAND" ]] && optional_env+=("OABCP_AGENT_COMMAND=$OABCP_AGENT_COMMAND")
-[[ -n "$OABCP_AGENT_PROFILES" ]] && optional_env+=("OABCP_AGENT_PROFILES=$OABCP_AGENT_PROFILES")
-[[ -n "$OABCP_AGENT_WORKING_DIR" ]] && optional_env+=("OABCP_AGENT_WORKING_DIR=$OABCP_AGENT_WORKING_DIR")
-[[ -n "$OABCP_AGENT_INHERIT_ENV" ]] && optional_env+=("OABCP_AGENT_INHERIT_ENV=$OABCP_AGENT_INHERIT_ENV")
-if [[ "${#optional_env[@]}" -gt 0 ]]; then
-  kubectl -n "$KUBE_NAMESPACE" set env deployment/control-plane "${optional_env[@]}" >/dev/null
-fi
-
-# Recreate the pod even when the image tag did not change; this catches the common
-# local dev case where openab-control-plane:local was rebuilt in place.
-kubectl -n "$KUBE_NAMESPACE" rollout restart deployment/control-plane >/dev/null
 
 if [[ "$WAIT_ROLLOUT" == "1" ]]; then
   if ! kubectl -n "$KUBE_NAMESPACE" rollout status deployment/control-plane --timeout=120s; then

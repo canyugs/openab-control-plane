@@ -134,6 +134,15 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+yaml_quote() {
+  local value="$1"
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] ||
+    die "YAML scalar cannot contain newlines"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "$value"
+}
+
 default_image_for_agent() {
   case "$1" in
     claude|claude-agent-acp) echo "ghcr.io/openabdev/openab:0.9.0-beta.3-claude" ;;
@@ -433,6 +442,7 @@ if [[ "$DELETE" == "1" ]]; then
   kubectl -n "$KUBE_NAMESPACE" delete deployment -l app=openab-bot --ignore-not-found
   exit 0
 fi
+[[ "$REPLICAS" =~ ^[0-9]+$ ]] || die "--replicas must be a non-negative integer"
 
 if [[ -z "$SECRET_KEY" && -n "$CREDENTIAL_ENV" ]]; then
   SECRET_KEY="$CREDENTIAL_ENV"
@@ -488,6 +498,9 @@ for raw_bot in "${bots[@]}"; do
   else
     config_url="http://$CONTROL_PLANE_SERVICE:$CONTROL_PLANE_PORT/bot-config/$bot?agent=$bot_agent"
   fi
+  bot_yaml=$(yaml_quote "$bot")
+  bot_image_yaml=$(yaml_quote "$bot_image")
+  config_url_yaml=$(yaml_quote "$config_url")
   env_entries=""
   env_names=""
   if [[ -n "$SECRET_NAME" ]]; then
@@ -530,31 +543,31 @@ $volume_entries"
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: $bot
+  name: $bot_yaml
   labels:
     app: openab-bot
-    bot: $bot
+    bot: $bot_yaml
 spec:
   replicas: $REPLICAS
   selector:
     matchLabels:
       app: openab-bot
-      bot: $bot
+      bot: $bot_yaml
   template:
     metadata:
       labels:
         app: openab-bot
-        bot: $bot
+        bot: $bot_yaml
     spec:
       containers:
         - name: openab
-          image: $bot_image
+          image: $bot_image_yaml
           imagePullPolicy: IfNotPresent
           command:
             - openab
             - run
             - -c
-            - $config_url
+            - $config_url_yaml
 $env_yaml
 $volume_mount_yaml
 $volume_yaml

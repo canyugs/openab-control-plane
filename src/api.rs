@@ -768,6 +768,13 @@ fn sh_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+fn chair_pre_boot_hook_script(working_dir: &str) -> String {
+    format!(
+        "#!/bin/sh\nset -e\nexport HOME={home}\nif [ ! -x \"$HOME/bin/get-gh-app-token.sh\" ]; then echo \"github app auth not provisioned (no get-gh-app-token.sh); skipping\"; exit 0; fi\nauth() {{ \"$HOME/bin/get-gh-app-token.sh\" | gh auth login --with-token; }}\nauth\ngit config --global credential.helper '!gh auth git-credential' || true\n# refresh before the 1h installation-token expiry\n( while sleep 3000; do auth || true; done ) &\n",
+        home = sh_single_quote(working_dir)
+    )
+}
+
 /// Serves a stock OAB pod its full config.toml with `[gateway]` pointing back at
 /// this plane. Mirrors openab-hub's `/bot-config/{id}`. The chair's "open a
 /// thread + @mention reviewers" behavior comes from the trigger message, not
@@ -818,9 +825,10 @@ async fn bot_config(
     // (the hook env is sanitized). Reviewers don't write, so they keep GH_TOKEN.
     // Safe no-op (`on_failure = "warn"` + exit 0) until the volume is provisioned.
     let hooks_section = if bot.role == "chair" {
+        let hook_script = chair_pre_boot_hook_script(&profile.working_dir);
         format!(
-            "\n[hooks.pre_boot]\non_failure = \"warn\"\ntimeout_seconds = 60\ninline = '''\n#!/bin/sh\nset -e\nexport HOME={home}\nif [ ! -x \"$HOME/bin/get-gh-app-token.sh\" ]; then echo \"github app auth not provisioned (no get-gh-app-token.sh); skipping\"; exit 0; fi\nauth() {{ \"$HOME/bin/get-gh-app-token.sh\" | gh auth login --with-token; }}\nauth\ngit config --global credential.helper '!gh auth git-credential' || true\n# refresh before the 1h installation-token expiry\n( while sleep 3000; do auth || true; done ) &\n'''\n",
-            home = sh_single_quote(&profile.working_dir)
+            "\n[hooks.pre_boot]\non_failure = \"warn\"\ntimeout_seconds = 60\ninline = {}\n",
+            toml_string(&hook_script)
         )
     } else {
         String::new()
@@ -966,7 +974,7 @@ async fn stream_session(
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_profile_from, AgentProfile};
+    use super::{agent_profile_from, chair_pre_boot_hook_script, toml_string, AgentProfile};
 
     #[test]
     fn maps_known_provider_profiles_and_splits_args() {
@@ -1058,5 +1066,16 @@ mod tests {
         let err = agent_profile_from("custom", Some(r#"{"custom":{"args":["--acp"]}}"#), None)
             .unwrap_err();
         assert!(err.contains("must set command"));
+    }
+
+    #[test]
+    fn chair_hook_inline_is_toml_basic_string_safe() {
+        let script = chair_pre_boot_hook_script("/home/o'malley");
+        let encoded = toml_string(&script);
+        assert!(encoded.starts_with('"'));
+        assert!(!encoded.contains('\n'));
+        assert!(!encoded.contains("'''"));
+        assert!(encoded.contains("/home/o"));
+        assert!(encoded.contains("malley"));
     }
 }
