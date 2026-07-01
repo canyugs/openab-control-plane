@@ -205,7 +205,7 @@ fn review_open_session_action_with_roster(
     })
 }
 
-// --- Conversational follow-up (ADR 006) ---------------------------------------
+// --- Conversational follow-up (ADR 011) ---------------------------------------
 
 /// Ask pointer trigger — shared shape with the review trigger, but for a single bot
 /// answering a question and posting a NEW comment (not the edit-last verdict).
@@ -230,7 +230,7 @@ pub fn render_ask_trigger(repo: &str, num: u64, question: &str) -> String {
         .replace("{{QUESTION}}", question)
 }
 
-/// Answer a follow-up on a PR with a **solo** session (ADR 006): one bot (the chair —
+/// Answer a follow-up on a PR with a **solo** session (ADR 011): one bot (the chair —
 /// the only writer) self-fetches the PR + thread, answers, and posts a NEW comment.
 /// Cheaper than a council and the right shape for a single answer; no GitHub I/O here.
 /// The controller dedups by the comment-scoped trigger ref, so webhook retries return

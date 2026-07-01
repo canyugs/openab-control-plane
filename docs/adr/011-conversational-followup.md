@@ -1,6 +1,6 @@
-# ADR 006 — Conversational follow-up: `@mention` / `/ask` answered by a solo self-fetch session
+# ADR 011 — Conversational follow-up: `@mention` / `/ask` answered by a solo self-fetch session
 
-Status: **proposed** · 2026-06-28
+Status: **accepted** · 2026-06-28
 
 ## Context
 

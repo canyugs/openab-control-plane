@@ -1,5 +1,9 @@
 # Architecture
 
+Archived note. The maintained architecture boundary is now
+[`../design.md`](../design.md) plus the source map in
+[`../../README.md`](../../README.md).
+
 ## North / Core / South
 
 The control plane uses a **directional data-flow model** borrowed from SDN

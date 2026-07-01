@@ -35,13 +35,13 @@ pub struct WebhookTrigger {
     /// today `GitHubApp` mints against the single env installation (Phase-2 gap).
     pub installation_id: Option<u64>,
     /// "auto" for a PR-opened trigger, `/review` for a review command, or `"ask"` for a
-    /// conversational follow-up (`@mention` / `/ask`, ADR 006).
+    /// conversational follow-up (`@mention` / `/ask`, ADR 011).
     pub reason: String,
     /// Review preset from a `review:<preset>` label on the PR, read straight from the
     /// webhook payload (no GitHub call). `None` → convene falls back to the global
     /// env / default. Lets a PR pick its own review depth (lite|quick|standard|full).
     pub preset: Option<String>,
-    /// The follow-up question text — set only when `reason == "ask"` (ADR 006).
+    /// The follow-up question text — set only when `reason == "ask"` (ADR 011).
     pub question: Option<String>,
     /// Triggering comment id — the idempotency key for an `ask` (a re-delivered
     /// `issue_comment` webhook must not double-answer). `None` for PR-event triggers.
@@ -51,7 +51,7 @@ pub struct WebhookTrigger {
 /// Users allowed to command the bot via a comment (`/review`, `/ask`, `@mention`).
 /// Read from the webhook payload's `author_association` — no GitHub call. Write-ish
 /// roles only: anyone else's command is ignored (matters most for `/ask`, which spends
-/// tokens on demand — ADR 006).
+/// tokens on demand — ADR 011).
 fn can_command(author_association: &str) -> bool {
     matches!(author_association, "OWNER" | "MEMBER" | "COLLABORATOR")
 }
@@ -74,7 +74,7 @@ fn mention_handle() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Extract a follow-up question from a PR comment (ADR 006). A comment is an "ask" if
+/// Extract a follow-up question from a PR comment (ADR 011). A comment is an "ask" if
 /// it starts with `/ask` **or** @mentions the bot handle; the returned string is the
 /// question with the command/mention stripped (may be empty — a bare ping = "look at
 /// this PR"). `None` if it's neither. Pure (handle passed in) for testing.
@@ -204,7 +204,7 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                     comment_id: None,
                 });
             }
-            // Conversational follow-up (ADR 006): `/ask` or an `@mention` of the bot,
+            // Conversational follow-up (ADR 011): `/ask` or an `@mention` of the bot,
             // answered by a solo session. Permission-gated (token spend on demand) —
             // only a write-ish commenter may ask; everyone else is ignored.
             if let Some(question) = parse_ask_comment(comment, mention_handle().as_deref()) {
@@ -274,7 +274,7 @@ pub async fn handle_webhook(
         );
     }
 
-    // 5. Conversational follow-up (ADR 006) takes the ask path: a solo session answers
+    // 5. Conversational follow-up (ADR 011) takes the ask path: a solo session answers
     //    the question. Idempotency keys on the comment id (a re-delivered issue_comment
     //    must not double-answer) — distinct from the PR-level review dedup below.
     if trigger.reason == "ask" {
@@ -590,7 +590,7 @@ mod tests {
         assert!(parse_trigger("push", &json!({})).is_none());
     }
 
-    // --- conversational follow-up (ADR 006) ---
+    // --- conversational follow-up (ADR 011) ---
 
     #[test]
     fn parse_ask_comment_matches_slash_ask_and_mention() {

@@ -78,7 +78,7 @@ Goal: preset-based angle assignment, auto-trigger, structured output.
 | **Decision→review-state** — chair approve/request-changes as source of truth + label | TODO | Depends on GitHub App identity |
 | **Post-review actions** — chair posts action menu, compact summary (🔴×1 🟡×10 🟢×5) | TODO | Phase 3 of presets |
 | **Commit status target_url** — Checks tab "Details" links to the review comment | TODO | Phase 4 of presets |
-| **Conversational follow-up** — `@mention` / `/ask` the bot on a PR → it answers in the thread | **✅ v1** (#30) | The CodeRabbit `@coderabbitai …` gap. A `/ask` or `@OABCP_BOT_HANDLE` comment from a write-ish user (`author_association`) convenes a **solo** self-fetch session that answers as a new PR comment; comment-id idempotency; opt-in `OABCP_ALLOWED_REPOS`. Plane stays out of GitHub ([ADR 006](adr/006-conversational-followup.md)). Deferred: inline review-thread replies (`pull_request_review_comment`), `/resolve`, single-session streaming |
+| **Conversational follow-up** — `@mention` / `/ask` the bot on a PR → it answers in the thread | **✅ v1** (#30) | The CodeRabbit `@coderabbitai …` gap. A `/ask` or `@OABCP_BOT_HANDLE` comment from a write-ish user (`author_association`) convenes a **solo** self-fetch session that answers as a new PR comment; comment-id idempotency; opt-in `OABCP_ALLOWED_REPOS`. Plane stays out of GitHub ([ADR 011](adr/011-conversational-followup.md)). Deferred: inline review-thread replies (`pull_request_review_comment`), `/resolve`, single-session streaming |
 
 ### Angle definitions
 
