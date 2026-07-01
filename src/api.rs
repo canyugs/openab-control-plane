@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
@@ -582,26 +582,60 @@ struct AgentProfileOverride {
     inherit_env: Option<Vec<String>>,
 }
 
+struct AgentProfileEnv {
+    overrides: Result<Option<HashMap<String, AgentProfileOverride>>, String>,
+    working_dir_override: Option<String>,
+}
+
 /// Maps a provider name to the OAB `[agent]` profile. OAB splits command and
 /// args (`config.rs`: `command: String`, `args: Vec<String>`), so multi-word ACP
 /// invocations must remain split here. Operators can override or add profiles
 /// with `OABCP_AGENT_PROFILES`; unknown names still pass through as a raw command.
 fn agent_profile(agent: &str) -> Result<AgentProfile, String> {
-    let profiles_json = std::env::var("OABCP_AGENT_PROFILES").ok();
-    let working_dir = std::env::var("OABCP_AGENT_WORKING_DIR").ok();
-    agent_profile_from(agent, profiles_json.as_deref(), working_dir.as_deref())
+    static CONFIG: OnceLock<AgentProfileEnv> = OnceLock::new();
+    let config = CONFIG.get_or_init(|| AgentProfileEnv {
+        overrides: parse_agent_profile_overrides(
+            std::env::var("OABCP_AGENT_PROFILES").ok().as_deref(),
+        ),
+        working_dir_override: std::env::var("OABCP_AGENT_WORKING_DIR").ok(),
+    });
+    let overrides = match &config.overrides {
+        Ok(overrides) => overrides.as_ref(),
+        Err(err) => return Err(err.clone()),
+    };
+    agent_profile_from_overrides(agent, overrides, config.working_dir_override.as_deref())
 }
 
+#[cfg(test)]
 fn agent_profile_from(
     agent: &str,
     profiles_json: Option<&str>,
     working_dir_override: Option<&str>,
 ) -> Result<AgentProfile, String> {
+    let overrides = parse_agent_profile_overrides(profiles_json)?;
+    agent_profile_from_overrides(agent, overrides.as_ref(), working_dir_override)
+}
+
+fn parse_agent_profile_overrides(
+    profiles_json: Option<&str>,
+) -> Result<Option<HashMap<String, AgentProfileOverride>>, String> {
+    profiles_json
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|raw| {
+            serde_json::from_str(raw).map_err(|err| format!("invalid OABCP_AGENT_PROFILES: {err}"))
+        })
+        .transpose()
+}
+
+fn agent_profile_from_overrides(
+    agent: &str,
+    overrides: Option<&HashMap<String, AgentProfileOverride>>,
+    working_dir_override: Option<&str>,
+) -> Result<AgentProfile, String> {
     let mut profile = builtin_agent_profile(agent);
 
-    if let Some(raw) = profiles_json.map(str::trim).filter(|v| !v.is_empty()) {
-        let overrides: HashMap<String, AgentProfileOverride> = serde_json::from_str(raw)
-            .map_err(|err| format!("invalid OABCP_AGENT_PROFILES: {err}"))?;
+    if let Some(overrides) = overrides {
         if let Some(override_profile) = overrides.get(agent) {
             let mut base = profile.unwrap_or_else(|| AgentProfile {
                 command: String::new(),
