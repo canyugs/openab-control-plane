@@ -238,6 +238,11 @@ V1 flow:
 4. OCP registers or refreshes metadata and returns the bot config URL.
 5. The bot connects to `/ws` with its bot token.
 
+The returned `config_url` is a compatibility bootstrap URL for the current
+`/bot-config` path. ADR 010 sets the production direction: OpenAB runtime config
+should live in OpenAB `configUrl` / `configFile`, not in OCP-rendered
+`config.toml`. Discovery remains inventory and admission input either way.
+
 Refreshing an existing bot does not overwrite its stored `name` or `role`; a pod
 cannot rename itself or promote itself from reviewer to chair by changing its
 discovery payload. Omitted discovery metadata fields are preserved on refresh;

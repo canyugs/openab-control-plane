@@ -1,6 +1,6 @@
 # ADR 003 — Steering delivery: how standing review rules reach the bots
 
-Status: **proposed** (undecided) · 2026-06-27
+Status: superseded for OCP-hosted delivery by [ADR 010](010-openab-configurl-boundary.md) · 2026-06-27
 
 ## Context
 
@@ -15,7 +15,9 @@ ROADMAP Phase 1 ("Shared steering via `pre_seed`") wants the steering moved out 
 the trigger into a boot-time layer so the trigger shrinks to just the diff. The
 open question is *where the steering archive lives and who serves it* — which is an
 architecture/trust-domain decision, not a code detail. This ADR freezes the options
-while the choice is still open.
+while the choice was still open. ADR 010 later tightened the boundary: OCP should
+not become an OpenAB config or blob renderer. Steering should be delivered as a
+bot/OpenAB property, not by growing `/bot-config`.
 
 **One thing this is NOT about: token savings.** The diff dominates trigger size;
 the rules are small. The real wins of moving steering out are architectural —
@@ -52,13 +54,13 @@ LocalStack/MinIO path. Two consequences:
 | Per-pod credentials | none | **real cloud keys** (new secret surface + rotation debt) | dummy static creds (not a real secret) |
 | Trust domains | one (plane) | +1 external | one (plane) |
 | OAB change | no | no | **yes** — `force_path_style` first |
-| OCP change | done (template extract) | bot_config emits `pre_seed` + package/upload | bot_config + **new minimal S3-GetObject origin** |
+| OCP change | done (template extract) | none beyond documentation / packaging | not allowed by ADR 010 |
 | Steering location | stuck in the trigger/launcher | boot-time bot property (`$HOME` file) | same as ②, archive is an OCP build artifact pinned to the plane version |
 | Role-split layers | impossible (same trigger to all) | native (layers) | native (layers) |
 | Per-trigger cost | rules resent every run | diff only | diff only |
 | Integrity | none | built-in SHA256 | built-in SHA256 |
 | One-click UX | simplest (nothing to set up) | worst (user supplies storage + keys) | good (plane self-contained) |
-| design.md discipline | steering is the app's job, but lives in the launcher | **cleanest** — "file seeding belongs to OAB hooks / the deployer" | mild tension (plane becomes a blob origin — but serves opaque bytes, never injects) |
+| design.md discipline | steering is the app's job, but lives in the launcher | **cleanest** — "file seeding belongs to OAB hooks / the deployer" | rejected by ADR 010 |
 | Time / risk to ship | now, zero risk | medium (ops only, no code dep) | longest (gated on OAB PR + new endpoint), lowest ongoing ops |
 
 ### Rejected
@@ -97,20 +99,21 @@ delivered as a per-`$HOME` file with role-split layers — which `include_str!` 
 
 - **Now:** keep ① — it works, and the trigger steering is already extracted to
   `scripts/pr-review-trigger.tmpl`. No rush.
-- **Target:** ③ — OAB is ours, so the `force_path_style` prerequisite is a cheap
-  in-house PR, and it yields the cleanest end-state: zero external infra, no real
-  per-pod secrets, one-click self-contained. The cost is a small new S3-GetObject
-  surface on the plane and a mild design.md tension (hosting opaque steering bytes).
-- **Fallback:** ② — if we decide OCP should not be a blob origin, an external
-  bucket is the orthodox path at the price of ops + a per-pod credential surface.
+- **Target after ADR 010:** ② or an equivalent OpenAB-native delivery path. The
+  steering artifact belongs in external object storage, a bot image, `configFile`,
+  or another deployment-owned layer. OCP may package or document the file, but
+  should not host it or emit `pre_seed` config.
+- **Rejected after ADR 010:** ③. A plane-hosted S3 origin would make OCP a blob
+  origin and invite it back into OpenAB config delivery.
 
 ## Consequences / sequencing
 
-- If we pursue ③, the OAB `force_path_style` change lands **first** — it is the
-  precondition for the plane origin to be reachable at all.
-- ② and ③ share the same OCP-side work (bot_config emits `[hooks.pre_seed]` with
-  per-role `sources`; trigger template drops the rules); they differ only in the
-  `endpoint_url`/credentials and who hosts the archive. So the OCP work is not
-  wasted regardless of which storage backend wins — decide the backend late.
-- Revisit when there's a concrete driver (a third-party deploy that needs role-split
-  steering, or trigger bloat that actually bites). Until then this stays *proposed*.
+- Do not make `/bot-config` emit `[hooks.pre_seed]`; that duplicates OpenAB
+  config rendering and conflicts with ADR 010.
+- If steering is moved out of the trigger, the deployment should point OpenAB at
+  final config through `configUrl` / `configFile`, and that config can reference
+  OAB-native `pre_seed` sources.
+- Revisit external steering delivery when there's a concrete driver (a third-party
+  deploy that needs role-split steering, or trigger bloat that actually bites).
+  Until then, keep trigger-embedded steering for compatibility and avoid adding
+  OCP-owned config delivery.

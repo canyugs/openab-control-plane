@@ -31,8 +31,8 @@ enough to test.
 | Roster, fanout, isolation | OAB is single-bot; multi-bot routing is the plane's job |
 | The **coordination seam** (`Coordinator` trait) | The engine owns the *seam*; the *policy* plugged into it (quorum, solo, …) is not core — see "Policy vs mechanism vs substrate" below |
 | Durable delivery (outbox, replay) | Cross-bot message reliability |
-| Bot identity + per-bot tokens | The plane manages the registry; credentials stay in each pod (`inherit_env`) |
-| `/bot-config/:id` — OAB config.toml assembly | Bots fetch gateway/agent/pool config; store is a trait seam (SQLite default, Postgres/libSQL swap) |
+| Bot identity + per-bot gateway tokens | The plane manages the registry and gateway credentials; production OpenAB runtime config belongs outside the plane |
+| `/bot-config/:id` legacy bootstrap | Compatibility path for current templates and local dogfood; not the long-term OpenAB config delivery surface |
 | North API (sessions, messages, SSE) | The client-facing interface |
 
 ## OCP does NOT own
@@ -40,6 +40,7 @@ enough to test.
 | Concern | Who owns it | Why |
 |---------|-------------|-----|
 | Agent steering (`CLAUDE.md`, `AGENTS.md`, `.kiro/steering/`) | Bot deployer via OAB `pre_seed` / `pre_boot` | Agent-agnostic — any CLI OAB supports works without plane changes |
+| OpenAB runtime config (`config.toml`, `configUrl`, `configFile`, `s3://`, `aws-sm://`, `pre_seed`, hooks, agent command) | OpenAB + deployment tooling | OCP must not duplicate OpenAB's config schema or recreate Helm-style rendering |
 | LLM reasoning / verdict content | The agent (chair bot) | Plane never calls an LLM |
 | Agent credentials (`CLAUDE_CODE_OAUTH_TOKEN`, API keys) | Each bot pod via `inherit_env` | Plane never touches model keys |
 | Bot-side credential consumption — fetching its scoped GitHub token, configuring `gh`, not holding a static write PAT | OAB bot / pod | OCP **mints, offers (`/v1/sessions/:id/github-token`), and purges-on-close** per-role scoped tokens (purge = drop from the store so they're never served again, not a GitHub-side revoke); how the pod *consumes* a credential (and which static tokens it carries) is the pod's job — same boundary as `inherit_env` above |
