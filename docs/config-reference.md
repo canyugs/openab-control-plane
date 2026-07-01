@@ -188,9 +188,11 @@ Each entry is `name:role` (role defaults to `reviewer` if omitted). The bot's
 random token is generated once per bot, stored, and served inline by
 `/bot-config/<name>` — no human ever copies a token. This `token_plain` serving
 is tracked as a production hardening item; future configUrl deployments should
-externalize the gateway token instead of relying on OCP-rendered config. Re-seeding is idempotent
-(`INSERT OR IGNORE`): restarts and already-present bots are skipped, so tokens
-stay stable across reboots as long as the DB volume persists.
+externalize the gateway token instead of relying on OCP-rendered config.
+
+Re-seeding is idempotent (`INSERT OR IGNORE`): restarts and already-present bots
+are skipped, so tokens stay stable across reboots as long as the DB volume
+persists.
 
 ## Add / remove / replace a bot (change the standing council)
 
