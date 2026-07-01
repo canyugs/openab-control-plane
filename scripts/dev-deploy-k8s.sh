@@ -223,6 +223,11 @@ if [[ "$CHECK_IMAGE_ID" == "1" ]] && command -v docker >/dev/null 2>&1; then
       echo "pod image IDs:" >&2
       printf '%s\n' "$pod_image_ids" >&2
       echo "The webhook readiness probe would likely test an old binary." >&2
+      echo >&2
+      echo "If a fresh scripts/dev-build-image.sh + retry still shows this (same stale" >&2
+      echo "pod image ID every time, or ErrImageNeverPull on a brand-new unique tag)," >&2
+      echo "Docker Desktop's dockerd->Kubernetes image bridge is stuck, not the build." >&2
+      echo "Fix: 'docker desktop restart', then redeploy." >&2
       exit 1
     fi
   fi

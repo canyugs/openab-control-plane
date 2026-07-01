@@ -134,6 +134,27 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+# A "Running" pod only means the openab process started — not that it reached
+# the plane. A stale/mismatched config-base-url (e.g. pointing at a host OCP
+# that isn't running) leaves the pod stuck retrying forever with no non-zero
+# exit anywhere. Poll its own logs for the gateway handshake outcome instead.
+check_gateway_connected() {
+  local bot="$1" deadline=$((SECONDS + 15)) logs
+  while ((SECONDS < deadline)); do
+    logs=$(kubectl -n "$KUBE_NAMESPACE" logs "deployment/$bot" --tail=20 2>/dev/null || true)
+    if grep -q "connected to gateway" <<<"$logs"; then
+      return 0
+    fi
+    if grep -qE "Connection refused|gateway connection failed" <<<"$logs"; then
+      echo "warning: $bot cannot reach the gateway at its configured URL — check --config-base-url and that '$CONTROL_PLANE_SERVICE' is actually deployed (dev-deploy-k8s.sh) or reachable" >&2
+      return 1
+    fi
+    sleep 2
+  done
+  echo "warning: $bot did not confirm a gateway connection within 15s — check: kubectl -n $KUBE_NAMESPACE logs deployment/$bot" >&2
+  return 1
+}
+
 yaml_quote() {
   local value="$1"
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] ||
@@ -145,8 +166,8 @@ yaml_quote() {
 
 default_image_for_agent() {
   case "$1" in
-    claude|claude-agent-acp) echo "ghcr.io/openabdev/openab:0.9.0-beta.3-claude" ;;
-    kiro) echo "ghcr.io/openabdev/openab:0.9.0-beta.3-kiro" ;;
+    claude|claude-agent-acp) echo "ghcr.io/openabdev/openab:0.9.0-beta.6-claude" ;;
+    kiro) echo "ghcr.io/openabdev/openab:0.9.0-beta.6-kiro" ;;
     *) echo "" ;;
   esac
 }
@@ -581,6 +602,7 @@ YAML
 
   if [[ "$WAIT_ROLLOUT" == "1" && "$REPLICAS" != "0" ]]; then
     kubectl -n "$KUBE_NAMESPACE" rollout status "deployment/$bot" --timeout=180s
+    check_gateway_connected "$bot" || true
   fi
 done
 
