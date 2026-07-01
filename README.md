@@ -93,10 +93,12 @@ npx zeabur@latest template deploy -c 1E1Y97 \
 When developing unpublished template changes from this repository, use
 `-f zeabur-template-pat-Z7TQIR.yaml` or `-f zeabur-template-app-1E1Y97.yaml` instead of `-c`.
 
-Claude is only the template default. OCP serves agent profiles dynamically through
-`/bot-config/<bot>?agent=<profile>`; switching or mixing CLIs means updating the
-agent profile (`OABCP_AGENT_PROFILES` for command/args/permissions), the bot
-image, and the pod Secret carrying that CLI's credential.
+Claude is only the template default. Today's bootstrap templates use OCP's legacy
+`/bot-config/<bot>?agent=<profile>` path; switching or mixing CLIs means updating
+the agent profile (`OABCP_AGENT_PROFILES` for command/args/permissions), the bot
+image, and the pod Secret carrying that CLI's credential. The longer-term
+production direction is OpenAB `configUrl` / `configFile`, where each bot points
+directly at its final `config.toml`; see [ADR 010](docs/adr/010-openab-configurl-boundary.md).
 
 Full install docs:
 

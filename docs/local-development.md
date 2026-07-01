@@ -253,10 +253,13 @@ For webhook testing with host OCP, run the tunnel pod against the host service:
 scripts/dev-tunnel-k8s.sh --origin-url http://host.docker.internal:18090
 ```
 
-Custom or experimental CLIs should be configured as OCP agent profiles, not by
-editing Rust code. Put command args, permission/trust flags, working directory,
-and extra inherited env vars in `OABCP_AGENT_PROFILES`; see
-[config-reference.md](config-reference.md).
+Custom or experimental CLIs in this local bootstrap path should be configured as
+OCP agent profiles, not by editing Rust code. Put command args, permission/trust
+flags, working directory, and extra inherited env vars in
+`OABCP_AGENT_PROFILES`; see [config-reference.md](config-reference.md). Do not
+grow this into product config rendering: production bot deployments should move
+toward OpenAB `configUrl` / `configFile` as described in
+[ADR 010](adr/010-openab-configurl-boundary.md).
 
 ## Expose Local OCP To GitHub
 

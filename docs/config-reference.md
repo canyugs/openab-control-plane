@@ -1,6 +1,10 @@
 # Configuration Reference
 
-All configuration is via environment variables. No config file needed.
+All OCP configuration is via environment variables. OpenAB bot runtime
+configuration is a separate concern: production bots should prefer OpenAB
+`configUrl` / `configFile` as described in
+[ADR 010](adr/010-openab-configurl-boundary.md). The `/bot-config` settings below
+are retained for bootstrap compatibility and local dogfood.
 
 ## Control plane
 
@@ -11,10 +15,10 @@ All configuration is via environment variables. No config file needed.
 | `OABCP_API_KEY` | _(open)_ | Bearer token for north API authentication. Unset = no auth |
 | `OABCP_BOTS` | _(none)_ | Initial bot roster registered at boot. Format: `name:role,name:role,...` e.g. `chair:chair,rev1:reviewer,rev2:reviewer`. Idempotent — existing bots are skipped |
 | `OABCP_WS_URL` | auto-detected | WebSocket URL bots connect to. Override when the internal hostname differs from default |
-| `OABCP_AGENT_COMMAND` | `claude` | Default agent profile when a pod's `/bot-config` fetch has no `?agent=`. Set this to make a uniform single-provider council; leave default + use `?agent=` per pod to mix |
-| `OABCP_AGENT_PROFILES` | _(built-ins)_ | JSON object for overriding or adding OpenAB agent profiles. Each profile can set `command`, `args`, `working_dir`, and `inherit_env`. Put CLI trust/permission flags in `args` |
-| `OABCP_AGENT_WORKING_DIR` | profile-specific | Force `[agent].working_dir` for every served bot config. Useful when all bot images use the same non-default home |
-| `OABCP_AGENT_INHERIT_ENV` | _(none)_ | Extra comma-separated env var names appended to `[agent].inherit_env` for custom CLIs |
+| `OABCP_AGENT_COMMAND` | `claude` | Legacy `/bot-config` default agent profile when a pod fetch has no `?agent=`. Do not add new OpenAB config features here; use OpenAB `configUrl` for production |
+| `OABCP_AGENT_PROFILES` | _(built-ins)_ | Legacy `/bot-config` JSON overrides for command, args, working directory, and inherited env names. Useful for local dogfood, not a replacement for OpenAB `config.toml` |
+| `OABCP_AGENT_WORKING_DIR` | profile-specific | Legacy `/bot-config` override for `[agent].working_dir`. Prefer OpenAB `configUrl` for production |
+| `OABCP_AGENT_INHERIT_ENV` | _(none)_ | Legacy `/bot-config` extra env names appended to `[agent].inherit_env`. Prefer OpenAB `configUrl` for production |
 | `OABCP_BOT_DISCOVERY_TOKEN` | _(disabled)_ | Scoped bootstrap token for `POST /v1/bots/discover`. When unset, discovery registration returns `403`. This token only registers/refreshes bot inventory metadata; it cannot open sessions or change rosters |
 | `OABCP_CONFIG_BASE_URL` | `http://control-plane.zeabur.internal:8090` | Base URL read at startup and used in discovery responses when returning a `/bot-config/<id>` URL |
 | `OABCP_SESSION_TIMEOUT_SECS` | `600` | Liveness watchdog deadline. A session still active this many seconds after creation is force-closed with a `TIMEOUT` verdict and a north `timeout` event so a silent/dead reviewer can't hang it forever. Anchored on `created_at` (no last-activity reset) — raise for legitimately long councils |
@@ -71,7 +75,13 @@ and have no validated on-pod login path. (The chair's persistent volume +
 `gh auth login` in its `pre_boot` hook authenticates **`gh`/git for PR write-back**,
 not the agent model — don't conflate the two.)
 
-## Per-bot Agent Profile (mixed councils)
+## Legacy /bot-config Agent Profile (mixed councils)
+
+This section documents the compatibility path used by the current templates and
+local Kubernetes dogfood. It is intentionally not the long-term production
+configuration model. New OpenAB runtime features should be expressed in final
+`config.toml` and delivered through OpenAB `configUrl` / `configFile`, not added
+as OCP environment variables.
 
 Each bot is a separate pod, so each can run a different agent CLI on its own
 credential. The provider is chosen per pod via the `/bot-config` fetch URL:
@@ -127,18 +137,19 @@ deployments can mount it with `scripts/dev-deploy-bots.sh --steering-file`; Kiro
 defaults to `/home/agent/.kiro/steering`, while AGENTS.md-style CLIs default to
 `/home/node/AGENTS.md`.
 
-The pod must run the matching agent image and carry that provider's key. OCP only
-serves the OpenAB config; it does not install a CLI into the container and does
-not create credentials. Keep the axes separate:
+The pod must run the matching agent image and carry that provider's key. In this
+legacy path, OCP serves enough OpenAB config to bootstrap the pod; it does not
+install a CLI into the container and does not create credentials. Keep the axes
+separate:
 
 | Axis | Where it is configured | Example |
 |------|------------------------|---------|
-| OAB `[agent]` command/args | `OABCP_AGENT_PROFILES` or built-in profile | `kiro-cli acp --trust-all-tools` |
+| OAB `[agent]` command/args | OpenAB `configUrl`; legacy fallback: `OABCP_AGENT_PROFILES` or built-in profile | `kiro-cli acp --trust-all-tools` |
 | Bot image | deployment/template/service image | `ghcr.io/openabdev/openab:0.9.0-beta.3-kiro` |
 | Model credential | bot pod env/Secret | `KIRO_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` |
 | PR read credential | reviewer pods | read-only App/session token or local `GH_TOKEN` shortcut for `gh pr diff` |
 | PR write credential | chair pod only | pod-local GitHub App key/minter, write-scoped App/session token, or local `GH_TOKEN` shortcut |
-| Review steering | bot pod filesystem / OAB pre_seed | `docs/steering/pr-review.md` |
+| Review steering | bot pod filesystem / OAB `pre_seed`; local fallback: ConfigMap mount | `docs/steering/pr-review.md` |
 
 For local Kubernetes testing, `scripts/dev-deploy-bots.sh` can wire these per bot:
 
@@ -165,7 +176,8 @@ uniform council, set `OABCP_AGENT_COMMAND` and drop the per-pod param.
 ## Roster format
 
 `OABCP_BOTS` registers bots at startup so pods can fetch config from
-`/bot-config/<name>` without manual `POST /v1/bots` calls.
+`/bot-config/<name>` without manual `POST /v1/bots` calls. This is the current
+bootstrap path, not the target production config delivery path.
 
 ```
 OABCP_BOTS="chair:chair,rev1:reviewer,rev2:reviewer"
@@ -174,9 +186,13 @@ OABCP_BOTS="chair:chair,rev1:reviewer,rev2:reviewer"
 Each entry is `name:role` (role defaults to `reviewer` if omitted). The bot's
 `id` is set equal to `name`, so the pod's fetch URL is known ahead of time. A
 random token is generated once per bot, stored, and served inline by
-`/bot-config/<name>` — no human ever copies a token. Re-seeding is idempotent
-(`INSERT OR IGNORE`): restarts and already-present bots are skipped, so tokens
-stay stable across reboots as long as the DB volume persists.
+`/bot-config/<name>` — no human ever copies a token. This `token_plain` serving
+is tracked as a production hardening item; future configUrl deployments should
+externalize the gateway token instead of relying on OCP-rendered config.
+
+Re-seeding is idempotent (`INSERT OR IGNORE`): restarts and already-present bots
+are skipped, so tokens stay stable across reboots as long as the DB volume
+persists.
 
 ## Add / remove / replace a bot (change the standing council)
 
