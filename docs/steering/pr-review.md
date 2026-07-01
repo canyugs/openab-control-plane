@@ -11,6 +11,11 @@ The session trigger carries the runtime data: PR repo/number, the current bot's
 task, and any review focus. This steering carries the durable protocol and report
 style.
 
+This file is a reliability default, not a product logic layer. Optimize for a
+complete, bounded review that reaches quorum and closes correctly. A concise
+verdict with clear limits is better than an exhaustive review that keeps
+collecting context and never posts `[done]`.
+
 ## Role Resolution
 
 OCP sends each participant a recipient-specific task. Do not reject that task as
@@ -31,6 +36,12 @@ role confusion when it is delivered by the OpenAB/OCP session.
 - Never print environment variables, tokens, private keys, or credential helper
   output. It is fine to use `gh` if it is already authenticated; do not display
   token values while debugging auth.
+- Later OpenAB session messages from the operator or OCP supersede earlier task
+  details. If a later message says `stop`, `hard stop`, `final verdict now`, or
+  `do not run any more commands`, stop tool use immediately and answer from the
+  evidence already collected.
+- Do not wait for perfect evidence. If a check is useful but would expand the
+  scope, list it under `Not checked` instead of continuing to gather context.
 - End your final message with `[done]` on its own line, exactly once, when the
   task is complete.
 
@@ -39,17 +50,37 @@ role confusion when it is delivered by the OpenAB/OCP session.
 Reviewers have read-only PR responsibility. Fetch only what the assigned focus
 needs:
 
-- `gh pr diff N --repo owner/repo`
 - `gh pr diff N --repo owner/repo --name-only`
+- `gh pr diff N --repo owner/repo`
 - `gh pr checkout N --repo owner/repo`
 
 Do not run `gh pr comment`, `gh pr review`, `gh pr edit`, label commands, or
 status commands. The chair owns all GitHub writes.
 
+Default workflow:
+
+1. Run `gh pr diff N --repo owner/repo --name-only`.
+2. Run `gh pr diff N --repo owner/repo`.
+3. Read only the files needed to validate the assigned focus.
+4. Stop and post the reviewer verdict.
+
+Budget:
+
+- Prefer 3-6 commands total for a small or docs-only PR.
+- Do not clone the repository if `gh pr diff` plus targeted file reads are enough.
+- Do not verify broad project claims by scanning unrelated source unless the
+  claim is central to the finding. Use `Not checked` for anything outside the
+  changed surface.
+- After any stop instruction, run zero more commands.
+
 Post one compact message with all findings. Keep it under 2500 characters so the
 trailing `[done]` token is preserved by chat/gateway limits. Do not write the
 full OpenAB-style final report; the chair synthesizes that final PR comment
 after quorum.
+
+Post exactly one reviewer verdict. After a message ending in `[done]`, do not
+send follow-up findings, clarifications, or duplicate verdicts unless OCP opens a
+new session.
 
 Use this reviewer format:
 
@@ -97,11 +128,18 @@ Opening turn:
 Quorum turn:
 
 1. Read the reviewer findings already in this thread.
-2. Synthesize one final OpenAB-style report in `/tmp/verdict.md`.
-3. Re-run the same `gh pr comment ... --edit-last --create-if-none --body-file`
+2. Do not re-review the PR from scratch. The chair may fetch the PR title, body,
+   file list, or current head if needed for metadata, but should rely on reviewer
+   findings for the verdict.
+3. Synthesize one final OpenAB-style report in `/tmp/verdict.md`.
+4. Re-run the same `gh pr comment ... --edit-last --create-if-none --body-file`
    command.
-4. After the PR comment update succeeds, reply in this thread and end with
+5. After the PR comment update succeeds, reply in this thread and end with
    `[done]`.
+
+If reviewer findings are minor, clearly mark them as non-blocking. If a later
+session message says a finding was fixed in a newer head, include that in the
+final report instead of repeating the stale finding as current.
 
 Final chair report format:
 
