@@ -1,6 +1,6 @@
 # ADR 013 — Decision→review-state: structured verdict + GitHub review as source of truth
 
-Status: **proposed** · 2026-07-02
+Status: **accepted** · 2026-07-02
 
 ## Context
 
@@ -72,8 +72,9 @@ settled message:
 
 ### 4. Plane exposes the structure
 
-- `GET /v1/sessions/:id` and the list endpoint include
-  `decision` and `findings: {red, yellow, green}` (null when unset).
+- `GET /v1/sessions/:id` and the list endpoint include `decision` and
+  `findings_red` / `findings_yellow` / `findings_green` (flat, null when
+  unset — the `Session` struct serializes directly).
 - The north `verdict` event and the ADR 012 close-webhook payload gain the
   same two fields. Webhook receivers stop parsing markdown.
 
