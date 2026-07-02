@@ -12,6 +12,7 @@ Zeabur template deployment.
 
 - Docker Desktop with Kubernetes enabled.
 - `kubectl` context set to `docker-desktop`.
+- A local container registry (see below).
 - `cloudflared` installed for public webhook testing.
 
 Check the local cluster:
@@ -27,6 +28,29 @@ Expected context:
 docker-desktop
 ```
 
+## Local Container Registry
+
+Docker Desktop 4.80+ enables the containerd snapshotter by default. This breaks
+the implicit image bridge between `docker build` and Kubernetes: images built
+locally are not visible to kubelet, causing `ErrImageNeverPull` or stale pods.
+
+The fix is a local registry. Start it once; it survives Docker Desktop restarts:
+
+```sh
+docker run -d --restart=always -p 5555:5000 --name local-registry registry:2
+```
+
+`dev-build-image.sh` auto-detects the registry at `localhost:5555` and pushes
+after each build. `dev-deploy-k8s.sh` uses `imagePullPolicy: IfNotPresent` so
+Kubernetes pulls from the registry instead of relying on the broken bridge.
+
+Verify it works:
+
+```sh
+scripts/dev-build-image.sh
+# should print: pushed to localhost:5555/openab-control-plane:dev-...
+```
+
 ## Build The Local Image
 
 The release workflow currently publishes an amd64 image for Zeabur. On Apple
@@ -38,7 +62,9 @@ scripts/dev-build-image.sh
 ```
 
 The script builds a unique `openab-control-plane:dev-...` tag and also updates
-`openab-control-plane:local`. On an amd64 machine, use:
+`openab-control-plane:local`. When the local registry is running, it auto-pushes
+to `localhost:5555` and prints the registry-qualified image reference for
+`dev-deploy-k8s.sh`. On an amd64 machine, use:
 
 ```sh
 scripts/dev-build-image.sh --platform linux/amd64
@@ -47,20 +73,15 @@ scripts/dev-build-image.sh --platform linux/amd64
 ## Run OCP On Docker Desktop Kubernetes
 
 ```sh
-scripts/dev-deploy-k8s.sh --image openab-control-plane:local
-```
-
-If you want to run a unique tag printed by `dev-build-image.sh`, pass it directly:
-
-```sh
-scripts/dev-deploy-k8s.sh --image openab-control-plane:dev-<sha>-<timestamp>
+# Use the registry-qualified image printed by dev-build-image.sh:
+scripts/dev-deploy-k8s.sh --image localhost:5555/openab-control-plane:dev-<sha>-<timestamp>
 ```
 
 The deploy script creates or updates the namespace, deployment, service, local
 API key, bot roster, and webhook secret. It also forces a rollout restart, because
-local dev often rebuilds the same `:local` tag. It fails if the running pod
-`imageID` does not match the local Docker image, because that means Docker
-Desktop Kubernetes is still running an older binary.
+local dev often rebuilds the same tag. It fails if the running pod `imageID` does
+not match the local Docker image, because that means Kubernetes is still running
+an older binary.
 
 Smoke check the webhook path. This starts a temporary port-forward if one is
 needed:
@@ -224,9 +245,10 @@ To remove them:
 scripts/dev-deploy-bots.sh --delete
 ```
 
-If Docker Desktop Kubernetes cannot see a freshly built local OCP image, you can
-still test the bot execution path by running OCP on the host and pointing bot
-pods at it:
+If the local registry is not running and Docker Desktop Kubernetes cannot see a
+freshly built local OCP image (`ErrImageNeverPull`), start the registry first
+(see "Local Container Registry" above). As a fallback, you can test the bot
+execution path by running OCP on the host and pointing bot pods at it:
 
 ```sh
 scripts/dev-run-host-ocp.sh
