@@ -358,7 +358,7 @@ pub fn parse_verdict_trailer(text: &str) -> Option<VerdictTrailer> {
     let (mut red, mut yellow, mut green) = (None, None, None);
     for part in parts {
         let (key, value) = part.split_once('=')?;
-        let n: i64 = value.parse().ok()?;
+        let n: i64 = value.parse().ok().filter(|n| *n >= 0)?;
         match key {
             "r" => red = Some(n),
             "y" => yellow = Some(n),
@@ -1130,6 +1130,7 @@ mod tests {
         assert!(parse_verdict_trailer("no trailer here [done]").is_none());
         assert!(parse_verdict_trailer("[[verdict:maybe r=1]]").is_none());
         assert!(parse_verdict_trailer("[[verdict:approve r=lots]]").is_none());
+        assert!(parse_verdict_trailer("[[verdict:approve r=-1]]").is_none());
         assert!(parse_verdict_trailer("[[verdict:approve x=1]]").is_none());
         assert!(parse_verdict_trailer("[[verdict:approve r=1").is_none()); // unclosed
     }
