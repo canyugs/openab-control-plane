@@ -52,5 +52,6 @@
   (`github_webhook.rs` known gap); stored plaintext in SQLite; revoke does not
   call GitHub's API.
 - Upstream OpenAB is moving to deny-by-default L3 identity trust (trust pyramid
-  Phase 3); rendered bot configs must keep `trusted_bot_ids` / bot-message
-  settings correct or councils silently stop working.
+  Phase 3). Rendered bot configs pin `allow_all_users = true` explicitly (the
+  WS token is the trust boundary; an `allowed_users` list would go stale on
+  roster changes and also blocks bot senders). Keep it explicit.
