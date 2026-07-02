@@ -170,6 +170,16 @@ default it mounts to `/home/agent/.kiro/steering` for Kiro and
 `/home/node/AGENTS.md` for other agent profiles. The OCP trigger then carries
 only the runtime PR ref, current recipient task, and focus assignment.
 
+After editing the steering file, refresh the ConfigMap and restart the bots
+without a full redeploy:
+
+```sh
+kubectl -n oabcp-local create cm openab-pr-review-steering \
+  --from-file=openab-pr-review.md=docs/steering/pr-review.md \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n oabcp-local rollout restart deploy/chair deploy/rev1 deploy/rev2
+```
+
 ### Local GitHub Credentials
 
 If the test only needs the chair to write PR comments with your local account,
