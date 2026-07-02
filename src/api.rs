@@ -1151,6 +1151,12 @@ async fn bot_config(
 url = {ws_url}
 platform = "feishu"
 token = {token}
+# Explicit: survives OAB's trust-pyramid Phase 3 default flip (L3 deny-all).
+# This surface is private and token-authed; senders are the plane itself
+# ("client"/"system") plus roster bots, and the roster is dynamic — an
+# allowed_users list would go stale after recruit/replace. The WS token is
+# the trust boundary, not sender ids.
+allow_all_users = true
 allow_bot_messages = true
 bot_username = {name}
 streaming = true
