@@ -51,6 +51,33 @@ pub trait Coordinator: Send + Sync {
     fn starters(&self, roster: &[String], _chair: Option<&str>) -> Vec<String> {
         roster.to_vec()
     }
+    /// The roster changed outside a done-signal (liveness trim/replace). Default:
+    /// nothing; quorum modes re-check whether the already-recorded done-count now
+    /// meets the (possibly shrunk) quorum.
+    fn on_roster_change(&self, _cx: &dyn Ctx) -> Vec<Action> {
+        vec![]
+    }
+}
+
+/// Shared quorum policy: once `quorum_n` reviewers signalled done, enter Quorum
+/// and prompt the chair to synthesize. Reached from a done-signal and from a
+/// liveness roster trim (a shrunk quorum can make the recorded count sufficient).
+fn quorum_actions(cx: &dyn Ctx) -> Vec<Action> {
+    let mut actions = vec![];
+    let chair = cx.chair();
+    if quorum_reached(cx.roster(), chair, &cx.reactors(DONE_EMOJI), cx.quorum_n()) {
+        actions.push(Action::Transition {
+            from: SessionState::Deliberating,
+            to: SessionState::Quorum,
+        });
+        if let Some(c) = chair {
+            actions.push(Action::Prompt {
+                to: c.to_string(),
+                content: "Quorum reached. Chair, synthesize the final verdict, complete any side effect required by the opening trigger, and only then end your final message with [done]. Do not send [done] before the required side effect succeeds.".to_string(),
+            });
+        }
+    }
+    actions
 }
 
 /// v1 lifecycle: reviewers (roster minus chair) signal done; once `quorum_n` of
@@ -60,6 +87,10 @@ pub struct QuorumCouncil;
 impl Coordinator for QuorumCouncil {
     fn kind(&self) -> &'static str {
         "quorum_council"
+    }
+
+    fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<Action> {
+        quorum_actions(cx)
     }
 
     fn starters(&self, roster: &[String], chair: Option<&str>) -> Vec<String> {
@@ -87,18 +118,7 @@ impl Coordinator for QuorumCouncil {
         // 2. quorum reached → enter Quorum + prompt the chair (was maybe_quorum).
         //    The Transition CAS + Prompt-after-failed-Transition suppression make
         //    this fire exactly once, on the call that actually transitions.
-        if quorum_reached(cx.roster(), chair, &cx.reactors(DONE_EMOJI), cx.quorum_n()) {
-            actions.push(Action::Transition {
-                from: SessionState::Deliberating,
-                to: SessionState::Quorum,
-            });
-            if let Some(c) = chair {
-                actions.push(Action::Prompt {
-                    to: c.to_string(),
-                    content: "Quorum reached. Chair, synthesize the final verdict, complete any side effect required by the opening trigger, and only then end your final message with [done]. Do not send [done] before the required side effect succeeds.".to_string(),
-                });
-            }
-        }
+        actions.extend(quorum_actions(cx));
 
         // 3. The chair's own done closes only after reviewer quorum. This prevents
         //    an opening-trigger chair response from closing the PR review before
@@ -137,6 +157,10 @@ impl Coordinator for ReviewCouncil {
 
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
         QuorumCouncil.on_done(cx, bot)
+    }
+
+    fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<Action> {
+        QuorumCouncil.on_roster_change(cx)
     }
 }
 
