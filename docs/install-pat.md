@@ -22,6 +22,7 @@ npx zeabur@latest template deploy -c Z7TQIR \
 `GH_TOKEN` should be scoped to the target repo:
 
 - `Pull requests`: Read and write
+- `Commit statuses`: Read and write (Checks tab "Details" links to the review)
 - `Contents`: Read-only
 
 After deploy, wait until `control-plane`, `chair`, `rev1`, and `rev2` are running.

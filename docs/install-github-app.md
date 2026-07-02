@@ -29,6 +29,7 @@ Create a GitHub App with:
 
 - Permissions:
   - `Pull requests`: Read and write
+  - `Commit statuses`: Read and write (Checks tab "Details" links to the review)
   - `Contents`: Read-only
 - Events:
   - Pull requests
