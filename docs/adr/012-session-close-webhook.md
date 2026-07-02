@@ -1,6 +1,6 @@
 # ADR 012 — Session close webhook callback
 
-Status: **proposed** · 2026-07-02
+Status: **accepted** · 2026-07-02
 
 ## Context
 

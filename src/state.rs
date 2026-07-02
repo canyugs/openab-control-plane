@@ -38,6 +38,8 @@ pub struct AppState {
     /// Coarse (one lock for all mints) but mints are rare at council scale; make it
     /// keyed if mint volume ever grows.
     pub github_mint_lock: tokio::sync::Mutex<()>,
+    /// Optional outbound webhook POSTed on session close (ADR 012). None = off.
+    pub close_webhook_url: Option<String>,
 }
 
 impl AppState {
@@ -50,6 +52,7 @@ impl AppState {
             std::env::var("OABCP_BOT_DISCOVERY_TOKEN").ok(),
             std::env::var("OABCP_CONFIG_BASE_URL")
                 .unwrap_or_else(|_| "http://control-plane.zeabur.internal:8090".to_string()),
+            std::env::var("OABCP_SESSION_CLOSE_WEBHOOK").ok(),
         )
     }
 
@@ -60,6 +63,7 @@ impl AppState {
         github_webhook_secret: Option<String>,
         bot_discovery_token: Option<String>,
         config_base_url: String,
+        close_webhook_url: Option<String>,
     ) -> Arc<AppState> {
         let (north_tx, _) = broadcast::channel(1024);
         Arc::new(AppState {
@@ -74,6 +78,7 @@ impl AppState {
             bot_discovery_token,
             config_base_url,
             github_mint_lock: tokio::sync::Mutex::new(()),
+            close_webhook_url,
         })
     }
 

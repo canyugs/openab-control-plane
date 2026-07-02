@@ -33,6 +33,7 @@ async fn spawn_server_with_discovery_token(token: &str) -> SocketAddr {
         None,
         Some(token.to_string()),
         "http://control-plane.zeabur.internal:8090".to_string(),
+        None,
     );
     let (addr, _) = spawn_server_with_app_state(state).await;
     addr
