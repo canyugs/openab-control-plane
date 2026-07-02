@@ -442,6 +442,13 @@ fn find_spare(
 /// already-recorded done-count sufficient, in which case the chair is prompted
 /// to synthesize now instead of waiting for the watchdog.
 fn trim_reviewer(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Result<()> {
+    // Narrow the check→trim race (council review on #68): a bot that reconnected
+    // since the sweep's connected check keeps its seat.
+    if let Some(inv) = state.store.bot_inventory(bot_id)? {
+        if inv.connected {
+            return Ok(());
+        }
+    }
     if !state.store.remove_session_bot(session_id, bot_id)? {
         return Ok(());
     }
@@ -1437,6 +1444,18 @@ mod tests {
         let roster = store.roster(&session.id).unwrap();
         assert!(roster.contains(&rev1), "voted reviewer must not be trimmed");
         assert!(roster.contains(&rev2), "connected reviewer must not be trimmed");
+        assert_eq!(store.session(&session.id).unwrap().unwrap().quorum_n, 2);
+    }
+
+    #[test]
+    fn liveness_trim_rechecks_connection_before_dropping() {
+        let (state, store, session, _chair, _rev1, rev2) = liveness_setup();
+        // rev2 is connected again by the time the trim runs (check→trim race)
+        trim_reviewer(&state, &session.id, &rev2).unwrap();
+        assert!(
+            store.roster(&session.id).unwrap().contains(&rev2),
+            "a reconnected bot must keep its seat",
+        );
         assert_eq!(store.session(&session.id).unwrap().unwrap().quorum_n, 2);
     }
 
