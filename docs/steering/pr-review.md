@@ -149,17 +149,18 @@ Quorum turn:
 
    If the review submission is refused (e.g. a self-review), note it in your
    reply and continue — the comment stays the report of record.
-6. Set a commit status so the Checks tab "Details" links to the review comment:
+6. Set a commit status so the Checks tab "Details" links to the review comment.
+   `COMMENT_URL` is the URL printed in step 4 (fall back to the PR URL):
 
    ```sh
    SHA=$(gh pr view N --repo owner/repo --json headRefOid -q .headRefOid)
    gh api repos/owner/repo/statuses/$SHA -f state=success -f context=openab/council \
-     -f description="Council: 🔴×0 🟡×2 🟢×5" -f target_url=<comment URL from step 4>
+     -f description="Council: 🔴×0 🟡×2 🟢×5" -f target_url="$COMMENT_URL"
    ```
 
    Use `state=success` for approve, `state=failure` for request-changes. If the
-   comment URL was not printed, use the PR URL instead. If the API call is
-   refused (missing Commit statuses permission), note it and continue.
+   API call is refused (missing Commit statuses permission), note it and
+   continue.
 7. After the PR comment update succeeds, reply in this thread ending with the
    verdict trailer and `[done]`, e.g.:
 

@@ -40,13 +40,13 @@ Chair quorum turn:
      or, when there are red findings:
        gh pr review {{NUM}} --repo {{REPO}} --request-changes --body "OpenAB Council: changes requested — see the review comment."
      If the review submission is refused (e.g. self-review), note it and continue.
-  5. Set a commit status so the Checks tab "Details" links to the review comment:
+  5. Set a commit status so the Checks tab "Details" links to the review comment.
+     COMMENT_URL is the URL printed in step 3 (fall back to https://github.com/{{REPO}}/pull/{{NUM}}):
        SHA=$(gh pr view {{NUM}} --repo {{REPO}} --json headRefOid -q .headRefOid)
        gh api repos/{{REPO}}/statuses/$SHA -f state=success -f context=openab/council \
-         -f description="Council: 🔴×0 🟡×2 🟢×5" -f target_url=<comment URL from step 3>
-     Use state=success for approve, state=failure for request_changes. If the comment
-     URL was not printed, use https://github.com/{{REPO}}/pull/{{NUM}} instead. If the
-     API call is refused (missing Commit statuses permission), note it and continue.
+         -f description="Council: 🔴×0 🟡×2 🟢×5" -f target_url="$COMMENT_URL"
+     Use state=success for approve, state=failure for request_changes. If the API call
+     is refused (missing Commit statuses permission), note it and continue.
   6. Only after the PR comment update succeeds, end your final message with the
      verdict trailer then [done], e.g.:
        [[verdict:request_changes r=1 y=3 g=5]] [done]
