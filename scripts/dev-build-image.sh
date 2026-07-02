@@ -78,4 +78,17 @@ echo "built image: ${IMAGE_NAME}:${TAG}"
 if [[ "$TAG_LOCAL" == "1" ]]; then
   echo "updated alias: ${IMAGE_NAME}:local"
 fi
-echo "next: scripts/dev-deploy-k8s.sh --image ${IMAGE_NAME}:${TAG}"
+
+# Push to local registry so Docker Desktop k8s can pull it.
+# The containerd snapshotter in Docker Desktop 4.80+ breaks the
+# dockerd→k8s image bridge; a local registry sidesteps the issue.
+LOCAL_REGISTRY="${LOCAL_REGISTRY:-localhost:5555}"
+if curl -sf "http://${LOCAL_REGISTRY}/v2/" >/dev/null 2>&1; then
+  local_ref="${LOCAL_REGISTRY}/${IMAGE_NAME}:${TAG}"
+  docker tag "${IMAGE_NAME}:${TAG}" "$local_ref"
+  docker push "$local_ref" >/dev/null 2>&1
+  echo "pushed to ${local_ref}"
+  echo "next: scripts/dev-deploy-k8s.sh --image ${local_ref}"
+else
+  echo "next: scripts/dev-deploy-k8s.sh --image ${IMAGE_NAME}:${TAG}"
+fi

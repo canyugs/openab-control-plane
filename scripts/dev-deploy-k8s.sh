@@ -168,7 +168,7 @@ spec:
       containers:
         - name: openab-control-plane
           image: "$IMAGE"
-          imagePullPolicy: Never
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: $REMOTE_PORT
           env:
