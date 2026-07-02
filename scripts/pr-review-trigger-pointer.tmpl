@@ -31,7 +31,17 @@ Chair quorum turn:
   1. After OCP later says quorum was reached, synthesize the reviewer findings.
   2. Overwrite /tmp/verdict.md with the full markdown verdict.
   3. Re-run the same gh pr comment command above to update the in-progress comment.
-  4. Only after the PR comment update succeeds, end your final message with [done].
+  4. Submit the review state so the merge UI reflects the decision:
+       gh pr review {{NUM}} --repo {{REPO}} --approve --body "OpenAB Council: approved — see the review comment."
+     or, when there are red findings:
+       gh pr review {{NUM}} --repo {{REPO}} --request-changes --body "OpenAB Council: changes requested — see the review comment."
+     If the review submission is refused (e.g. self-review), note it and continue.
+  5. Only after the PR comment update succeeds, end your final message with the
+     verdict trailer then [done], e.g.:
+       [[verdict:request_changes r=1 y=3 g=5]] [done]
+     r/y/g = the count of red/yellow/green findings in your final report; use
+     approve or request_changes to match the review you submitted. The trailer is
+     machine-parsed — keep the exact format.
 
 The [done] token (on its own, at the end of your last message) is how the council records that you are finished — it is what closes the session. Send it exactly once, when truly done.
 

@@ -134,8 +134,29 @@ Quorum turn:
 3. Synthesize one final OpenAB-style report in `/tmp/verdict.md`.
 4. Re-run the same `gh pr comment ... --edit-last --create-if-none --body-file`
    command.
-5. After the PR comment update succeeds, reply in this thread and end with
-   `[done]`.
+5. Submit the GitHub review state so the merge UI reflects the council's
+   decision:
+
+   ```sh
+   gh pr review N --repo owner/repo --approve \
+     --body "OpenAB Council: approved — see the review comment."
+   # or, when there are 🔴 findings:
+   gh pr review N --repo owner/repo --request-changes \
+     --body "OpenAB Council: changes requested — see the review comment."
+   ```
+
+   If the review submission is refused (e.g. a self-review), note it in your
+   reply and continue — the comment stays the report of record.
+6. After the PR comment update succeeds, reply in this thread ending with the
+   verdict trailer and `[done]`, e.g.:
+
+   ```
+   [[verdict:request_changes r=1 y=3 g=5]] [done]
+   ```
+
+   `r`/`y`/`g` = the count of 🔴/🟡/🟢 findings in your final report; match the
+   decision to the review you submitted. The trailer is machine-parsed by the
+   plane — keep the exact format.
 
 If reviewer findings are minor, clearly mark them as non-blocking. If a later
 session message says a finding was fixed in a newer head, include that in the
