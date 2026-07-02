@@ -211,7 +211,7 @@ fi
 kubectl -n "$KUBE_NAMESPACE" get pods -l app=control-plane \
   -o custom-columns=NAME:.metadata.name,READY:.status.containerStatuses[0].ready,IMAGE:.spec.containers[0].image,IMAGE_ID:.status.containerStatuses[0].imageID,STATUS:.status.phase
 
-if [[ "$CHECK_IMAGE_ID" == "1" ]] && command -v docker >/dev/null 2>&1; then
+if [[ "$CHECK_IMAGE_ID" == "1" ]] && [[ "$IMAGE" != localhost:* ]] && [[ "$IMAGE" != 127.0.0.1:* ]] && command -v docker >/dev/null 2>&1; then
   local_image_id=$(docker image inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null || true)
   if [[ -n "$local_image_id" ]]; then
     pod_image_ids=$(kubectl -n "$KUBE_NAMESPACE" get pods -l app=control-plane \
