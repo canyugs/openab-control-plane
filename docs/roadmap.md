@@ -97,7 +97,7 @@ Goal: richer multi-agent patterns beyond broadcast+quorum.
 | Item | Status | Notes |
 |------|--------|-------|
 | **Shared blackboard** — KV/task state agents read+write (claim tasks, partial results) | TODO | Design first: KV vs task-list+claim |
-| **Liveness / timeouts** — heartbeat-driven stall detection, per-step timeouts | TODO | Richer detection beyond the Phase 1 session-close watchdog (which guarantees termination). `last_seen` recorded but unused |
+| **Liveness / timeouts** — heartbeat-driven stall detection, per-step timeouts | **✅ v1** (#68) | Liveness policy sweep: a roster member disconnected past `OABCP_LIVENESS_GRACE_SECS` (default 60s) flips to `unreachable`, is replaced from the inventory (same-role connected spare), or — reviewer with no spare — trimmed with the quorum shrunk so the session converges on the survivors (chair is replace-only). Reconnect flips health back. Live-verified: reviewer pod killed mid-council on #68 → closed with quorum in 2m53s, no watchdog. Deferred: per-step timeouts, zombie (connected-but-silent) detection via WS ping |
 | **Targeted addressing / handoff** — first-class A→B direct send | TODO | Currently broadcast + @mention-gate |
 
 ## Phase 4 — Platform
