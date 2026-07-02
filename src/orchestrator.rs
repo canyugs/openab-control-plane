@@ -325,11 +325,59 @@ pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bo
     state.emit_north(
         "verdict",
         session_id,
-        json!({ "text": verdict, "reason": "timeout" }),
+        json!({ "text": verdict.clone(), "reason": "timeout" }),
     );
     state.emit_north("state", session_id, json!({ "state": "closed" }));
+    fire_close_webhook(state, session_id, &verdict, "timeout");
     tracing::warn!("watchdog force-closed stale session {session_id}");
     Ok(true)
+}
+
+/// Build the ADR 012 `session.closed` webhook payload. Pure — unit-tested.
+fn close_webhook_payload(
+    session: Option<&Session>,
+    session_id: &str,
+    roster: &[String],
+    verdict: &str,
+    reason: &str,
+) -> serde_json::Value {
+    json!({
+        "event": "session.closed",
+        "session_id": session_id,
+        "trigger_ref": session.and_then(|s| s.trigger_ref.clone()),
+        "mode": session.map(|s| s.mode.clone()),
+        "verdict": verdict,
+        "reason": reason,
+        "roster": roster,
+        "ts": crate::store::now_ms(),
+    })
+}
+
+/// ADR 012: fire-and-forget POST to `OABCP_SESSION_CLOSE_WEBHOOK` after a
+/// session closes. Best-effort by design — a failure logs a warning; no retry,
+/// no queue (the verdict already lives on the PR and in the store). No-op when
+/// the env var is unset.
+fn fire_close_webhook(state: &Arc<AppState>, session_id: &str, verdict: &str, reason: &str) {
+    let Some(url) = state.close_webhook_url.clone() else {
+        return;
+    };
+    let session = state.store.session(session_id).ok().flatten();
+    let roster = state.store.roster(session_id).unwrap_or_default();
+    let payload = close_webhook_payload(session.as_ref(), session_id, &roster, verdict, reason);
+    let session_id = session_id.to_string();
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        match client.post(&url).json(&payload).send().await {
+            Ok(resp) if !resp.status().is_success() => {
+                tracing::warn!(
+                    "close webhook for {session_id} returned {}",
+                    resp.status()
+                );
+            }
+            Err(e) => tracing::warn!("close webhook for {session_id} failed: {e}"),
+            _ => {}
+        }
+    });
 }
 
 /// Reconstruct the sender of a stored message (for history backfill).
@@ -852,8 +900,9 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     ) {
                         tracing::warn!("revoke github tokens for {} failed: {e}", session.id);
                     }
-                    state.emit_north("verdict", &session.id, json!({ "text": verdict }));
+                    state.emit_north("verdict", &session.id, json!({ "text": verdict.clone() }));
                     state.emit_north("state", &session.id, json!({ "state": "closed" }));
+                    fire_close_webhook(state, &session.id, &verdict, "normal");
                 }
             }
         }
@@ -975,6 +1024,26 @@ mod tests {
     use crate::protocol::ReplyChannel;
     use crate::state::AppState;
     use crate::store::{SqliteStore, Store};
+
+    #[test]
+    fn close_webhook_payload_shape() {
+        let mut s = test_session(Some("chair"), "review_council");
+        s.trigger_ref = Some("github:pr/o/r#1".into());
+        let roster = vec!["chair".to_string(), "rev1".to_string()];
+        let p = close_webhook_payload(Some(&s), &s.id, &roster, "LGTM", "normal");
+        assert_eq!(p["event"], "session.closed");
+        assert_eq!(p["session_id"], "ses_1");
+        assert_eq!(p["trigger_ref"], "github:pr/o/r#1");
+        assert_eq!(p["mode"], "review_council");
+        assert_eq!(p["verdict"], "LGTM");
+        assert_eq!(p["reason"], "normal");
+        assert_eq!(p["roster"], serde_json::json!(["chair", "rev1"]));
+        assert!(p["ts"].as_i64().unwrap() > 0);
+        // Session lookup failed → fields null, payload still well-formed.
+        let p = close_webhook_payload(None, "ses_x", &[], "v", "timeout");
+        assert!(p["trigger_ref"].is_null());
+        assert!(p["mode"].is_null());
+    }
 
     fn test_session(chair: Option<&str>, mode: &str) -> Session {
         Session {

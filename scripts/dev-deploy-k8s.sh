@@ -14,6 +14,7 @@ OABCP_AGENT_COMMAND="${OABCP_AGENT_COMMAND:-}"
 OABCP_AGENT_PROFILES="${OABCP_AGENT_PROFILES:-}"
 OABCP_AGENT_WORKING_DIR="${OABCP_AGENT_WORKING_DIR:-}"
 OABCP_AGENT_INHERIT_ENV="${OABCP_AGENT_INHERIT_ENV:-}"
+OABCP_SESSION_CLOSE_WEBHOOK="${OABCP_SESSION_CLOSE_WEBHOOK:-}"
 REMOTE_PORT="${REMOTE_PORT:-8090}"
 WAIT_ROLLOUT=1
 CHECK_CONTEXT=1
@@ -45,7 +46,7 @@ Environment:
   IMAGE, KUBE_NAMESPACE, KUBE_CONTEXT, OABCP_API_KEY,
   GITHUB_WEBHOOK_SECRET, OABCP_BOTS, OABCP_COUNCIL_ROSTER, OABCP_WS_URL,
   OABCP_AGENT_COMMAND, OABCP_AGENT_PROFILES, OABCP_AGENT_WORKING_DIR,
-  OABCP_AGENT_INHERIT_ENV.
+  OABCP_AGENT_INHERIT_ENV, OABCP_SESSION_CLOSE_WEBHOOK.
 USAGE
 }
 
@@ -143,6 +144,7 @@ optional_env_yaml=""
 [[ -n "$OABCP_AGENT_PROFILES" ]] && append_optional_env_yaml OABCP_AGENT_PROFILES "$OABCP_AGENT_PROFILES"
 [[ -n "$OABCP_AGENT_WORKING_DIR" ]] && append_optional_env_yaml OABCP_AGENT_WORKING_DIR "$OABCP_AGENT_WORKING_DIR"
 [[ -n "$OABCP_AGENT_INHERIT_ENV" ]] && append_optional_env_yaml OABCP_AGENT_INHERIT_ENV "$OABCP_AGENT_INHERIT_ENV"
+[[ -n "$OABCP_SESSION_CLOSE_WEBHOOK" ]] && append_optional_env_yaml OABCP_SESSION_CLOSE_WEBHOOK "$OABCP_SESSION_CLOSE_WEBHOOK"
 restart_nonce=$(date +%s)
 
 echo "applying local control-plane deployment with image: $IMAGE"
@@ -211,7 +213,7 @@ fi
 kubectl -n "$KUBE_NAMESPACE" get pods -l app=control-plane \
   -o custom-columns=NAME:.metadata.name,READY:.status.containerStatuses[0].ready,IMAGE:.spec.containers[0].image,IMAGE_ID:.status.containerStatuses[0].imageID,STATUS:.status.phase
 
-if [[ "$CHECK_IMAGE_ID" == "1" ]] && command -v docker >/dev/null 2>&1; then
+if [[ "$CHECK_IMAGE_ID" == "1" ]] && [[ "$IMAGE" != localhost:* ]] && [[ "$IMAGE" != 127.0.0.1:* ]] && command -v docker >/dev/null 2>&1; then
   local_image_id=$(docker image inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null || true)
   if [[ -n "$local_image_id" ]]; then
     pod_image_ids=$(kubectl -n "$KUBE_NAMESPACE" get pods -l app=control-plane \

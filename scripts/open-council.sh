@@ -124,7 +124,8 @@ fi
 OPEN_BODY=$(ROSTER="$EFF_ROSTER" REF="$REF" QUORUM="$QUORUM_EFF" MODE="${MODE:-}" node -e '
   const r = JSON.parse(process.env.ROSTER);
   const quorum = process.env.QUORUM ? Number(process.env.QUORUM) : Math.max(0, r.length - 1);
-  const mode = process.env.MODE || (r.length === 1 ? "solo" : "council");
+  const isPR = /^github:pr\//.test(process.env.REF || "");
+  const mode = process.env.MODE || (r.length === 1 ? "solo" : isPR ? "review_council" : "council");
   process.stdout.write(JSON.stringify({
     title: "council", trigger_ref: process.env.REF, roster: r,
     quorum_n: quorum, chair_bot: r[0], mode,
