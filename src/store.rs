@@ -212,6 +212,11 @@ pub trait Store: Send + Sync {
         old_bot_id: &str,
         new_bot_id: &str,
     ) -> Result<bool>;
+    /// Remove one bot from a session roster (liveness trim). The caller shrinks
+    /// the quorum and purges the bot's pending outbox.
+    fn remove_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool>;
+    /// Adjust a session's quorum (liveness trim after a roster drop).
+    fn set_session_quorum(&self, session_id: &str, quorum_n: i64) -> Result<()>;
     /// Update the authoritative chair identity for a session. Used when replacing
     /// the current chair with another chair-capable bot.
     fn set_session_chair(&self, session_id: &str, chair_bot: &str) -> Result<()>;
@@ -997,6 +1002,24 @@ impl Store for SqliteStore {
             params![session_id, bot_id],
         )?;
         Ok(n == 1)
+    }
+
+    fn remove_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool> {
+        let c = self.conn.lock().unwrap();
+        let n = c.execute(
+            "DELETE FROM session_bots WHERE session_id = ?1 AND bot_id = ?2",
+            params![session_id, bot_id],
+        )?;
+        Ok(n == 1)
+    }
+
+    fn set_session_quorum(&self, session_id: &str, quorum_n: i64) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "UPDATE sessions SET quorum_n = ?2 WHERE id = ?1",
+            params![session_id, quorum_n],
+        )?;
+        Ok(())
     }
 
     fn replace_session_bot(

@@ -32,6 +32,22 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
 
     let conn_gen = state.register_conn(&bot_id, tx);
     let _ = state.store.set_connected(&bot_id, true);
+    // Liveness recovery: a reconnected bot is healthy again. Only unwind the
+    // sweep's own `unreachable` flip — never an operator-set health value.
+    if let Ok(Some(inv)) = state.store.bot_inventory(&bot_id) {
+        if inv.health == "unreachable" {
+            let patch = crate::store::BotMetadataPatch {
+                health: Some("ok".into()),
+                ..Default::default()
+            };
+            let _ = state.store.update_bot_metadata(&bot_id, &patch);
+            state.emit_north(
+                "bot_health",
+                "-",
+                serde_json::json!({ "bot": bot_id, "health": "ok" }),
+            );
+        }
+    }
     // Replay anything queued while this bot was offline (durable outbox).
     state.flush_outbox(&bot_id);
     tracing::info!("bot {bot_id} connected");

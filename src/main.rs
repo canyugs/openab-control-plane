@@ -20,6 +20,7 @@ async fn main() -> anyhow::Result<()> {
     seed_roster(store.as_ref())?;
     let state = AppState::new(store);
     spawn_watchdog(state.clone());
+    spawn_liveness(state.clone());
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -73,6 +74,31 @@ fn spawn_watchdog(state: Arc<AppState>) {
                     }
                 }
                 Err(e) => tracing::error!("watchdog scan failed: {e}"),
+            }
+        }
+    });
+}
+
+/// Liveness policy sweep (A3): disconnected roster member past the grace window
+/// → health flip → replace from inventory, or trim + shrink quorum
+/// (`orchestrator::sweep_liveness`). Grace must exceed the OAB reconnect backoff
+/// (1–30s) so a plane or pod bounce isn't misread as death. Default 60s;
+/// `OABCP_LIVENESS_GRACE_SECS=0` disables the sweep.
+fn spawn_liveness(state: Arc<AppState>) {
+    let grace_secs: i64 = std::env::var("OABCP_LIVENESS_GRACE_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60);
+    if grace_secs <= 0 {
+        tracing::info!("liveness sweep disabled (OABCP_LIVENESS_GRACE_SECS=0)");
+        return;
+    }
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            tick.tick().await;
+            if let Err(e) = orchestrator::sweep_liveness(&state, grace_secs * 1000) {
+                tracing::error!("liveness sweep failed: {e}");
             }
         }
     });
