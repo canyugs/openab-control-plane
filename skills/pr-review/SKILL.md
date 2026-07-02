@@ -120,9 +120,11 @@ Opening turn:
 Quorum turn:
 
 1. Read the reviewer findings already in this thread.
-2. Synthesize one final OpenAB-style report in `/tmp/verdict.md`.
+2. Synthesize one final OpenAB-style report in `/tmp/verdict.md`. End the body
+   with the summary + action menu footer (see the report format below); the
+   counts must match your verdict trailer.
 3. Re-run the same `gh pr comment ... --edit-last --create-if-none --body-file`
-   command.
+   command. It prints the comment URL — keep it for the commit status in step 5.
 4. Submit the GitHub review state so the merge UI reflects the council's
    decision (a comment alone is scrollable-past):
 
@@ -136,7 +138,19 @@ Quorum turn:
 
    If the review submission fails (e.g. GitHub refuses a self-review), say so
    in your reply and continue — the comment is still the report of record.
-5. After the PR comment update succeeds, reply here ending with the verdict
+5. Set a commit status so the Checks tab "Details" links to the review comment.
+   `COMMENT_URL` is the URL printed in step 3 (fall back to the PR URL):
+
+   ```sh
+   SHA=$(gh pr view N --repo owner/repo --json headRefOid -q .headRefOid)
+   gh api repos/owner/repo/statuses/$SHA -f state=success -f context=openab/council \
+     -f description="Council: 🔴×0 🟡×2 🟢×5" -f target_url="$COMMENT_URL"
+   ```
+
+   Use `state=success` for approve, `state=failure` for request-changes. If the
+   API call is refused (missing Commit statuses permission), say so and
+   continue.
+6. After the PR comment update succeeds, reply here ending with the verdict
    trailer and `[done]`, e.g.:
 
    ```
@@ -198,6 +212,9 @@ Merged explanation from reviewers. Preserve disagreement when it matters.
 - Absent reviewers: none / list
 
 </details>
+
+---
+🔴×1 🟡×3 🟢×5 · 💬 Comment `/ask <question>` for a follow-up · 🔁 Push new commits to re-run the council
 ```
 
 Use `LGTM ✅` when there are no critical findings. Use

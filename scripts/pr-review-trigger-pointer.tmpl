@@ -29,14 +29,25 @@ Chair opening turn:
 
 Chair quorum turn:
   1. After OCP later says quorum was reached, synthesize the reviewer findings.
-  2. Overwrite /tmp/verdict.md with the full markdown verdict.
+  2. Overwrite /tmp/verdict.md with the full markdown verdict. End the body with a
+     one-line summary + action menu footer (counts must match your verdict trailer):
+       ---
+       🔴×1 🟡×3 🟢×5 · 💬 Comment `/ask <question>` for a follow-up · 🔁 Push new commits to re-run the council
   3. Re-run the same gh pr comment command above to update the in-progress comment.
+     It prints the comment URL — keep it for the commit status in step 5.
   4. Submit the review state so the merge UI reflects the decision:
        gh pr review {{NUM}} --repo {{REPO}} --approve --body "OpenAB Council: approved — see the review comment."
      or, when there are red findings:
        gh pr review {{NUM}} --repo {{REPO}} --request-changes --body "OpenAB Council: changes requested — see the review comment."
      If the review submission is refused (e.g. self-review), note it and continue.
-  5. Only after the PR comment update succeeds, end your final message with the
+  5. Set a commit status so the Checks tab "Details" links to the review comment.
+     COMMENT_URL is the URL printed in step 3 (fall back to https://github.com/{{REPO}}/pull/{{NUM}}):
+       SHA=$(gh pr view {{NUM}} --repo {{REPO}} --json headRefOid -q .headRefOid)
+       gh api repos/{{REPO}}/statuses/$SHA -f state=success -f context=openab/council \
+         -f description="Council: 🔴×0 🟡×2 🟢×5" -f target_url="$COMMENT_URL"
+     Use state=success for approve, state=failure for request_changes. If the API call
+     is refused (missing Commit statuses permission), note it and continue.
+  6. Only after the PR comment update succeeds, end your final message with the
      verdict trailer then [done], e.g.:
        [[verdict:request_changes r=1 y=3 g=5]] [done]
      r/y/g = the count of red/yellow/green findings in your final report; use

@@ -302,6 +302,21 @@ mod tests {
     }
 
     #[test]
+    fn render_trigger_includes_commit_status_and_action_menu() {
+        let t = render_trigger("canyugs/ocp", 7, "");
+        // commit status: Checks tab "Details" links to the review comment
+        assert!(t.contains("repos/canyugs/ocp/statuses/"));
+        assert!(t.contains("headRefOid"));
+        assert!(t.contains("state=success"));
+        assert!(t.contains("state=failure"));
+        assert!(t.contains("target_url"));
+        assert!(t.contains("openab/council"));
+        // action menu footer in the final PR comment
+        assert!(t.contains("/ask"));
+        assert!(t.contains("re-run"));
+    }
+
+    #[test]
     fn review_session_uses_review_council_mode() {
         let action = review_open_session_action("o/r", 1, None).unwrap();
         assert_eq!(action.mode, "review_council");
