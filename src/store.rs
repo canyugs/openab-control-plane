@@ -108,6 +108,12 @@ pub struct Session {
     pub closed_at: Option<i64>,
     /// Coordination mode → picks the `Coordinator` (default "council").
     pub mode: String,
+    /// Structured verdict (ADR 013), parsed from the chair's `[[verdict:…]]`
+    /// trailer at normal close. All NULL on timeout or missing trailer.
+    pub decision: Option<String>,
+    pub findings_red: Option<i64>,
+    pub findings_yellow: Option<i64>,
+    pub findings_green: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,6 +222,16 @@ pub trait Store: Send + Sync {
     /// state is unknown when a timeout fires). CAS so only one caller wins;
     /// returns true if this call performed the close.
     fn close_if_active(&self, session_id: &str) -> Result<bool>;
+    /// Record the structured verdict (ADR 013) parsed from the chair's
+    /// `[[verdict:…]]` trailer. Called once at normal close; never on timeout.
+    fn set_session_verdict(
+        &self,
+        session_id: &str,
+        decision: &str,
+        red: Option<i64>,
+        yellow: Option<i64>,
+        green: Option<i64>,
+    ) -> Result<()>;
     /// Non-terminal session ids created before `cutoff_ms` — watchdog candidates.
     fn active_sessions_before(&self, cutoff_ms: i64) -> Result<Vec<String>>;
     fn roster(&self, session_id: &str) -> Result<Vec<String>>;
@@ -292,7 +308,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY, title TEXT NOT NULL, state TEXT NOT NULL,
     trigger_ref TEXT, quorum_n INTEGER NOT NULL, chair_bot TEXT,
     created_at INTEGER NOT NULL, closed_at INTEGER,
-    mode TEXT NOT NULL DEFAULT 'council'
+    mode TEXT NOT NULL DEFAULT 'council',
+    decision TEXT, findings_red INTEGER, findings_yellow INTEGER, findings_green INTEGER
 );
 CREATE TABLE IF NOT EXISTS session_bots (
     session_id TEXT NOT NULL, bot_id TEXT NOT NULL,
@@ -337,6 +354,10 @@ fn migrate(conn: &Connection) -> Result<()> {
         "ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'council'",
         [],
     );
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN decision TEXT", []);
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN findings_red INTEGER", []);
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN findings_yellow INTEGER", []);
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN findings_green INTEGER", []);
     let _ = conn.execute("ALTER TABLE outbox ADD COLUMN session_id TEXT", []);
     let _ = conn.execute("ALTER TABLE bots ADD COLUMN provider TEXT", []);
     let _ = conn.execute(
@@ -492,7 +513,8 @@ impl SqliteStore {
         trigger_ref: &str,
     ) -> Result<Option<Session>> {
         Ok(c.query_row(
-            "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode
+            "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode,
+                            decision, findings_red, findings_yellow, findings_green
              FROM sessions
              WHERE trigger_ref = ?1 AND state NOT IN ('closed', 'aborted')
              ORDER BY created_at DESC, id DESC
@@ -509,6 +531,10 @@ impl SqliteStore {
                     created_at: r.get(6)?,
                     closed_at: r.get(7)?,
                     mode: r.get(8)?,
+                    decision: r.get(9)?,
+                    findings_red: r.get(10)?,
+                    findings_yellow: r.get(11)?,
+                    findings_green: r.get(12)?,
                 })
             },
         )
@@ -803,6 +829,10 @@ impl Store for SqliteStore {
             created_at,
             closed_at: None,
             mode: mode.to_string(),
+            decision: None,
+            findings_red: None,
+            findings_yellow: None,
+            findings_green: None,
         })
     }
 
@@ -844,7 +874,8 @@ impl Store for SqliteStore {
         let c = self.conn.lock().unwrap();
         let s = c
             .query_row(
-                "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode
+                "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode,
+                            decision, findings_red, findings_yellow, findings_green
                  FROM sessions WHERE id = ?1",
                 params![id],
                 |r| {
@@ -858,6 +889,10 @@ impl Store for SqliteStore {
                         created_at: r.get(6)?,
                         closed_at: r.get(7)?,
                         mode: r.get(8)?,
+                        decision: r.get(9)?,
+                        findings_red: r.get(10)?,
+                        findings_yellow: r.get(11)?,
+                        findings_green: r.get(12)?,
                     })
                 },
             )
@@ -882,6 +917,10 @@ impl Store for SqliteStore {
                 created_at: r.get(6)?,
                 closed_at: r.get(7)?,
                 mode: r.get(8)?,
+                decision: r.get(9)?,
+                findings_red: r.get(10)?,
+                findings_yellow: r.get(11)?,
+                findings_green: r.get(12)?,
             })
         }
 
@@ -890,7 +929,8 @@ impl Store for SqliteStore {
         let sessions = match (trigger_ref, state) {
             (Some(trigger_ref), Some(state)) => {
                 let mut stmt = c.prepare(
-                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode
+                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode,
+                            decision, findings_red, findings_yellow, findings_green
                      FROM sessions
                      WHERE trigger_ref = ?1 AND state = ?2
                      ORDER BY created_at DESC, rowid DESC
@@ -904,7 +944,8 @@ impl Store for SqliteStore {
             }
             (Some(trigger_ref), None) => {
                 let mut stmt = c.prepare(
-                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode
+                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode,
+                            decision, findings_red, findings_yellow, findings_green
                      FROM sessions
                      WHERE trigger_ref = ?1
                      ORDER BY created_at DESC, rowid DESC
@@ -918,7 +959,8 @@ impl Store for SqliteStore {
             }
             (None, Some(state)) => {
                 let mut stmt = c.prepare(
-                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode
+                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode,
+                            decision, findings_red, findings_yellow, findings_green
                      FROM sessions
                      WHERE state = ?1
                      ORDER BY created_at DESC, rowid DESC
@@ -932,7 +974,8 @@ impl Store for SqliteStore {
             }
             (None, None) => {
                 let mut stmt = c.prepare(
-                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode
+                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode,
+                            decision, findings_red, findings_yellow, findings_green
                      FROM sessions
                      ORDER BY created_at DESC, rowid DESC
                      LIMIT ?1",
@@ -1023,6 +1066,24 @@ impl Store for SqliteStore {
             params![session_id, now_ms()],
         )?;
         Ok(n == 1)
+    }
+
+    fn set_session_verdict(
+        &self,
+        session_id: &str,
+        decision: &str,
+        red: Option<i64>,
+        yellow: Option<i64>,
+        green: Option<i64>,
+    ) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "UPDATE sessions SET decision = ?2, findings_red = ?3,
+                    findings_yellow = ?4, findings_green = ?5
+             WHERE id = ?1",
+            params![session_id, decision, red, yellow, green],
+        )?;
+        Ok(())
     }
 
     fn active_sessions_before(&self, cutoff_ms: i64) -> Result<Vec<String>> {

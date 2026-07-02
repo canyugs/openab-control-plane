@@ -333,6 +333,47 @@ pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bo
     Ok(true)
 }
 
+/// Parsed `[[verdict:…]]` trailer (ADR 013): chair decision + optional 🔴/🟡/🟢 counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerdictTrailer {
+    pub decision: String, // "approve" | "request_changes"
+    pub red: Option<i64>,
+    pub yellow: Option<i64>,
+    pub green: Option<i64>,
+}
+
+/// Parse the last `[[verdict:approve|request_changes r=N y=N g=N]]` trailer in
+/// the chair's final message (ADR 013). Counts are optional. An unknown
+/// decision or any malformed part rejects the whole trailer (None) — the
+/// session then closes with NULLs, today's prose-only behavior.
+pub fn parse_verdict_trailer(text: &str) -> Option<VerdictTrailer> {
+    let start = text.rfind("[[verdict:")?;
+    let rest = &text[start + "[[verdict:".len()..];
+    let inner = &rest[..rest.find("]]")?];
+    let mut parts = inner.split_whitespace();
+    let decision = parts.next()?;
+    if decision != "approve" && decision != "request_changes" {
+        return None;
+    }
+    let (mut red, mut yellow, mut green) = (None, None, None);
+    for part in parts {
+        let (key, value) = part.split_once('=')?;
+        let n: i64 = value.parse().ok()?;
+        match key {
+            "r" => red = Some(n),
+            "y" => yellow = Some(n),
+            "g" => green = Some(n),
+            _ => return None,
+        }
+    }
+    Some(VerdictTrailer {
+        decision: decision.to_string(),
+        red,
+        yellow,
+        green,
+    })
+}
+
 /// Build the ADR 012 `session.closed` webhook payload. Pure — unit-tested.
 fn close_webhook_payload(
     session: Option<&Session>,
@@ -349,6 +390,11 @@ fn close_webhook_payload(
         "verdict": verdict,
         "reason": reason,
         "roster": roster,
+        // ADR 013: structured verdict (all null on timeout / missing trailer).
+        "decision": session.and_then(|s| s.decision.clone()),
+        "findings_red": session.and_then(|s| s.findings_red),
+        "findings_yellow": session.and_then(|s| s.findings_yellow),
+        "findings_green": session.and_then(|s| s.findings_green),
         "ts": crate::store::now_ms(),
     })
 }
@@ -900,7 +946,41 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     ) {
                         tracing::warn!("revoke github tokens for {} failed: {e}", session.id);
                     }
-                    state.emit_north("verdict", &session.id, json!({ "text": verdict.clone() }));
+                    // ADR 013: record the chair's structured verdict before the
+                    // webhook fires (it re-reads the session from the store).
+                    let trailer = parse_verdict_trailer(&verdict);
+                    match &trailer {
+                        Some(t) => {
+                            if let Err(e) = state.store.set_session_verdict(
+                                &session.id,
+                                &t.decision,
+                                t.red,
+                                t.yellow,
+                                t.green,
+                            ) {
+                                tracing::warn!(
+                                    "record verdict for {} failed: {e}",
+                                    session.id
+                                );
+                            }
+                        }
+                        None => tracing::warn!(
+                            "no [[verdict:…]] trailer in chair final for {}; \
+                             structured verdict stays NULL",
+                            session.id
+                        ),
+                    }
+                    state.emit_north(
+                        "verdict",
+                        &session.id,
+                        json!({
+                            "text": verdict.clone(),
+                            "decision": trailer.as_ref().map(|t| t.decision.clone()),
+                            "findings_red": trailer.as_ref().and_then(|t| t.red),
+                            "findings_yellow": trailer.as_ref().and_then(|t| t.yellow),
+                            "findings_green": trailer.as_ref().and_then(|t| t.green),
+                        }),
+                    );
                     state.emit_north("state", &session.id, json!({ "state": "closed" }));
                     fire_close_webhook(state, &session.id, &verdict, "normal");
                 }
@@ -1026,6 +1106,35 @@ mod tests {
     use crate::store::{SqliteStore, Store};
 
     #[test]
+    fn verdict_trailer_parsing() {
+        // Full form, embedded in a real chair final.
+        let t = parse_verdict_trailer(
+            "Report…\n\nVerdict: request changes\n[[verdict:request_changes r=1 y=3 g=5]] [done]",
+        )
+        .unwrap();
+        assert_eq!(t.decision, "request_changes");
+        assert_eq!((t.red, t.yellow, t.green), (Some(1), Some(3), Some(5)));
+
+        // Decision only — counts optional.
+        let t = parse_verdict_trailer("LGTM [[verdict:approve]] [done]").unwrap();
+        assert_eq!(t.decision, "approve");
+        assert_eq!((t.red, t.yellow, t.green), (None, None, None));
+
+        // Last trailer wins (chair quoted an earlier draft).
+        let t = parse_verdict_trailer("[[verdict:approve]] … [[verdict:request_changes r=2]]")
+            .unwrap();
+        assert_eq!(t.decision, "request_changes");
+        assert_eq!(t.red, Some(2));
+
+        // Malformed → None, never a partial parse.
+        assert!(parse_verdict_trailer("no trailer here [done]").is_none());
+        assert!(parse_verdict_trailer("[[verdict:maybe r=1]]").is_none());
+        assert!(parse_verdict_trailer("[[verdict:approve r=lots]]").is_none());
+        assert!(parse_verdict_trailer("[[verdict:approve x=1]]").is_none());
+        assert!(parse_verdict_trailer("[[verdict:approve r=1").is_none()); // unclosed
+    }
+
+    #[test]
     fn close_webhook_payload_shape() {
         let mut s = test_session(Some("chair"), "review_council");
         s.trigger_ref = Some("github:pr/o/r#1".into());
@@ -1056,6 +1165,10 @@ mod tests {
             created_at: 0,
             closed_at: None,
             mode: mode.into(),
+            decision: None,
+            findings_red: None,
+            findings_yellow: None,
+            findings_green: None,
         }
     }
 

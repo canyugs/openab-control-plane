@@ -979,6 +979,11 @@ async fn council_closes_on_text_done_signal() {
         closed,
         "council must close on text [done] (no reactions sent): {last}"
     );
+    // ADR 013: the [[verdict:…]] trailer in the chair final lands as columns.
+    assert_eq!(last["session"]["decision"], "approve", "structured decision: {last}");
+    assert_eq!(last["session"]["findings_red"], 0);
+    assert_eq!(last["session"]["findings_yellow"], 1);
+    assert_eq!(last["session"]["findings_green"], 2);
     assert!(
         last["messages"]
             .as_array()
@@ -1032,7 +1037,7 @@ fn spawn_text_done_bot(
                 Role::Chair if sender == "system" => {
                     w.send(reply(
                         &session,
-                        "VERDICT: approved [done]",
+                        "VERDICT: approved [[verdict:approve r=0 y=1 g=2]] [done]",
                         None,
                         None,
                         None,
