@@ -14,9 +14,13 @@ open-source pipeline (precision/recall vs 24 human golden comments).
 
 | Metric | Value |
 |--------|-------|
-| Precision | **23.9%** (16 TP / 67 candidates) |
+| Precision | **23.9%** (16 TP / 67 judged = TP+FP) |
 | Recall | **66.7%** (16 / 24 golden) |
 | F1 | **35.2%** |
+
+Precision denominator is TP+FP = 67 (candidate↔golden judgements), not the
+raw `candidates` column below, which sums to 76: dedup collapses 9 sibling
+duplicates before judging, so raw candidates ≥ TP+FP.
 
 Recall well above SWE-PRBench's 15–31% frontier expectation; precision is
 the noise problem quantified — ~3 of every 4 council findings don't map to a
@@ -24,6 +28,9 @@ human golden comment. (FP is pessimistic: a real-but-not-golden finding
 counts against precision. Same rule for every tool, so comparable.)
 
 ## Per-PR
+
+`candidates` = raw issues extracted from the review (pre-dedup); it can
+exceed TP+FP for that row because dedup merges siblings before judging.
 
 | repo/PR | TP | FP | FN | candidates | golden |
 |---------|----|----|----|------------|--------|
