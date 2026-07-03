@@ -35,14 +35,14 @@ is no ground truth for what the council *missed*.
 | 74 | 1 | 🟡 | rev1, rev2 | `candidates` column (sum 76) reads as precision denominator (67=TP+FP) | acted-on | fixed in follow-up commit (dedup explanation added) |
 | 74 | 2 | 🟡 | rev1 | 7/10 rows TP+FP ≠ candidates — needs footnote | acted-on | same commit; both reviewers caught it independently |
 
-All-green reviews (no 🔴/🟡): #59, #62, #64, #65, #66, #67, #72 — 7 of 14
-council reports.
+All-green reviews (no 🔴/🟡): #59, #62, #64, #65, #66, #67, #72, #75 — 8 of
+15 council reports.
 
 ## Tally (v1 rules)
 
 - 13 findings: **acted-on 4 · known-deferred 2 · noise 5 · open 2**
 - Precision proxy: **6/11 ≈ 55%**
-- 🔴 count across all 14 dogfood reviews: **0** — the council has never
+- 🔴 count across all 15 dogfood reviews: **0** — the council has never
   blocked a merge on its own repo; but on the keycloak bench it opened 🔴
   on 4/8 PRs, so the timid-chair worry is a same-repo/self-review effect,
   not a calibration failure (see martian-keycloak-slice.md).
