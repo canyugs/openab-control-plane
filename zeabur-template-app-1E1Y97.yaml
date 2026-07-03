@@ -98,7 +98,7 @@ spec:
       description: HMAC secret used by POST /api/v1/github_webhooks. Use the same value in the GitHub App webhook settings.
     - key: BOT_TOKEN_CHAIR
       type: PASSWORD
-      name: Chair gateway token
+      name: chair gateway token
       description: Per-bot WS token for the chair pod. Generate with `openssl rand -hex 32`.
     - key: BOT_TOKEN_REV1
       type: PASSWORD
