@@ -32,23 +32,27 @@ is no ground truth for what the council *missed*.
 | 71 | 1 | 🟡 | rev2 | template substitution order lets untrusted BODY expand later placeholders | acted-on | bae9129 (single-pass render) |
 | 71 | 2 | 🟡 | rev2 | raw API response echoed to stderr on session-open failure | acted-on | bae9129 (truncated echo) |
 | 73 | 1 | 🟡 | rev1 | "formula comment is informational, not a defect — math verified correct" | noise | self-described non-defect issued as 🟡; severity misuse |
+| 74 | 1 | 🟡 | rev1, rev2 | `candidates` column (sum 76) reads as precision denominator (67=TP+FP) | acted-on | fixed in follow-up commit (dedup explanation added) |
+| 74 | 2 | 🟡 | rev1 | 7/10 rows TP+FP ≠ candidates — needs footnote | acted-on | same commit; both reviewers caught it independently |
 
-All-green reviews (no 🔴/🟡): #59, #62, #64, #65, #66, #67, #72 — 7 of 13
+All-green reviews (no 🔴/🟡): #59, #62, #64, #65, #66, #67, #72 — 7 of 14
 council reports.
 
 ## Tally (v1 rules)
 
-- 11 findings: **acted-on 2 · known-deferred 2 · noise 5 · open 2**
-- Precision proxy: **4/9 ≈ 44%**
-- 🔴 count across all 13 reviews: **0** — the council has never blocked a
-  merge; severity calibration above 🟡 is untested.
+- 13 findings: **acted-on 4 · known-deferred 2 · noise 5 · open 2**
+- Precision proxy: **6/11 ≈ 55%**
+- 🔴 count across all 14 dogfood reviews: **0** — the council has never
+  blocked a merge on its own repo; but on the keycloak bench it opened 🔴
+  on 4/8 PRs, so the timid-chair worry is a same-repo/self-review effect,
+  not a calibration failure (see martian-keycloak-slice.md).
 
 Per angle:
 
 | Reviewer | Raised | acted-on | known-deferred | noise | open |
 |----------|--------|----------|----------------|-------|------|
-| rev2 | 4 (1 shared) | 2 | 1 (shared) | 1 | 0 |
-| rev1 | 7 (1 shared) | 0 | 2 (1 shared) | 4 | 1 |
+| rev2 | 5 (2 shared) | 3 | 1 (shared) | 1 | 0 |
+| rev1 | 9 (2 shared) | 2 | 2 (1 shared) | 4 | 1 |
 
 ## Observations (2026-07-03)
 
