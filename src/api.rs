@@ -1099,11 +1099,18 @@ async fn bot_config(
         .bot(&id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    let token = state
-        .store
-        .bot_token_plain(&id)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
+    // ADR 016: in externalized mode, serve an env reference instead of the token.
+    // OpenAB expands `${OABCP_BOT_TOKEN}` from the pod's own env at boot, so the
+    // response body carries no secret and an unauthenticated fetch leaks nothing.
+    let token = if crate::identity::externalize_tokens() {
+        "${OABCP_BOT_TOKEN}".to_string()
+    } else {
+        state
+            .store
+            .bot_token_plain(&id)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .ok_or(StatusCode::NOT_FOUND)?
+    };
     let ws_url = std::env::var("OABCP_WS_URL")
         .unwrap_or_else(|_| "ws://openab-control-plane.zeabur.internal:8080/ws".into());
     // BYOK, per-bot provider. `?agent=` (set per pod) picks the CLI; default is
