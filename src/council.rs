@@ -194,13 +194,17 @@ fn review_open_session_action_with_roster(
         .first()
         .cloned()
         .ok_or_else(|| anyhow!("assign_angles produced empty roster"))?;
+    // A lone-bot roster has no reviewers, so review_council's chair would wait
+    // forever for a reviewer quorum that can't arrive (C4). Route it to solo, where
+    // the bot's own done closes the session — it self-reviews and posts the verdict.
+    let mode = if eff_roster.len() > 1 { "review_council" } else { "solo" };
     Ok(OpenSessionAction {
         title: "council".into(),
         trigger_ref: Some(trigger_ref),
         roster: eff_roster,
         quorum_n: quorum,
         chair_bot: Some(chair_bot),
-        mode: "review_council".into(),
+        mode: mode.into(),
         prompt: trigger,
     })
 }
@@ -320,6 +324,18 @@ mod tests {
     fn review_session_uses_review_council_mode() {
         let action = review_open_session_action("o/r", 1, None).unwrap();
         assert_eq!(action.mode, "review_council");
+    }
+
+    #[test]
+    fn lone_bot_roster_uses_solo_mode_not_hanging_council() {
+        // C4: a 1-bot roster has no reviewers, so review_council would hang the chair
+        // on an unreachable quorum. It must open as solo (own done closes it).
+        let action =
+            review_open_session_action_with_roster("o/r", 1, None, vec!["chair".into()]).unwrap();
+        assert_eq!(action.mode, "solo");
+        assert_eq!(action.roster, vec!["chair"]);
+        assert_eq!(action.quorum_n, 0);
+        assert_eq!(action.chair_bot.as_deref(), Some("chair"));
     }
 
     #[test]
