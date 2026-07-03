@@ -173,9 +173,13 @@ impl AppState {
         // Durable path: queue then flush. A disconnected bot keeps the frame and
         // gets it on reconnect (flush_outbox) instead of losing it.
         let frame = serde_json::to_string(&event).unwrap();
+        // Idempotency key: one logical message per bot. A retry / backfill re-enqueue
+        // hits the UNIQUE index and is dropped instead of double-queuing (C2). message_id
+        // is globally unique, so bot_id scopes it to this recipient.
+        let idem_key = format!("{bot_id}:{message_id}");
         if self
             .store
-            .enqueue_outbox(bot_id, session_id, &frame)
+            .enqueue_outbox(bot_id, session_id, &idem_key, &frame)
             .is_err()
         {
             return self.send_to_bot(bot_id, frame); // fall back to best-effort

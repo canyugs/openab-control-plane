@@ -274,7 +274,13 @@ pub trait Store: Send + Sync {
     /// Durable per-bot outbox (offline delivery). Frames queued here are flushed
     /// in `seq` order when the bot is connected; a disconnected bot keeps them
     /// and gets them on reconnect. `ack_outbox` removes a delivered frame.
-    fn enqueue_outbox(&self, bot_id: &str, session_id: &str, frame: &str) -> Result<()>;
+    fn enqueue_outbox(
+        &self,
+        bot_id: &str,
+        session_id: &str,
+        idem_key: &str,
+        frame: &str,
+    ) -> Result<()>;
     fn pending_outbox(&self, bot_id: &str) -> Result<Vec<(i64, String)>>;
     fn ack_outbox(&self, seq: i64) -> Result<()>;
     fn purge_outbox_for_session_bot(&self, session_id: &str, bot_id: &str) -> Result<()>;
@@ -337,10 +343,15 @@ CREATE TABLE IF NOT EXISTS reactions (
 );
 CREATE TABLE IF NOT EXISTS outbox (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    bot_id TEXT NOT NULL, session_id TEXT, frame TEXT NOT NULL, created_at INTEGER NOT NULL
+    bot_id TEXT NOT NULL, session_id TEXT, idem_key TEXT, frame TEXT NOT NULL, created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_bot ON outbox(bot_id, seq);
 CREATE INDEX IF NOT EXISTS idx_outbox_session_bot ON outbox(session_id, bot_id);
+-- Idempotency key = "{bot_id}:{message_id}". UNIQUE makes enqueue idempotent while a
+-- frame is still pending, so a retry / backfill re-enqueue of the same logical message
+-- to the same bot can't queue a duplicate (C2). NULLs (legacy rows) are distinct in
+-- SQLite, so old frames are unaffected. Cleared on ack, so legit re-delivery still works.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_idem ON outbox(idem_key);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY, value TEXT NOT NULL
 );
@@ -367,6 +378,11 @@ fn migrate(conn: &Connection) -> Result<()> {
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN findings_yellow INTEGER", []);
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN findings_green INTEGER", []);
     let _ = conn.execute("ALTER TABLE outbox ADD COLUMN session_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE outbox ADD COLUMN idem_key TEXT", []);
+    let _ = conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_idem ON outbox(idem_key)",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE bots ADD COLUMN provider TEXT", []);
     let _ = conn.execute(
         "ALTER TABLE bots ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'",
@@ -1289,11 +1305,19 @@ impl Store for SqliteStore {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    fn enqueue_outbox(&self, bot_id: &str, session_id: &str, frame: &str) -> Result<()> {
+    fn enqueue_outbox(
+        &self,
+        bot_id: &str,
+        session_id: &str,
+        idem_key: &str,
+        frame: &str,
+    ) -> Result<()> {
         let c = self.conn.lock().unwrap();
+        // OR IGNORE: a duplicate idem_key means the same frame is already pending —
+        // dropping the second insert is the whole point (idempotent enqueue).
         c.execute(
-            "INSERT INTO outbox (bot_id, session_id, frame, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![bot_id, session_id, frame, now_ms()],
+            "INSERT OR IGNORE INTO outbox (bot_id, session_id, idem_key, frame, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![bot_id, session_id, idem_key, frame, now_ms()],
         )?;
         Ok(())
     }
@@ -1390,6 +1414,28 @@ mod tests {
         // once closed, the same PR can open a fresh council (e.g. a later push)
         store.set_state(&s.id, SessionState::Closed).unwrap();
         assert!(store.active_session_for_trigger(pr).unwrap().is_none());
+    }
+
+    #[test]
+    fn enqueue_outbox_is_idempotent_per_idem_key() {
+        let store = SqliteStore::memory().unwrap();
+        let key = "bot1:msg1";
+        store.enqueue_outbox("bot1", "s1", key, "frameA").unwrap();
+        // Same key (retry / backfill re-enqueue) is dropped — no duplicate frame.
+        store.enqueue_outbox("bot1", "s1", key, "frameA").unwrap();
+        assert_eq!(store.pending_outbox("bot1").unwrap().len(), 1);
+
+        // A different message to the same bot still queues.
+        store
+            .enqueue_outbox("bot1", "s1", "bot1:msg2", "frameB")
+            .unwrap();
+        assert_eq!(store.pending_outbox("bot1").unwrap().len(), 2);
+
+        // After ack the key frees up, so a legit re-delivery works again.
+        let seq = store.pending_outbox("bot1").unwrap()[0].0;
+        store.ack_outbox(seq).unwrap();
+        store.enqueue_outbox("bot1", "s1", key, "frameA").unwrap();
+        assert_eq!(store.pending_outbox("bot1").unwrap().len(), 2);
     }
 
     #[test]
