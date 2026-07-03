@@ -21,13 +21,56 @@ pub fn issue(store: &dyn Store, name: &str, role: &str) -> Result<(Bot, String)>
     Ok((bot, token))
 }
 
+/// Whether gateway tokens are delivered through the pod's env
+/// (`token = "${OABCP_BOT_TOKEN}"` in `/bot-config`, OpenAB env-expands at boot)
+/// instead of rendered plaintext (ADR 016). Off by default — legacy plaintext.
+pub fn externalize_tokens() -> bool {
+    std::env::var("OABCP_EXTERNALIZE_TOKENS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// The plane env var an operator sets to supply bot `<name>`'s gateway token in
+/// externalized mode. Non-alphanumerics fold to `_` so a name like `rev-codex-1`
+/// still yields a valid env var (`OABCP_BOT_TOKEN_REV_CODEX_1`).
+pub fn bot_token_env_var(name: &str) -> String {
+    let suffix: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+        .collect();
+    format!("OABCP_BOT_TOKEN_{suffix}")
+}
+
+/// Pick a seeded bot's `(token, plaintext_to_store)`. Externalized: the operator
+/// provided the token, so store the hash and **no plaintext** (nothing for
+/// `/bot-config` to leak). Legacy: generate a random token and keep the plaintext
+/// so the endpoint can serve it.
+fn seed_token(provided: Option<String>) -> (String, String) {
+    match provided {
+        Some(token) => (token, String::new()),
+        None => {
+            let token = format!("oabct_{}", uuid::Uuid::new_v4().simple());
+            (token.clone(), token)
+        }
+    }
+}
+
 /// Idempotently register a roster bot whose `id == name`, so pods can fetch
-/// `/bot-config/<name>` with a name known ahead of time (template-wired). The
-/// token is random, stored once, and served via `/bot-config` — no human copies
-/// it. Returns true if newly created, false if it already existed.
+/// `/bot-config/<name>` with a name known ahead of time (template-wired).
+/// Externalized (ADR 016): the token comes from the plane env
+/// `OABCP_BOT_TOKEN_<NAME>`, hash-only at rest. Legacy: a random token is stored
+/// and served plaintext. Returns true if newly created, false if it existed.
 pub fn seed(store: &dyn Store, name: &str, role: &str) -> Result<bool> {
-    let token = format!("oabct_{}", uuid::Uuid::new_v4().simple());
-    store.seed_bot(name, name, role, &hash_token(&token), &token)
+    let provided = if externalize_tokens() {
+        let var = bot_token_env_var(name);
+        Some(std::env::var(&var).map_err(|_| {
+            anyhow!("OABCP_EXTERNALIZE_TOKENS is set but {var} is unset for bot '{name}'")
+        })?)
+    } else {
+        None
+    };
+    let (token, plaintext) = seed_token(provided);
+    store.seed_bot(name, name, role, &hash_token(&token), &plaintext)
 }
 
 /// Resolve a connection token to its bot, or error.
@@ -141,6 +184,29 @@ mod tests {
         let bot = store.bot("rev1").unwrap().unwrap();
         assert_eq!(bot.id, "rev1"); // id == name, so /bot-config/rev1 resolves
         assert_eq!(bot.role, "reviewer");
+    }
+
+    #[test]
+    fn bot_token_env_var_folds_non_alnum() {
+        assert_eq!(bot_token_env_var("chair"), "OABCP_BOT_TOKEN_CHAIR");
+        assert_eq!(bot_token_env_var("rev1"), "OABCP_BOT_TOKEN_REV1");
+        // hyphens/dots → underscore so the var name stays valid
+        assert_eq!(
+            bot_token_env_var("rev-codex-1"),
+            "OABCP_BOT_TOKEN_REV_CODEX_1"
+        );
+    }
+
+    #[test]
+    fn seed_token_externalized_stores_no_plaintext() {
+        // operator-provided → hash-only, nothing for /bot-config to leak
+        let (token, plaintext) = seed_token(Some("oabct_provided".into()));
+        assert_eq!(token, "oabct_provided");
+        assert!(plaintext.is_empty());
+        // legacy → random token kept as plaintext to serve
+        let (token, plaintext) = seed_token(None);
+        assert_eq!(token, plaintext);
+        assert!(token.starts_with("oabct_"));
     }
 
     #[test]
