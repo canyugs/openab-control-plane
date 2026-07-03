@@ -1109,6 +1109,9 @@ async fn bot_config(
             .store
             .bot_token_plain(&id)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            // An externalized bot stores an empty plaintext; if the flag is later
+            // flipped off, treat that as "no servable token" (404), not `token = ""`.
+            .filter(|t| !t.is_empty())
             .ok_or(StatusCode::NOT_FOUND)?
     };
     let ws_url = std::env::var("OABCP_WS_URL")
