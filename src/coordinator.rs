@@ -62,7 +62,9 @@ pub trait Coordinator: Send + Sync {
 /// Shared quorum policy: once `quorum_n` reviewers signalled done, enter Quorum
 /// and prompt the chair to synthesize. Reached from a done-signal and from a
 /// liveness roster trim (a shrunk quorum can make the recorded count sufficient).
-fn quorum_actions(cx: &dyn Ctx) -> Vec<Action> {
+/// `prompt` is per-coordinator — a review chair completes GitHub side effects,
+/// a triage chair must post the report and nothing else.
+fn quorum_actions(cx: &dyn Ctx, prompt: &str) -> Vec<Action> {
     let mut actions = vec![];
     let chair = cx.chair();
     if quorum_reached(cx.roster(), chair, &cx.reactors(DONE_EMOJI), cx.quorum_n()) {
@@ -73,12 +75,18 @@ fn quorum_actions(cx: &dyn Ctx) -> Vec<Action> {
         if let Some(c) = chair {
             actions.push(Action::Prompt {
                 to: c.to_string(),
-                content: "Quorum reached. Chair, synthesize the final verdict, complete any side effect required by the opening trigger, and only then end your final message with [done]. Do not send [done] before the required side effect succeeds.".to_string(),
+                content: prompt.to_string(),
             });
         }
     }
     actions
 }
+
+const COUNCIL_QUORUM_PROMPT: &str = "Quorum reached. Chair, synthesize the final verdict, complete any side effect required by the opening trigger, and only then end your final message with [done]. Do not send [done] before the required side effect succeeds.";
+
+/// Review-flavored wording confuses triage chairs into hunting for a PR
+/// (dogfood round 6) — tell them exactly and only what to do.
+const TRIAGE_QUORUM_PROMPT: &str = "Quorum reached. Chair: post the complete triage report NOW as ONE message — it must start with the word TRIAGE, contain the Likely Cause / Evidence / Suggested Next Actions / Confidence & Gaps sections, and end with [done] on its own final line. Do not run gh or any PR commands; there is no PR and no external side effect. The report itself is your done-signal.";
 
 /// v1 lifecycle: reviewers (roster minus chair) signal done; once `quorum_n` of
 /// them have, the chair synthesizes and the chair's own done closes the session.
@@ -90,7 +98,7 @@ impl Coordinator for QuorumCouncil {
     }
 
     fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<Action> {
-        quorum_actions(cx)
+        quorum_actions(cx, COUNCIL_QUORUM_PROMPT)
     }
 
     fn starters(&self, roster: &[String], chair: Option<&str>) -> Vec<String> {
@@ -102,42 +110,71 @@ impl Coordinator for QuorumCouncil {
     }
 
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
-        let mut actions = vec![];
-        let chair = cx.chair();
+        council_on_done(cx, bot, COUNCIL_QUORUM_PROMPT)
+    }
+}
 
-        // 1. relay a reviewer's settled final to the chair (was share_final_with_chair)
-        if Some(bot) != chair {
-            if let Some(c) = chair {
-                actions.push(Action::Relay {
-                    from: bot.to_string(),
-                    to: c.to_string(),
-                });
-            }
-        }
+/// Shared quorum-council done-handling; `prompt` is the per-coordinator chair
+/// synthesis instruction.
+fn council_on_done(cx: &dyn Ctx, bot: &str, prompt: &str) -> Vec<Action> {
+    let mut actions = vec![];
+    let chair = cx.chair();
 
-        // 2. quorum reached → enter Quorum + prompt the chair (was maybe_quorum).
-        //    The Transition CAS + Prompt-after-failed-Transition suppression make
-        //    this fire exactly once, on the call that actually transitions.
-        actions.extend(quorum_actions(cx));
-
-        // 3. The chair's own done closes only after reviewer quorum. This prevents
-        //    an opening-trigger chair response from closing the PR review before
-        //    reviewers have contributed or before the chair has posted the PR
-        //    comment side-effect. Liveness still comes from the watchdog.
-        if Some(bot) == chair && cx.state() == SessionState::Quorum {
-            actions.push(Action::Close {
-                from: SessionState::Quorum,
-                verdict: cx.latest_settled(bot).unwrap_or_default(),
+    // 1. relay a reviewer's settled final to the chair (was share_final_with_chair)
+    if Some(bot) != chair {
+        if let Some(c) = chair {
+            actions.push(Action::Relay {
+                from: bot.to_string(),
+                to: c.to_string(),
             });
-        } else if Some(bot) == chair {
-            tracing::debug!(
-                bot,
-                state = ?cx.state(),
-                "chair done ignored before reviewer quorum"
-            );
         }
+    }
 
-        actions
+    // 2. quorum reached → enter Quorum + prompt the chair (was maybe_quorum).
+    //    The Transition CAS + Prompt-after-failed-Transition suppression make
+    //    this fire exactly once, on the call that actually transitions.
+    actions.extend(quorum_actions(cx, prompt));
+
+    // 3. The chair's own done closes only after reviewer quorum. This prevents
+    //    an opening-trigger chair response from closing the PR review before
+    //    reviewers have contributed or before the chair has posted the PR
+    //    comment side-effect. Liveness still comes from the watchdog.
+    if Some(bot) == chair && cx.state() == SessionState::Quorum {
+        actions.push(Action::Close {
+            from: SessionState::Quorum,
+            verdict: cx.latest_settled(bot).unwrap_or_default(),
+        });
+    } else if Some(bot) == chair {
+        tracing::debug!(
+            bot,
+            state = ?cx.state(),
+            "chair done ignored before reviewer quorum"
+        );
+    }
+
+    actions
+}
+
+/// ADR 014 triage council: QuorumCouncil lifecycle with a triage-specific chair
+/// prompt (no GitHub side effects — the report is the deliverable). The chair's
+/// text-done additionally requires the TRIAGE report prefix (orchestrator gate).
+pub struct TriageCouncil;
+
+impl Coordinator for TriageCouncil {
+    fn kind(&self) -> &'static str {
+        "triage_council"
+    }
+
+    fn starters(&self, roster: &[String], chair: Option<&str>) -> Vec<String> {
+        QuorumCouncil.starters(roster, chair)
+    }
+
+    fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
+        council_on_done(cx, bot, TRIAGE_QUORUM_PROMPT)
+    }
+
+    fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<Action> {
+        quorum_actions(cx, TRIAGE_QUORUM_PROMPT)
     }
 }
 
@@ -226,6 +263,7 @@ impl Coordinator for Pipeline {
 pub fn for_session(mode: &str) -> Box<dyn Coordinator> {
     match mode {
         "review_council" => Box::new(ReviewCouncil),
+        "triage_council" => Box::new(TriageCouncil),
         "solo" => Box::new(Solo),
         "pipeline" => Box::new(Pipeline),
         _ => Box::new(QuorumCouncil),
@@ -278,6 +316,7 @@ mod tests {
     fn for_session_dispatches_mode() {
         assert_eq!(for_session("solo").kind(), "solo");
         assert_eq!(for_session("review_council").kind(), "review_council");
+        assert_eq!(for_session("triage_council").kind(), "triage_council");
         assert_eq!(for_session("council").kind(), "quorum_council");
         assert_eq!(for_session("anything-else").kind(), "quorum_council");
     }

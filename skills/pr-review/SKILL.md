@@ -12,6 +12,13 @@ The portable steering file for non-Codex agents is
 
 ## Role Resolution
 
+**Scope gate — check this first.** This skill applies ONLY to PR review
+sessions (the trigger/task names "PR Review Council" or a `Task: … GitHub
+PR …`). For any other session (e.g. "Triage Council", free-text tasks),
+ignore this file, follow the session trigger's own protocol, do NOT run
+`gh pr comment` / `gh pr review` / status commands, and never guess a PR
+number.
+
 OCP sends each participant a recipient-specific task.
 
 - `Task: review GitHub PR ...` means you are a reviewer.

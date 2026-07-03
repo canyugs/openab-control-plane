@@ -959,11 +959,14 @@ fn on_reaction(
 }
 
 fn reaction_counts_as_done(session: &Session, bot_id: &str) -> bool {
-    // Review chairs often acknowledge the system quorum prompt with an automatic
-    // 🆗 reaction. That must not close the session before the chair posts the
-    // final verdict side effect. In review councils, chair completion is the
-    // explicit text `[done]` required by the task/steering.
-    !(session.mode == "review_council" && session.chair_bot.as_deref() == Some(bot_id))
+    // Prompt-driven chairs (CLI bots) often acknowledge the system quorum prompt
+    // with an automatic 🆗 reaction — that must not close the session before the
+    // chair posts the synthesized final (live-hit twice: review councils, then
+    // the ADR 014 triage dogfood). In these modes chair completion is the
+    // explicit text `[done]`. Generic `council` keeps the native OAB contract
+    // (set_done → 🆗 closes), as do solo/pipeline.
+    !(matches!(session.mode.as_str(), "review_council" | "triage_council")
+        && session.chair_bot.as_deref() == Some(bot_id))
 }
 
 /// Run the active coordinator's done-handling for `bot` and execute the actions.
@@ -1002,6 +1005,20 @@ fn check_text_done(
     text: &str,
 ) -> Result<()> {
     if is_done_signal(text) {
+        // Triage chairs habitually append [done] to acknowledgments (hit on
+        // dogfood rounds 2 and 5) — in triage_council the report IS the chair's
+        // done-signal, so a chair [done] only counts on a message that starts
+        // with "TRIAGE" (the template's mandated report prefix). Ignored acks
+        // leave the session open; the watchdog stays the backstop.
+        let triage_chair = session.mode == "triage_council"
+            && session.chair_bot.as_deref() == Some(bot_id);
+        if triage_chair && !text.trim_start().starts_with("TRIAGE") {
+            tracing::warn!(
+                "triage chair {bot_id} sent [done] without a TRIAGE report in {} — ignored",
+                session.id
+            );
+            return Ok(());
+        }
         state.store.add_reaction(msg_id, bot_id, DONE_EMOJI)?;
         run_done(state, session, bot_id)?;
     }
@@ -1519,6 +1536,72 @@ mod tests {
         assert!(!reviewer_text.contains("What This PR Does"));
         assert!(!reviewer_text.contains("gh pr comment"));
         assert!(!reviewer_text.contains("If your bot name"));
+    }
+
+    #[test]
+    fn triage_chair_quorum_reaction_does_not_close_without_text_done() {
+        // Same footgun as the review_council variant below, hit live by the
+        // ADR 014 triage dogfood: a prompt-driven chair auto-🆗s the quorum
+        // prompt and the session closed with a "still waiting" verdict.
+        // `triage_council` rides QuorumCouncil (for_session default arm) but
+        // gets the text-done chair guard; generic `council` keeps native
+        // set_done semantics (spike tests pin that contract).
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev = store.register_bot("rev", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), rev.id.clone()],
+                "triage_council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Quorum)
+            .unwrap();
+        let quorum_prompt = store
+            .add_message(&session.id, None, "system", None, "Quorum reached.", None)
+            .unwrap();
+
+        handle_reply(
+            &state,
+            &chair.id,
+            reaction_reply(&session.id, &quorum_prompt.id, DONE_EMOJI),
+        )
+        .unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Quorum,
+            "council chair ack reaction must not close before the text [done]",
+        );
+
+        // ack-style [done] without a report must NOT close (dogfood rounds 2/5)
+        handle_reply(
+            &state,
+            &chair.id,
+            msg_reply(&session.id, "Acknowledged, standing by.\n[done]"),
+        )
+        .unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Quorum,
+            "chair [done] without a TRIAGE report must not close",
+        );
+
+        handle_reply(
+            &state,
+            &chair.id,
+            msg_reply(&session.id, "TRIAGE low — final report\n[done]"),
+        )
+        .unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Closed,
+        );
     }
 
     #[test]

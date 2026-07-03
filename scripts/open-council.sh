@@ -116,7 +116,9 @@ if [[ "$ARG" =~ ^([^/]+/[^#]+)#([0-9]+)$ ]]; then
   REF="github:pr/$REPO#$NUM"
 else
   [[ -n "$PRESET" ]] && echo "note: --preset ignored for free-text tasks (angles apply to a PR diff)" >&2
-  TRIGGER="$ARG"; REF="adhoc"
+  # TRIGGER_REF lets a panel shim (e.g. open-triage.sh, ADR 014) supply a real
+  # idempotency key; bare free-text councils keep the legacy "adhoc" ref.
+  TRIGGER="$ARG"; REF="${TRIGGER_REF:-adhoc}"
 fi
 
 # Open the session (node builds the body: quorum_n + mode derived from the roster,
@@ -131,9 +133,13 @@ OPEN_BODY=$(ROSTER="$EFF_ROSTER" REF="$REF" QUORUM="$QUORUM_EFF" MODE="${MODE:-}
     quorum_n: quorum, chair_bot: r[0], mode,
   }));
 ')
-SID=$(curl -s -X POST "$PLANE/v1/sessions" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d "$OPEN_BODY" \
-  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).session_id))')
+RESP=$(curl -s -X POST "$PLANE/v1/sessions" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d "$OPEN_BODY")
+SID=$(printf '%s' "$RESP" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).session_id||"")}catch{}})')
+if [[ -z "$SID" ]]; then
+  echo "error: session open failed — an active session may already hold trigger_ref \"$REF\" (plane said: ${RESP:-<empty>})" >&2
+  exit 1
+fi
 echo "session: $SID"
 [[ -n "$ASSIGN_TEXT" ]] && echo "preset: $PRESET → $EFF_ROSTER"
 
