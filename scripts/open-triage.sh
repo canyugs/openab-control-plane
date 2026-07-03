@@ -73,7 +73,9 @@ TRIGGER=$(TICKET_REF="$REF" TITLE="$TITLE" BODY="$BODY" ANGLE_ASSIGNMENT="$ASSIG
   TMPL="$SCRIPT_DIR/triage-trigger.tmpl" node -e '
   const fs = require("fs");
   let t = fs.readFileSync(process.env.TMPL, "utf8");
-  for (const k of ["TICKET_REF", "TITLE", "BODY", "ANGLE_ASSIGNMENT", "CHAIR"]) t = t.split("{{" + k + "}}").join(process.env[k]);
+  // Single pass: replacement values are never re-scanned, so a {{CHAIR}} inside
+  // the untrusted TITLE/BODY stays literal (council finding on #71).
+  t = t.replace(/\{\{(TICKET_REF|TITLE|BODY|ANGLE_ASSIGNMENT|CHAIR)\}\}/g, (_, k) => process.env[k]);
   process.stdout.write(t);
 ')
 

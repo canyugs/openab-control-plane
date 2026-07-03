@@ -137,7 +137,7 @@ RESP=$(curl -s -X POST "$PLANE/v1/sessions" -H "Authorization: Bearer $KEY" -H '
   -d "$OPEN_BODY")
 SID=$(printf '%s' "$RESP" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).session_id||"")}catch{}})')
 if [[ -z "$SID" ]]; then
-  echo "error: session open failed — an active session may already hold trigger_ref \"$REF\" (plane said: ${RESP:-<empty>})" >&2
+  echo "error: session open failed — an active session may already hold trigger_ref \"$REF\" (plane said: ${RESP:0:200})" >&2
   exit 1
 fi
 echo "session: $SID"
