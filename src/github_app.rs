@@ -242,11 +242,13 @@ impl GitHubApp {
             .await
             .context("installation token revoke request failed")?;
         let status = resp.status();
-        if !status.is_success() {
-            let raw = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("GitHub token revoke returned {status}: {raw}"));
+        // 401/404 = the token is already gone (hit its TTL, or double-revoke). That's
+        // the success condition for a revoke, not an error — don't warn on it.
+        if status.is_success() || status.as_u16() == 401 || status.as_u16() == 404 {
+            return Ok(());
         }
-        Ok(())
+        let raw = resp.text().await.unwrap_or_default();
+        Err(anyhow!("GitHub token revoke returned {status}: {raw}"))
     }
 }
 

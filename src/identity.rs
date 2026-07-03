@@ -101,7 +101,7 @@ pub fn revoke_session_github_tokens(
     store.purge_installation_tokens(session_id)?;
     if let Some(app) = app {
         for token in tokens {
-            let app = app.clone(); // Client is Arc inside — cheap clone
+            let app = app.clone(); // clones the PEM string; fine at 1–2 tokens per close
             tokio::spawn(async move {
                 if let Err(e) = app.revoke_installation_token(&token).await {
                     tracing::warn!("server-side github token revoke failed: {e}");
