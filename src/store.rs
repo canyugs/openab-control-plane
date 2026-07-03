@@ -293,6 +293,9 @@ pub trait Store: Send + Sync {
     /// Cached `(token, expires_at_ms)` for a (session, role), or None. The caller
     /// decides freshness (refresh margin lives in `github_app`).
     fn installation_token(&self, session_id: &str, role: &str) -> Result<Option<(String, i64)>>;
+    /// Every cached token string for a session (any role). Read before `purge_*` so
+    /// the close path can revoke each one GitHub-side.
+    fn session_installation_tokens(&self, session_id: &str) -> Result<Vec<String>>;
     /// Central revoke: drop every scoped token for a session. Called when the session
     /// closes so a pod can't keep acting on GitHub after the verdict.
     fn purge_installation_tokens(&self, session_id: &str) -> Result<()>;
@@ -1345,6 +1348,14 @@ impl Store for SqliteStore {
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
         )
         .optional()?)
+    }
+
+    fn session_installation_tokens(&self, session_id: &str) -> Result<Vec<String>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt =
+            c.prepare("SELECT token FROM installation_tokens WHERE session_id = ?1")?;
+        let rows = stmt.query_map(params![session_id], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     fn purge_installation_tokens(&self, session_id: &str) -> Result<()> {

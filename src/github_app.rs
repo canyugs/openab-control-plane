@@ -223,6 +223,33 @@ impl GitHubApp {
             role,
         })
     }
+
+    /// Server-side revoke: `DELETE /installation/token`, authenticated by the token
+    /// *itself* (not the App JWT). Kills a token GitHub-side the moment a session
+    /// closes, instead of leaving it live until its ≤1h TTL. Best-effort: on failure
+    /// the TTL is still the backstop. GitHub returns 204 on success; a 401 means the
+    /// token already died (expired / revoked) — also fine.
+    pub async fn revoke_installation_token(&self, token: &str) -> Result<()> {
+        let url = format!("{}/installation/token", self.api_base.trim_end_matches('/'));
+        let resp = self
+            .client
+            .delete(&url)
+            .header("Authorization", format!("token {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "openab-control-plane")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .context("installation token revoke request failed")?;
+        let status = resp.status();
+        // 401/404 = the token is already gone (hit its TTL, or double-revoke). That's
+        // the success condition for a revoke, not an error — don't warn on it.
+        if status.is_success() || status.as_u16() == 401 || status.as_u16() == 404 {
+            return Ok(());
+        }
+        let raw = resp.text().await.unwrap_or_default();
+        Err(anyhow!("GitHub token revoke returned {status}: {raw}"))
+    }
 }
 
 /// Accept a PEM with real newlines, a `\n`-escaped single line, or a base64-wrapped

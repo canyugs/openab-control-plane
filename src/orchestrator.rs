@@ -274,8 +274,11 @@ pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bo
         return Ok(false); // already terminal
     }
     // Central revoke: scoped GitHub tokens die with the session (Agent Identity).
-    if let Err(e) = crate::identity::revoke_session_github_tokens(state.store.as_ref(), session_id)
-    {
+    if let Err(e) = crate::identity::revoke_session_github_tokens(
+        state.store.as_ref(),
+        state.github_app.as_ref(),
+        session_id,
+    ) {
         tracing::warn!("revoke github tokens for {session_id} failed: {e}");
     }
     let session = state.store.session(session_id)?;
@@ -1106,6 +1109,7 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     // Central revoke: scoped GitHub tokens die with the session.
                     if let Err(e) = crate::identity::revoke_session_github_tokens(
                         state.store.as_ref(),
+                        state.github_app.as_ref(),
                         &session.id,
                     ) {
                         tracing::warn!("revoke github tokens for {} failed: {e}", session.id);

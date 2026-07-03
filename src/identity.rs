@@ -85,13 +85,31 @@ fn fresh_cached(store: &dyn Store, session_id: &str, role: Role) -> Result<Optio
 /// Central revoke (ROADMAP): when a session closes, drop its scoped GitHub tokens so
 /// a pod can't keep acting on the PR after the verdict. Call from every close path.
 ///
-/// KNOWN GAP (#3): this purges only the plane's cache — it does not call
-/// `DELETE /installation/token` on GitHub, so a token already handed to a pod stays
-/// valid at GitHub until its TTL (≤1h) elapses. The close paths are sync; a real
-/// server-side revoke needs an async call and is tracked as a fast-follow. TTL is
-/// the backstop until then.
-pub fn revoke_session_github_tokens(store: &dyn Store, session_id: &str) -> Result<()> {
-    store.purge_installation_tokens(session_id)
+/// Two layers: (1) purge the plane's cache so no future call hands the token out;
+/// (2) revoke it GitHub-side via `DELETE /installation/token` so a token already in
+/// a pod dies immediately instead of living out its ≤1h TTL. Layer 2 is async and
+/// best-effort — the close paths are sync, so each revoke is spawned and the TTL
+/// stays the backstop if the call fails. Fires only in App mode (`app` = Some);
+/// PAT mode has no per-role installation tokens to revoke.
+pub fn revoke_session_github_tokens(
+    store: &dyn Store,
+    app: Option<&GitHubApp>,
+    session_id: &str,
+) -> Result<()> {
+    // Read live tokens before the purge wipes them.
+    let tokens = store.session_installation_tokens(session_id)?;
+    store.purge_installation_tokens(session_id)?;
+    if let Some(app) = app {
+        for token in tokens {
+            let app = app.clone(); // clones the PEM string; fine at 1–2 tokens per close
+            tokio::spawn(async move {
+                if let Err(e) = app.revoke_installation_token(&token).await {
+                    tracing::warn!("server-side github token revoke failed: {e}");
+                }
+            });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -170,7 +188,17 @@ mod tests {
         store
             .cache_installation_token("ses_1", "reviewer", "ghs_r", far_future)
             .unwrap();
-        revoke_session_github_tokens(&store, "ses_1").unwrap();
+        // revoke reads the live tokens (for server-side DELETE) before purging.
+        let live = store.session_installation_tokens("ses_1").unwrap();
+        assert_eq!(live.len(), 2);
+        assert!(live.contains(&"ghs_c".to_string()) && live.contains(&"ghs_r".to_string()));
+        // app=None → cache-only revoke, no network (PAT-mode path); server-side
+        // DELETE needs a live GitHub and is covered by the plane integration run.
+        revoke_session_github_tokens(&store, None, "ses_1").unwrap();
+        assert!(store
+            .session_installation_tokens("ses_1")
+            .unwrap()
+            .is_empty());
         assert!(store
             .installation_token("ses_1", "chair")
             .unwrap()
