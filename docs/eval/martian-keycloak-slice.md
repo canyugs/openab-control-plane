@@ -97,6 +97,35 @@ lead by cutting false positives. The ledger's noise patterns (speculation
 beyond the diff, restating in-code comments, 🟡 for non-defects) are the
 first levers.
 
+## A/B — council vs single agent (ADR 015 §3)
+
+Same golden PRs, same judge, same reviewer agent — the only difference is
+fan-out. Solo = one reviewer (`MODE=solo`, roster `["rev1"]`), reviewing the
+same diff the council reviewers saw, verdict captured from the plane session
+(the solo bot reviews in-thread, doesn't post to GitHub). 9 PRs: kc#36880
+excluded because its solo bot deterministically self-assigned the chair role
+and waited for non-existent reviewers (Solo-coordinator role-assignment
+ambiguity — chair_bot defaults to roster[0], so a lone bot is its own chair).
+
+| Metric | Council | Solo | Δ |
+|--------|---------|------|---|
+| Recall | **71.4%** (15/21) | 47.6% (10/21) | **+23.8** |
+| Precision | 26.8% | 30.3% | −3.5 |
+| F1 | **39.0%** | 37.0% | +2.0 |
+| TP / FP / FN | 15 / 41 / 6 | 10 / 23 / 11 | |
+
+Per-PR (TP/FP/FN): council's TP ≥ solo's on every one of the 9; council
+strictly beat solo on recall in 6, tied in 3 (greptile#1, 40940, 38446),
+lost none.
+
+**Result:** the council architecture buys **+24 points of recall for −3.5
+points of precision** over a single instance of the same agent. For a review
+tool — where a missed bug costs more than a noisy comment — that is a
+favourable trade, and it is the quantified justification for fan-out. No
+public benchmark measures this: vendors compare tools, not coordination
+shapes. (Solo here is one council member reviewing alone, so this isolates
+the value of fan-out itself, not a model difference.)
+
 ## Caveats
 
 - 10 PRs / 24 golden — a signal for tuning, not an external claim
