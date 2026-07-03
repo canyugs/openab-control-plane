@@ -18,6 +18,15 @@ collecting context and never posts `[done]`.
 
 ## Role Resolution
 
+**Scope gate — check this first.** This file applies ONLY to PR review
+sessions: the session trigger or your task names a GitHub PR review ("PR
+Review Council", `Task: review GitHub PR …`, or `Task: manage the GitHub PR
+status comment …`). For ANY other session (e.g. "Triage Council", free-text
+tasks), ignore this entire file and follow the session trigger's own protocol
+— in particular, do NOT run `gh pr comment` / `gh pr review` / status
+commands, and never guess a PR number. (Found live: a triage chair followed
+this file and posted a review on an unrelated PR.)
+
 OCP sends each participant a recipient-specific task. Do not reject that task as
 role confusion when it is delivered by the OpenAB/OCP session.
 
