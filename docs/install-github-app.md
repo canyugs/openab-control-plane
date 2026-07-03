@@ -18,8 +18,16 @@ npx zeabur@latest template deploy -c 1E1Y97 \
   --project-id <PROJECT_ID> \
   --var PUBLIC_DOMAIN=my-council \
   --var CLAUDE_CODE_OAUTH_TOKEN=<CLAUDE_CODE_OAUTH_TOKEN> \
-  --var GITHUB_WEBHOOK_SECRET=$SECRET
+  --var GITHUB_WEBHOOK_SECRET=$SECRET \
+  --var BOT_TOKEN_CHAIR=$(openssl rand -hex 32) \
+  --var BOT_TOKEN_REV1=$(openssl rand -hex 32) \
+  --var BOT_TOKEN_REV2=$(openssl rand -hex 32)
 ```
+
+`BOT_TOKEN_CHAIR`, `BOT_TOKEN_REV1`, and `BOT_TOKEN_REV2` are the per-pod gateway
+tokens (ADR 016): the plane stores only their hashes and serves
+`token = "${OABCP_BOT_TOKEN}"` in `/bot-config`, so an unauthenticated config
+fetch leaks nothing. Use three distinct values.
 
 After deploy, wait until `control-plane`, `chair`, `rev1`, and `rev2` are running.
 
