@@ -61,11 +61,26 @@ for what the council missed); the ledger never pretends otherwise.
 
 ### 2. Martian offline bench through the real product
 
-- Dedicated bench org (e.g. `oabcp-bench`) with the dogfood GitHub App
-  installed and the plane's webhook pointed at it.
-- Run their `step0_fork_prs --org oabcp-bench --name openab` to recreate the
-  golden PRs. Pace the forks (the plane will open one council per PR-opened
-  event; don't fire 50 at once).
+*(Amended 2026-07-03 during the first slice run — what actually shipped:)*
+
+- **No bench org.** Orgs can't be created via API, and the App-installation
+  repo list can't be modified with an OAuth token either. Bench repos live
+  in the owner's personal namespace and stay **private** the whole time
+  (Martian goes public only so third-party tools can see the repos; our
+  council reviews via the owner PAT). Delete the repos after data
+  collection. Revisit a dedicated org only for the full-50 run.
+- **Trigger via `open-council.sh`, not the webhook** — same plane, same
+  coordinator, same chair path; only the ingress differs. (Webhook needs
+  each bench repo added to the App installation, which is web-UI-only.)
+  Side benefit: the script opens the full council, while `/review` webhook
+  triggers currently resolve to the lite preset.
+- **First slice = keycloak, not sentry** (smallest source repo, 586 MB vs
+  883 MB; 10 PRs / 24 golden comments).
+- Their `step0_fork_prs` needs four local patches: create under
+  `/user/repos`, skip the make-public step, clone from a local `--mirror`
+  cache (mirror clones carry `refs/pull/*`), and push over SSH (OAuth
+  tokens without `workflow` scope can't push trees containing
+  `.github/workflows`). Plus `openab` in step1's `_NON_BOT_TOOLS`.
 - The chair's single report comment is a "general comment" in their model;
   their step2 already LLM-extracts individual issues from general comments,
   so our report format needs no change.
