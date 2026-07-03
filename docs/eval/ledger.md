@@ -31,15 +31,16 @@ is no ground truth for what the council *missed*.
 | 70 | 2 | 🟡 | rev1 | no per-panel/per-session timeout override, only global env | open | real gap adjacent to A3 deferred list; triage round 7 did hit backend latency |
 | 71 | 1 | 🟡 | rev2 | template substitution order lets untrusted BODY expand later placeholders | acted-on | bae9129 (single-pass render) |
 | 71 | 2 | 🟡 | rev2 | raw API response echoed to stderr on session-open failure | acted-on | bae9129 (truncated echo) |
+| 73 | 1 | 🟡 | rev1 | "formula comment is informational, not a defect — math verified correct" | noise | self-described non-defect issued as 🟡; severity misuse |
 
-All-green reviews (no 🔴/🟡): #59, #62, #64, #65, #66, #67, #72 — 7 of 12
+All-green reviews (no 🔴/🟡): #59, #62, #64, #65, #66, #67, #72 — 7 of 13
 council reports.
 
 ## Tally (v1 rules)
 
-- 10 findings: **acted-on 2 · known-deferred 2 · noise 4 · open 2**
-- Precision proxy: **4/8 = 50%**
-- 🔴 count across all 12 reviews: **0** — the council has never blocked a
+- 11 findings: **acted-on 2 · known-deferred 2 · noise 5 · open 2**
+- Precision proxy: **4/9 ≈ 44%**
+- 🔴 count across all 13 reviews: **0** — the council has never blocked a
   merge; severity calibration above 🟡 is untested.
 
 Per angle:
@@ -47,7 +48,7 @@ Per angle:
 | Reviewer | Raised | acted-on | known-deferred | noise | open |
 |----------|--------|----------|----------------|-------|------|
 | rev2 | 4 (1 shared) | 2 | 1 (shared) | 1 | 0 |
-| rev1 | 6 (1 shared) | 0 | 2 (1 shared) | 3 | 1 |
+| rev1 | 7 (1 shared) | 0 | 2 (1 shared) | 4 | 1 |
 
 ## Observations (2026-07-03)
 
@@ -60,6 +61,9 @@ Per angle:
   documented in code. Reviewers restating in-code ponytail comments is a
   noise pattern worth a prompt tweak: "if the code already documents the
   limitation, cite it as known instead of raising it."
-- Zero 🔴 on 12 self-authored PRs could mean clean code or a timid chair;
+- Zero 🔴 on 13 self-authored PRs could mean clean code or a timid chair;
   the Martian bench (ADR 015 §2) has golden Critical/High issues and will
   distinguish these.
+- #73's review of this very file produced a 🟡 that describes itself as "not
+  a defect" — severity misuse to have something to report. Prompt tweak
+  candidate: a finding that requires no action is 🟢 by definition.
