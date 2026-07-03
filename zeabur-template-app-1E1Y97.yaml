@@ -27,6 +27,10 @@ spec:
     - `PUBLIC_DOMAIN`: the control-plane domain, for example `my-council`.
     - `CLAUDE_CODE_OAUTH_TOKEN`: from `claude setup-token`.
     - `GITHUB_WEBHOOK_SECRET`: random HMAC secret, for example from `openssl rand -hex 32`.
+    - `BOT_TOKEN_CHAIR`, `BOT_TOKEN_REV1`, `BOT_TOKEN_REV2`: one gateway token per
+      pod, each `openssl rand -hex 32`. The plane stores only their hashes and
+      serves `token = "${OABCP_BOT_TOKEN}"` in `/bot-config` — so an unauthenticated
+      config fetch leaks nothing (ADR 016). Use three distinct values.
 
     ## GitHub App setup
 
@@ -92,6 +96,18 @@ spec:
       type: PASSWORD
       name: GitHub Webhook Secret
       description: HMAC secret used by POST /api/v1/github_webhooks. Use the same value in the GitHub App webhook settings.
+    - key: BOT_TOKEN_CHAIR
+      type: PASSWORD
+      name: chair gateway token
+      description: Per-bot WS token for the chair pod. Generate with `openssl rand -hex 32`.
+    - key: BOT_TOKEN_REV1
+      type: PASSWORD
+      name: rev1 gateway token
+      description: Per-bot WS token for the rev1 pod. Generate with `openssl rand -hex 32`.
+    - key: BOT_TOKEN_REV2
+      type: PASSWORD
+      name: rev2 gateway token
+      description: Per-bot WS token for the rev2 pod. Generate with `openssl rand -hex 32`.
   services:
     - name: control-plane
       icon: https://cdn-console.zeabur.com/f/6qNF8/ocp-icon.webp
@@ -127,6 +143,14 @@ spec:
             default: chair:chair,rev1:reviewer,rev2:reviewer
           GITHUB_WEBHOOK_SECRET:
             default: ${GITHUB_WEBHOOK_SECRET}
+          OABCP_EXTERNALIZE_TOKENS:
+            default: "1"
+          OABCP_BOT_TOKEN_CHAIR:
+            default: ${BOT_TOKEN_CHAIR}
+          OABCP_BOT_TOKEN_REV1:
+            default: ${BOT_TOKEN_REV1}
+          OABCP_BOT_TOKEN_REV2:
+            default: ${BOT_TOKEN_REV2}
 
     - name: chair
       icon: https://cdn-console.zeabur.com/f/0Ewi6/openab-icon.webp
@@ -147,6 +171,8 @@ spec:
         env:
           CLAUDE_CODE_OAUTH_TOKEN:
             default: ${CLAUDE_CODE_OAUTH_TOKEN}
+          OABCP_BOT_TOKEN:
+            default: ${BOT_TOKEN_CHAIR}
 
     - name: rev1
       icon: https://cdn-console.zeabur.com/f/0Ewi6/openab-icon.webp
@@ -164,6 +190,8 @@ spec:
         env:
           CLAUDE_CODE_OAUTH_TOKEN:
             default: ${CLAUDE_CODE_OAUTH_TOKEN}
+          OABCP_BOT_TOKEN:
+            default: ${BOT_TOKEN_REV1}
 
     - name: rev2
       icon: https://cdn-console.zeabur.com/f/0Ewi6/openab-icon.webp
@@ -181,3 +209,5 @@ spec:
         env:
           CLAUDE_CODE_OAUTH_TOKEN:
             default: ${CLAUDE_CODE_OAUTH_TOKEN}
+          OABCP_BOT_TOKEN:
+            default: ${BOT_TOKEN_REV2}

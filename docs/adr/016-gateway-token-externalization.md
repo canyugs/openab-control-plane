@@ -120,6 +120,28 @@ This is deliberately the minimum that closes the hole:
 3. Once the templates are externalized, the plaintext path is legacy-only;
    consider flipping the default and removing `token_plain` in a later ADR.
 
+## Migration Status (2026-07-03)
+
+- **Step 1 (flag off by default)** — shipped (#77/#78).
+- **Step 2 (externalize the distributed templates)** — done. Both Zeabur
+  templates now set `OABCP_EXTERNALIZE_TOKENS=1`, provision three per-bot
+  `BOT_TOKEN_*` secrets on the plane (`OABCP_BOT_TOKEN_<NAME>`), and pass each
+  matching value to its pod as `OABCP_BOT_TOKEN`. This closes the real remaining
+  exposure: the templates deploy into environments we don't control, and until
+  now they shipped with the plaintext-serving path live.
+- **Step 3 (flip the process-global default, drop `token_plain`)** — **deferred,
+  by design**:
+  - *Not flipping the default.* `externalize_tokens()` and `seed()` read the
+    process-global env; flipping the default makes any `seed()` without a
+    `OABCP_BOT_TOKEN_<NAME>` fail (including hermetic unit tests and a bare
+    `cargo run`), for no gain now that the shipped templates set `=1` explicitly.
+    The default's value is moot for real deploys.
+  - *Not dropping `token_plain`.* It still backs the API-registration path
+    (`POST /v1/bots` → `/bot-config`, which reads `bot_token_plain`). Seeded bots
+    store an empty string, so it is harmless at rest under externalized mode.
+    Removing it means reworking that path — separate from the template channel
+    this ADR targets.
+
 ## References
 
 - [ADR 010 — OpenAB configUrl boundary](010-openab-configurl-boundary.md)
