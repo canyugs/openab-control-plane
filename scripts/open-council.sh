@@ -176,4 +176,11 @@ curl -sN "$STREAM_URL" -H "Authorization: Bearer $KEY" | node -e '
       else if (o.type === "state" && p.state === "closed") process.exit(0);
     }
   });
+  // A clean close exits 0 above. Reaching EOF without it means the SSE stream was
+  // cut — dead plane / dropped port-forward — NOT a finished council. Fail loud so
+  // callers (and CI) do not read a severed stream as success. (C5a op-hazard.)
+  process.stdin.on("end", () => {
+    console.error("error: stream ended before the council closed — plane or port-forward may be down");
+    process.exit(3);
+  });
 '
