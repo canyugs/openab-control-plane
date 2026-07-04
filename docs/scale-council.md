@@ -65,8 +65,14 @@ Since PR #94 (C7) a rolling bot restart no longer strands a live bot, so the
 restart is safe; the plane restart itself still costs the disposable DB. The
 plane pod swap also breaks the `port-forward svc/control-plane` — restart it.
 
-`kubectl set env deploy/control-plane …` is the lightest way to change roster
-(keeps the current image, rolls only the plane).
+`kubectl set env deploy/control-plane …` keeps the current image and rolls only
+the plane, but it is NOT non-destructive: the control-plane deployment has no
+volume (`/data` is the container's ephemeral filesystem), so the pod swap still
+wipes the DB and re-mints tokens. C7 makes the follow-up bot restart *safe* (no
+stranding); it does not remove the *need* for it — a bot holding a stale token
+fails re-auth against the fresh DB. A durable `/data` PVC would make plane
+restarts non-destructive and is the real fix (Track C observations); until then,
+every plane env change = restart all bots.
 
 ## Multi-provider — what's auto vs manual
 
@@ -106,7 +112,7 @@ kubectl --context docker-desktop -n oabcp-local set env deploy/control-plane \
 pkill -f "port-forward svc/control-plane 8090"; \
   kubectl --context docker-desktop -n oabcp-local port-forward svc/control-plane 8090:8090 &
 
-# 3. Deploy ONLY the new bot pods. --bots is the name list; --bot-agents the map.
+# 3. Deploy the new bot pods. --bots is the name list; --bot-agents the map.
 scripts/dev-deploy-bots.sh \
   --bots rev3,rev4 \
   --bot-agents rev3=kiro,rev4=claude \
@@ -114,11 +120,17 @@ scripts/dev-deploy-bots.sh \
   --agent-secret claude=claude-oauth:CLAUDE_CODE_OAUTH_TOKEN \
   --extra-secret gh-token:GH_TOKEN \
   --steering-file docs/steering/pr-review.md
+
+# 4. Restart the EXISTING bots too — step 1 wiped the DB + re-minted tokens, so
+#    chair/rev1/rev2 hold stale tokens and would drop on their next reconnect.
+kubectl --context docker-desktop -n oabcp-local rollout restart deploy/chair deploy/rev1 deploy/rev2
 ```
 
-Existing chair/rev1/rev2 keep running (C7 = a rolling reconnect no longer strands
-them, and set-env only rolled the plane). If a fresh pod sticks at
-`connected=false`, restart just that deploy (see the double-connect note below).
+Step 4 is mandatory whenever step 1 ran (any plane env change): the token re-mint
+forces every pre-existing bot to re-fetch `/bot-config`. C7 makes these restarts
+safe (a rolling reconnect no longer strands a live bot); it does not let you skip
+them. If a *fresh* pod sticks at `connected=false` on first boot, restart just
+that deploy (the double-connect race — see the gotcha below).
 
 ## Scale DOWN
 
