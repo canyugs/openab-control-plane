@@ -93,10 +93,18 @@ impl AppState {
         gen
     }
 
-    pub fn unregister_conn(&self, bot_id: &str, gen: u64) {
+    /// Remove a connection iff `gen` is still the current generation. Returns
+    /// true if it was removed — i.e. this teardown owns the bot's live state.
+    /// A superseded old connection (a newer one already registered during a
+    /// rolling reconnect) returns false, so the caller must NOT clobber the
+    /// bot's `connected` flag on its behalf.
+    pub fn unregister_conn(&self, bot_id: &str, gen: u64) -> bool {
         let mut hub = self.hub.lock().unwrap();
         if hub.get(bot_id).map(|(g, _)| *g) == Some(gen) {
             hub.remove(bot_id);
+            true
+        } else {
+            false
         }
     }
 
@@ -217,12 +225,21 @@ mod tests {
         let gen0 = state.register_conn("bot_a", tx0); // old pod
         let gen1 = state.register_conn("bot_a", tx1); // new pod replaces
         assert_ne!(gen0, gen1);
-        state.unregister_conn("bot_a", gen0); // old pod's late disconnect
+        // Old pod's late disconnect: superseded gen → returns false, so ws.rs
+        // knows NOT to flip the DB `connected` flag for the still-live bot.
+        assert!(
+            !state.unregister_conn("bot_a", gen0),
+            "superseded gen must report it did not own the live state"
+        );
         assert!(
             state.is_connected("bot_a"),
             "newer connection wrongly evicted"
         );
-        state.unregister_conn("bot_a", gen1); // current connection drops
+        // Current connection drops: owns the state → returns true → ws.rs marks offline.
+        assert!(
+            state.unregister_conn("bot_a", gen1),
+            "current gen must report it owned the live state"
+        );
         assert!(!state.is_connected("bot_a"));
     }
 

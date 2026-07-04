@@ -77,8 +77,13 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
         }
     }
 
-    state.unregister_conn(&bot_id, conn_gen);
-    let _ = state.store.set_connected(&bot_id, false);
     send_task.abort();
-    tracing::info!("bot {bot_id} disconnected");
+    // Only mark the bot offline if THIS connection is still the current one. On a
+    // rolling reconnect the new conn (gen N+1) registers before this old one (gen N)
+    // tears down; unregister_conn returns false for the superseded gen, so we must
+    // not flip `connected` false and strand a bot that is actually live on the new tx.
+    if state.unregister_conn(&bot_id, conn_gen) {
+        let _ = state.store.set_connected(&bot_id, false);
+        tracing::info!("bot {bot_id} disconnected");
+    }
 }
