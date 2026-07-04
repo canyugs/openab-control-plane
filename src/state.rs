@@ -9,12 +9,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
 
+/// One live south connection: its generation + the outbound frame sender.
+type Conn = (u64, mpsc::UnboundedSender<String>);
+
 pub struct AppState {
     pub store: Arc<dyn Store>,
-    /// bot_id -> (connection generation, outbound sender). The generation lets a
-    /// stale disconnect avoid evicting a newer connection (OAB reconnects/restarts
-    /// overlap: new pod registers before the old pod's disconnect fires).
-    hub: Mutex<HashMap<String, (u64, mpsc::UnboundedSender<String>)>>,
+    /// bot_id -> stack of live connections `(generation, outbound sender)`, oldest
+    /// first, so the LAST entry is the current one messages route to. Keeping every
+    /// live conn (not just the newest) is what fixes the double-connect zombie
+    /// (C8): when two same-bot_id pods overlap and the current one drops, the
+    /// still-live older conn is promoted back to current instead of the bot being
+    /// marked offline. `connected` = "this stack is non-empty".
+    hub: Mutex<HashMap<String, Vec<Conn>>>,
     conn_seq: AtomicU64,
     /// north SSE fanout (serialized NorthEvent JSON).
     pub north_tx: broadcast::Sender<String>,
@@ -83,42 +89,43 @@ impl AppState {
     }
 
     /// Register a connection; returns its generation. Pass it back to
-    /// `unregister_conn` so a stale disconnect can't evict a newer connection.
+    /// `unregister_conn` on teardown. The new conn becomes the current one; any
+    /// existing conns for this bot stay live underneath it (see C8).
     pub fn register_conn(&self, bot_id: &str, tx: mpsc::UnboundedSender<String>) -> u64 {
         let gen = self.conn_seq.fetch_add(1, Ordering::Relaxed);
-        let displaced = self
-            .hub
-            .lock()
-            .unwrap()
-            .insert(bot_id.to_string(), (gen, tx));
+        let mut hub = self.hub.lock().unwrap();
+        let stack = hub.entry(bot_id.to_string()).or_default();
         // A second live connection for the same bot_id (fresh-pod double-dial /
-        // overlapping reconnect). Benign for the current one, but this is the only
-        // signal that the double-connect race (PLAN C8) happened — surface it.
-        if let Some((old_gen, _)) = displaced {
-            tracing::warn!("bot {bot_id} re-registered gen {old_gen}->{gen} (displaced a live connection)");
+        // overlapping reconnect). No longer a hazard — the older conn is kept and
+        // can be promoted back — but still worth surfacing as the C8 fingerprint.
+        if let Some((old_gen, _)) = stack.last() {
+            tracing::warn!("bot {bot_id} second live connection gen {old_gen}->{gen} (overlap)");
         }
+        stack.push((gen, tx));
         gen
     }
 
-    /// Remove a connection iff `gen` is still the current generation. Returns
-    /// true if it was removed — i.e. this teardown owns the bot's live state.
-    /// A superseded old connection (a newer one already registered during a
-    /// rolling reconnect) returns false, so the caller must NOT clobber the
-    /// bot's `connected` flag on its behalf.
+    /// Remove connection `gen` from the bot's stack. Returns true iff the bot now
+    /// has NO live connections left — i.e. the caller should mark it offline. If a
+    /// superseded/older conn remains (the double-connect case), returns false: the
+    /// bot is still reachable on that conn and must stay `connected`.
     pub fn unregister_conn(&self, bot_id: &str, gen: u64) -> bool {
         let mut hub = self.hub.lock().unwrap();
-        if hub.get(bot_id).map(|(g, _)| *g) == Some(gen) {
-            hub.remove(bot_id);
-            true
-        } else {
-            false
+        if let Some(stack) = hub.get_mut(bot_id) {
+            stack.retain(|(g, _)| *g != gen);
+            if stack.is_empty() {
+                hub.remove(bot_id);
+                return true;
+            }
         }
+        false
     }
 
-    /// Send a raw text frame to a connected bot. Returns false if not connected.
+    /// Send a raw text frame to a bot's current (most recent live) connection.
+    /// Returns false if not connected.
     pub fn send_to_bot(&self, bot_id: &str, text: String) -> bool {
         let hub = self.hub.lock().unwrap();
-        match hub.get(bot_id) {
+        match hub.get(bot_id).and_then(|stack| stack.last()) {
             Some((_, tx)) => tx.send(text).is_ok(),
             None => false,
         }
@@ -204,7 +211,11 @@ impl AppState {
 
     #[cfg(test)]
     pub fn is_connected(&self, bot_id: &str) -> bool {
-        self.hub.lock().unwrap().contains_key(bot_id)
+        self.hub
+            .lock()
+            .unwrap()
+            .get(bot_id)
+            .is_some_and(|stack| !stack.is_empty())
     }
 
     pub fn emit_north(&self, kind: &str, session_id: &str, payload: serde_json::Value) {
@@ -230,24 +241,45 @@ mod tests {
         let (tx0, _rx0) = mpsc::unbounded_channel();
         let (tx1, _rx1) = mpsc::unbounded_channel();
         let gen0 = state.register_conn("bot_a", tx0); // old pod
-        let gen1 = state.register_conn("bot_a", tx1); // new pod replaces
+        let gen1 = state.register_conn("bot_a", tx1); // new pod overlaps
         assert_ne!(gen0, gen1);
-        // Old pod's late disconnect: superseded gen → returns false, so ws.rs
-        // knows NOT to flip the DB `connected` flag for the still-live bot.
+        // Old pod's late disconnect: a newer conn is still live → returns false, so
+        // ws.rs does NOT flip `connected` false for the still-live bot.
         assert!(
             !state.unregister_conn("bot_a", gen0),
-            "superseded gen must report it did not own the live state"
+            "a live newer conn remains → must report bot still connected"
         );
-        assert!(
-            state.is_connected("bot_a"),
-            "newer connection wrongly evicted"
-        );
-        // Current connection drops: owns the state → returns true → ws.rs marks offline.
+        assert!(state.is_connected("bot_a"), "newer connection wrongly evicted");
+        // Last connection drops: stack now empty → returns true → ws.rs marks offline.
         assert!(
             state.unregister_conn("bot_a", gen1),
-            "current gen must report it owned the live state"
+            "removing the last conn must report the bot fully offline"
         );
         assert!(!state.is_connected("bot_a"));
+    }
+
+    #[test]
+    fn current_conn_death_promotes_surviving_older_conn() {
+        // The C8 zombie: two same-bot_id pods overlap, the CURRENT (newer) conn
+        // dies, and the older conn is still live. It must be promoted back to
+        // current — bot stays connected and messages route to it — not marked
+        // offline. rx0 stays in scope so tx0 is a live sender.
+        let state = AppState::new(Arc::new(SqliteStore::memory().unwrap()));
+        let (tx0, _rx0) = mpsc::unbounded_channel();
+        let (tx1, _rx1) = mpsc::unbounded_channel();
+        let _gen0 = state.register_conn("bot_a", tx0); // survivor pod, connects first
+        let gen1 = state.register_conn("bot_a", tx1); // doomed pod, connects second (current)
+        // doomed conn dies while survivor is still live → not fully offline.
+        assert!(
+            !state.unregister_conn("bot_a", gen1),
+            "surviving older conn remains → bot must stay connected"
+        );
+        assert!(state.is_connected("bot_a"), "survivor wrongly evicted → zombie");
+        // Messages now route to the promoted survivor (tx0), not the dead conn.
+        assert!(
+            state.send_to_bot("bot_a", "ping".into()),
+            "promoted conn must accept sends"
+        );
     }
 
     #[test]

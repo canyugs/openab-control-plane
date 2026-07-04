@@ -94,10 +94,12 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
         let _ = state.store.set_connected(&bot_id, false);
         tracing::info!("bot {bot_id} disconnected (gen {conn_gen})");
     } else {
-        // Superseded old connection tore down after a newer one took over. Was
-        // silent before — logging it makes the double-connect race (C8) visible:
-        // a "connected gen N+1" with no matching "disconnected gen N+1", plus this
-        // line for gen N, is the fingerprint to look for if a bot sticks offline.
-        tracing::info!("bot {bot_id} superseded connection closed (gen {conn_gen}, newer conn active)");
+        // Another connection for this bot is still live (double-connect overlap).
+        // It is now the current one; the bot stays connected. Flush the outbox so
+        // anything queued while this conn was current lands on the promoted conn
+        // instead of stranding on the socket that just died. This is the C8 fix:
+        // the surviving pod is promoted back to current, no zombie, no reset.
+        state.flush_outbox(&bot_id);
+        tracing::info!("bot {bot_id} connection closed (gen {conn_gen}); still live on another conn");
     }
 }
