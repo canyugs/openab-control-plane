@@ -1450,8 +1450,11 @@ impl Store for SqliteStore {
         // percentile in Rust (SQLite has no percentile_cont).
         let mut durations: Vec<i64> = {
             let mut stmt = c.prepare(
+                // closed_at >= created_at drops any negative duration from wall-clock
+                // skew (the timestamps are separate now_ms() reads, not monotonic).
                 "SELECT closed_at - created_at FROM sessions
-                 WHERE decision IS NOT NULL AND closed_at IS NOT NULL",
+                 WHERE decision IS NOT NULL AND closed_at IS NOT NULL
+                   AND closed_at >= created_at",
             )?;
             let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
