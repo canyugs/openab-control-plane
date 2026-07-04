@@ -77,6 +77,8 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
         }
     }
 
+    // Unconditional: send_task pumps THIS socket's sink and dies with it,
+    // regardless of generation — a superseded old conn still aborts its own task.
     send_task.abort();
     // Only mark the bot offline if THIS connection is still the current one. On a
     // rolling reconnect the new conn (gen N+1) registers before this old one (gen N)
