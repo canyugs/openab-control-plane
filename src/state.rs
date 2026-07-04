@@ -211,11 +211,9 @@ impl AppState {
 
     #[cfg(test)]
     pub fn is_connected(&self, bot_id: &str) -> bool {
-        self.hub
-            .lock()
-            .unwrap()
-            .get(bot_id)
-            .is_some_and(|stack| !stack.is_empty())
+        // unregister_conn removes a bot's entry the moment its stack empties, so
+        // "present" == "has a live conn" — no need to also check non-empty (#100 F4).
+        self.hub.lock().unwrap().contains_key(bot_id)
     }
 
     pub fn emit_north(&self, kind: &str, session_id: &str, payload: serde_json::Value) {

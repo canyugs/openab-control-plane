@@ -83,14 +83,18 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
         }
     }
 
-    // Unconditional: send_task pumps THIS socket's sink and dies with it,
-    // regardless of generation — a superseded old conn still aborts its own task.
+    // Order matters (council #100 F1): unregister FIRST so send_to_bot/flush_outbox
+    // stop routing to this dead gen, THEN abort our own pump. Aborting first would
+    // leave this conn's tx still on the stack (as current) but with a dead
+    // send_task — a concurrent send could succeed on the channel, get acked out of
+    // the durable outbox, then be dropped when the buffer dies → message lost with
+    // no re-flush (the stack model keeps the bot connected, so nothing re-triggers
+    // delivery).
+    let fully_offline = state.unregister_conn(&bot_id, conn_gen);
+    // send_task pumps THIS socket's sink and dies with it regardless of generation;
+    // abort it now that the conn is off the stack.
     send_task.abort();
-    // Only mark the bot offline if THIS connection is still the current one. On a
-    // rolling reconnect the new conn (gen N+1) registers before this old one (gen N)
-    // tears down; unregister_conn returns false for the superseded gen, so we must
-    // not flip `connected` false and strand a bot that is actually live on the new tx.
-    if state.unregister_conn(&bot_id, conn_gen) {
+    if fully_offline {
         let _ = state.store.set_connected(&bot_id, false);
         tracing::info!("bot {bot_id} disconnected (gen {conn_gen})");
     } else {
