@@ -321,7 +321,8 @@ fn percentile(values: &mut [i64], p: f64) -> Option<i64> {
         return None;
     }
     values.sort_unstable();
-    let idx = ((p / 100.0) * (values.len() - 1) as f64).round() as usize;
+    // clamp so a caller passing p>100 (or fp rounding at the top) can't index OOB.
+    let idx = (((p / 100.0) * (values.len() - 1) as f64).round() as usize).min(values.len() - 1);
     Some(values[idx])
 }
 
@@ -1435,28 +1436,34 @@ impl Store for SqliteStore {
             "SELECT decision, COUNT(*) FROM sessions WHERE decision IS NOT NULL GROUP BY decision",
         )?;
 
+        // "Reached a verdict" = `decision IS NOT NULL`. Aborted sessions stamp
+        // `closed_at` too (see the abort path), so filtering on `closed_at` alone
+        // would fold their non-review elapsed time into throughput + percentiles.
         let closed_24h: i64 = c.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE closed_at IS NOT NULL AND closed_at >= ?1",
+            "SELECT COUNT(*) FROM sessions
+             WHERE decision IS NOT NULL AND closed_at IS NOT NULL AND closed_at >= ?1",
             params![now - 24 * 3600 * 1000],
             |r| r.get(0),
         )?;
 
-        // Time-to-verdict: pull closed-session durations, percentile in Rust
-        // (SQLite has no percentile_cont). One column, closed sessions only.
+        // Time-to-verdict: durations of sessions that actually reached a verdict,
+        // percentile in Rust (SQLite has no percentile_cont).
         let mut durations: Vec<i64> = {
             let mut stmt = c.prepare(
-                "SELECT closed_at - created_at FROM sessions WHERE closed_at IS NOT NULL",
+                "SELECT closed_at - created_at FROM sessions
+                 WHERE decision IS NOT NULL AND closed_at IS NOT NULL",
             )?;
             let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
-            rows.filter_map(|r| r.ok()).collect()
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
         let ttv_count = durations.len() as i64;
 
+        // Findings aggregated over verdict sessions only, so numerator and
+        // denominator share the same population (no avg skew).
         let (red, yellow, green, findings_sessions): (i64, i64, i64, i64) = c.query_row(
             "SELECT COALESCE(SUM(findings_red),0), COALESCE(SUM(findings_yellow),0),
-                    COALESCE(SUM(findings_green),0),
-                    SUM(CASE WHEN findings_red IS NOT NULL THEN 1 ELSE 0 END)
-             FROM sessions",
+                    COALESCE(SUM(findings_green),0), COUNT(*)
+             FROM sessions WHERE decision IS NOT NULL",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
@@ -1504,6 +1511,8 @@ mod tests {
         assert_eq!(percentile(&mut v, 95.0), Some(10));
         // unsorted input is handled (sorts in place)
         assert_eq!(percentile(&mut [30, 10, 20], 50.0), Some(20));
+        // p>100 clamps to the max instead of panicking on an OOB index.
+        assert_eq!(percentile(&mut [1, 2, 3], 150.0), Some(3));
     }
 
     #[test]
@@ -1522,10 +1531,19 @@ mod tests {
         store.set_state(&done.id, SessionState::Closed).unwrap();
         store.enqueue_outbox("bot1", &open.id, "bot1:m1", "f").unwrap();
 
+        // An aborted session stamps closed_at but never reached a verdict — it
+        // must NOT count toward throughput or time-to-verdict (council reds F1/F2).
+        let aborted = store
+            .create_session("aborted", Some("t:aborted"), 3, None, &[], "council")
+            .unwrap();
+        store.set_state(&aborted.id, SessionState::Aborted).unwrap();
+
         let now = now_ms();
         let s = store.stats(now).unwrap();
         assert_eq!(s["sessions"]["by_state"]["open"], json!(1));
         assert_eq!(s["sessions"]["by_state"]["closed"], json!(1));
+        assert_eq!(s["sessions"]["by_state"]["aborted"], json!(1));
+        // only the verdict session counts, not the aborted one.
         assert_eq!(s["sessions"]["closed_24h"], json!(1));
         assert_eq!(s["sessions"]["by_decision"]["approve"], json!(1));
         assert_eq!(s["sessions"]["findings"]["red"], json!(0));
