@@ -151,7 +151,7 @@ spec:
           # Single source of truth for the OpenAB pod image. rev1/rev2 alias this
           # (*openab_image), so a version bump is one edit here and the three pods
           # can never drift onto mismatched tags.
-          image: &openab_image ghcr.io/openabdev/openab:0.9.0-beta.6-claude
+          image: &openab_image ghcr.io/openabdev/openab:0.9.0-beta.7-claude
           command:
             - openab
             - run
