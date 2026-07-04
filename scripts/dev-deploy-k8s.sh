@@ -147,8 +147,27 @@ optional_env_yaml=""
 [[ -n "$OABCP_SESSION_CLOSE_WEBHOOK" ]] && append_optional_env_yaml OABCP_SESSION_CLOSE_WEBHOOK "$OABCP_SESSION_CLOSE_WEBHOOK"
 restart_nonce=$(date +%s)
 
+if ! kubectl -n "$KUBE_NAMESPACE" get pvc control-plane-data >/dev/null 2>&1; then
+  echo "note: first run with the durable /data PVC — the plane starts from an empty" >&2
+  echo "      DB and re-mints bot tokens once. Restart existing bots after this deploy" >&2
+  echo "      so they re-fetch /bot-config; later plane restarts are non-destructive." >&2
+fi
+
 echo "applying local control-plane deployment with image: $IMAGE"
 kubectl -n "$KUBE_NAMESPACE" apply -f - >/dev/null <<YAML
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: control-plane-data
+  labels:
+    app: control-plane
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -157,6 +176,10 @@ metadata:
     app: control-plane
 spec:
   replicas: 1
+  # Recreate, not RollingUpdate: the RWO PVC can't attach to the new pod while
+  # the old one still holds it, so a rolling swap would deadlock on the mount.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: control-plane
@@ -186,7 +209,16 @@ spec:
               value: "$OABCP_COUNCIL_ROSTER"
             - name: OABCP_WS_URL
               value: "$OABCP_WS_URL"
+            - name: OABCP_DB
+              value: "/data/plane.db"
 $optional_env_yaml
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: control-plane-data
 ---
 apiVersion: v1
 kind: Service
