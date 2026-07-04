@@ -24,20 +24,30 @@ pod restarts / OOM (no metrics-server → `kubectl top` unavailable); quota = bo
 
 (cells: ttv · total findings · decision. quorum_n confirmed = reviewer count each run.)
 
-## The knee is at ~4
+## Where the returns stop: usefulness plateaus after 4, turns negative by 6
+
+Precisely: the *last size that pays* is 4. The 5th reviewer adds nothing (the
+plateau); the 6th makes things worse (the degradation cliff sits between 5 and 6).
+So "aim for 4" — not because 4 is a sharp inflection, but because nothing past it
+helps and 6 hurts.
 
 - **4 → 5: flat.** Identical total findings (7/7/10 → 7/7/10), same decisions,
   ttv within noise. The 5th reviewer participated but surfaced no new distinct
   findings — pure cost (an extra pod, extra quota pressure; transient 429s on
   chair/rev3/rev4), no signal.
-- **5 → 6: actively worse.** Three separate degradations:
+- **5 → 6: three degradations, each on a different PR** (not a uniform
+  cross-PR worsening — each PR failed in its own way):
   1. **Convergence fails** — PR37634 ran 630s and closed with `decision=None`
      (no verdict), > 2× the 4-reviewer baseline and past any usable bound.
-  2. **Signal regresses** — PR36880 flipped `request_changes → approve`, i.e. the
-     6-reviewer council *missed* the 🔴 that the 4- and 5-reviewer councils both
-     caught. More voices diluted the finding rather than reinforcing it.
+  2. **Signal regresses** — PR36880 flipped `request_changes → approve` AND its
+     total findings dropped 10 → 7: the 6-reviewer council *missed* the 🔴 the 4-
+     and 5-reviewer councils both caught. More voices diluted consensus rather
+     than reinforcing it.
   3. **Resource pressure** — first pod restart (rev3) appeared at 7 bots on the
      6-CPU node (a liveness restart under load, not a clean OOM).
+  (PR37038 stayed request_changes at all three sizes — so the cliff is
+  PR-dependent, which is itself the point: at 6 you can no longer count on a
+  verdict, or on the right one.)
 
 ## Takeaway
 
@@ -55,9 +65,11 @@ unusually large/risky — and even then watch convergence.
   marginal-recall-vs-golden number is A4's judge (`~/Documents/zeabur/ocp-eval/`).
   Each run's verdict log is saved under the C10 scratchpad, so recall can be
   computed post-hoc on these exact outputs without re-running councils.
-- **n = 1 per cell.** The 4→5 flatness and 5→6 breakdown are each seen across 3
-  PRs, but run-to-run variance is real (PR37038's 🔴 count wandered 3→1→2). Treat
-  the knee as directional, not a decimal.
+- **n = 1 per cell — no repeated-run variance data.** Each (size, PR) ran once,
+  so this measures no run-to-run noise directly. PR37038's 🔴 count moving 3→1→2
+  is *across sizes* (4→5→6), which confounds a real size effect with LLM noise —
+  it can't be separated here. So the plateau/cliff is a directional read across 3
+  PRs, not a measured decimal; a rerun with ≥2 samples per cell would firm it up.
 - **Local node ceiling.** The 7-bot restart is a docker-desktop limit, not a
   product limit — production sizing would differ; the *signal* knee (~4) is the
   transferable finding.
