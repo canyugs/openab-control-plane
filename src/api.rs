@@ -24,6 +24,7 @@ use tokio_stream::StreamExt;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/v1/stats", get(stats))
         .route("/v1/bots", get(list_bots).post(register_bot))
         .route("/v1/bots/discover", post(discover_bot))
         .route("/v1/bots/:id", patch(patch_bot))
@@ -113,6 +114,43 @@ fn normalize_list(values: Vec<String>) -> Vec<String> {
 struct RegisterBot {
     name: String,
     role: String,
+}
+
+/// Read-only observability snapshot (C6): session outcome aggregates from the DB
+/// plus a per-bot infra roll-up from the live inventory. Distribution only, NOT
+/// a correctness/quality signal; snapshot since this deploy's DB was seeded.
+async fn stats(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_auth(&state, &headers)?;
+    let mut snapshot = state
+        .store
+        .stats(crate::store::now_ms())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let bots = state
+        .store
+        .list_bots()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let connected = bots.iter().filter(|b| b.connected).count();
+    let mut by_health: std::collections::BTreeMap<String, usize> = Default::default();
+    for b in &bots {
+        *by_health.entry(b.health.clone()).or_default() += 1;
+    }
+    snapshot["bots"] = json!({
+        "total": bots.len(),
+        "connected": connected,
+        "by_health": by_health,
+        "detail": bots.iter().map(|b| json!({
+            "id": b.id,
+            "connected": b.connected,
+            "health": b.health,
+            "last_seen_ms": b.last_seen_ms,
+            "version": b.version,
+        })).collect::<Vec<_>>(),
+    });
+    Ok(Json(snapshot))
 }
 
 async fn register_bot(
