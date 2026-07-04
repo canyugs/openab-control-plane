@@ -86,10 +86,17 @@ impl AppState {
     /// `unregister_conn` so a stale disconnect can't evict a newer connection.
     pub fn register_conn(&self, bot_id: &str, tx: mpsc::UnboundedSender<String>) -> u64 {
         let gen = self.conn_seq.fetch_add(1, Ordering::Relaxed);
-        self.hub
+        let displaced = self
+            .hub
             .lock()
             .unwrap()
             .insert(bot_id.to_string(), (gen, tx));
+        // A second live connection for the same bot_id (fresh-pod double-dial /
+        // overlapping reconnect). Benign for the current one, but this is the only
+        // signal that the double-connect race (PLAN C8) happened — surface it.
+        if let Some((old_gen, _)) = displaced {
+            tracing::warn!("bot {bot_id} re-registered gen {old_gen}->{gen} (displaced a live connection)");
+        }
         gen
     }
 
