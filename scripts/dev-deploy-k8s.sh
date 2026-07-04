@@ -149,6 +149,19 @@ restart_nonce=$(date +%s)
 
 echo "applying local control-plane deployment with image: $IMAGE"
 kubectl -n "$KUBE_NAMESPACE" apply -f - >/dev/null <<YAML
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: control-plane-data
+  labels:
+    app: control-plane
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -157,6 +170,10 @@ metadata:
     app: control-plane
 spec:
   replicas: 1
+  # Recreate, not RollingUpdate: the RWO PVC can't attach to the new pod while
+  # the old one still holds it, so a rolling swap would deadlock on the mount.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: control-plane
@@ -186,7 +203,16 @@ spec:
               value: "$OABCP_COUNCIL_ROSTER"
             - name: OABCP_WS_URL
               value: "$OABCP_WS_URL"
+            - name: OABCP_DB
+              value: "/data/plane.db"
 $optional_env_yaml
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: control-plane-data
 ---
 apiVersion: v1
 kind: Service

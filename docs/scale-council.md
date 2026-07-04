@@ -56,23 +56,41 @@ truth; raising one alone silently does nothing:
 - Bots `dev-deploy-bots.sh`: 3 pods, Kiro (`?agent=kiro`, `KIRO_API_KEY`).
 - Gateway tokens: legacy auto-mint (plane generates per bot, served inline).
 
-## ⚠️ Redeploy hazard
+## Redeploy behaviour (durable DB since C9)
 
-Changing plane env (`OABCP_BOTS` / `OABCP_COUNCIL_ROSTER` / preset) redeploys the
-plane, which **wipes the in-container SQLite DB and re-mints every bot's gateway
-token** → you **must restart all bot pods** so they re-fetch `/bot-config`.
-Since PR #94 (C7) a rolling bot restart no longer strands a live bot, so the
-restart is safe; the plane restart itself still costs the disposable DB. The
-plane pod swap also breaks the `port-forward svc/control-plane` — restart it.
+`dev-deploy-k8s.sh` mounts a `control-plane-data` PVC at `/data` and points
+`OABCP_DB=/data/plane.db` there, so the SQLite DB **survives plane pod swaps**.
+A plane redeploy or `kubectl set env deploy/control-plane …` no longer wipes the
+DB or re-mints tokens → **existing bots keep their tokens and do NOT need
+restarting**. The deployment uses `strategy: Recreate` (the RWO PVC can't attach
+to two pods at once, so a rolling swap would deadlock on the mount).
 
-`kubectl set env deploy/control-plane …` keeps the current image and rolls only
-the plane, but it is NOT non-destructive: the control-plane deployment has no
-volume (`/data` is the container's ephemeral filesystem), so the pod swap still
-wipes the DB and re-mints tokens. C7 makes the follow-up bot restart *safe* (no
-stranding); it does not remove the *need* for it — a bot holding a stale token
-fails re-auth against the fresh DB. A durable `/data` PVC would make plane
-restarts non-destructive and is the real fix (Track C observations); until then,
-every plane env change = restart all bots.
+Verified 2026-07-05: bounced the plane with all 5 bots untouched — they
+auto-reconnected (openab retries with backoff on a `Connection reset`) on their
+persisted tokens, back to 5/5, zero `401`.
+
+Still true after C9:
+- The plane pod swap breaks `port-forward svc/control-plane` — restart it.
+- A **fresh** bot added via step 3 still needs its own pod; only *existing* bots
+  are spared the restart.
+- **One-time cutover:** the first apply that *introduces* the PVC starts from a
+  fresh empty `/data/plane.db`, so it re-mints tokens once — restart the existing
+  bots that single time so they re-fetch `/bot-config`. Every plane restart after
+  that is non-destructive.
+
+**Roster shrink needs an explicit delete.** Because seeding is `INSERT OR IGNORE`
+against the now-durable DB, dropping a name from `OABCP_BOTS` does NOT remove its
+row — the bot stays seeded and connectable. To actually retire a reviewer, delete
+its row (and its pod), don't just shorten the env:
+
+```sh
+kubectl --context docker-desktop -n oabcp-local exec deploy/control-plane -- \
+  sqlite3 /data/plane.db "DELETE FROM bots WHERE id='rev4';"
+kubectl --context docker-desktop -n oabcp-local delete deploy rev4
+```
+
+To wipe everything (old destructive behaviour on demand): delete the PVC
+(`kubectl -n oabcp-local delete pvc control-plane-data`) then redeploy.
 
 ## Multi-provider — what's auto vs manual
 
@@ -120,17 +138,13 @@ scripts/dev-deploy-bots.sh \
   --agent-secret claude=claude-oauth:CLAUDE_CODE_OAUTH_TOKEN \
   --extra-secret gh-token:GH_TOKEN \
   --steering-file docs/steering/pr-review.md
-
-# 4. Restart the EXISTING bots too — step 1 wiped the DB + re-minted tokens, so
-#    chair/rev1/rev2 hold stale tokens and would drop on their next reconnect.
-kubectl --context docker-desktop -n oabcp-local rollout restart deploy/chair deploy/rev1 deploy/rev2
 ```
 
-Step 4 is mandatory whenever step 1 ran (any plane env change): the token re-mint
-forces every pre-existing bot to re-fetch `/bot-config`. C7 makes these restarts
-safe (a rolling reconnect no longer strands a live bot); it does not let you skip
-them. If a *fresh* pod sticks at `connected=false` on first boot, restart just
-that deploy (the double-connect race — see the gotcha below).
+Since C9 the DB is durable, so step 1 does **not** re-mint tokens — the existing
+chair/rev1/rev2 keep their `/bot-config` and stay connected; no restart needed
+(pre-C9 this was a mandatory 4th step). If a *fresh* pod sticks at
+`connected=false` on first boot, restart just that deploy (the double-connect
+race — see the gotcha below).
 
 ## Scale DOWN
 
