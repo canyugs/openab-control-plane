@@ -22,7 +22,13 @@ pub async fn ws_handler(
     let token = q.get("token").cloned().unwrap_or_default();
     match identity::verify(state.store.as_ref(), &token) {
         Ok(bot) => ws.on_upgrade(move |socket| handle_conn(state, socket, bot.id)),
-        Err(_) => axum::http::StatusCode::UNAUTHORIZED.into_response(),
+        Err(_) => {
+            // A bot dialing with an unknown/stale token (e.g. re-minted after a DB
+            // reset) loops here → stuck offline. Log it so that failure mode is
+            // distinguishable from the double-connect race. Never log the token.
+            tracing::warn!("ws upgrade rejected: invalid bot token");
+            axum::http::StatusCode::UNAUTHORIZED.into_response()
+        }
     }
 }
 
@@ -50,7 +56,7 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
     }
     // Replay anything queued while this bot was offline (durable outbox).
     state.flush_outbox(&bot_id);
-    tracing::info!("bot {bot_id} connected");
+    tracing::info!("bot {bot_id} connected (gen {conn_gen})");
 
     // outbound pump: plane → bot
     let send_task = tokio::spawn(async move {
@@ -86,6 +92,12 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
     // not flip `connected` false and strand a bot that is actually live on the new tx.
     if state.unregister_conn(&bot_id, conn_gen) {
         let _ = state.store.set_connected(&bot_id, false);
-        tracing::info!("bot {bot_id} disconnected");
+        tracing::info!("bot {bot_id} disconnected (gen {conn_gen})");
+    } else {
+        // Superseded old connection tore down after a newer one took over. Was
+        // silent before — logging it makes the double-connect race (C8) visible:
+        // a "connected gen N+1" with no matching "disconnected gen N+1", plus this
+        // line for gen N, is the fingerprint to look for if a bot sticks offline.
+        tracing::info!("bot {bot_id} superseded connection closed (gen {conn_gen}, newer conn active)");
     }
 }

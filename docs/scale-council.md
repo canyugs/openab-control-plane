@@ -180,11 +180,17 @@ curl -s -H "Authorization: Bearer $KEY" "$PLANE/v1/sessions?limit=1" \
   2026-07-05 4-way run split 3 Kiro / 2 Claude across two keys → zero throttling.
   Mix providers (`--bot-agents rev=claude,…` + that provider's Secret) before a
   single key saturates.
-- **Double-connect on fresh-pod startup.** A newly created bot pod occasionally
-  opens two WS connections; the surviving one drops ~0.5s later and openab does
-  not auto-retry, leaving it `connected=false`. Restart that one deploy to get a
-  clean single connection. Distinct from C7 (which fixed a *superseded old* conn
-  clobbering the flag) — see PLAN C8.
+- **Double-connect on fresh-pod startup (C8 — could not reproduce post-C9).** A
+  fresh pod was once seen opening two WS with the survivor dropping ~0.5s later
+  and sticking `connected=false`. Re-tested 2026-07-05 across 16 fresh-pod events
+  (8 rolling + 8 scale-0→1): every one a clean single connection. openab in fact
+  auto-reconnects with backoff (the original "no retry" was wrong), and the
+  practical trigger was the ephemeral-DB token churn that C9 removed. If it
+  recurs, the plane now logs the fingerprint: a `re-registered gen N->M (displaced
+  a live connection)` warn and/or a `superseded connection closed (gen N)` line —
+  a bot stuck offline after those, with no later `connected`, is the C8 race;
+  `invalid bot token` warns instead point at the stale-token path. Workaround
+  either way: `rollout restart` that one deploy.
 - **Liveness grace.** `OABCP_LIVENESS_GRACE_SECS=60`: a pod not connected within
   the window is flipped `unreachable` and trimmed. Big fleets cold-start slower —
   wait for all `connected=true` before opening.
