@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -305,6 +305,24 @@ pub trait Store: Send + Sync {
     /// Central revoke: drop every scoped token for a session. Called when the session
     /// closes so a pod can't keep acting on GitHub after the verdict.
     fn purge_installation_tokens(&self, session_id: &str) -> Result<()>;
+
+    /// Read-only observability snapshot: session outcome aggregates (state split,
+    /// 24h throughput, time-to-verdict p50/p95, mode/decision split, findings
+    /// totals) + outbox backlog. Distribution only — NOT a quality signal (see C6).
+    /// `now` is unix-ms so the caller controls the 24h window (testable).
+    fn stats(&self, now: i64) -> Result<Value>;
+}
+
+/// p50/p95-style percentile over an unsorted slice (nearest-rank on the sorted
+/// values). Empty → None. ponytail: exact enough for an eyeball metric; swap for
+/// interpolation only if someone charts these.
+fn percentile(values: &mut [i64], p: f64) -> Option<i64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    let idx = ((p / 100.0) * (values.len() - 1) as f64).round() as usize;
+    Some(values[idx])
 }
 
 const SCHEMA: &str = r#"
@@ -1390,11 +1408,136 @@ impl Store for SqliteStore {
         )?;
         Ok(())
     }
+
+    fn stats(&self, now: i64) -> Result<Value> {
+        let c = self.conn.lock().unwrap();
+
+        // GROUP BY helper: collect a (key,count) query into a JSON object.
+        let group = |sql: &str| -> Result<Value> {
+            let mut stmt = c.prepare(sql)?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?.unwrap_or_else(|| "unknown".into()),
+                    r.get::<_, i64>(1)?,
+                ))
+            })?;
+            let mut map = serde_json::Map::new();
+            for row in rows {
+                let (k, n) = row?;
+                map.insert(k, json!(n));
+            }
+            Ok(Value::Object(map))
+        };
+
+        let by_state = group("SELECT state, COUNT(*) FROM sessions GROUP BY state")?;
+        let by_mode = group("SELECT mode, COUNT(*) FROM sessions GROUP BY mode")?;
+        let by_decision = group(
+            "SELECT decision, COUNT(*) FROM sessions WHERE decision IS NOT NULL GROUP BY decision",
+        )?;
+
+        let closed_24h: i64 = c.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE closed_at IS NOT NULL AND closed_at >= ?1",
+            params![now - 24 * 3600 * 1000],
+            |r| r.get(0),
+        )?;
+
+        // Time-to-verdict: pull closed-session durations, percentile in Rust
+        // (SQLite has no percentile_cont). One column, closed sessions only.
+        let mut durations: Vec<i64> = {
+            let mut stmt = c.prepare(
+                "SELECT closed_at - created_at FROM sessions WHERE closed_at IS NOT NULL",
+            )?;
+            let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        let ttv_count = durations.len() as i64;
+
+        let (red, yellow, green, findings_sessions): (i64, i64, i64, i64) = c.query_row(
+            "SELECT COALESCE(SUM(findings_red),0), COALESCE(SUM(findings_yellow),0),
+                    COALESCE(SUM(findings_green),0),
+                    SUM(CASE WHEN findings_red IS NOT NULL THEN 1 ELSE 0 END)
+             FROM sessions",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+        let avg_findings = if findings_sessions > 0 {
+            (red + yellow + green) as f64 / findings_sessions as f64
+        } else {
+            0.0
+        };
+
+        let outbox_pending: i64 =
+            c.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))?;
+
+        Ok(json!({
+            "sessions": {
+                "by_state": by_state,
+                "closed_24h": closed_24h,
+                "time_to_verdict_ms": {
+                    "p50": percentile(&mut durations, 50.0),
+                    "p95": percentile(&mut durations, 95.0),
+                    "count": ttv_count,
+                },
+                "by_mode": by_mode,
+                "by_decision": by_decision,
+                "findings": {
+                    "red": red, "yellow": yellow, "green": green,
+                    "avg_per_session": avg_findings,
+                },
+            },
+            "outbox": { "pending": outbox_pending },
+        }))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn percentile_nearest_rank() {
+        assert_eq!(percentile(&mut [], 50.0), None);
+        assert_eq!(percentile(&mut [42], 95.0), Some(42));
+        // 1..=10 → p50 idx round(0.5*9)=5 → value 6; p95 idx round(0.95*9)=9 → 10.
+        let mut v: Vec<i64> = (1..=10).collect();
+        assert_eq!(percentile(&mut v, 50.0), Some(6));
+        assert_eq!(percentile(&mut v, 95.0), Some(10));
+        // unsorted input is handled (sorts in place)
+        assert_eq!(percentile(&mut [30, 10, 20], 50.0), Some(20));
+    }
+
+    #[test]
+    fn stats_aggregates_sessions_and_outbox() {
+        let store = SqliteStore::memory().unwrap();
+        // one open, one closed+approved with findings and a known duration.
+        let open = store
+            .create_session("open", Some("t:open"), 3, None, &[], "council")
+            .unwrap();
+        let done = store
+            .create_session("done", Some("t:done"), 3, None, &[], "council")
+            .unwrap();
+        store
+            .set_session_verdict(&done.id, "approve", Some(0), Some(2), Some(5))
+            .unwrap();
+        store.set_state(&done.id, SessionState::Closed).unwrap();
+        store.enqueue_outbox("bot1", &open.id, "bot1:m1", "f").unwrap();
+
+        let now = now_ms();
+        let s = store.stats(now).unwrap();
+        assert_eq!(s["sessions"]["by_state"]["open"], json!(1));
+        assert_eq!(s["sessions"]["by_state"]["closed"], json!(1));
+        assert_eq!(s["sessions"]["closed_24h"], json!(1));
+        assert_eq!(s["sessions"]["by_decision"]["approve"], json!(1));
+        assert_eq!(s["sessions"]["findings"]["red"], json!(0));
+        assert_eq!(s["sessions"]["findings"]["yellow"], json!(2));
+        assert_eq!(s["sessions"]["findings"]["green"], json!(5));
+        // one session has findings → avg = 7/1
+        assert_eq!(s["sessions"]["findings"]["avg_per_session"], json!(7.0));
+        // one closed session → p50/p95 both its (small, >=0) duration; count = 1.
+        assert_eq!(s["sessions"]["time_to_verdict_ms"]["count"], json!(1));
+        assert!(s["sessions"]["time_to_verdict_ms"]["p50"].is_i64());
+        assert_eq!(s["outbox"]["pending"], json!(1));
+    }
 
     #[test]
     fn active_session_for_trigger_dedups_only_while_open() {

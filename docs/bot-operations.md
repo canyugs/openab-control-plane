@@ -112,6 +112,43 @@ The design rationale is captured in
 to support quota failover and safe replacement inside a single OCP group, not to
 auto-admit pods or create a multi-tenant bot registry.
 
+## Observability (`GET /v1/stats`)
+
+A read-only JSON snapshot for eyeballing review throughput and infra state (north
+API key required). No new dependency or collection — it aggregates the existing
+`sessions` / `bots` / `outbox` tables on demand.
+
+```sh
+curl -s -H "Authorization: Bearer $KEY" "$PLANE/v1/stats" | jq
+```
+
+```json
+{
+  "sessions": {
+    "by_state": { "open": 1, "closed": 12, "aborted": 0 },
+    "closed_24h": 9,
+    "time_to_verdict_ms": { "p50": 138000, "p95": 210000, "count": 12 },
+    "by_mode": { "council": 12, "solo": 1 },
+    "by_decision": { "approve": 10, "reject": 2 },
+    "findings": { "red": 3, "yellow": 41, "green": 78, "avg_per_session": 10.2 }
+  },
+  "bots": {
+    "total": 5, "connected": 5,
+    "by_health": { "ok": 5 },
+    "detail": [ { "id": "chair", "connected": true, "health": "ok",
+                  "last_seen_ms": 1783183627000, "version": "openab:0.9.0-beta.7" } ]
+  },
+  "outbox": { "pending": 0 }
+}
+```
+
+Honest ceilings: findings are a **distribution, not a quality signal** — whether
+the verdicts were *right* is the eval harness's job, not these counts. It's a
+live snapshot over whatever the current DB holds; with the durable `/data` PVC
+(see [scale-council.md](scale-council.md)) that now spans plane restarts, but a
+`DELETE FROM bots`/PVC wipe still resets it. No Prometheus/OTel — JSON is enough
+for humans and scripts.
+
 ## Provider Map
 
 The provider is selected by either:
