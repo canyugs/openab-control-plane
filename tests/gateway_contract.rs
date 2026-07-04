@@ -6,10 +6,13 @@
 //! fixtures below are derived from openab at the image version pinned in the
 //! Zeabur templates.
 //!
-//! Pinned against: ghcr.io/openabdev/openab:0.9.0-beta.6 (openab commit 22a3cb2).
+//! Pinned against: ghcr.io/openabdev/openab:0.9.0-beta.7 (openab commit 5951950).
 //! On an image bump, re-check `crates/openab-core/src/gateway.rs` (structs
 //! `GatewayEvent`/`GwChannel`/`GwSender`/`GwContent`, `GatewayReply`,
-//! `GatewayResponse`) and update the fixtures if fields moved.
+//! `GatewayResponse`) and update the fixtures if fields moved. beta.6→beta.7
+//! added the runtime trust gate + echo throttle to `process_gateway_event`
+//! only; the wire structs above are byte-for-byte unchanged, so the fixtures
+//! still hold.
 
 use openab_control_plane::protocol::{
     ChannelInfo, Content, GatewayEvent, GatewayReply, GatewayResponse, SenderInfo, EVENT_SCHEMA,

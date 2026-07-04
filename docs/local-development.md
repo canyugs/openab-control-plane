@@ -132,7 +132,7 @@ scripts/dev-deploy-bots.sh \
 ```
 
 The script auto-detects the `kiro-api` secret when it exists and uses
-`ghcr.io/openabdev/openab:0.9.0-beta.6-kiro`. The Kiro built-in agent profile
+`ghcr.io/openabdev/openab:0.9.0-beta.7-kiro`. The Kiro built-in agent profile
 serves:
 
 ```toml

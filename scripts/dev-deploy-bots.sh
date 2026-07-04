@@ -166,8 +166,8 @@ yaml_quote() {
 
 default_image_for_agent() {
   case "$1" in
-    claude|claude-agent-acp) echo "ghcr.io/openabdev/openab:0.9.0-beta.6-claude" ;;
-    kiro) echo "ghcr.io/openabdev/openab:0.9.0-beta.6-kiro" ;;
+    claude|claude-agent-acp) echo "ghcr.io/openabdev/openab:0.9.0-beta.7-claude" ;;
+    kiro) echo "ghcr.io/openabdev/openab:0.9.0-beta.7-kiro" ;;
     *) echo "" ;;
   esac
 }
