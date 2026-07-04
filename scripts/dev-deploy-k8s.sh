@@ -147,6 +147,12 @@ optional_env_yaml=""
 [[ -n "$OABCP_SESSION_CLOSE_WEBHOOK" ]] && append_optional_env_yaml OABCP_SESSION_CLOSE_WEBHOOK "$OABCP_SESSION_CLOSE_WEBHOOK"
 restart_nonce=$(date +%s)
 
+if ! kubectl -n "$KUBE_NAMESPACE" get pvc control-plane-data >/dev/null 2>&1; then
+  echo "note: first run with the durable /data PVC — the plane starts from an empty" >&2
+  echo "      DB and re-mints bot tokens once. Restart existing bots after this deploy" >&2
+  echo "      so they re-fetch /bot-config; later plane restarts are non-destructive." >&2
+fi
+
 echo "applying local control-plane deployment with image: $IMAGE"
 kubectl -n "$KUBE_NAMESPACE" apply -f - >/dev/null <<YAML
 apiVersion: v1
