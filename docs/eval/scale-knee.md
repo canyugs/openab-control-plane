@@ -87,12 +87,71 @@ Two sharper reads the count table couldn't give:
   (C10) is now located precisely: bigger councils hurt at **synthesis**, not
   **review**.
 
-**Actionable:** the recall ceiling here is set by review *angles*, not reviewer
-*count* — the one serious miss (PR36880 `hasPermission` resource-lookup) is a
-stable blind spot no reviewer caught at any size. The A4 lever to raise recall is
-angle/prompt coverage; the lever to stop the 6-reviewer regression is chair
-synthesis, not fewer reviewers. Harness: `ocp-eval/.../offline/c10_recall.py`
-(reads the durable plane + `c10-results.csv`); raw output `c10-recall.json`.
+**Actionable:** reviewer *count* is not the recall lever — the one serious miss
+(PR36880 `hasPermission` resource-lookup) is a stable blind spot no reviewer
+caught at any size, and the 6-reviewer regression is a chair-synthesis problem,
+not a reviewing one. The obvious next lever — assigning *angles* — was then tested
+and turned out **not** to raise recall either (next section). Harness:
+`ocp-eval/.../offline/c10_recall.py` (reads the durable plane + `c10-results.csv`).
+
+## Do review angles raise recall? No — they redistribute it
+
+C10 ran generic (no angle assignment). The natural follow-up: does
+`--preset` (assign each reviewer a focus — correctness / security / testing / …)
+raise recall? Tested on the same 3 PRs, holding size fixed, varying only angle
+assignment: **generic** (no preset) → **angled-4** (`standard` = 5 angles onto 4
+reviewers, one doubles up) → **angled-5** (5 angles onto 5 reviewers, strict 1:1).
+
+Single-run reviewer-union recall:
+
+| PR | generic | angled-4 | angled-5 (1:1) |
+|----|---------|----------|----------------|
+| PR37038 (2 High) | 100% | 100% | 100% |
+| PR37634 (1 Crit, 1 High, 2 Low) | 50% | 75% | **100%** |
+| PR36880 (3 High) | 67% | 33% | **0%** |
+| **Aggregate** | 67% | 67% | 67% |
+| **High/Critical only** | **86%** | 71% | **57%** |
+
+Aggregate recall is flat at 67% in every condition — but the *composition* trades
+off monotonically as specialization increases: the mixed-severity PR (PR37634,
+which has shallow/dimension-specific issues) climbs 50→75→100 as dedicated angles
+find its Low nits, while the deep-authorization PR (PR36880, three permission-
+hierarchy correctness bugs) collapses 67→33→0. **On the issues that matter
+(High/Critical), specialization is strictly worse: 86% → 71% → 57%.**
+
+The single-run 67→33→0 was partly noise, so PR36880 was re-run to n=3 per config:
+
+| config | 3 runs | mean recall |
+|--------|--------|-------------|
+| generic-4 | 67 / 33 / 33 | **44%** |
+| angled-4 | 33 / 33 / 33 | **33%** |
+| angled-5 (1:1) | 0 / 33 / 33 | **22%** |
+
+The direction holds (gentler than the fluke suggested). The per-golden pattern
+across all 9 PR36880 runs is the real signal:
+
+- **`hasPermission(ClientModel, String)` — missed 9/9.** A hard blind spot
+  independent of size and angles; only a deeper correctness/authz steering
+  checklist will move it.
+- **orphaned-permissions (feature-flag) — caught 8/9.** Everyone gets it.
+- **`getClientsWithPermission` iteration — generic 2/3, angled 0/6.** This is the
+  finding specialization *kills*: it needs a reviewer reading the whole permission
+  flow, which generic's redundant full-readers hit but per-lane specialists miss.
+
+**Why:** generic review = every reviewer reads the whole PR → redundancy → deep
+correctness bugs get several independent pairs of eyes → someone catches them.
+Angle assignment spends that redundancy on breadth: dedicated angles cheaply find
+shallow dimension-specific issues (docs, testing, an over-broad `catch`), but no
+one holistically owns correctness, so the deep bugs slip. The more you specialize
+(4-with-doubling → strict 1:1), the sharper the trade.
+
+**Actionable (revised):** angles are a *breadth* knob, not a recall booster — use
+a preset when you want cheap coverage of shallow dimensions, but for a codebase
+whose dangerous bugs are deep correctness (keycloak authz here), **generic
+redundant review wins on the findings that matter.** The two real levers for
+deep-bug recall are redundancy (multiple full readers) and steering *depth*
+(an explicit authz/permission checklist for the stable blind spot), not angle
+specialization. Harness: `c10_recall.py` + `angle-run.sh` / `angle-run5.sh`.
 
 ## Takeaway
 
