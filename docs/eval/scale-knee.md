@@ -49,6 +49,51 @@ helps and 6 hurts.
   PR-dependent, which is itself the point: at 6 you can no longer count on a
   verdict, or on the right one.)
 
+## Recall check — the count-knee holds as a *measured* recall knee
+
+The table above counts findings (a signal+noise proxy). To test whether the
+plateau is real, each run's 9 verdicts were re-judged post-hoc against the
+keycloak golden labels — **no council re-run**. Candidate = *reviewer-union*
+(each reviewer's session messages; a golden issue is a hit if ANY reviewer
+covered it), scored by #74's exact judge (`claude-sonnet-4-5` via AI Hub). This
+measures the council's raw **detection** capacity by size. (The chair's
+synthesized verdict isn't in the session — it was written to a pod file and
+`--edit-last` overwrote all but the last size on GitHub — so reviewer-union is
+the recoverable, internally-consistent candidate across all 9 runs.)
+
+| Reviewers | PR37038 | PR37634 | PR36880 | Aggregate |
+|-----------|---------|---------|---------|-----------|
+| **4** | 100% (2/2) | 50% (2/4) | 67% (2/3) | **67% (6/9)** |
+| **5** | 100% (2/2) | 50% (2/4) | 67% (2/3) | **67% (6/9)** |
+| **6** | 100% (2/2) | 50% (2/4) | 67% (2/3) | **67% (6/9)** |
+
+**Recall is dead flat across 4/5/6 — the 5th and 6th reviewer detect zero new
+golden bugs.** Not just the aggregate: the *per-PR* recall and the *exact set of
+misses* are identical at every size. The count-proxy plateau was real.
+
+Two sharper reads the count table couldn't give:
+
+- **On issues that matter, recall is 86% and still flat.** The 9 golden are 1
+  Critical + 6 High + 2 Low. The stable miss set is 2 Low + 1 High, so
+  High/Critical recall = **6/7 (86%)** at every size; the 2 Low misses (a Javadoc
+  nit, an over-broad `catch`) are arguably correct triage, not a gap. Aggregate
+  67% also ≈ #74's 66.7% chair-verdict recall on the 10-PR slice — an independent
+  method landing in the same place.
+- **The "6 regresses" degradation is a chair-synthesis failure, not a detection
+  failure.** On PR36880 the 6-reviewer council flipped `request_changes →
+  approve` (Results table) — yet its *reviewers* caught the same 2/3 golden as at
+  4 and 5, **including** the orphaned-permissions blocker. The bug was seen and
+  then dropped at the chair/consensus step. So "more voices dilute consensus"
+  (C10) is now located precisely: bigger councils hurt at **synthesis**, not
+  **review**.
+
+**Actionable:** the recall ceiling here is set by review *angles*, not reviewer
+*count* — the one serious miss (PR36880 `hasPermission` resource-lookup) is a
+stable blind spot no reviewer caught at any size. The A4 lever to raise recall is
+angle/prompt coverage; the lever to stop the 6-reviewer regression is chair
+synthesis, not fewer reviewers. Harness: `ocp-eval/.../offline/c10_recall.py`
+(reads the durable plane + `c10-results.csv`); raw output `c10-recall.json`.
+
 ## Takeaway
 
 For this workload, **4 reviewers is the sweet spot**; 5 is tolerable but wasteful;
@@ -61,10 +106,12 @@ unusually large/risky — and even then watch convergence.
 
 ## Honest limits of this read
 
-- **Count, not recall.** Findings totals conflate signal and noise; a rigorous
-  marginal-recall-vs-golden number is A4's judge (`~/Documents/zeabur/ocp-eval/`).
-  Each run's verdict log is saved under the C10 scratchpad, so recall can be
-  computed post-hoc on these exact outputs without re-running councils.
+- **Count vs recall — now resolved.** The Results table counts findings (signal
+  +noise); the "Recall check" section above re-judged the same 9 runs against
+  golden and found recall flat across sizes (67% aggregate, 86% on High/Critical).
+  So the plateau isn't a counting artifact. Caveat inherited: reviewer-union
+  recall measures *detection*, not the chair's delivered verdict (see that
+  section for why the chair text isn't recoverable per-size).
 - **n = 1 per cell — no repeated-run variance data.** Each (size, PR) ran once,
   so this measures no run-to-run noise directly. PR37038's 🔴 count moving 3→1→2
   is *across sizes* (4→5→6), which confounds a real size effect with LLM noise —
