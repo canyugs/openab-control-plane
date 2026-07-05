@@ -106,7 +106,7 @@ spec:
       domainKey: PUBLIC_DOMAIN
       spec:
         source:
-          image: docker.io/canyu/openab-control-plane:0.1.12
+          image: docker.io/canyu/openab-control-plane:0.1.13
         ports:
           - id: web
             port: 8090

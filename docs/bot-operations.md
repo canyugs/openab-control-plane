@@ -285,6 +285,85 @@ Rollback:
 2. Restart the control-plane.
 3. Stop or delete the `rev3` service.
 
+## Attach An Existing OpenAB Instance
+
+Use this when you already run an OpenAB and want OCP to control it, instead of
+letting OCP stand up a fresh pod. OCP never reaches into a pod — a bot **dials
+out** to the plane's `/ws`, so "attach" means pointing your OpenAB at the plane
+and registering its identity. The instance must be a build that speaks the
+gateway protocol ([ADR 008](adr/008-external-controller-protocol.md)) and must be
+able to reach the plane's `OABCP_WS_URL`.
+
+**Connecting is not joining the council.** An attached instance becomes a
+controllable, idle bot; it only reviews once you add its id to
+`OABCP_COUNCIL_ROSTER` (see *Add A Reviewer*). This is the deliberate trust
+boundary — see *Safety Rules*.
+
+First, register the identity (either way):
+
+- Static: add the id to `OABCP_BOTS` on the control-plane and restart it, **or**
+- API: `POST /v1/bots` (returns the bot id + a gateway token).
+
+Then pick a path by **who owns the runtime config**:
+
+### Path A — bootstrap config (`/bot-config`), quick trials
+
+Point the instance at the plane's config URL:
+
+```sh
+openab run -c http://control-plane.zeabur.internal:8090/bot-config/<id>
+```
+
+The instance now runs the plane's **minimal** config
+([ADR 010](adr/010-openab-configurl-boundary.md) bootstrap path). ⚠️ Your
+instance's own `[agent]` / tools / steering do **not** apply on this run unless
+you replicate them into `OABCP_AGENT_PROFILES` on the plane. Good for a fast
+"does it connect and review" check; not for an instance with custom settings.
+
+### Path B — keep your config, add the gateway (production, preserves settings)
+
+Per [ADR 010](adr/010-openab-configurl-boundary.md), OpenAB keeps owning its
+runtime config; OCP owns only identity + gateway. Leave your `config.toml`
+(agent, tools, steering, `pre_seed`, secrets) untouched and add a `[gateway]`
+block pointing at the plane:
+
+```toml
+[gateway]
+url = "wss://<plane-domain>/ws"   # the plane's OABCP_WS_URL
+platform = "feishu"
+token = "${OABCP_BOT_TOKEN}"      # the gateway token from registration
+allow_all_users = true
+allow_bot_messages = true
+bot_username = "<id>"
+streaming = true
+```
+
+Keep starting the instance with **your own** config
+(`openab run -c <your-configUrl>`). All original settings are preserved; OCP only
+coordinates sessions and rosters on top.
+
+Either path is **reversible and non-destructive**: `-c` is a per-run argument and
+never rewrites the on-disk config. Point the instance back at its own config to
+detach.
+
+**Register-only (no session/roster rights):** to let an instance report in for
+inventory without granting it anything, use `POST /v1/bots/discover` with
+`OABCP_BOT_DISCOVERY_TOKEN` (see *Bot Discovery*). It records metadata; it cannot
+open sessions or change rosters.
+
+Validation:
+
+- Control-plane logs show `seeded from OABCP_BOTS bot="<id>"` (static path) or the
+  `POST /v1/bots` response.
+- Instance logs show `connected to gateway`.
+- `GET /v1/stats` lists the id as `connected: true`.
+
+Rollback:
+
+1. If added to the council, remove the id from `OABCP_COUNCIL_ROSTER` and restart
+   the control-plane.
+2. Point the instance back at its own config URL (Path B) or stop the run (Path A).
+
 ## Replace A Reviewer Provider
 
 Use this when a model quota is exhausted or when you want to test another CLI
