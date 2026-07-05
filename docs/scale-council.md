@@ -142,9 +142,9 @@ scripts/dev-deploy-bots.sh \
 
 Since C9 the DB is durable, so step 1 does **not** re-mint tokens — the existing
 chair/rev1/rev2 keep their `/bot-config` and stay connected; no restart needed
-(pre-C9 this was a mandatory 4th step). If a *fresh* pod sticks at
-`connected=false` on first boot, restart just that deploy (the double-connect
-race — see the gotcha below).
+(pre-C9 this was a mandatory 4th step). Since C8 (#100) a fresh pod that briefly
+overlaps an old one self-heals too — no manual restart for the double-connect
+case either (see the gotcha below).
 
 ## Scale DOWN
 
@@ -180,17 +180,19 @@ curl -s -H "Authorization: Bearer $KEY" "$PLANE/v1/sessions?limit=1" \
   2026-07-05 4-way run split 3 Kiro / 2 Claude across two keys → zero throttling.
   Mix providers (`--bot-agents rev=claude,…` + that provider's Secret) before a
   single key saturates.
-- **Double-connect on fresh-pod startup (C8 — could not reproduce post-C9).** A
-  fresh pod was once seen opening two WS with the survivor dropping ~0.5s later
-  and sticking `connected=false`. Re-tested 2026-07-05 across 16 fresh-pod events
-  (8 rolling + 8 scale-0→1): every one a clean single connection. openab in fact
-  auto-reconnects with backoff (the original "no retry" was wrong), and the
-  practical trigger was the ephemeral-DB token churn that C9 removed. If it
-  recurs, the plane now logs the fingerprint: a `re-registered gen N->M (displaced
-  a live connection)` warn and/or a `superseded connection closed (gen N)` line —
-  a bot stuck offline after those, with no later `connected`, is the C8 race;
-  `invalid bot token` warns instead point at the stale-token path. Workaround
-  either way: `rollout restart` that one deploy.
+- **Double-connect on fresh-pod startup (C8 — FIXED #100).** A fresh pod that
+  briefly overlaps the old one (two replicasets during a roll, or a scale-0→1
+  dial) used to be able to win the hub slot then die and orphan the survivor →
+  bot stuck `connected=false` with no self-heal. Since #100 the plane keeps a
+  *stack* of live conns per bot; when the current one dies a surviving conn is
+  promoted back to current, so the bot stays connected — no manual restart. openab
+  also auto-reconnects with backoff (the original "no retry" was wrong). The plane
+  still logs the fingerprint if you want to watch it happen: a `bot <id> second
+  live connection gen N->M (overlap)` warn on the double-dial, then `connection
+  closed (gen N); still live on another conn` when the loser drops. `invalid bot
+  token` warns instead point at the stale-token path (not this race). If a bot
+  *does* stick offline after those overlap lines, that's a regression worth a bug,
+  not a `rollout restart`.
 - **Liveness grace.** `OABCP_LIVENESS_GRACE_SECS=60`: a pod not connected within
   the window is flipped `unreachable` and trimmed. Big fleets cold-start slower —
   wait for all `connected=true` before opening.
