@@ -315,7 +315,9 @@ openab run -c http://control-plane.zeabur.internal:8090/bot-config/<id>
 ```
 
 The instance now runs the plane's **minimal** config
-([ADR 010](adr/010-openab-configurl-boundary.md) bootstrap path). ⚠️ Your
+([ADR 010](adr/010-openab-configurl-boundary.md) keeps `/bot-config` as the
+bootstrap path; the served token is externalized per
+[ADR 016](adr/016-gateway-token-externalization.md)). ⚠️ Your
 instance's own `[agent]` / tools / steering do **not** apply on this run unless
 you replicate them into `OABCP_AGENT_PROFILES` on the plane. Good for a fast
 "does it connect and review" check; not for an instance with custom settings.
@@ -328,10 +330,12 @@ runtime config; OCP owns only identity + gateway. Leave your `config.toml`
 block pointing at the plane:
 
 ```toml
+# `platform = "feishu"` is just the gateway adapter name — not a Feishu account.
+# `token` is the OCP gateway token from registration, NOT a platform/Feishu token.
 [gateway]
 url = "wss://<plane-domain>/ws"   # the plane's OABCP_WS_URL
 platform = "feishu"
-token = "${OABCP_BOT_TOKEN}"      # the gateway token from registration
+token = "${OABCP_BOT_TOKEN}"      # OCP gateway token (env-expanded at boot, ADR 016)
 allow_all_users = true
 allow_bot_messages = true
 bot_username = "<id>"
@@ -343,8 +347,9 @@ Keep starting the instance with **your own** config
 coordinates sessions and rosters on top.
 
 Either path is **reversible and non-destructive**: `-c` is a per-run argument and
-never rewrites the on-disk config. Point the instance back at its own config to
-detach.
+never rewrites the on-disk config. To detach: Path A — stop the run and point the
+instance back at its own config; Path B — remove the `[gateway]` block and restart
+it.
 
 **Register-only (no session/roster rights):** to let an instance report in for
 inventory without granting it anything, use `POST /v1/bots/discover` with
@@ -362,7 +367,9 @@ Rollback:
 
 1. If added to the council, remove the id from `OABCP_COUNCIL_ROSTER` and restart
    the control-plane.
-2. Point the instance back at its own config URL (Path B) or stop the run (Path A).
+2. Detach the instance:
+   - Path A: stop the `-c <plane>/bot-config/<id>` run; point it back at its own config.
+   - Path B: remove the `[gateway]` block from your config and restart it.
 
 ## Replace A Reviewer Provider
 
