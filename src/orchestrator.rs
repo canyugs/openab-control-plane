@@ -1,5 +1,6 @@
 //! Orchestration (design §13): the deterministic referee. The plane owns the
-//! lifecycle, fanout, and quorum; the chair bot is the only LLM judgment.
+//! lifecycle, client-trigger fanout, and quorum; the chair bot is the only LLM
+//! judgment.
 
 use crate::coordinator::{self, Action, Ctx};
 use crate::protocol::{Content, GatewayReply, GatewayResponse, SenderInfo, RESPONSE_SCHEMA};
@@ -144,48 +145,6 @@ fn recipient_text(session: &Session, target_id: &str, text: &str) -> String {
         text,
         review_trigger_context(session, text).as_ref(),
     )
-}
-
-/// Fan a stored message out to every roster bot except its author (§10).
-fn fanout(
-    state: &AppState,
-    session: &Session,
-    msg: &Message,
-    sender: SenderInfo,
-    mentions: Vec<String>,
-) -> Result<()> {
-    // Don't fan a streaming stub to peers: OAB sends a placeholder first
-    // ("…"/empty) then fills it via edit_message (which doesn't re-fan), so a
-    // peer bot would only ever see the stub and reply "your message got cut
-    // off". ponytail: peers reviewing the same trigger don't need each other's
-    // stream; the chair's verdict still reads the stored final via GET. Upgrade
-    // path: fan the final content on the author's done-signal (🆗).
-    let stub = msg.content.trim();
-    if stub.is_empty() || stub == "…" {
-        return Ok(());
-    }
-    let roster = state.store.roster(&session.id)?;
-    let thread = state.store.thread_for_session(&session.id)?;
-    let author = msg.author_id.as_deref();
-    let review_ctx = (msg.author_kind == "client")
-        .then(|| review_trigger_context(session, &msg.content))
-        .flatten();
-    for target in routing::fanout_targets(&roster, author) {
-        state.deliver_event(
-            &target,
-            &session.id,
-            thread.as_deref(),
-            sender.clone(),
-            Content::text(if msg.author_kind == "client" {
-                recipient_text_with_context(session, &target, &msg.content, review_ctx.as_ref())
-            } else {
-                msg.content.clone()
-            }),
-            mentions.clone(),
-            &msg.id,
-        );
-    }
-    Ok(())
 }
 
 /// Client posts the opening intent. Stores it, moves open→deliberating, fans the
@@ -1058,7 +1017,6 @@ fn on_send(
         &reply.content.text,
         reply.quote_message_id.as_deref(),
     )?;
-    fanout(state, session, &msg, bot_sender(bot_id, bot_name), vec![])?;
     state.emit_north(
         "message",
         &session.id,
@@ -1684,6 +1642,209 @@ mod tests {
             .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
             .unwrap();
         (state, store, session, chair.id, rev1.id, rev2.id)
+    }
+
+    fn pending_message_frames(
+        store: &SqliteStore,
+        bot_id: &str,
+        message_id: &str,
+    ) -> Vec<serde_json::Value> {
+        store
+            .pending_outbox(bot_id)
+            .unwrap()
+            .into_iter()
+            .filter_map(|(_, frame)| serde_json::from_str::<serde_json::Value>(&frame).ok())
+            .filter(|v| v["message_id"] == message_id)
+            .collect()
+    }
+
+    fn pending_text_frames(
+        store: &SqliteStore,
+        bot_id: &str,
+        text: &str,
+    ) -> Vec<serde_json::Value> {
+        store
+            .pending_outbox(bot_id)
+            .unwrap()
+            .into_iter()
+            .filter_map(|(_, frame)| serde_json::from_str::<serde_json::Value>(&frame).ok())
+            .filter(|v| v["content"]["text"].as_str() == Some(text))
+            .collect()
+    }
+
+    #[test]
+    fn bot_send_is_stored_and_emitted_north_but_never_fanned() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev1 = store.register_bot("rev1", "reviewer", "h2", "t2").unwrap();
+        let rev2 = store.register_bot("rev2", "reviewer", "h3", "t3").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                2,
+                Some(&chair.id),
+                &[chair.id.clone(), rev1.id.clone(), rev2.id.clone()],
+                "review_council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+        let mut north = state.north_tx.subscribe();
+
+        handle_reply(&state, &rev1.id, msg_reply(&session.id, "review body")).unwrap();
+
+        let msg = store
+            .messages(&session.id)
+            .unwrap()
+            .into_iter()
+            .find(|m| {
+                m.author_id.as_deref() == Some(rev1.id.as_str()) && m.content == "review body"
+            })
+            .expect("bot send should be stored");
+        assert!(
+            pending_message_frames(&store, &chair.id, &msg.id).is_empty(),
+            "chair must not receive implicit bot-message fanout"
+        );
+        assert!(
+            pending_message_frames(&store, &rev2.id, &msg.id).is_empty(),
+            "peer reviewer must not receive implicit bot-message fanout"
+        );
+
+        let raw = north.try_recv().expect("north message event");
+        let event: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(event["type"], "message");
+        assert_eq!(event["payload"]["message_id"], msg.id);
+        assert_eq!(event["payload"]["content"], "review body");
+    }
+
+    #[test]
+    fn session_reset_placeholder_reaches_no_peer() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev1 = store.register_bot("rev1", "reviewer", "h2", "t2").unwrap();
+        let rev2 = store.register_bot("rev2", "reviewer", "h3", "t3").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                2,
+                Some(&chair.id),
+                &[chair.id.clone(), rev1.id.clone(), rev2.id.clone()],
+                "review_council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+        let placeholder = "⚠️ _Session expired, starting fresh..._\n\n…";
+
+        handle_reply(&state, &rev1.id, msg_reply(&session.id, placeholder)).unwrap();
+
+        let msg = store
+            .messages(&session.id)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.author_id.as_deref() == Some(rev1.id.as_str()) && m.content == placeholder)
+            .expect("placeholder should still be stored");
+        assert!(pending_message_frames(&store, &chair.id, &msg.id).is_empty());
+        assert!(pending_message_frames(&store, &rev2.id, &msg.id).is_empty());
+    }
+
+    #[test]
+    fn reviewer_done_relays_settled_final_to_chair_once() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev = store.register_bot("rev", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), rev.id.clone()],
+                "review_council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+
+        handle_reply(
+            &state,
+            &rev.id,
+            msg_reply(&session.id, "reviewer settled final [done]"),
+        )
+        .unwrap();
+
+        let msg = store
+            .messages(&session.id)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.author_id.as_deref() == Some(rev.id.as_str()))
+            .unwrap();
+        let relayed = pending_message_frames(&store, &chair.id, &msg.id);
+        assert_eq!(relayed.len(), 1);
+        assert_eq!(
+            relayed[0]["content"]["text"],
+            "reviewer settled final [done]"
+        );
+    }
+
+    #[test]
+    fn pipeline_stage_done_relays_output_and_prompt_to_next_stage() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let s0 = store.register_bot("s0", "reviewer", "h0", "t0").unwrap();
+        let s1 = store.register_bot("s1", "reviewer", "h1", "t1").unwrap();
+        let s2 = store.register_bot("s2", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                0,
+                None,
+                &[s0.id.clone(), s1.id.clone(), s2.id.clone()],
+                "pipeline",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+
+        handle_reply(
+            &state,
+            &s0.id,
+            msg_reply(&session.id, "stage 0 output [done]"),
+        )
+        .unwrap();
+
+        let msg = store
+            .messages(&session.id)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.author_id.as_deref() == Some(s0.id.as_str()))
+            .unwrap();
+        let output_to_s1 = pending_message_frames(&store, &s1.id, &msg.id);
+        assert_eq!(output_to_s1.len(), 1);
+        assert_eq!(output_to_s1[0]["content"]["text"], "stage 0 output [done]");
+        assert!(
+            !pending_text_frames(
+                &store,
+                &s1.id,
+                "Your turn — continue the review, building on the prior stage's output above.",
+            )
+            .is_empty(),
+            "next stage should also receive the handoff prompt"
+        );
+        assert!(
+            pending_message_frames(&store, &s2.id, &msg.id).is_empty(),
+            "later pipeline stages must not receive implicit bot-message fanout"
+        );
     }
 
     #[test]
