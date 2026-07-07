@@ -32,7 +32,7 @@ enough to test.
 | The **coordination seam** (`Coordinator` trait) | The engine owns the *seam*; the *policy* plugged into it (quorum, solo, …) is not core — see "Policy vs mechanism vs substrate" below |
 | Durable delivery (outbox, replay) | Cross-bot message reliability |
 | Bot identity + per-bot gateway tokens | The plane manages the registry and gateway credentials; production OpenAB runtime config belongs outside the plane |
-| `/bot-config/:id` legacy bootstrap | Compatibility path for current templates and local dogfood; not the long-term OpenAB config delivery surface |
+| `/bot-config/:id` legacy bootstrap | Compatibility path for current templates and local dogfood; frozen bugfix-only (B2) and retired when ADR 010's Stage 3 profile/`pre_boot` migration moves templates to OpenAB-native `configUrl` artifacts |
 | North API (sessions, messages, SSE) | The client-facing interface |
 
 ## OCP does NOT own
@@ -43,8 +43,8 @@ enough to test.
 | OpenAB runtime config (`config.toml`, `configUrl`, `configFile`, `s3://`, `aws-sm://`, `pre_seed`, hooks, agent command) | OpenAB + deployment tooling | OCP must not duplicate OpenAB's config schema or recreate Helm-style rendering |
 | LLM reasoning / verdict content | The agent (chair bot) | Plane never calls an LLM |
 | Agent credentials (`CLAUDE_CODE_OAUTH_TOKEN`, API keys) | Each bot pod via `inherit_env` | Plane never touches model keys |
-| Bot-side credential consumption — fetching its scoped GitHub token, configuring `gh`, not holding a static write PAT | OAB bot / pod | OCP **mints, offers (`/v1/sessions/:id/github-token`), and purges-on-close** per-role scoped tokens (purge = drop from the store so they're never served again, not a GitHub-side revoke); how the pod *consumes* a credential (and which static tokens it carries) is the pod's job — same boundary as `inherit_env` above |
-| PR-specific logic (gh pr diff, gh pr comment, label) | Application shim or chair bot | Code review is an app on top of OCP, not part of it |
+| Bot-side credential consumption — fetching its scoped GitHub token, configuring `gh`, not holding a static write PAT | OAB bot / pod | OCP **mints, offers (`/v1/sessions/:id/github-token`), and purges-on-close** per-role scoped tokens. Purge from the store is guaranteed; GitHub-side revoke is best-effort async in App mode only, warn-only with no retry, and the ≤1h token TTL remains the backstop. How the pod *consumes* a credential (and which static tokens it carries) is the pod's job — same boundary as `inherit_env` above |
+| PR-specific logic (gh pr diff, gh pr comment, label) | Bundled first-party controller today; future `plugins/pr_review` extraction | B1: PR review is compiled in for the first dogfood product (`/v1/review`, webhook parsing, presets, prompt fabrication). It is grandfathered until the Stage 3 extraction, not evidence that arbitrary app logic belongs in the runtime kernel |
 | Agent lifecycle (spawn, pool, session TTL) | OpenAB (`[agent]` + `[pool]` config) | OAB's existing session pool management |
 | Platform adapters (Discord, Slack, Telegram) | OpenAB gateway | OCP speaks the gateway wire protocol, not platform APIs |
 | File/knowledge seeding (S3, git clone) | OAB `pre_seed` / `pre_boot` hooks | Boot-time setup is the bot image's responsibility |
@@ -109,8 +109,17 @@ split:
 | once-only + ordered (close once, transition once) | safety | ✅ CAS `advance_state` |
 | only authorized members act | safety | ✅ roster gate |
 | nothing acts after close | safety | ✅ post-close drop |
-| no message lost across disconnect | safety | ✅ outbox + replay |
-| **the session always reaches a terminal verdict** | **liveness** | ✅ `force_close_timeout` watchdog (deadline → forced close) |
+| at-least-once delivery across disconnect; duplicates possible at OAB | safety | ✅ outbox + replay. A2 fix direction: delivered marker + per-bot flush serialization in Stage 1; receiver dedup upstream in Stage 2 |
+| **the session always terminates** | **liveness** | ✅ `force_close_timeout` watchdog (deadline → terminal state). B4: verdict content and GitHub posting remain steering/controller responsibilities, not kernel guarantees |
+
+M1 review-trigger rule: a same-delivery retry dedupes; a new-head or
+new-command trigger supersedes the active review session. Today's implementation
+does not yet hold that rule: a `synchronize` during an active council is swallowed
+as a dedupe (`src/github_webhook.rs:334-345`; same pre-check on
+`POST /v1/review`, `src/api.rs:1251-1258`), so the council can verdict on a stale
+head. This is a declared defect until the P1 supersede mechanism in
+[pr-mention-plan §3](pr-mention-plan.md#3-supersession-m1--the-one-new-kernel-mechanism)
+lands, including its out-of-order residual.
 
 **Test for "is it OCP's job":** must it hold even if a bot is slow, dead, buggy,
 malicious, or hallucinating? → plane. Only when bots behave? → steering.

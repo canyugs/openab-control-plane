@@ -43,6 +43,15 @@ The production direction is:
 `/bot-config/:id` remains a bootstrap and local-dogfood compatibility path. It
 must not become the primary configuration surface for new OpenAB features.
 
+### Amendment 2026-07 (B2): `/bot-config` renderer freeze
+
+`bot_config()` rendering is frozen: bugfix-only, no new OpenAB runtime fields.
+The one post-ADR drift was commit `957a547` / #60, which pinned the `allow_*`
+trust fields in the rendered config ahead of OpenAB's trust flip; that is exactly
+the kind of trust/gateway field growth this ADR's "should not add" list targets.
+Future production work must move through OpenAB-owned profiles, `pre_boot`, and
+deployment-owned `configUrl` artifacts instead of expanding this renderer.
+
 ## Scope Rules
 
 OCP may keep doing these things:

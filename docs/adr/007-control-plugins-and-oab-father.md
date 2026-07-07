@@ -53,6 +53,12 @@ At the same time, the useful abstraction is now visible:
    implementation work should extract the current hardcoded assumptions only
    when they block packaging, installation clarity, or another real plugin.
 
+**Status note (B1, 2026-07):** the extraction trigger above is arguably fired by
+[ADR 014](014-triage-panel.md) plus the forum north-client plan, and PR review
+is already a bundled first-party controller in code rather than a pure external
+shim. Extraction to `plugins/pr_review` is queued for Phase 2 / boundary Stage 3;
+until then the current in-kernel controller is grandfathered, not generalized.
+
 ## Target Shape
 
 ```text

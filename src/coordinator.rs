@@ -46,8 +46,12 @@ pub trait Coordinator: Send + Sync {
     /// A settled done-signal (🆗 add) arrived from `bot`. Return actions.
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action>;
     /// Roster members *prompted to act* on the opening trigger (i.e. @mentioned).
-    /// Non-starters still receive the trigger as context. Default: the whole
-    /// roster (council/solo fan-out). `Pipeline` starts only stage 0.
+    /// A9: non-starters are skipped by the stock OAB mention gate before any
+    /// recipient thread exists, so the opening event is dropped, not deferred;
+    /// they first see the session via a later Relay or backfill. Any Stage 1
+    /// in-thread re-delivery must mint a new message row/message_id because
+    /// A2's outbox idem_key will survive ack. Default: the whole roster
+    /// (council/solo fan-out). `Pipeline` starts only stage 0.
     fn starters(&self, roster: &[String], _chair: Option<&str>) -> Vec<String> {
         roster.to_vec()
     }

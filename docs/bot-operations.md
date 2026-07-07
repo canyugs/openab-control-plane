@@ -342,6 +342,14 @@ bot_username = "<id>"
 streaming = true
 ```
 
+**A11 MUST:** keep `allow_bot_messages = true` on attached Path B bots. If it is
+omitted, OAB silently drops council-peer speech after the plane's outbox has
+already marked the message delivered; the plane cannot see the loss, and the
+thread goes quiet until the watchdog. `allow_all_users = true` is belt-only here
+because OAB already allows all users when the list is empty, but keep it explicit
+so the WS token remains the trust boundary. This requirement also belongs on
+upstream OAB's gateway compliance list; that upstream note is outside this PR.
+
 Keep starting the instance with **your own** config
 (`openab run -c <your-configUrl>`). All original settings are preserved; OCP only
 coordinates sessions and rosters on top.

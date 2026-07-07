@@ -102,3 +102,13 @@ What exists today constrains the design:
 Trigger parse (item 2): small (~½ day, parse + test). The full loop (items 3–6:
 solo-ask convene + pointer template + new-comment post path + comment-id idempotency +
 the permission/allowlist gate): medium, ~2–4 days. Tracked in a new issue.
+
+## Amendment 2026-07 — deterministic command tier
+
+The mention surface grows a deterministic command tier, with no LLM intent
+classifier. Per [pr-mention-plan §2](../pr-mention-plan.md#2-command-grammar--trigger-surface),
+comment-leading `@handle review [fix notes]` and `@handle full review` become
+re-review commands at P2; all other mention text remains the solo ask path from
+this ADR. The command tier is active only when `OABCP_BOT_HANDLE` is set; unset
+means mention parsing is off and fails closed. The ask path never supersedes a
+review council.
