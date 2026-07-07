@@ -14,6 +14,7 @@
 #   ROSTER  JSON array of bot names (default ["chair","rev1","rev2"], matches OABCP_BOTS)
 #   QUORUM  override quorum_n          (default: all participating reviewers)
 #   MODE    override mode              (default: solo for 1-entry roster, else council)
+#           Note: MODE=council on a PR-shaped trigger delivers no role protocol.
 #   PRESET  quick|standard|full        (same as --preset; PR path only — assigns review angles)
 #   SELF_FETCH =1 to send a pointer trigger; bots fetch the diff themselves (same as --self-fetch)
 #   FOLLOW  =1 to stream + print the verdict (same as --watch)
