@@ -51,6 +51,18 @@ pub struct WebhookTrigger {
     /// Triggering comment id — the idempotency key for an `ask` (a re-delivered
     /// `issue_comment` webhook must not double-answer). `None` for PR-event triggers.
     pub comment_id: Option<u64>,
+    /// Author-provided fix notes from `@handle review [notes]`. `Some("")` is a
+    /// deliberate bare mention-review command; `None` means no carried re-review context.
+    pub review_notes: Option<String>,
+    /// True for `@handle full review`, which asks the successor round to omit the
+    /// delta header and review from scratch.
+    pub review_from_scratch: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MentionReviewCommand {
+    notes: String,
+    from_scratch: bool,
 }
 
 /// Users allowed to command the bot via a comment (`/review`, `/ask`, `@mention`).
@@ -107,6 +119,58 @@ fn parse_ask_comment(comment: &str, handle: Option<&str>) -> Option<String> {
         }
     }
     None
+}
+
+fn strip_leading_mention<'a>(comment: &'a str, handle: Option<&str>) -> Option<&'a str> {
+    let c = comment.trim();
+    let h = handle?;
+    let rest = c.strip_prefix('@')?;
+    let name = rest.get(..h.len())?;
+    if !name.eq_ignore_ascii_case(h) {
+        return None;
+    }
+    let tail = &rest[h.len()..];
+    let boundary =
+        tail.is_empty() || !tail.starts_with(|ch: char| ch.is_alphanumeric() || ch == '-');
+    if !boundary {
+        return None;
+    }
+    Some(tail.trim_start_matches("[bot]").trim_start())
+}
+
+fn strip_ci_word<'a>(text: &'a str, word: &str) -> Option<&'a str> {
+    let prefix = text.get(..word.len())?;
+    if !prefix.eq_ignore_ascii_case(word) {
+        return None;
+    }
+    let rest = &text[word.len()..];
+    if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+        Some(rest.trim_start_matches(char::is_whitespace))
+    } else {
+        None
+    }
+}
+
+/// Parse the paid re-review command tier. Unlike `parse_ask_comment`, this is
+/// comment-leading only so quoted/code-span/mid-sentence copies cannot supersede
+/// a live council.
+fn parse_mention_review_comment(
+    comment: &str,
+    handle: Option<&str>,
+) -> Option<MentionReviewCommand> {
+    let rest = strip_leading_mention(comment, handle)?;
+    if let Some(after_full) = strip_ci_word(rest, "full") {
+        let notes = strip_ci_word(after_full, "review")?;
+        return Some(MentionReviewCommand {
+            notes: notes.to_string(),
+            from_scratch: true,
+        });
+    }
+    let notes = strip_ci_word(rest, "review")?;
+    Some(MentionReviewCommand {
+        notes: notes.to_string(),
+        from_scratch: false,
+    })
 }
 
 /// Match a slash command only when the command is exact or followed by whitespace, so
@@ -180,6 +244,8 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                 preset: preset_from_labels(&pr["labels"]),
                 question: None,
                 comment_id: None,
+                review_notes: None,
+                review_from_scratch: false,
             })
         }
         "issue_comment" => {
@@ -216,6 +282,31 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                     preset: preset_from_labels(&body["issue"]["labels"]),
                     question: None,
                     comment_id: body["comment"]["id"].as_u64(),
+                    review_notes: None,
+                    review_from_scratch: false,
+                });
+            }
+            if let Some(review) = parse_mention_review_comment(comment, mention_handle().as_deref())
+            {
+                let assoc = body["comment"]["author_association"].as_str().unwrap_or("");
+                if !can_command(assoc) {
+                    return None;
+                }
+                return Some(WebhookTrigger {
+                    repo,
+                    pr_number,
+                    pr_url: pr_url.to_string(),
+                    installation_id,
+                    reason: "/review".into(),
+                    trigger_fingerprint: body["comment"]["id"]
+                        .as_u64()
+                        .map(|id| format!("cmd:{id}")),
+                    is_synchronize: false,
+                    preset: preset_from_labels(&body["issue"]["labels"]),
+                    question: None,
+                    comment_id: body["comment"]["id"].as_u64(),
+                    review_notes: Some(review.notes),
+                    review_from_scratch: review.from_scratch,
                 });
             }
             // Conversational follow-up (ADR 011): `/ask` or an `@mention` of the bot,
@@ -239,6 +330,8 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                     preset: None,
                     question: Some(question),
                     comment_id: body["comment"]["id"].as_u64(),
+                    review_notes: None,
+                    review_from_scratch: false,
                 });
             }
             None
@@ -378,12 +471,22 @@ pub async fn handle_webhook(
     // makes no ancestry call here. A late older synchronize can supersede a newer
     // round; the next trigger re-supersedes, and the reviewed-head label makes the
     // stale verdict visible until a payload-only recency rule exists.
+    let rereview_context = if trigger.review_notes.is_some() || trigger.review_from_scratch {
+        Some(crate::council::ReviewRereviewContext {
+            base_sha: None,
+            author_notes: trigger.review_notes.clone(),
+            from_scratch: trigger.review_from_scratch,
+        })
+    } else {
+        None
+    };
     match crate::council::convene_for_pr(
         &state,
         &trigger.repo,
         trigger.pr_number,
         trigger.preset.clone(),
         trigger.trigger_fingerprint.clone(),
+        rereview_context,
     )
     .await
     {
@@ -476,6 +579,23 @@ mod tests {
         }
     }
 
+    fn webhook_env_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
+    fn with_bot_handle<T>(handle: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _guard = webhook_env_lock().lock().unwrap();
+        let old = std::env::var("OABCP_BOT_HANDLE").ok();
+        match handle {
+            Some(handle) => std::env::set_var("OABCP_BOT_HANDLE", handle),
+            None => std::env::remove_var("OABCP_BOT_HANDLE"),
+        }
+        let result = f();
+        restore_env("OABCP_BOT_HANDLE", old);
+        result
+    }
+
     fn state_with_review_bots() -> Arc<AppState> {
         let store = Arc::new(SqliteStore::memory().unwrap());
         store
@@ -526,6 +646,25 @@ mod tests {
             "comment": {
                 "id": comment_id,
                 "body": "/review please",
+                "author_association": "MEMBER",
+                "user": { "type": "User" }
+            }
+        })
+    }
+
+    fn issue_comment_payload(comment_id: u64, body: &str) -> Value {
+        json!({
+            "action": "created",
+            "installation": { "id": 99 },
+            "repository": { "full_name": "o/r" },
+            "issue": {
+                "number": 7,
+                "pull_request": { "url": "https://api.github.com/repos/o/r/pulls/7" },
+                "labels": []
+            },
+            "comment": {
+                "id": comment_id,
+                "body": body,
                 "author_association": "MEMBER",
                 "user": { "type": "User" }
             }
@@ -834,6 +973,179 @@ mod tests {
         assert_eq!(t.pr_number, 12);
         // a non-write commenter's /ask is ignored (token-spend gate)
         assert!(parse_trigger("issue_comment", &body("NONE")).is_none());
+    }
+
+    #[test]
+    fn comment_leading_mention_review_convenes_with_notes() {
+        with_bot_handle(Some("zeabur-council"), || {
+            let body = issue_comment_payload(
+                777,
+                "@zeabur-council review fixed F1\n\nAdded a regression test.",
+            );
+
+            let t = parse_trigger("issue_comment", &body).expect("mention review should trigger");
+
+            assert_eq!(t.reason, "/review");
+            assert_eq!(t.trigger_fingerprint.as_deref(), Some("cmd:777"));
+            assert_eq!(
+                t.review_notes.as_deref(),
+                Some("fixed F1\n\nAdded a regression test.")
+            );
+            assert!(!t.review_from_scratch);
+        });
+    }
+
+    #[test]
+    fn full_review_sets_from_scratch() {
+        with_bot_handle(Some("zeabur-council"), || {
+            let body = issue_comment_payload(778, "@zeabur-council FULL review start over");
+
+            let t = parse_trigger("issue_comment", &body).expect("full review should trigger");
+
+            assert_eq!(t.reason, "/review");
+            assert_eq!(t.review_notes.as_deref(), Some("start over"));
+            assert!(t.review_from_scratch);
+        });
+    }
+
+    #[test]
+    fn quoted_footer_mention_does_not_trigger() {
+        with_bot_handle(Some("zeabur-council"), || {
+            let body = issue_comment_payload(779, "> @zeabur-council review fixed F1");
+
+            let t =
+                parse_trigger("issue_comment", &body).expect("quote still falls through to ask");
+
+            assert_eq!(t.reason, "ask");
+            assert_eq!(t.question.as_deref(), Some("review fixed F1"));
+            assert_eq!(t.review_notes, None);
+        });
+    }
+
+    #[test]
+    fn code_span_mention_does_not_trigger() {
+        with_bot_handle(Some("zeabur-council"), || {
+            let body = issue_comment_payload(780, "`@zeabur-council review fixed F1`");
+
+            let t = parse_trigger("issue_comment", &body)
+                .expect("code span still falls through to ask");
+
+            assert_eq!(t.reason, "ask");
+            assert_eq!(t.question.as_deref(), Some("review fixed F1`"));
+            assert_eq!(t.review_notes, None);
+        });
+    }
+
+    #[test]
+    fn mid_sentence_mention_falls_through_to_ask() {
+        with_bot_handle(Some("zeabur-council"), || {
+            let body = issue_comment_payload(781, "Could @zeabur-council review the auth flow?");
+
+            let t = parse_trigger("issue_comment", &body).expect("mid-sentence mention is ask");
+
+            assert_eq!(t.reason, "ask");
+            assert_eq!(t.question.as_deref(), Some("review the auth flow?"));
+            assert_eq!(t.review_notes, None);
+        });
+    }
+
+    #[test]
+    fn handle_unset_disables_mention_grammar() {
+        with_bot_handle(None, || {
+            let body = issue_comment_payload(782, "@zeabur-council review fixed F1");
+
+            assert!(parse_trigger("issue_comment", &body).is_none());
+        });
+    }
+
+    #[test]
+    fn bot_author_mention_is_ignored() {
+        with_bot_handle(Some("zeabur-council"), || {
+            let mut body = issue_comment_payload(783, "@zeabur-council review fixed F1");
+            body["comment"]["user"]["type"] = json!("Bot");
+
+            assert!(parse_trigger("issue_comment", &body).is_none());
+        });
+    }
+
+    #[test]
+    fn mention_review_reads_preset_from_issue_labels() {
+        with_bot_handle(Some("zeabur-council"), || {
+            let mut body = issue_comment_payload(784, "@zeabur-council review fixed F1");
+            body["issue"]["labels"] = json!([{ "name": "review:full" }]);
+
+            let t = parse_trigger("issue_comment", &body).expect("mention review should trigger");
+
+            assert_eq!(t.preset.as_deref(), Some("full"));
+        });
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mention_review_delivers_prior_sha_delta_context_to_reviewer() {
+        let _policy_guard = crate::council::review_policy_env_lock().lock().await;
+        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
+        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
+        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
+        std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
+
+        let state = state_with_review_bots();
+        let first =
+            crate::council::convene_for_pr(&state, "o/r", 7, None, Some("sha:abc123".into()), None)
+                .await
+                .unwrap();
+        let crate::controller::ControllerActionResult::SessionOpened {
+            session_id: first_id,
+            ..
+        } = first
+        else {
+            panic!("first review should open");
+        };
+
+        let second = crate::council::convene_for_pr(
+            &state,
+            "o/r",
+            7,
+            None,
+            Some("cmd:9003".into()),
+            Some(crate::council::ReviewRereviewContext {
+                base_sha: None,
+                author_notes: Some(
+                    "Fixed F1 by guarding the empty diff.\n\nAdded coverage.".into(),
+                ),
+                from_scratch: false,
+            }),
+        )
+        .await
+        .unwrap();
+        let crate::controller::ControllerActionResult::Superseded {
+            session_id: second_id,
+            ..
+        } = second
+        else {
+            panic!("second review should supersede");
+        };
+
+        assert_ne!(second_id, first_id);
+        let prompt = state
+            .store
+            .messages(&second_id)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.author_kind == "client")
+            .unwrap()
+            .content;
+        assert!(prompt.contains("Delta: review the diff since `abc123`"));
+        assert!(prompt.contains("Fixed F1 by guarding the empty diff.\n\nAdded coverage."));
+
+        let reviewer_frames = state.store.pending_outbox("rev1").unwrap();
+        assert!(reviewer_frames.iter().any(|(_, frame)| {
+            frame.contains("review the diff since `abc123`")
+                && frame.contains("Fixed F1 by guarding the empty diff.")
+                && frame.contains("git merge-base --is-ancestor abc123 HEAD")
+        }));
+
+        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
+        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
     }
 
     #[tokio::test(flavor = "current_thread")]

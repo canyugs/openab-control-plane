@@ -65,11 +65,41 @@ fn inlined_diff(text: &str) -> Option<&str> {
     Some(diff.trim())
 }
 
+struct RereviewTriggerContext<'a> {
+    base_sha: Option<&'a str>,
+    author_notes: Option<&'a str>,
+    from_scratch: bool,
+}
+
+fn rereview_context(text: &str) -> Option<RereviewTriggerContext<'_>> {
+    let (_, rest) = text.split_once(crate::council::REREVIEW_CONTEXT_START)?;
+    let (block, _) = rest.split_once(crate::council::REREVIEW_CONTEXT_END)?;
+    let from_scratch = block
+        .lines()
+        .any(|line| line.trim() == "Mode: full review from scratch");
+    let base_sha = block.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("Delta: review the diff since `")
+            .and_then(|tail| tail.strip_suffix('`'))
+            .filter(|sha| !sha.is_empty())
+    });
+    let author_notes = block
+        .split_once("Author fix notes:\n")
+        .map(|(_, notes)| notes)
+        .filter(|notes| !notes.is_empty());
+    Some(RereviewTriggerContext {
+        base_sha,
+        author_notes,
+        from_scratch,
+    })
+}
+
 struct ReviewTriggerContext<'a> {
     repo: &'a str,
     pr: &'a str,
     angles: HashMap<String, String>,
     diff: Option<&'a str>,
+    rereview: Option<RereviewTriggerContext<'a>>,
 }
 
 fn review_trigger_context<'a>(
@@ -85,6 +115,7 @@ fn review_trigger_context<'a>(
         pr,
         angles: assigned_angles(text),
         diff: inlined_diff(text),
+        rereview: rereview_context(text),
     })
 }
 
@@ -96,7 +127,11 @@ fn review_recipient_text_from_context(
     let repo = ctx.repo;
     let pr = ctx.pr;
     if session.chair_bot.as_deref() == Some(target_id) {
-        return render_review_chair_task(repo, pr);
+        let mut text = render_review_chair_task(repo, pr);
+        if let Some(rereview) = ctx.rereview.as_ref() {
+            text.push_str(&render_rereview_task_context(rereview));
+        }
+        return text;
     }
 
     let angle = ctx
@@ -104,13 +139,35 @@ fn review_recipient_text_from_context(
         .get(target_id)
         .cloned()
         .unwrap_or_else(|| "correctness".to_string());
+    let rereview_note = ctx
+        .rereview
+        .as_ref()
+        .map(render_rereview_task_context)
+        .unwrap_or_default();
     let diff_note = match ctx.diff {
         Some(diff) => format!("\n\nDiff to review:\n{diff}"),
         None => format!(
             "\n\nFetch what you need with:\n- gh pr diff {pr} --repo {repo}\n- gh pr diff {pr} --repo {repo} --name-only\n- gh pr checkout {pr} --repo {repo}"
         ),
     };
-    render_review_reviewer_task(repo, pr, &angle, &diff_note)
+    render_review_reviewer_task(repo, pr, &angle, &format!("{rereview_note}{diff_note}"))
+}
+
+fn render_rereview_task_context(ctx: &RereviewTriggerContext<'_>) -> String {
+    let mut out = "\n\nRe-review context:\n".to_string();
+    if ctx.from_scratch {
+        out.push_str("- Full review from scratch; do not limit analysis to the previous delta.\n");
+    } else if let Some(sha) = ctx.base_sha {
+        out.push_str(&format!("- review the diff since `{sha}`.\n"));
+        out.push_str(&format!(
+            "- If `git merge-base --is-ancestor {sha} HEAD` fails, fall back to a full review and say so in the verdict.\n"
+        ));
+    }
+    if let Some(notes) = ctx.author_notes {
+        out.push_str("\nAuthor fix notes:\n");
+        out.push_str(notes);
+    }
+    out
 }
 
 fn render_review_chair_task(repo: &str, pr: &str) -> String {
@@ -2319,16 +2376,79 @@ mod tests {
     }
 
     #[test]
+    fn recipient_texts_carry_delta_header_and_notes() {
+        let session = test_session(Some("chair"), "review_council");
+        let trigger = crate::council::render_trigger_with_context(
+            "canyugs/openab-control-plane",
+            53,
+            "Review focus assignment:\n- rev1 → security",
+            Some(&crate::council::ReviewRereviewContext {
+                base_sha: Some("abc123".into()),
+                author_notes: Some(
+                    "Fixed F1 by guarding the empty diff.\n\nAdded coverage.".into(),
+                ),
+                from_scratch: false,
+            }),
+        );
+
+        let chair_text = recipient_text(&session, "chair", &trigger);
+        let reviewer_text = recipient_text(&session, "rev1", &trigger);
+
+        for text in [chair_text, reviewer_text] {
+            assert!(text.contains("review the diff since `abc123`"));
+            assert!(text.contains(
+                "If `git merge-base --is-ancestor abc123 HEAD` fails, fall back to a full review and say so in the verdict."
+            ));
+            assert!(text.contains("Fixed F1 by guarding the empty diff.\n\nAdded coverage."));
+        }
+    }
+
+    #[test]
+    fn full_review_recipient_texts_omit_delta_header() {
+        let session = test_session(Some("chair"), "review_council");
+        let trigger = crate::council::render_trigger_with_context(
+            "canyugs/openab-control-plane",
+            53,
+            "Review focus assignment:\n- rev1 → security",
+            Some(&crate::council::ReviewRereviewContext {
+                base_sha: Some("abc123".into()),
+                author_notes: Some("Start over after the rebase.".into()),
+                from_scratch: true,
+            }),
+        );
+
+        let chair_text = recipient_text(&session, "chair", &trigger);
+        let reviewer_text = recipient_text(&session, "rev1", &trigger);
+
+        for text in [chair_text, reviewer_text] {
+            assert!(text.contains("Start over after the rebase."));
+            assert!(!text.contains("review the diff since `abc123`"));
+            assert!(!text.contains("git merge-base --is-ancestor abc123 HEAD"));
+        }
+    }
+
+    #[test]
     fn chair_task_carries_full_quorum_protocol() {
         let session = test_session(Some("chair"), "review_council");
         let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"\n\nReview focus assignment:\n- rev1 → correctness";
 
         let chair_text = recipient_text(&session, "chair", trigger);
 
-        assert!(chair_text.contains("💬 Comment `/ask <question>` for a follow-up"));
+        assert!(chair_text.contains("💬 Comment `@handle <question>` for a follow-up"));
         assert!(chair_text.contains("gh pr review 53 --repo canyugs/openab-control-plane"));
         assert!(chair_text.contains("gh api repos/canyugs/openab-control-plane/statuses/$SHA"));
         assert!(chair_text.contains("[[verdict:request_changes r=1 y=3 g=5]] [done]"));
+    }
+
+    #[test]
+    fn chair_footer_advertises_mention_commands_in_code_spans() {
+        let session = test_session(Some("chair"), "review_council");
+        let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"";
+
+        let chair_text = recipient_text(&session, "chair", trigger);
+
+        assert!(chair_text.contains("Comment `@handle <question>` for a follow-up"));
+        assert!(chair_text.contains("Push new commits or comment `@handle review <fix notes>`"));
     }
 
     #[test]

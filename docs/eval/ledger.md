@@ -71,3 +71,13 @@ Per angle:
 - #73's review of this very file produced a 🟡 that describes itself as "not
   a defect" — severity misuse to have something to report. Prompt tweak
   candidate: a finding that requires no action is 🟢 by definition.
+
+## Re-review spend checkpoint (#127)
+
+For each dogfood `@handle review <fix notes>` re-review, record round-1 spend
+and round-N spend here until the eval harness has a structured cost table.
+Trigger the reduced-panel follow-up if round-N spend exceeds 50% of round-1.
+
+| PR | Round | Trigger | Round-1 spend | Round-N spend | Ratio | Notes |
+|----|-------|---------|---------------|---------------|-------|-------|
+| _pending dogfood_ | | `@handle review` | | | | |
