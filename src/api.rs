@@ -2,6 +2,9 @@
 //! (web UI / desktop app) opens a session, posts an intent, renders the stream —
 //! no chat platform anywhere. v1 auth = bearer API key.
 
+use crate::controller::{
+    self, ControllerAction, ControllerActionResult, ControllerError, OpenSessionAction,
+};
 use crate::identity;
 use crate::orchestrator;
 use crate::session::{reviewers, DONE_EMOJI};
@@ -428,20 +431,33 @@ async fn open_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(req): Json<OpenSession>,
-) -> Result<impl IntoResponse, StatusCode> {
-    check_auth(&state, &headers)?;
-    let s = state
-        .store
-        .create_session(
-            &req.title,
-            req.trigger_ref.as_deref(),
-            req.quorum_n,
-            req.chair_bot.as_deref(),
-            &req.roster,
-            &req.mode,
-        )
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(json!({ "session_id": s.id })))
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    check_auth(&state, &headers).map_err(error_status)?;
+    let action = OpenSessionAction {
+        title: req.title,
+        trigger_ref: req.trigger_ref,
+        roster: req.roster,
+        quorum_n: req.quorum_n,
+        chair_bot: req.chair_bot,
+        mode: req.mode,
+        prompt: String::new(),
+    };
+    match controller::execute(&state, ControllerAction::OpenSession(action)) {
+        Ok(ControllerActionResult::SessionOpened {
+            session_id,
+            deduped,
+        }) => Ok(Json(
+            json!({ "session_id": session_id, "deduped": deduped }),
+        )),
+        Err(ControllerError::Invalid(message)) => {
+            Err((StatusCode::BAD_REQUEST, Json(json!({ "error": message }))))
+        }
+        Err(ControllerError::Internal(_)) => Err(error_status(StatusCode::INTERNAL_SERVER_ERROR)),
+    }
+}
+
+fn error_status(status: StatusCode) -> (StatusCode, Json<Value>) {
+    (status, Json(json!({ "error": status.to_string() })))
 }
 
 #[derive(Deserialize)]
@@ -1391,9 +1407,9 @@ mod tests {
     use axum::body::to_bytes;
     use axum::extract::{Path, Query, State};
     use axum::response::IntoResponse;
-    use std::sync::Arc;
     use futures::StreamExt;
     use serde_json::{json, Value};
+    use std::sync::Arc;
     use tokio::sync::broadcast;
     use tokio::time::{timeout, Duration};
 

@@ -36,7 +36,13 @@ pub fn externalize_tokens() -> bool {
 pub fn bot_token_env_var(name: &str) -> String {
     let suffix: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("OABCP_BOT_TOKEN_{suffix}")
 }

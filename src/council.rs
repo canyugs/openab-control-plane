@@ -197,7 +197,11 @@ fn review_open_session_action_with_roster(
     // A lone-bot roster has no reviewers, so review_council's chair would wait
     // forever for a reviewer quorum that can't arrive (C4). Route it to solo, where
     // the bot's own done closes the session — it self-reviews and posts the verdict.
-    let mode = if eff_roster.len() > 1 { "review_council" } else { "solo" };
+    let mode = if eff_roster.len() > 1 {
+        "review_council"
+    } else {
+        "solo"
+    };
     Ok(OpenSessionAction {
         title: "council".into(),
         trigger_ref: Some(trigger_ref),

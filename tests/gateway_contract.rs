@@ -49,7 +49,15 @@ fn event_serialization_satisfies_bot_deserializer() {
 
     assert_eq!(v["schema"], "openab.gateway.event.v1");
     // Required (no serde default) on the bot side:
-    for field in ["event_id", "timestamp", "platform", "channel", "sender", "content", "message_id"] {
+    for field in [
+        "event_id",
+        "timestamp",
+        "platform",
+        "channel",
+        "sender",
+        "content",
+        "message_id",
+    ] {
         assert!(!v[field].is_null(), "bot requires `{field}`");
     }
     // Nested field names the bot deserializes by exact name:
@@ -146,7 +154,10 @@ fn response_shape_matches_bot_expectations() {
     assert_eq!(v["success"], true);
     // Omitted Options serialize as absent; bot maps absent → None.
     for field in ["thread_id", "message_id", "error"] {
-        assert!(v.get(field).is_none(), "`{field}` should be omitted when None");
+        assert!(
+            v.get(field).is_none(),
+            "`{field}` should be omitted when None"
+        );
     }
 
     // A create_topic success carries thread_id; round-trip the enriched form.
