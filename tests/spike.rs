@@ -917,11 +917,11 @@ async fn chair_recruits_through_admission_gate() {
     tokio::time::sleep(Duration::from_millis(150)).await;
     post_client(&base, &session, "review this").await;
 
-    // chair recruits the specialist (authorized) — embedded in a normal message
+    // chair recruits the specialist (authorized) — own-line directive
     chair_w
         .send(reply(
             &session,
-            &format!("need a security pass [[recruit:{specialist_id}]]"),
+            &format!("need a security pass\n[[recruit:{specialist_id}]]"),
             None,
             None,
             None,
@@ -932,7 +932,7 @@ async fn chair_recruits_through_admission_gate() {
     rev_w
         .send(reply(
             &session,
-            &format!("sneaking one in [[recruit:{sneaky_id}]]"),
+            &format!("sneaking one in\n[[recruit:{sneaky_id}]]"),
             None,
             None,
             None,

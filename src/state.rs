@@ -4,7 +4,7 @@ use crate::github_app::GitHubApp;
 use crate::protocol::{ChannelInfo, Content, GatewayEvent, SenderInfo, EVENT_SCHEMA};
 use crate::store::{new_id, now_ms, SessionState, Store};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
@@ -51,6 +51,9 @@ pub struct AppState {
     pub close_webhook_url: Option<String>,
     /// South WebSocket ping interval in seconds. 0 disables ping deadlines.
     pub ws_ping_secs: u64,
+    /// Per-session recruit directives already processed. This bounds repeated
+    /// parse paths and the unknown-target provision signal surface.
+    pub recruit_seen: Mutex<HashMap<String, HashSet<String>>>,
 }
 
 impl AppState {
@@ -119,6 +122,7 @@ impl AppState {
             github_mint_lock: tokio::sync::Mutex::new(()),
             close_webhook_url,
             ws_ping_secs,
+            recruit_seen: Mutex::new(HashMap::new()),
         })
     }
 
