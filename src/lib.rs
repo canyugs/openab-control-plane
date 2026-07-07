@@ -8,6 +8,7 @@ pub mod council;
 pub mod github_app;
 pub mod github_webhook;
 pub mod identity;
+pub mod ops;
 pub mod orchestrator;
 pub mod protocol;
 pub mod routing;

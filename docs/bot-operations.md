@@ -17,20 +17,20 @@ OCP separates three concerns:
 
 | Layer | Controlled by | What it decides |
 |---|---|---|
-| Bot identity | `OABCP_BOTS` | Which bot ids exist in the plane |
-| Standing council | `OABCP_COUNCIL_ROSTER` | Which bot ids are convened for webhook reviews |
+| Bot identity | `POST /v1/bots`, `POST /v1/bots/discover`, first-boot `OABCP_BOTS` | Which bot ids exist in the plane |
+| Standing council | `PUT /v1/council/roster` runtime override, env fallback | Which bot ids are convened for webhook reviews |
 | Running pod | Zeabur service image, command, env, volume | Which CLI/provider the bot actually runs |
 
 These three names must stay aligned. If the roster contains `rev3`, there must be
 a registered bot id `rev3`, and a running service that connects with
 `/bot-config/rev3`.
 
-`OABCP_BOTS` is additive and idempotent. Removing a name from `OABCP_BOTS` does
-not purge an existing row from the database. The important operational switch is
-`OABCP_COUNCIL_ROSTER`: if a bot is not in that roster, webhook reviews will not
-call it.
+`OABCP_BOTS` is first-boot seeding only. Once the bots table is non-empty, the
+plane ignores `OABCP_BOTS`; add identities with the APIs and retire them with
+`DELETE /v1/bots/:id`. The important operational switch is the standing roster:
+if a bot is not in that roster, webhook reviews will not call it.
 
-The first bot in `OABCP_COUNCIL_ROSTER` is the chair. The chair synthesizes the
+The first bot in the standing roster is the chair. The chair synthesizes the
 verdict and is the only bot expected to write PR comments.
 
 This runbook assumes one OCP deployment manages one operational group. That group
@@ -49,13 +49,13 @@ Bot discovery is possible, but it should be split into two separate decisions:
 
 Do not let any pod add itself to the review council only because it connected.
 That would let a misconfigured or compromised pod influence reviews. Discovery
-should create an inventory; `OABCP_COUNCIL_ROSTER`, a controller, or an operator
+should create an inventory; the standing roster, a controller, or an operator
 still decides admission.
 
 Current state:
 
-- The static path is `OABCP_BOTS` + `/bot-config/<name>`.
-- `POST /v1/bots` can register a bot identity.
+- The static path is first-boot `OABCP_BOTS` + `/bot-config/<name>`.
+- `POST /v1/bots` can register a bot identity and returns its gateway token.
 - `GET /v1/bots` lists inventory metadata and standing-roster membership.
 - `POST /v1/bots/discover` can bootstrap or refresh a bot when
   `OABCP_BOT_DISCOVERY_TOKEN` is set.
@@ -63,6 +63,8 @@ Current state:
   It requires the north API key, not the discovery token. Send JSON `null` for
   nullable metadata fields such as `provider`, `note`, `version`, or `runtime`
   to clear them.
+- `DELETE /v1/bots/:id` retires an idle, non-rostered identity and its gateway
+  token. Remove it from the roster and stop the pod first.
 - Connected bots already update connection state internally.
 - Recruiting an unknown bot emits `provision_requested`; see
   [provisioner.md](provisioner.md).
@@ -85,8 +87,8 @@ Discovery flow:
 3. OCP registers or refreshes the bot identity, records metadata, and returns the
    pod's `/bot-config/<id>?agent=<provider>` URL.
 4. The pod fetches that config and connects to `/ws` with its bot token.
-5. Operators or controllers choose whether to add the bot to
-   `OABCP_COUNCIL_ROSTER` or a specific session roster.
+5. Operators or controllers choose whether to add the bot to the standing roster
+   or a specific session roster.
 
 Refreshing an existing bot through discovery updates inventory metadata only. It
 does not let a pod change an existing bot's name or role. Omitted metadata fields
@@ -100,8 +102,8 @@ Security requirements for discovery:
 - Self-reported role is only used when creating a newly discovered identity; it
   is not allowed to overwrite an existing identity's role.
 - Reviewers must not receive GitHub write credentials through discovery.
-- Chair selection remains explicit: first in `OABCP_COUNCIL_ROSTER` or
-  `chair_bot` in an open-session action.
+- Chair selection remains explicit: first in the standing roster or `chair_bot`
+  in an open-session action.
 - Offline or stale bots should remain discoverable but not auto-selected.
 
 This gives the useful operator experience ("show me available bots and
@@ -146,7 +148,7 @@ Honest ceilings: findings are a **distribution, not a quality signal** — wheth
 the verdicts were *right* is the eval harness's job, not these counts. It's a
 live snapshot over whatever the current DB holds; with the durable `/data` PVC
 (see [scale-council.md](scale-council.md)) that now spans plane restarts, but a
-`DELETE FROM bots`/PVC wipe still resets it. No Prometheus/OTel — JSON is enough
+`DELETE /v1/bots/:id` or PVC wipe still changes it. No Prometheus/OTel — JSON is enough
 for humans and scripts.
 
 ## Provider Map
@@ -213,17 +215,26 @@ Use this when a reviewer should stop participating in webhook reviews.
 
 Example: remove `rev2` from a `chair,rev1,rev2` council.
 
-1. Edit the control-plane env:
+1. Drop `rev2` from the runtime standing roster:
 
-   ```text
-   OABCP_COUNCIL_ROSTER=chair,rev1
+   ```sh
+   curl -X PUT "$PLANE/v1/council/roster" \
+     -H "Authorization: Bearer $KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"roster":["chair","rev1"]}'
    ```
 
-2. Restart the control-plane.
-3. Stop or delete the `rev2` Zeabur service if it is no longer needed.
-4. Leave `OABCP_BOTS` alone unless you are deliberately cleaning up identities.
-   A leftover `rev2` identity is harmless while it is not in
-   `OABCP_COUNCIL_ROSTER`.
+2. Stop or delete the `rev2` Zeabur service if it is no longer needed.
+3. Optional full identity retirement:
+
+   ```sh
+   curl -X DELETE "$PLANE/v1/bots/rev2" \
+     -H "Authorization: Bearer $KEY"
+   ```
+
+   `DELETE` returns `409` while the bot is still in the standing roster, still
+   connected, or belongs to an active session. Remove it from the roster and stop
+   the pod first; wait for active sessions to close.
 
 Validation:
 
@@ -237,9 +248,12 @@ Validation:
 
 Rollback:
 
-1. Set `OABCP_COUNCIL_ROSTER=chair,rev1,rev2`.
-2. Restart the control-plane.
-3. Restart the `rev2` service.
+1. If you deleted the identity, register it again with `POST /v1/bots` or
+   `POST /v1/bots/discover`, then update the bot service with the new token or
+   config URL.
+2. Put `rev2` back in the runtime standing roster with
+   `PUT /v1/council/roster`.
+3. Start the `rev2` service.
 
 ## Add A Reviewer
 
@@ -247,43 +261,66 @@ Use this when you want a larger standing council.
 
 Example: add `rev3`.
 
-1. Edit the control-plane env:
+1. Register the identity.
 
-   ```text
-   OABCP_BOTS=chair:chair,rev1:reviewer,rev2:reviewer,rev3:reviewer
-   OABCP_COUNCIL_ROSTER=chair,rev1,rev2,rev3
+   Use `POST /v1/bots` when the service owns its runtime config and can use the
+   returned gateway token:
+
+   ```sh
+   curl -X POST "$PLANE/v1/bots" \
+     -H "Authorization: Bearer $KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"name":"rev3","role":"reviewer"}'
    ```
 
-2. Create a new Zeabur service for `rev3`.
-3. Configure the service command to fetch the matching bot config:
+   Or use discovery when you need a stable chosen id such as `rev3` for
+   `/bot-config/rev3`:
+
+   ```sh
+   curl -X POST "$PLANE/v1/bots/discover" \
+     -H "Authorization: Bearer $OABCP_BOT_DISCOVERY_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"id":"rev3","role":"reviewer","provider":"codex","capabilities":["review"]}'
+   ```
+
+2. Add the new id to the runtime standing roster:
+
+   ```sh
+   curl -X PUT "$PLANE/v1/council/roster" \
+     -H "Authorization: Bearer $KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"roster":["chair","rev1","rev2","rev3"]}'
+   ```
+
+3. Create a new Zeabur service for `rev3`.
+4. Configure the service command to fetch the matching bot config:
 
    ```sh
    openab run -c http://control-plane.zeabur.internal:8090/bot-config/rev3
    ```
 
-4. If `rev3` should use another provider, append the provider query:
+5. If `rev3` should use another provider, append the provider query:
 
    ```sh
    openab run -c http://control-plane.zeabur.internal:8090/bot-config/rev3?agent=codex
    ```
 
-5. Set the provider credential on the `rev3` service, for example
+6. Set the provider credential on the `rev3` service, for example
    `OPENAI_API_KEY` for `codex` or `GEMINI_API_KEY` for `gemini`.
-6. Use a service image that contains the selected CLI.
-7. Restart the control-plane so it seeds `rev3`.
-8. Start or restart `rev3`.
+7. Use a service image that contains the selected CLI.
+8. Start `rev3`.
 
 Validation:
 
-- Check the control-plane logs for `seeded from OABCP_BOTS bot="rev3"`.
+- `GET /v1/bots` lists `rev3` with `rostered: true`.
 - Check the `rev3` logs for `connected to gateway`.
 - Trigger a review and confirm `rev3` appears in the session roster.
 
 Rollback:
 
-1. Remove `rev3` from `OABCP_COUNCIL_ROSTER`.
-2. Restart the control-plane.
-3. Stop or delete the `rev3` service.
+1. Remove `rev3` with `PUT /v1/council/roster`.
+2. Stop or delete the `rev3` service.
+3. Optionally retire the identity with `DELETE /v1/bots/rev3`.
 
 ## Attach An Existing OpenAB Instance
 
@@ -296,13 +333,17 @@ able to reach the plane's `OABCP_WS_URL`.
 
 **Connecting is not joining the council.** An attached instance becomes a
 controllable, idle bot; it only reviews once you add its id to
-`OABCP_COUNCIL_ROSTER` (see *Add A Reviewer*). This is the deliberate trust
+the standing roster (see *Add A Reviewer*). This is the deliberate trust
 boundary — see *Safety Rules*.
 
 First, register the identity (either way):
 
-- Static: add the id to `OABCP_BOTS` on the control-plane and restart it, **or**
-- API: `POST /v1/bots` (returns the bot id + a gateway token).
+- API: `POST /v1/bots` (returns the bot id + a gateway token), or
+- Discovery: `POST /v1/bots/discover` when you need a chosen id and
+  `OABCP_BOT_DISCOVERY_TOKEN` is enabled.
+
+`OABCP_BOTS` is only first-boot bootstrap for a new empty database; do not use it
+for day-2 membership changes.
 
 Then pick a path by **who owns the runtime config**:
 
@@ -366,15 +407,14 @@ open sessions or change rosters.
 
 Validation:
 
-- Control-plane logs show `seeded from OABCP_BOTS bot="<id>"` (static path) or the
-  `POST /v1/bots` response.
+- `POST /v1/bots` returned the id and gateway token, or
+  `POST /v1/bots/discover` returned the chosen id's config URL.
 - Instance logs show `connected to gateway`.
 - `GET /v1/stats` lists the id as `connected: true`.
 
 Rollback:
 
-1. If added to the council, remove the id from `OABCP_COUNCIL_ROSTER` and restart
-   the control-plane.
+1. If added to the council, remove the id with `PUT /v1/council/roster`.
 2. Detach the instance:
    - Path A: stop the `-c <plane>/bot-config/<id>` run; point it back at its own config.
    - Path B: remove the `[gateway]` block from your config and restart it.
@@ -404,8 +444,8 @@ Example: replace `rev1` from Claude to Codex.
 
 6. Restart `rev1`.
 
-`OABCP_BOTS` and `OABCP_COUNCIL_ROSTER` do not need to change because the bot id
-is still `rev1`.
+The bot identity and standing roster do not need to change because the bot id is
+still `rev1`.
 
 Validation:
 
@@ -461,16 +501,23 @@ provider on the existing `chair` service.
 
 Example: move chair duties from `chair` to `chair2`.
 
-1. Add the new identity:
+1. Add the new chair identity. Use discovery if you need the stable id
+   `chair2` for `/bot-config/chair2`:
 
-   ```text
-   OABCP_BOTS=chair:chair,chair2:chair,rev1:reviewer,rev2:reviewer
+   ```sh
+   curl -X POST "$PLANE/v1/bots/discover" \
+     -H "Authorization: Bearer $OABCP_BOT_DISCOVERY_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"id":"chair2","role":"chair","provider":"codex","capabilities":["review"]}'
    ```
 
-2. Put `chair2` first in the standing roster:
+2. Put `chair2` first in the runtime standing roster:
 
-   ```text
-   OABCP_COUNCIL_ROSTER=chair2,rev1,rev2
+   ```sh
+   curl -X PUT "$PLANE/v1/council/roster" \
+     -H "Authorization: Bearer $KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"roster":["chair2","rev1","rev2"]}'
    ```
 
 3. Create a `chair2` service.
@@ -484,16 +531,15 @@ Example: move chair duties from `chair` to `chair2`.
 6. Move GitHub write-back credentials to `chair2`:
    - PAT path: set `GH_TOKEN` on `chair2`, remove it from the old chair.
    - GitHub App path: upload the App private key and token-minter to `chair2`.
-7. Restart the control-plane.
-8. Start or restart `chair2`.
-9. Verify `chair2` is connected and can write to GitHub.
-10. Stop the old `chair` service after a successful test.
+7. Start `chair2`.
+8. Verify `chair2` is connected and can write to GitHub.
+9. Stop the old `chair` service after a successful test.
 
 Rollback:
 
-1. Set `OABCP_COUNCIL_ROSTER=chair,rev1,rev2`.
+1. Restore the old runtime standing roster with `PUT /v1/council/roster`.
 2. Restore GitHub write-back credentials on `chair`.
-3. Restart the control-plane and `chair`.
+3. Restart `chair`.
 4. Stop `chair2`.
 
 ## Emergency Quota Playbook

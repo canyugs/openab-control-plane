@@ -1,5 +1,5 @@
 use openab_control_plane::store::{now_ms, SqliteStore, Store};
-use openab_control_plane::{build_router, identity, orchestrator, state::AppState};
+use openab_control_plane::{build_router, ops::seed_roster, orchestrator, state::AppState};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,23 +30,6 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
-    Ok(())
-}
-
-/// Register the initial bot roster from `OABCP_BOTS` so pods can connect with no
-/// manual `POST /v1/bots`. Format: `name:role,name:role` (role defaults to
-/// `reviewer`). Idempotent — restarts and existing bots are skipped.
-fn seed_roster(store: &dyn Store) -> anyhow::Result<()> {
-    let Ok(spec) = std::env::var("OABCP_BOTS") else {
-        return Ok(());
-    };
-    for entry in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        let (name, role) = entry.split_once(':').unwrap_or((entry, "reviewer"));
-        let (name, role) = (name.trim(), role.trim());
-        if identity::seed(store, name, role)? {
-            tracing::info!(bot = name, role, "seeded from OABCP_BOTS");
-        }
-    }
     Ok(())
 }
 
