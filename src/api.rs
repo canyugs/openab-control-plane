@@ -1217,6 +1217,10 @@ inherit_env = {inherit_env}
 [pool]
 max_sessions = 4
 session_ttl_hours = 2
+
+[reactions]
+# A6: a cosmetic OAB flag must not be able to erase quorum votes.
+remove_after_reply = false
 {hooks_section}"#,
         hooks_section = hooks_section,
     );

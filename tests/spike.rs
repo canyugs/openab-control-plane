@@ -269,6 +269,7 @@ async fn bot_inventory_discover_and_patch_metadata() {
     assert!(config
         .contains("bot_username = \"Codex \\\"reviewer\\\"\\n[agent]\\ncommand = \\\"bad\\\"\""));
     assert!(!config.lines().any(|line| line == "command = \"bad\""));
+    assert!(config.contains("[reactions]\n# A6: a cosmetic OAB flag must not be able to erase quorum votes.\nremove_after_reply = false"));
 }
 
 async fn open_session(base: &str, roster: &[String], chair: Option<&str>, quorum_n: i64) -> String {

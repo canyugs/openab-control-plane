@@ -264,12 +264,13 @@ pub trait Store: Send + Sync {
         reply_to: Option<&str>,
     ) -> Result<Message>;
     fn edit_message(&self, message_id: &str, content: &str) -> Result<()>;
+    fn message(&self, id: &str) -> Result<Option<Message>>;
     fn messages(&self, session_id: &str) -> Result<Vec<Message>>;
 
     fn add_reaction(&self, message_id: &str, bot_id: &str, emoji: &str) -> Result<()>;
     fn remove_reaction(&self, message_id: &str, bot_id: &str, emoji: &str) -> Result<()>;
     fn reactions(&self, session_id: &str) -> Result<Vec<Reaction>>;
-    fn reactors_in_session(&self, session_id: &str, emoji: &str) -> Result<Vec<String>>;
+    fn done_voters(&self, session_id: &str) -> Result<Vec<String>>;
 
     /// Durable per-bot outbox (offline delivery). Frames queued here are flushed
     /// in `seq` order when the bot is connected; a disconnected bot keeps them
@@ -1260,6 +1261,30 @@ impl Store for SqliteStore {
         Ok(())
     }
 
+    fn message(&self, id: &str) -> Result<Option<Message>> {
+        let c = self.conn.lock().unwrap();
+        let msg = c
+            .query_row(
+                "SELECT id, session_id, thread_id, author_kind, author_id, content, reply_to, created_at
+                 FROM messages WHERE id = ?1",
+                params![id],
+                |r| {
+                    Ok(Message {
+                        id: r.get(0)?,
+                        session_id: r.get(1)?,
+                        thread_id: r.get(2)?,
+                        author_kind: r.get(3)?,
+                        author_id: r.get(4)?,
+                        content: r.get(5)?,
+                        reply_to: r.get(6)?,
+                        created_at: r.get(7)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(msg)
+    }
+
     fn messages(&self, session_id: &str) -> Result<Vec<Message>> {
         let c = self.conn.lock().unwrap();
         let mut stmt = c.prepare(
@@ -1318,14 +1343,19 @@ impl Store for SqliteStore {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    fn reactors_in_session(&self, session_id: &str, emoji: &str) -> Result<Vec<String>> {
+    fn done_voters(&self, session_id: &str) -> Result<Vec<String>> {
         let c = self.conn.lock().unwrap();
         let mut stmt = c.prepare(
+            // Done-vote invariant: a 🆗 counts only when it targets the opening
+            // trigger / system prompt, or the voting bot's own message. OAB's
+            // per-turn status 🆗 on a peer bot message is not a quorum vote.
             "SELECT DISTINCT r.bot_id FROM reactions r
              JOIN messages m ON m.id = r.message_id
-             WHERE m.session_id = ?1 AND r.emoji = ?2",
+             WHERE m.session_id = ?1
+               AND r.emoji = '🆗'
+               AND (m.author_kind IN ('client', 'system') OR m.author_id = r.bot_id)",
         )?;
-        let rows = stmt.query_map(params![session_id, emoji], |r| r.get::<_, String>(0))?;
+        let rows = stmt.query_map(params![session_id], |r| r.get::<_, String>(0))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -1796,6 +1826,35 @@ mod tests {
         assert_eq!(reactions.len(), 1);
         assert_eq!(reactions[0].message_id, m1.id);
         assert_eq!(reactions[0].bot_id, "rev1");
+    }
+
+    #[test]
+    fn done_voters_counts_only_trigger_targeted_or_self_votes() {
+        let store = SqliteStore::memory().unwrap();
+        let s = store
+            .create_session("one", None, 0, None, &[], "council")
+            .unwrap();
+        let client = store
+            .add_message(&s.id, None, "client", None, "trigger", None)
+            .unwrap();
+        let system = store
+            .add_message(&s.id, None, "system", None, "prompt", None)
+            .unwrap();
+        let own = store
+            .add_message(&s.id, None, "bot", Some("rev1"), "final", None)
+            .unwrap();
+        let peer = store
+            .add_message(&s.id, None, "bot", Some("rev2"), "peer", None)
+            .unwrap();
+
+        store.add_reaction(&client.id, "rev1", "🆗").unwrap();
+        store.add_reaction(&system.id, "rev2", "🆗").unwrap();
+        store.add_reaction(&own.id, "rev1", "🆗").unwrap();
+        store.add_reaction(&peer.id, "rev1", "🆗").unwrap();
+
+        let mut voters = store.done_voters(&s.id).unwrap();
+        voters.sort();
+        assert_eq!(voters, vec!["rev1".to_string(), "rev2".to_string()]);
     }
 
     #[test]
