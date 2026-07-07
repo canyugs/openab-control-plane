@@ -188,9 +188,17 @@ pub fn post_client_message(
     let msg = state
         .store
         .add_message(session_id, None, "client", None, content, None)?;
-    state
-        .store
-        .advance_state(session_id, SessionState::Open, SessionState::Deliberating)?;
+    let cur = SessionState::from_db_str(&session.state);
+    match cur {
+        SessionState::Open => {
+            state.store.advance_state(session_id, SessionState::Open, SessionState::Deliberating)?;
+        }
+        SessionState::Closed | SessionState::Aborted => {
+            // Staff follow-up on a finished solo/chat turn — reopen for the next bot pass.
+            state.store.advance_state(session_id, cur, SessionState::Deliberating)?;
+        }
+        SessionState::Deliberating | SessionState::Quorum => {}
+    }
 
     let sender = SenderInfo {
         id: "client".into(),
@@ -2010,5 +2018,30 @@ mod tests {
             .active_sessions_before(crate::store::now_ms() + 1)
             .unwrap()
             .contains(&session.id));
+    }
+
+    #[test]
+    fn post_client_message_reopens_closed_session_for_staff_followup() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let bot = store.register_bot("allen", "allen", "h1", "t1").unwrap();
+        let session = store
+            .create_session(
+                "forum-support",
+                Some("forum:ticket:SUP-1"),
+                0,
+                Some(&bot.id),
+                std::slice::from_ref(&bot.id),
+                "solo",
+            )
+            .unwrap();
+        store.set_state(&session.id, SessionState::Closed).unwrap();
+
+        post_client_message(&state, &session.id, "please dig deeper").unwrap();
+
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Deliberating,
+        );
     }
 }
