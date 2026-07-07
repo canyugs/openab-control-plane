@@ -1,5 +1,7 @@
-//! Fanout policy (design §10): trust = session roster. On any stored message,
-//! deliver to every roster bot EXCEPT the author. Pure + testable.
+//! Client/system fanout policy (design §10): trust = session roster. Client- or
+//! system-authored messages can fan to the full roster; bot-authored messages
+//! are stored + emitted north and only reach peers through Relay or backfill.
+//! Pure + testable.
 
 /// Recipients of a message authored by `author` (None = client/system author).
 pub fn fanout_targets(roster: &[String], author: Option<&str>) -> Vec<String> {

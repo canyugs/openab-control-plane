@@ -57,7 +57,7 @@ layers, three different dispositions:
 
 | Layer | What it is | Disposition |
 |-------|-----------|-------------|
-| **Mechanism** (core) | session state machine, CAS transitions, fanout, durable delivery, identity, north/south interfaces, **and the `Coordinator` seam itself** | Fixed. This is OCP. |
+| **Mechanism** (core) | session state machine, CAS transitions, client/system fanout, durable delivery, identity, north/south interfaces, **and the `Coordinator` seam itself** | Fixed. This is OCP. |
 | **Policy** (pluggable) | what a done-signal means, when the group has converged, who synthesizes, what prompts whom | A `Coordinator` impl. **Quorum is not privileged** — it's the v1 reference impl (`QuorumCouncil`), one policy beside solo/debate/pipeline. The engine does not "have quorum" any more than it "has debate". |
 | **Substrate** (the floor) | the OAB gateway wire protocol: a shared broadcast thread, `react`/`reply`/`edit`, the `🆗` done-signal | Accepted, not owned. Not OCP's choice — OCP rides **stock** OAB pods, so it speaks what they speak. Being substrate-neutral = a different project. |
 
@@ -67,6 +67,16 @@ gateway), because that substrate is what stock OAB gives you. The seam can't pus
 past the wire protocol without an OAB change — and that's an upstream change,
 never smuggled into a Coordinator (see `docs/coordinators.md`, OAB-contract
 invariant).
+
+Substrate invariant: bot-authored messages are stored and emitted north but never
+fanned to peers by the mechanism. Bot→bot delivery happens only through a
+coordinator-ordered `Relay` of a settled final (at-least-once until A2's
+delivered-marker lands) or through history `backfill` for late joiners and
+replacements. Client/system messages fan to the full roster where the mechanism
+orders a broadcast. If a future coordinator needs pre-done peer visibility, for
+example a debate mode, add that as an explicit coordinator `Action`
+(`Broadcast`/`Relay-on-message`) rather than reintroducing implicit
+mechanism-side fanout.
 
 ### What this implies for residual leaks
 

@@ -1,7 +1,8 @@
 //! Coordination policy (the pluggable lifecycle seam). The orchestrator owns the
-//! *mechanism* (fanout, state transitions, delivery, emitting events); a
-//! `Coordinator` owns the *policy* — what a done-signal means, when to relay,
-//! when to converge, what closes the session. See `docs/coordinators.md`.
+//! *mechanism* (client-trigger fanout, state transitions, delivery, emitting
+//! events); a `Coordinator` owns the *policy* — what a done-signal means, when
+//! to relay, when to converge, what closes the session. See
+//! `docs/coordinators.md`.
 //!
 //! The orchestrator runs the mechanism, then asks the Coordinator (via `on_done`)
 //! what `Action`s to take, and executes them — keeping the CAS guards so a single
