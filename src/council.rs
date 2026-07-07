@@ -300,24 +300,27 @@ mod tests {
         assert!(t.contains("recipient-specific task"));
         assert!(!t.contains("Role gate"));
         assert!(!t.contains("If your bot name"));
-        assert!(t.contains("OpenAB Council review started"));
+        assert!(!t.contains("OpenAB Council review started"));
         assert!(!t.contains("===== DIFF ====="));
         assert!(!t.contains("{{"));
     }
 
     #[test]
-    fn render_trigger_includes_commit_status_and_action_menu() {
-        let t = render_trigger("canyugs/ocp", 7, "");
-        // commit status: Checks tab "Details" links to the review comment
-        assert!(t.contains("repos/canyugs/ocp/statuses/"));
-        assert!(t.contains("headRefOid"));
-        assert!(t.contains("state=success"));
-        assert!(t.contains("state=failure"));
-        assert!(t.contains("target_url"));
-        assert!(t.contains("openab/council"));
-        // action menu footer in the final PR comment
-        assert!(t.contains("/ask"));
-        assert!(t.contains("re-run"));
+    fn trigger_templates_carry_no_role_protocol() {
+        let pointer = render_trigger("canyugs/ocp", 7, "");
+        let inline = include_str!("../scripts/pr-review-trigger.tmpl")
+            .replace("{{REPO}}", "canyugs/ocp")
+            .replace("{{NUM}}", "7")
+            .replace("{{TITLE}}", "")
+            .replace("{{ANGLE_ASSIGNMENT}}", "")
+            .replace("{{DIFF}}", "diff --git a/src/lib.rs b/src/lib.rs");
+
+        for t in [pointer, inline] {
+            assert!(!t.contains("--edit-last"));
+            assert!(!t.contains("gh pr review"));
+            assert!(!t.contains("[[verdict:"));
+            assert!(!t.contains("{{"));
+        }
     }
 
     #[test]
