@@ -7,6 +7,7 @@
 use crate::coordinator;
 use crate::orchestrator;
 use crate::state::AppState;
+use crate::store::SessionCreateOutcome;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +19,7 @@ pub enum ControllerAction {
 pub struct OpenSessionAction {
     pub title: String,
     pub trigger_ref: Option<String>,
+    pub trigger_fingerprint: Option<String>,
     pub roster: Vec<String>,
     pub quorum_n: i64,
     pub chair_bot: Option<String>,
@@ -28,6 +30,7 @@ pub struct OpenSessionAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControllerActionResult {
     SessionOpened { session_id: String, deduped: bool },
+    Superseded { session_id: String, old_id: String },
 }
 
 #[derive(Debug)]
@@ -75,42 +78,41 @@ fn open_session(
     state: &Arc<AppState>,
     action: OpenSessionAction,
 ) -> ControllerResult<ControllerActionResult> {
-    if let Some(trigger_ref) = action.trigger_ref.as_deref() {
-        // Idempotent retry: return the existing session without re-validating.
-        // The active session is the source of truth even if retried config drifted.
-        if let Some(existing) = state.store.active_session_for_trigger(trigger_ref)? {
-            return Ok(ControllerActionResult::SessionOpened {
-                session_id: existing,
-                deduped: true,
-            });
-        }
-    }
-
     validate_open_session(state, &action)?;
 
-    let (session, deduped) = state.store.create_session_deduped(
+    let (session, outcome) = state.store.create_session_superseding(
         &action.title,
         action.trigger_ref.as_deref(),
+        action.trigger_fingerprint.as_deref(),
         action.quorum_n,
         action.chair_bot.as_deref(),
         &action.roster,
         &action.mode,
     )?;
-    if deduped {
-        return Ok(ControllerActionResult::SessionOpened {
+    match outcome {
+        SessionCreateOutcome::Deduped => Ok(ControllerActionResult::SessionOpened {
             session_id: session.id,
             deduped: true,
-        });
+        }),
+        SessionCreateOutcome::Created => {
+            if !action.prompt.trim().is_empty() {
+                orchestrator::post_client_message(state, &session.id, &action.prompt)?;
+            }
+            Ok(ControllerActionResult::SessionOpened {
+                session_id: session.id,
+                deduped: false,
+            })
+        }
+        SessionCreateOutcome::Superseded { old_id } => {
+            if !action.prompt.trim().is_empty() {
+                orchestrator::post_client_message(state, &session.id, &action.prompt)?;
+            }
+            Ok(ControllerActionResult::Superseded {
+                session_id: session.id,
+                old_id,
+            })
+        }
     }
-
-    if !action.prompt.trim().is_empty() {
-        orchestrator::post_client_message(state, &session.id, &action.prompt)?;
-    }
-
-    Ok(ControllerActionResult::SessionOpened {
-        session_id: session.id,
-        deduped: false,
-    })
 }
 
 fn validate_open_session(
@@ -182,6 +184,7 @@ mod tests {
         OpenSessionAction {
             title: "council".into(),
             trigger_ref: Some("github:pr/o/r#1".into()),
+            trigger_fingerprint: Some("sha:head1".into()),
             roster: vec!["chair".into(), "rev1".into()],
             quorum_n: 1,
             chair_bot: Some("chair".into()),
@@ -197,7 +200,10 @@ mod tests {
         let ControllerActionResult::SessionOpened {
             session_id,
             deduped,
-        } = result;
+        } = result
+        else {
+            panic!("open should create a session");
+        };
         assert!(!deduped);
 
         let session = state.store.session(&session_id).unwrap().unwrap();
@@ -219,7 +225,9 @@ mod tests {
     fn open_session_action_dedupes_active_trigger_ref() {
         let state = state_with_bots();
         let first = execute(&state, ControllerAction::OpenSession(review_action())).unwrap();
-        let ControllerActionResult::SessionOpened { session_id, .. } = first;
+        let ControllerActionResult::SessionOpened { session_id, .. } = first else {
+            panic!("first open should create a session");
+        };
 
         let second = execute(&state, ControllerAction::OpenSession(review_action())).unwrap();
         assert_eq!(
@@ -233,6 +241,41 @@ mod tests {
     }
 
     #[test]
+    fn open_session_reports_superseded_with_old_id() {
+        let state = state_with_bots();
+        let first = execute(&state, ControllerAction::OpenSession(review_action())).unwrap();
+        let ControllerActionResult::SessionOpened {
+            session_id: old_id,
+            deduped,
+        } = first
+        else {
+            panic!("first open should create a session");
+        };
+        assert!(!deduped);
+
+        let mut next = review_action();
+        next.trigger_fingerprint = Some("sha:head2".into());
+        next.prompt = "review new head".into();
+        let second = execute(&state, ControllerAction::OpenSession(next)).unwrap();
+
+        let ControllerActionResult::Superseded {
+            session_id: new_id,
+            old_id: reported_old,
+        } = second
+        else {
+            panic!("new fingerprint should supersede");
+        };
+        assert_eq!(reported_old, old_id);
+        assert_ne!(new_id, old_id);
+        assert_eq!(
+            SessionState::from_db_str(&state.store.session(&old_id).unwrap().unwrap().state),
+            SessionState::Closed
+        );
+        assert_eq!(state.store.messages(&new_id).unwrap().len(), 1);
+        assert_eq!(state.store.messages(&old_id).unwrap().len(), 1);
+    }
+
+    #[test]
     fn open_session_action_without_trigger_ref_does_not_dedupe() {
         let state = state_with_bots();
         let mut action = review_action();
@@ -243,11 +286,17 @@ mod tests {
         let ControllerActionResult::SessionOpened {
             session_id: first_id,
             deduped: first_deduped,
-        } = first;
+        } = first
+        else {
+            panic!("first open should create a session");
+        };
         let ControllerActionResult::SessionOpened {
             session_id: second_id,
             deduped: second_deduped,
-        } = second;
+        } = second
+        else {
+            panic!("second open should create a session");
+        };
 
         assert!(!first_deduped);
         assert!(!second_deduped);
@@ -262,7 +311,9 @@ mod tests {
         action.prompt = " \n ".into();
 
         let result = execute(&state, ControllerAction::OpenSession(action)).unwrap();
-        let ControllerActionResult::SessionOpened { session_id, .. } = result;
+        let ControllerActionResult::SessionOpened { session_id, .. } = result else {
+            panic!("blank prompt open should create a session");
+        };
 
         let session = state.store.session(&session_id).unwrap().unwrap();
         assert_eq!(

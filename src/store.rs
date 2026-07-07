@@ -108,6 +108,7 @@ pub struct Session {
     pub title: String,
     pub state: String,
     pub trigger_ref: Option<String>,
+    pub trigger_fingerprint: Option<String>,
     pub quorum_n: i64,
     pub chair_bot: Option<String>,
     pub created_at: i64,
@@ -120,6 +121,13 @@ pub struct Session {
     pub findings_red: Option<i64>,
     pub findings_yellow: Option<i64>,
     pub findings_green: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionCreateOutcome {
+    Created,
+    Deduped,
+    Superseded { old_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,6 +211,20 @@ pub trait Store: Send + Sync {
         roster: &[String],
         mode: &str,
     ) -> Result<(Session, bool)>;
+    /// Open a session for `trigger_ref` using fingerprint-aware idempotency.
+    /// Equal non-NULL fingerprints dedupe to the active row. A different or NULL
+    /// fingerprint closes the active row and inserts the successor in one txn.
+    #[allow(clippy::too_many_arguments)]
+    fn create_session_superseding(
+        &self,
+        title: &str,
+        trigger_ref: Option<&str>,
+        trigger_fingerprint: Option<&str>,
+        quorum_n: i64,
+        chair_bot: Option<&str>,
+        roster: &[String],
+        mode: &str,
+    ) -> Result<(Session, SessionCreateOutcome)>;
     fn session(&self, id: &str) -> Result<Option<Session>>;
     fn list_sessions(
         &self,
@@ -356,7 +378,7 @@ CREATE TABLE IF NOT EXISTS bots (
 );
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY, title TEXT NOT NULL, state TEXT NOT NULL,
-    trigger_ref TEXT, quorum_n INTEGER NOT NULL, chair_bot TEXT,
+    trigger_ref TEXT, trigger_fingerprint TEXT, quorum_n INTEGER NOT NULL, chair_bot TEXT,
     created_at INTEGER NOT NULL, closed_at INTEGER,
     mode TEXT NOT NULL DEFAULT 'council',
     decision TEXT, findings_red INTEGER, findings_yellow INTEGER, findings_green INTEGER
@@ -419,6 +441,10 @@ fn migrate(conn: &Connection) -> Result<()> {
         [],
     );
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN findings_green INTEGER", []);
+    let _ = conn.execute(
+        "ALTER TABLE sessions ADD COLUMN trigger_fingerprint TEXT",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE messages ADD COLUMN audience TEXT", []);
     let _ = conn.execute("ALTER TABLE outbox ADD COLUMN session_id TEXT", []);
     let _ = conn.execute("ALTER TABLE outbox ADD COLUMN idem_key TEXT", []);
@@ -592,7 +618,7 @@ impl SqliteStore {
         trigger_ref: &str,
     ) -> Result<Option<Session>> {
         Ok(c.query_row(
-            "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode,
+            "SELECT id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode,
                             decision, findings_red, findings_yellow, findings_green
              FROM sessions
              WHERE trigger_ref = ?1 AND state NOT IN ('closed', 'aborted')
@@ -605,15 +631,16 @@ impl SqliteStore {
                     title: r.get(1)?,
                     state: r.get(2)?,
                     trigger_ref: r.get(3)?,
-                    quorum_n: r.get(4)?,
-                    chair_bot: r.get(5)?,
-                    created_at: r.get(6)?,
-                    closed_at: r.get(7)?,
-                    mode: r.get(8)?,
-                    decision: r.get(9)?,
-                    findings_red: r.get(10)?,
-                    findings_yellow: r.get(11)?,
-                    findings_green: r.get(12)?,
+                    trigger_fingerprint: r.get(4)?,
+                    quorum_n: r.get(5)?,
+                    chair_bot: r.get(6)?,
+                    created_at: r.get(7)?,
+                    closed_at: r.get(8)?,
+                    mode: r.get(9)?,
+                    decision: r.get(10)?,
+                    findings_red: r.get(11)?,
+                    findings_yellow: r.get(12)?,
+                    findings_green: r.get(13)?,
                 })
             },
         )
@@ -929,6 +956,7 @@ impl Store for SqliteStore {
             title: title.to_string(),
             state: "open".into(),
             trigger_ref: trigger_ref.map(String::from),
+            trigger_fingerprint: None,
             quorum_n,
             chair_bot: chair_bot.map(String::from),
             created_at,
@@ -975,11 +1003,91 @@ impl Store for SqliteStore {
         }
     }
 
+    fn create_session_superseding(
+        &self,
+        title: &str,
+        trigger_ref: Option<&str>,
+        trigger_fingerprint: Option<&str>,
+        quorum_n: i64,
+        chair_bot: Option<&str>,
+        roster: &[String],
+        mode: &str,
+    ) -> Result<(Session, SessionCreateOutcome)> {
+        let id = new_id("ses");
+        let created_at = now_ms();
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let mut outcome = SessionCreateOutcome::Created;
+
+        if let Some(trigger_ref) = trigger_ref {
+            if let Some(existing) = Self::active_session_for_trigger_locked(&tx, trigger_ref)? {
+                if matches!(
+                    (
+                        existing.trigger_fingerprint.as_deref(),
+                        trigger_fingerprint
+                    ),
+                    (Some(existing), Some(incoming)) if existing == incoming
+                ) {
+                    tx.commit()?;
+                    return Ok((existing, SessionCreateOutcome::Deduped));
+                }
+                tx.execute(
+                    "UPDATE sessions SET state = 'closed', closed_at = ?2
+                     WHERE id = ?1 AND state NOT IN ('closed', 'aborted')",
+                    params![existing.id.as_str(), created_at],
+                )?;
+                outcome = SessionCreateOutcome::Superseded {
+                    old_id: existing.id,
+                };
+            }
+        }
+
+        tx.execute(
+            "INSERT INTO sessions
+                (id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, mode)
+             VALUES (?1, ?2, 'open', ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id,
+                title,
+                trigger_ref,
+                trigger_fingerprint,
+                quorum_n,
+                chair_bot,
+                created_at,
+                mode
+            ],
+        )?;
+        for bot_id in roster {
+            tx.execute(
+                "INSERT OR IGNORE INTO session_bots (session_id, bot_id) VALUES (?1, ?2)",
+                params![id, bot_id],
+            )?;
+        }
+        tx.commit()?;
+        let session = Session {
+            id,
+            title: title.to_string(),
+            state: "open".into(),
+            trigger_ref: trigger_ref.map(String::from),
+            trigger_fingerprint: trigger_fingerprint.map(String::from),
+            quorum_n,
+            chair_bot: chair_bot.map(String::from),
+            created_at,
+            closed_at: None,
+            mode: mode.to_string(),
+            decision: None,
+            findings_red: None,
+            findings_yellow: None,
+            findings_green: None,
+        };
+        Ok((session, outcome))
+    }
+
     fn session(&self, id: &str) -> Result<Option<Session>> {
         let c = self.conn.lock().unwrap();
         let s = c
             .query_row(
-                "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode,
+                "SELECT id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode,
                             decision, findings_red, findings_yellow, findings_green
                  FROM sessions WHERE id = ?1",
                 params![id],
@@ -989,15 +1097,16 @@ impl Store for SqliteStore {
                         title: r.get(1)?,
                         state: r.get(2)?,
                         trigger_ref: r.get(3)?,
-                        quorum_n: r.get(4)?,
-                        chair_bot: r.get(5)?,
-                        created_at: r.get(6)?,
-                        closed_at: r.get(7)?,
-                        mode: r.get(8)?,
-                        decision: r.get(9)?,
-                        findings_red: r.get(10)?,
-                        findings_yellow: r.get(11)?,
-                        findings_green: r.get(12)?,
+                        trigger_fingerprint: r.get(4)?,
+                        quorum_n: r.get(5)?,
+                        chair_bot: r.get(6)?,
+                        created_at: r.get(7)?,
+                        closed_at: r.get(8)?,
+                        mode: r.get(9)?,
+                        decision: r.get(10)?,
+                        findings_red: r.get(11)?,
+                        findings_yellow: r.get(12)?,
+                        findings_green: r.get(13)?,
                     })
                 },
             )
@@ -1017,15 +1126,16 @@ impl Store for SqliteStore {
                 title: r.get(1)?,
                 state: r.get(2)?,
                 trigger_ref: r.get(3)?,
-                quorum_n: r.get(4)?,
-                chair_bot: r.get(5)?,
-                created_at: r.get(6)?,
-                closed_at: r.get(7)?,
-                mode: r.get(8)?,
-                decision: r.get(9)?,
-                findings_red: r.get(10)?,
-                findings_yellow: r.get(11)?,
-                findings_green: r.get(12)?,
+                trigger_fingerprint: r.get(4)?,
+                quorum_n: r.get(5)?,
+                chair_bot: r.get(6)?,
+                created_at: r.get(7)?,
+                closed_at: r.get(8)?,
+                mode: r.get(9)?,
+                decision: r.get(10)?,
+                findings_red: r.get(11)?,
+                findings_yellow: r.get(12)?,
+                findings_green: r.get(13)?,
             })
         }
 
@@ -1034,7 +1144,7 @@ impl Store for SqliteStore {
         let sessions = match (trigger_ref, state) {
             (Some(trigger_ref), Some(state)) => {
                 let mut stmt = c.prepare(
-                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode,
+                    "SELECT id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode,
                             decision, findings_red, findings_yellow, findings_green
                      FROM sessions
                      WHERE trigger_ref = ?1 AND state = ?2
@@ -1049,7 +1159,7 @@ impl Store for SqliteStore {
             }
             (Some(trigger_ref), None) => {
                 let mut stmt = c.prepare(
-                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode,
+                    "SELECT id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode,
                             decision, findings_red, findings_yellow, findings_green
                      FROM sessions
                      WHERE trigger_ref = ?1
@@ -1064,7 +1174,7 @@ impl Store for SqliteStore {
             }
             (None, Some(state)) => {
                 let mut stmt = c.prepare(
-                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode,
+                    "SELECT id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode,
                             decision, findings_red, findings_yellow, findings_green
                      FROM sessions
                      WHERE state = ?1
@@ -1079,7 +1189,7 @@ impl Store for SqliteStore {
             }
             (None, None) => {
                 let mut stmt = c.prepare(
-                    "SELECT id, title, state, trigger_ref, quorum_n, chair_bot, created_at, closed_at, mode,
+                    "SELECT id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode,
                             decision, findings_red, findings_yellow, findings_green
                      FROM sessions
                      ORDER BY created_at DESC, rowid DESC
@@ -1756,6 +1866,46 @@ mod tests {
     }
 
     #[test]
+    fn trigger_fingerprint_migration_is_guarded() {
+        let path = temp_db_path("trigger-fingerprint-migration-is-guarded");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, title TEXT NOT NULL, state TEXT NOT NULL,
+                    trigger_ref TEXT, quorum_n INTEGER NOT NULL, chair_bot TEXT,
+                    created_at INTEGER NOT NULL, closed_at INTEGER,
+                    mode TEXT NOT NULL DEFAULT 'council',
+                    decision TEXT, findings_red INTEGER, findings_yellow INTEGER,
+                    findings_green INTEGER
+                );
+                CREATE TABLE messages (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, thread_id TEXT,
+                    author_kind TEXT NOT NULL, author_id TEXT, content TEXT NOT NULL,
+                    reply_to TEXT, created_at INTEGER NOT NULL
+                );
+                CREATE TABLE outbox (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bot_id TEXT NOT NULL, frame TEXT NOT NULL, created_at INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+            migrate(&c).unwrap();
+            migrate(&c).unwrap();
+            let has_column: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('sessions')
+                     WHERE name = 'trigger_fingerprint'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(has_column, 1);
+        }
+        remove_db_files(&PathBuf::from(path));
+    }
+
+    #[test]
     fn percentile_nearest_rank() {
         assert_eq!(percentile(&mut [], 50.0), None);
         assert_eq!(percentile(&mut [42], 95.0), Some(42));
@@ -2075,6 +2225,215 @@ mod tests {
             .unwrap();
         assert!(!deduped);
         assert_ne!(second.id, first.id);
+    }
+
+    #[test]
+    fn create_session_superseding_dedupes_on_equal_fingerprint() {
+        let store = SqliteStore::memory().unwrap();
+        let trigger = "github:pr/o/r#4";
+
+        let (first, outcome) = store
+            .create_session_superseding(
+                "Review o/r#4",
+                Some(trigger),
+                Some("sha:abc"),
+                0,
+                None,
+                &[],
+                "council",
+            )
+            .unwrap();
+        assert_eq!(outcome, SessionCreateOutcome::Created);
+
+        let (second, outcome) = store
+            .create_session_superseding(
+                "Review o/r#4 retry",
+                Some(trigger),
+                Some("sha:abc"),
+                0,
+                None,
+                &[],
+                "council",
+            )
+            .unwrap();
+        assert_eq!(outcome, SessionCreateOutcome::Deduped);
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.title, "Review o/r#4");
+        assert_eq!(second.trigger_fingerprint.as_deref(), Some("sha:abc"));
+    }
+
+    #[test]
+    fn create_session_superseding_closes_old_and_opens_successor_in_one_txn() {
+        let store = SqliteStore::memory().unwrap();
+        let trigger = "github:pr/o/r#5";
+        let (old, _) = store
+            .create_session_superseding(
+                "old",
+                Some(trigger),
+                Some("sha:old"),
+                0,
+                None,
+                &[],
+                "council",
+            )
+            .unwrap();
+
+        let (new, outcome) = store
+            .create_session_superseding(
+                "new",
+                Some(trigger),
+                Some("sha:new"),
+                0,
+                None,
+                &[],
+                "council",
+            )
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            SessionCreateOutcome::Superseded {
+                old_id: old.id.clone()
+            }
+        );
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&old.id).unwrap().unwrap().state),
+            SessionState::Closed
+        );
+        assert_ne!(old.id, new.id);
+        assert_eq!(
+            store
+                .active_session_for_trigger(trigger)
+                .unwrap()
+                .as_deref(),
+            Some(new.id.as_str())
+        );
+        let active_count: i64 = {
+            let c = store.conn.lock().unwrap();
+            c.query_row(
+                "SELECT COUNT(*) FROM sessions
+                 WHERE trigger_ref = ?1 AND state NOT IN ('closed', 'aborted')",
+                params![trigger],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(active_count, 1);
+    }
+
+    #[test]
+    fn create_session_superseding_null_fingerprints_supersede() {
+        let store = SqliteStore::memory().unwrap();
+        let trigger = "github:pr/o/r#6";
+        let legacy = store
+            .create_session("legacy", Some(trigger), 0, None, &[], "council")
+            .unwrap();
+
+        let (sha_round, outcome) = store
+            .create_session_superseding(
+                "sha round",
+                Some(trigger),
+                Some("sha:new"),
+                0,
+                None,
+                &[],
+                "council",
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            SessionCreateOutcome::Superseded {
+                old_id: legacy.id.clone()
+            }
+        );
+
+        let (null_round, outcome) = store
+            .create_session_superseding(
+                "manual round",
+                Some(trigger),
+                None,
+                0,
+                None,
+                &[],
+                "council",
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            SessionCreateOutcome::Superseded {
+                old_id: sha_round.id.clone()
+            }
+        );
+        assert_eq!(null_round.trigger_fingerprint, None);
+    }
+
+    #[test]
+    fn create_session_superseding_concurrent_same_delivery_has_one_successor() {
+        let store = std::sync::Arc::new(SqliteStore::memory().unwrap());
+        let trigger = "github:pr/o/r#7";
+        let (old, _) = store
+            .create_session_superseding(
+                "old",
+                Some(trigger),
+                Some("sha:old"),
+                0,
+                None,
+                &[],
+                "council",
+            )
+            .unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles = (0..2)
+            .map(|_| {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store
+                        .create_session_superseding(
+                            "new",
+                            Some(trigger),
+                            Some("sha:new"),
+                            0,
+                            None,
+                            &[],
+                            "council",
+                        )
+                        .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(results.iter().any(|(_, outcome)| {
+            outcome
+                == &SessionCreateOutcome::Superseded {
+                    old_id: old.id.clone(),
+                }
+        }));
+        assert!(results
+            .iter()
+            .any(|(_, outcome)| outcome == &SessionCreateOutcome::Deduped));
+        let successor_ids = results
+            .iter()
+            .map(|(s, _)| s.id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(successor_ids[0], successor_ids[1]);
+        let active_count: i64 = {
+            let c = store.conn.lock().unwrap();
+            c.query_row(
+                "SELECT COUNT(*) FROM sessions
+                 WHERE trigger_ref = ?1 AND state NOT IN ('closed', 'aborted')",
+                params![trigger],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(active_count, 1);
     }
 
     #[test]
