@@ -19,6 +19,8 @@ use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::sync::{Arc, OnceLock};
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
@@ -1331,16 +1333,45 @@ async fn stream_session(
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     check_auth(&state, &headers)?;
     let rx = state.north_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(move |r| {
-        let raw = r.ok()?;
-        let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-        if v.get("session_id").and_then(|s| s.as_str()) == Some(id.as_str()) {
-            Some(Ok(Event::default().data(raw)))
-        } else {
-            None
-        }
-    });
+    let stream = north_json_stream(rx, id).map(|raw| Ok(Event::default().data(raw)));
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+fn north_json_stream(
+    rx: broadcast::Receiver<String>,
+    session_id: String,
+) -> impl Stream<Item = String> {
+    BroadcastStream::new(rx).filter_map(move |r| match r {
+        Ok(raw) => {
+            let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+            if v.get("session_id").and_then(|s| s.as_str()) == Some(session_id.as_str()) {
+                Some(raw)
+            } else {
+                None
+            }
+        }
+        Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+            // `skipped` is the count of dropped GLOBAL events from the plane-wide
+            // north broadcast channel. It can include other sessions' events, so
+            // this is a gap signal, not a per-session count. Clients should
+            // re-fetch authoritative state via GET /v1/sessions/:id/log or
+            // GET /v1/sessions/:id, then keep reading this same stream:
+            // BroadcastStream yields Lagged once, repositions to the oldest
+            // retained value, and continues until the channel closes.
+            Some(
+                json!({
+                    "type": "resync",
+                    "session_id": session_id.as_str(),
+                    "payload": {
+                        "reason": "lagged",
+                        "skipped": skipped,
+                    },
+                    "ts": crate::store::now_ms(),
+                })
+                .to_string(),
+            )
+        }
+    })
 }
 
 #[cfg(test)]
@@ -1350,11 +1381,96 @@ mod tests {
         toml_string, AgentProfile, BotConfigParams,
     };
     use crate::state::AppState;
+    use crate::store::now_ms;
     use crate::store::{SqliteStore, Store};
     use axum::body::to_bytes;
     use axum::extract::{Path, Query, State};
     use axum::response::IntoResponse;
     use std::sync::Arc;
+    use futures::StreamExt;
+    use serde_json::{json, Value};
+    use tokio::sync::broadcast;
+    use tokio::time::{timeout, Duration};
+
+    fn north_event(session_id: &str, seq: u64) -> String {
+        json!({
+            "type": "message",
+            "session_id": session_id,
+            "payload": { "seq": seq },
+            "ts": now_ms(),
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn lagged_subscriber_gets_resync_and_stream_continues() {
+        let (tx, rx) = broadcast::channel::<String>(2);
+        let mut stream = Box::pin(super::north_json_stream(rx, "ses_1".to_string()));
+
+        for seq in 1..=5 {
+            tx.send(north_event("ses_1", seq)).unwrap();
+        }
+
+        let first: Value = serde_json::from_str(&stream.next().await.unwrap()).unwrap();
+        assert_eq!(first["type"], "resync");
+        assert_eq!(first["session_id"], "ses_1");
+        assert_eq!(first["payload"]["reason"], "lagged");
+        assert_eq!(first["payload"]["skipped"], 3);
+
+        let second: Value = serde_json::from_str(&stream.next().await.unwrap()).unwrap();
+        let third: Value = serde_json::from_str(&stream.next().await.unwrap()).unwrap();
+        assert_eq!(second["payload"]["seq"], 4);
+        assert_eq!(third["payload"]["seq"], 5);
+
+        tx.send(north_event("ses_1", 6)).unwrap();
+        let fourth: Value = serde_json::from_str(&stream.next().await.unwrap()).unwrap();
+        assert_eq!(fourth["payload"]["seq"], 6);
+    }
+
+    #[tokio::test]
+    async fn no_resync_without_lag() {
+        let (tx, rx) = broadcast::channel::<String>(8);
+        let mut stream = Box::pin(super::north_json_stream(rx, "ses_1".to_string()));
+
+        for seq in 1..=3 {
+            tx.send(north_event("ses_1", seq)).unwrap();
+        }
+
+        for seq in 1..=3 {
+            let event: Value = serde_json::from_str(&stream.next().await.unwrap()).unwrap();
+            assert_eq!(event["type"], "message");
+            assert_eq!(event["payload"]["seq"], seq);
+        }
+        assert!(timeout(Duration::from_millis(10), stream.next())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn resync_emitted_even_when_dropped_events_are_other_sessions() {
+        let (tx, rx) = broadcast::channel::<String>(2);
+        let mut stream = Box::pin(super::north_json_stream(rx, "ses_1".to_string()));
+
+        for seq in 1..=5 {
+            tx.send(north_event("ses_2", seq)).unwrap();
+        }
+
+        let first: Value = serde_json::from_str(&stream.next().await.unwrap()).unwrap();
+        assert_eq!(first["type"], "resync");
+        assert_eq!(first["session_id"], "ses_1");
+        assert_eq!(first["payload"]["reason"], "lagged");
+        assert_eq!(first["payload"]["skipped"], 3);
+
+        assert!(timeout(Duration::from_millis(10), stream.next())
+            .await
+            .is_err());
+
+        tx.send(north_event("ses_1", 6)).unwrap();
+        let next: Value = serde_json::from_str(&stream.next().await.unwrap()).unwrap();
+        assert_eq!(next["type"], "message");
+        assert_eq!(next["session_id"], "ses_1");
+        assert_eq!(next["payload"]["seq"], 6);
+    }
 
     #[test]
     fn maps_known_provider_profiles_and_splits_args() {
