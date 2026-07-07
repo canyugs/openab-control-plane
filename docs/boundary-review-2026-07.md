@@ -464,6 +464,88 @@ Verdicts on rejected alternatives (first two not adversarially verified):
   needing independent deploy cadence, or a third-party author). The extraction
   makes that a transport change, not a redesign.
 
+## Addendum 2026-07-07 — mention-driven re-review (the Gen-1 council's requirements)
+
+Added after the verification pass; evidence-cited from source but **not run
+through the adversarial verify pass** above. Trigger: nuphos PRs are reviewed
+today by the *predecessor* stack — the OAB + Discord review council
+(`multi-agent-review-ops` webhook + 7 reviewer pods + aggregator), whose
+migration onto OCP is the natural next consumer after forum support. Observed
+on zeabur/nuphos#350: author comments `@zeabur-review-agent <fix notes>` →
+re-review round with prior finding numbers understood → stale rounds marked
+"Superseded by a new review trigger."
+
+Product framing: the stated goal of the review product is to **replace
+CodeRabbit** (nuphos runs both side by side today). That makes the
+conversational loop table stakes, not polish — ADR 011 already names
+`@coderabbitai` as the gap it was closing, and the predecessor's observed
+author workflow (mention with fix notes → superseding re-review → carried
+finding numbers) is the bar an OCP-based replacement is measured against.
+
+What the predecessor actually does (from its source):
+
+- **The mention is not a trigger.** `@zeabur-review-agent` comment-triggering
+  is an open TODO (`multi-agent-review-ops/TODO.md:20-25`); re-review is
+  push-triggered (`synchronize` + `request-changes` label,
+  `webhook/index.js:51-69`). The author's fix-notes comment is prose the
+  reviewers *read* on self-fetch — ADR 011's "the thread is the state" stance,
+  independently arrived at.
+- **Supersession is prose-enforced.** A new trigger PATCHes the stale
+  "Processing" comment (cosmetic, `webhook/index.js:98-114`) and the aggregator
+  SHA-guards *at synthesis time* (`aggregator-output.md` Step 1) — the
+  superseded round runs to completion and self-aborts at the last step;
+  reviewers have no guard at all. A skippable prose step holding a
+  should-be-structural invariant — design.md's own tell.
+- **The re-review loop is the documented cost sink.** ~69% of reviews go
+  multi-round; the full 7-agent panel re-runs per push, re-discovering
+  carried-open findings (PR #664: 7 rounds, two findings carried 5 rounds) —
+  `docs/HANDOFF-commercialization.md:29-31`. Their named fix: delta-only
+  review + open-findings state. Their post-mortem list (prose quorum handoff
+  missed, in-memory dedup lost on restart, no re-review protocol) re-derives
+  OCP's guarantee thesis item by item.
+
+Gap vs OCP today, and where each lands on the boundary:
+
+**M1 — Supersede-vs-dedupe on the review path (mechanism → plane).** A
+`synchronize` arriving while a council is active is *swallowed* — the active
+session is returned as `deduped` (github_webhook.rs:159, :341-350;
+store.rs:430-436 UNIQUE active trigger_ref), GitHub never re-delivers, and the
+in-flight council verdicts on the **stale head**. The predecessor's semantics
+(supersede stale rounds) are correct for reviews; its enforcement (prompt) is
+what the plane exists to replace. Direction: same-delivery retry still dedupes;
+a new-head/new-command trigger CAS-closes the active session
+(`reason=superseded`, north event, outbox purged per A5) and opens the
+successor under the same trigger_ref index — no half-open window. Which events
+supersede is coordinator/controller **policy**; the atomic close-and-succeed is
+**mechanism**.
+
+**M2 — Mention → panel re-review with delta context (policy/steering →
+controller).** OCP's mention path is solo Q&A only (ADR 011); a full re-review
+needs `/review`, and nothing carries prior-round findings into it beyond
+self-fetch. The predecessor's cost data says delta-review is the feature that
+matters. Direction: controller-owned (Stage 3) — the pr-review controller
+distinguishes ask/re-review intents and renders the re-review trigger with the
+open-findings delta; kernel unchanged.
+
+**M3 — Superseded side-effect race (steering + controller).** The Gen-2 chair
+maintains one PR comment via `--edit-last`; a superseded chair that posts late
+clobbers the successor round's comment. Plane close cannot prevent a pod-side
+`gh` call (design.md:46 boundary). Direction: round token in the chair steering
+(check-before-edit), and/or the status-comment lifecycle moves to the
+controller via ADR 008 `emit_status` — never into the kernel.
+
+**M4 — Open-findings ledger (controller state, not kernel schema).** Delta
+review needs per-finding open/resolved state across rounds. ADR 013's
+decision/findings *counts* are already flagged as review-shaped columns in the
+core schema (Unverified observations); a per-finding table would tip that scale
+decisively. Direction: it is application data — it lives with the Stage 3
+bundled controller, and moves out with the ADR 013 columns.
+
+Net effect on the plan: M1 adds one mechanism item (Stage 1 — it closes a
+verdict-on-stale-code correctness gap that exists today, before any
+predecessor migration); M2–M4 attach to Stage 3 and name the predecessor
+migration, alongside forum support, as that stage's second firing consumer.
+
 ## Staged improvement plan
 
 Planning only. Each stage names its start trigger per design.md discipline.
@@ -479,6 +561,9 @@ review.**
 - design.md/ADR 007: PR review declared a bundled first-party controller until
   Stage 3 (B1); ADR 010 gets a `/bot-config` freeze + sunset condition (B2);
   ADR 016 gets named blockers for step 3 (D1).
+- Document the supersede-vs-dedupe rule for review triggers (same-delivery
+  retry dedupes; new head/command supersedes) — today's swallow-on-active
+  behavior is undeclared (M1, Addendum).
 - Arm ADR 001's split test on `/v1/stats`: sustained `outbox.pending > X` for
   Y min, or ttv p95 > watchdog/2 *after* Stage 1's WAL+index → revisit the
   Store swap; first false-trim or zombie-connected incident post-Stage-1 →
@@ -505,6 +590,9 @@ incident-C7/C8-class races).
 - `POST /v1/sessions` routed through the interpreter; whitelist derived from
   `coordinator::for_session` (B3).
 - Membership runbook flip to the existing APIs + `DELETE /v1/bots/:id` (C6).
+- Supersede-on-new-head for the review path: CAS close(`superseded`) + open
+  successor, atomic under the trigger_ref index; retry-redelivery still
+  dedupes (M1 — closes today's verdict-on-stale-code gap).
 
 **Stage 2 — minimal typed upstream extension (OAB wire change).** Trigger:
 **OCP-side case already made (roadmap.md:160-161); starts when OAB maintainers
@@ -524,11 +612,18 @@ parsing as an inert fallback tier for stock pods regardless.
 **Stage 3 — app extraction, in-process.** Trigger: **ADR 007's own trigger
 ("another real plugin") — arguably fired by the ADR 014 triage panel; fires
 definitively when the forum north client moves from plan to build**
-(docs/forum-north-client-plan.md).
+(docs/forum-north-client-plan.md), **and again when the Gen-1 Discord council
+(nuphos) migrates onto OCP** (Addendum).
 - `plugins/pr_review` bundled controller: prompts, presets/angles, webhook
   parsing, `/v1/review` exit the kernel; only ingress is `controller.rs`
   actions; done-policy moves onto the `Coordinator` trait (B1). Forum support
   routed the same way from day one — never a second grandfathered exception.
+- CodeRabbit-parity conversational loop, controller-owned: mention → panel
+  re-review with open-findings delta context (M2); per-finding open/resolved
+  ledger as controller state, moving out with the ADR 013 columns (M4);
+  round-token check-before-edit in chair steering and/or status-comment
+  lifecycle via ADR 008 `emit_status` to close the superseded `--edit-last`
+  race (M3).
 - `/bot-config` frozen + demoted per ADR 010: profiles and pre_boot move to
   templates/`configUrl` artifacts (B2).
 - ADR 016 finish: `issue()` honors the flag, `POST /v1/bots` externalized
@@ -573,6 +668,10 @@ split); measured 429 ceiling (quorum policy).
 | C6 membership ops | | runbook + DELETE route | | | registry split |
 | C7 presence zombies | | boot reset, column drop | | | registry split |
 | D1 ADR 016 default | named blockers | | | flip + column drop | |
+| M1 supersede semantics | doc the rule | atomic supersede | | | |
+| M2 mention re-review | | | | controller intent + delta | |
+| M3 --edit-last race | | | | round token / emit_status | |
+| M4 findings ledger | | | | controller state | |
 
 ## Unverified observations
 
