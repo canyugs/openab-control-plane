@@ -9,7 +9,7 @@ use crate::identity;
 use crate::orchestrator;
 use crate::session::{reviewers, DONE_EMOJI};
 use crate::state::AppState;
-use crate::store::{BotInventory, BotMetadata, BotMetadataPatch};
+use crate::store::{BotInventory, BotMetadata, BotMetadataPatch, DeleteBotOutcome};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -32,7 +32,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/v1/stats", get(stats))
         .route("/v1/bots", get(list_bots).post(register_bot))
         .route("/v1/bots/discover", post(discover_bot))
-        .route("/v1/bots/:id", patch(patch_bot))
+        .route("/v1/bots/:id", patch(patch_bot).delete(delete_bot))
         .route("/v1/sessions", get(list_sessions).post(open_session))
         .route("/v1/session-log", get(session_log_by_query))
         .route("/v1/sessions/:id", get(get_session))
@@ -407,6 +407,55 @@ async fn patch_bot(
     Ok(Json(json!({
         "bot": inventory_json(bot, connected, &standing, standing_chair.as_deref())
     })))
+}
+
+async fn delete_bot(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<axum::response::Response, StatusCode> {
+    check_auth(&state, &headers)?;
+    state
+        .store
+        .bot_inventory(&id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let (standing_roster, _) = crate::council::runtime_council_roster(&state)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if standing_roster.iter().any(|bot| bot == &id) {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "bot is in the standing roster; remove it first via PUT /v1/council/roster"
+            })),
+        )
+            .into_response());
+    }
+    if state.is_connected(&id) {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "bot is connected; stop the pod first" })),
+        )
+            .into_response());
+    }
+
+    match state
+        .store
+        .delete_bot(&id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        DeleteBotOutcome::Deleted => {
+            state.emit_north("bot_deleted", "-", json!({ "bot": id }));
+            Ok(Json(json!({ "bot_id": id, "deleted": true })).into_response())
+        }
+        DeleteBotOutcome::NotFound => Err(StatusCode::NOT_FOUND),
+        DeleteBotOutcome::ActiveSession => Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "bot is in an active session" })),
+        )
+            .into_response()),
+    }
 }
 
 #[derive(Deserialize)]

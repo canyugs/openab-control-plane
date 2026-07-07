@@ -16,8 +16,8 @@ Production scaling is the same knobs applied to Zeabur service env — see
 
 | Knob | Where | Controls |
 | --- | --- | --- |
-| **A. Reviewer identities + pods** | `OABCP_BOTS` on the plane + one running pod per bot | Which reviewers *exist* |
-| **B. Convened roster** | webhook: `OABCP_COUNCIL_ROSTER`; manual driver: `open-council.sh`'s `ROSTER` | Which of them a given council *invites* |
+| **A. Reviewer identities + pods** | `POST /v1/bots` or `POST /v1/bots/discover` + one running pod per bot; `OABCP_BOTS` only seeds an empty first-boot DB | Which reviewers *exist* |
+| **B. Convened roster** | webhook: runtime `PUT /v1/council/roster`, env fallback; manual driver: `open-council.sh`'s `ROSTER` | Which of them a given council *invites* |
 | **C. Preset angles** | webhook: `OABCP_COUNCIL_PRESET`; manual: `open-council.sh --preset` | How many invited reviewers actually deliberate |
 
 `assign_angles` (src/council.rs) round-robins preset angles onto reviewers:
@@ -43,17 +43,17 @@ Learned the hard way scaling 2→4 reviewers. Each dial has a *separate* source 
 truth; raising one alone silently does nothing:
 
 1. **`open-council.sh` hardcodes `ROSTER=["chair","rev1","rev2"]`** — it does NOT
-   read the plane's live roster. Growing `OABCP_BOTS`/`OABCP_COUNCIL_ROSTER` on
-   the plane does not change who the manual driver invites. You **must** pass the
+   read the plane's live roster. Updating the plane's runtime standing roster
+   does not change who the manual driver invites. You **must** pass the
    full roster explicitly: `ROSTER='["chair","rev1","rev2","rev3","rev4"]'
    open-council.sh …`. Miss this and you silently get a 2-reviewer, quorum-2
    council no matter how many pods are up.
 2. **`dev-deploy-bots.sh` takes the bot list from `--bots`, not `--bot-agents`**
    (default `chair,rev1,rev2`). Passing only `--bot-agents rev3=…,rev4=…` deploys
    nothing new — you must also pass `--bots rev3,rev4` (or the full list).
-3. **`dev-deploy-k8s.sh` does NOT forward `OABCP_COUNCIL_PRESET`** (only
-   `OABCP_BOTS` / `OABCP_COUNCIL_ROSTER`). To set a webhook-path preset, apply it
-   separately: `kubectl -n oabcp-local set env deploy/control-plane
+3. **`dev-deploy-k8s.sh` does NOT forward `OABCP_COUNCIL_PRESET`**. To set a
+   webhook-path preset, apply it separately:
+   `kubectl -n oabcp-local set env deploy/control-plane
    OABCP_COUNCIL_PRESET=standard`. For the manual dogfood path, use
    `open-council.sh --preset` instead — the plane env is irrelevant there.
 
@@ -61,6 +61,7 @@ truth; raising one alone silently does nothing:
 
 - Plane `dev-deploy-k8s.sh`: `OABCP_BOTS=chair:chair,rev1:reviewer,rev2:reviewer`,
   `OABCP_COUNCIL_ROSTER=chair,rev1,rev2`, no preset (webhook path → `lite`).
+  `OABCP_BOTS` only seeds the first empty DB; day-2 add/remove uses the APIs.
 - Bots `dev-deploy-bots.sh`: 3 pods, Kiro (`?agent=kiro`, `KIRO_API_KEY`).
 - Gateway tokens: legacy auto-mint (plane generates per bot, served inline).
 
@@ -86,16 +87,23 @@ Still true after C9:
   bots that single time so they re-fetch `/bot-config`. Every plane restart after
   that is non-destructive.
 
-**Roster shrink needs an explicit delete.** Because seeding is `INSERT OR IGNORE`
-against the now-durable DB, dropping a name from `OABCP_BOTS` does NOT remove its
-row — the bot stays seeded and connectable. To actually retire a reviewer, delete
-its row (and its pod), don't just shorten the env:
+**Roster shrink and identity retirement are API operations.** Remove the bot from
+the standing roster first, stop its pod, then delete its identity and gateway
+token:
 
 ```sh
-kubectl --context docker-desktop -n oabcp-local exec deploy/control-plane -- \
-  sqlite3 /data/plane.db "DELETE FROM bots WHERE id='rev4';"
+curl -X PUT "$PLANE/v1/council/roster" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"roster":["chair","rev1","rev2","rev3"]}'
 kubectl --context docker-desktop -n oabcp-local delete deploy rev4
+curl -X DELETE "$PLANE/v1/bots/rev4" \
+  -H "Authorization: Bearer $KEY"
 ```
+
+`DELETE /v1/bots/:id` returns `409` if the bot is still rostered, connected, or
+in an active session. That is intentional; stop inviting it, stop the pod, and
+wait for active sessions to close.
 
 To wipe everything (old destructive behaviour on demand): delete the PVC
 (`kubectl -n oabcp-local delete pvc control-plane-data`) then redeploy.
@@ -129,14 +137,21 @@ Example: 2 → 4 reviewers, `rev1/rev3=kiro`, `rev2/rev4=claude`.
 #    kubectl -n oabcp-local create secret generic claude-oauth \
 #      --from-file=CLAUDE_CODE_OAUTH_TOKEN=<file-with-token>
 
-# 1. Grow the plane roster (set env → rolls only the plane; keeps the image).
-kubectl --context docker-desktop -n oabcp-local set env deploy/control-plane \
-  OABCP_BOTS="chair:chair,rev1:reviewer,rev2:reviewer,rev3:reviewer,rev4:reviewer" \
-  OABCP_COUNCIL_ROSTER="chair,rev1,rev2,rev3,rev4"
+# 1. Register stable bot ids for /bot-config/rev3 and /bot-config/rev4.
+curl -X POST "$PLANE/v1/bots/discover" \
+  -H "Authorization: Bearer $OABCP_BOT_DISCOVERY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"rev3","role":"reviewer","provider":"kiro","capabilities":["review"]}'
+curl -X POST "$PLANE/v1/bots/discover" \
+  -H "Authorization: Bearer $OABCP_BOT_DISCOVERY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"rev4","role":"reviewer","provider":"claude","capabilities":["review"]}'
 
-# 2. Restart the port-forward (plane pod was replaced).
-pkill -f "port-forward svc/control-plane 8090"; \
-  kubectl --context docker-desktop -n oabcp-local port-forward svc/control-plane 8090:8090 &
+# 2. Grow the webhook standing roster without restarting the plane.
+curl -X PUT "$PLANE/v1/council/roster" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"roster":["chair","rev1","rev2","rev3","rev4"]}'
 
 # 3. Deploy the new bot pods. --bots is the name list; --bot-agents the map.
 scripts/dev-deploy-bots.sh \
@@ -148,11 +163,10 @@ scripts/dev-deploy-bots.sh \
   --steering-file docs/steering/pr-review.md
 ```
 
-Since C9 the DB is durable, so step 1 does **not** re-mint tokens — the existing
-chair/rev1/rev2 keep their `/bot-config` and stay connected; no restart needed
-(pre-C9 this was a mandatory 4th step). Since C8 (#100) a fresh pod that briefly
-overlaps an old one self-heals too — no manual restart for the double-connect
-case either (see the gotcha below).
+The plane stays up throughout this flow. The existing chair/rev1/rev2 keep their
+connections and tokens; only the new bot pods start. Since C8 (#100) a fresh pod
+that briefly overlaps an old one self-heals too — no manual restart for the
+double-connect case either (see the gotcha below).
 
 ## Scale DOWN
 
@@ -163,8 +177,9 @@ scripts/dev-deploy-bots.sh --delete              # remove all bot deployments
 ```
 
 To stop convening a reviewer, drop it from the roster you pass (`ROSTER=` for the
-manual driver, `OABCP_COUNCIL_ROSTER` for the webhook path) — deleting its pod is
-only needed to reclaim resources.
+manual driver, `PUT /v1/council/roster` for the webhook path) — deleting its pod
+is only needed to reclaim resources. Use `DELETE /v1/bots/:id` only when you want
+to retire the identity and old gateway token.
 
 ## Verify + run a scale test
 

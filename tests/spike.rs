@@ -515,6 +515,84 @@ async fn wait_for_connected(state: &Arc<AppState>, bot_id: &str, connected: bool
 }
 
 #[tokio::test]
+async fn delete_bot_endpoint_guards() {
+    let (addr, state) = spawn_server_with_state().await;
+    let base = addr.to_string();
+    let client = reqwest::Client::new();
+
+    let unknown = client
+        .delete(format!("http://{base}/v1/bots/missing"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
+
+    let (chair_id, _) = register_bot(&base, "chair", "chair").await;
+    let (rostered_id, _) = register_bot(&base, "rostered", "reviewer").await;
+    let standing = client
+        .put(format!("http://{base}/v1/council/roster"))
+        .json(&json!({ "roster": [chair_id, rostered_id.clone()] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(standing.status(), reqwest::StatusCode::OK);
+    let rostered = client
+        .delete(format!("http://{base}/v1/bots/{rostered_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rostered.status(), reqwest::StatusCode::CONFLICT);
+    let body: Value = rostered.json().await.unwrap();
+    assert_eq!(
+        body["error"],
+        "bot is in the standing roster; remove it first via PUT /v1/council/roster"
+    );
+
+    let (connected_id, connected_token) = register_bot(&base, "connected", "reviewer").await;
+    let connected_ws = connect(addr, &connected_token).await;
+    wait_for_connected(&state, &connected_id, true).await;
+    let connected = client
+        .delete(format!("http://{base}/v1/bots/{connected_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(connected.status(), reqwest::StatusCode::CONFLICT);
+    drop(connected_ws);
+    wait_for_connected(&state, &connected_id, false).await;
+
+    let (idle_id, idle_token) = register_bot(&base, "idle", "reviewer").await;
+    let deleted: Value = client
+        .delete(format!("http://{base}/v1/bots/{idle_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(deleted, json!({ "bot_id": idle_id, "deleted": true }));
+
+    let inventory: Value = client
+        .get(format!("http://{base}/v1/bots"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!inventory["bots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|bot| bot["id"] == idle_id));
+
+    let stale = connect_async(format!("ws://{addr}/ws?token={idle_token}")).await;
+    let Err(tokio_tungstenite::tungstenite::Error::Http(response)) = stale else {
+        panic!("deleted bot token should receive HTTP 401, got {stale:?}");
+    };
+    assert_eq!(response.status().as_u16(), 401);
+}
+
+#[tokio::test]
 async fn silent_peer_is_disconnected_by_ping_deadline() {
     let (addr, state) = spawn_server_with_ping_secs(1).await;
     let base = addr.to_string();

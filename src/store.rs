@@ -65,6 +65,13 @@ pub struct BotMetadataPatch {
     pub runtime: Option<Option<Value>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteBotOutcome {
+    Deleted,
+    NotFound,
+    ActiveSession,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SessionState {
     Open,
@@ -171,6 +178,7 @@ pub trait Store: Send + Sync {
         metadata: &BotMetadata,
     ) -> Result<(Bot, bool)>;
     fn update_bot_metadata(&self, id: &str, patch: &BotMetadataPatch) -> Result<bool>;
+    fn delete_bot(&self, bot_id: &str) -> Result<DeleteBotOutcome>;
 
     #[allow(clippy::too_many_arguments)]
     fn create_session(
@@ -863,6 +871,32 @@ impl Store for SqliteStore {
         }
         tx.commit()?;
         Ok(true)
+    }
+
+    fn delete_bot(&self, bot_id: &str) -> Result<DeleteBotOutcome> {
+        let c = self.conn.lock().unwrap();
+        let has_active_session = c
+            .query_row(
+                "SELECT 1
+                 FROM session_bots sb
+                 JOIN sessions s ON s.id = sb.session_id
+                 WHERE sb.bot_id = ?1
+                   AND s.state NOT IN ('closed', 'aborted')
+                 LIMIT 1",
+                params![bot_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if has_active_session {
+            return Ok(DeleteBotOutcome::ActiveSession);
+        }
+        let deleted = c.execute("DELETE FROM bots WHERE id = ?1", params![bot_id])?;
+        if deleted == 0 {
+            Ok(DeleteBotOutcome::NotFound)
+        } else {
+            Ok(DeleteBotOutcome::Deleted)
+        }
     }
 
     fn create_session(
@@ -1793,6 +1827,50 @@ mod tests {
 
         let s = store.stats(now_ms()).unwrap();
         assert_eq!(s["outbox"]["pending"], json!(1));
+    }
+
+    #[test]
+    fn delete_bot_removes_identity_and_token() {
+        let store = SqliteStore::memory().unwrap();
+        let (bot, token) = crate::identity::issue(&store, "retire-me", "reviewer").unwrap();
+        let token_hash = crate::identity::hash_token(&token);
+
+        assert_eq!(
+            store.delete_bot(&bot.id).unwrap(),
+            DeleteBotOutcome::Deleted
+        );
+
+        assert!(store.bot(&bot.id).unwrap().is_none());
+        assert!(store.bot_by_token_hash(&token_hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_bot_refuses_active_session_member() {
+        let store = SqliteStore::memory().unwrap();
+        let (bot, _) = crate::identity::issue(&store, "active", "reviewer").unwrap();
+        let session = store
+            .create_session(
+                "active review",
+                Some("github:pr/o/r#active"),
+                1,
+                None,
+                std::slice::from_ref(&bot.id),
+                "council",
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.delete_bot(&bot.id).unwrap(),
+            DeleteBotOutcome::ActiveSession
+        );
+        assert!(store.bot(&bot.id).unwrap().is_some());
+
+        store.set_state(&session.id, SessionState::Closed).unwrap();
+        assert_eq!(
+            store.delete_bot(&bot.id).unwrap(),
+            DeleteBotOutcome::Deleted
+        );
+        assert!(store.bot(&bot.id).unwrap().is_none());
     }
 
     #[test]
