@@ -11,7 +11,9 @@ use axum::extract::{Query, State};
 use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 pub async fn ws_handler(
@@ -35,6 +37,7 @@ pub async fn ws_handler(
 async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let last_activity = Arc::new(AtomicI64::new(crate::store::now_ms()));
 
     let conn_gen = state.register_conn(&bot_id, tx);
     let _ = state.store.set_connected(&bot_id, true);
@@ -59,27 +62,77 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
     tracing::info!("bot {bot_id} connected (gen {conn_gen})");
 
     // outbound pump: plane → bot
+    let (disconnect_tx, mut disconnect_rx) = mpsc::unbounded_channel::<()>();
+    let ping_secs = state.ws_ping_secs;
+    let ping_activity = last_activity.clone();
+    let ping_bot_id = bot_id.clone();
     let send_task = tokio::spawn(async move {
-        while let Some(text) = rx.recv().await {
-            if sink.send(Message::Text(text)).await.is_err() {
-                break;
+        if ping_secs == 0 {
+            while let Some(text) = rx.recv().await {
+                if sink.send(Message::Text(text)).await.is_err() {
+                    let _ = disconnect_tx.send(());
+                    break;
+                }
+            }
+            return;
+        }
+
+        let mut ping = tokio::time::interval(Duration::from_secs(ping_secs));
+        let deadline_ms = (ping_secs as i64) * 3 * 1000;
+        loop {
+            tokio::select! {
+                text = rx.recv() => {
+                    let Some(text) = text else {
+                        break;
+                    };
+                    if sink.send(Message::Text(text)).await.is_err() {
+                        let _ = disconnect_tx.send(());
+                        break;
+                    }
+                }
+                _ = ping.tick() => {
+                    let idle_ms = crate::store::now_ms() - ping_activity.load(Ordering::Relaxed);
+                    if idle_ms > deadline_ms {
+                        tracing::warn!("bot {ping_bot_id} missed websocket pong deadline ({idle_ms}ms idle)");
+                        let _ = sink.send(Message::Close(None)).await;
+                        let _ = disconnect_tx.send(());
+                        break;
+                    }
+                    tracing::trace!("ping bot {ping_bot_id}");
+                    if sink.send(Message::Ping(Vec::new())).await.is_err() {
+                        let _ = disconnect_tx.send(());
+                        break;
+                    }
+                }
             }
         }
     });
 
     // inbound: bot → plane
-    while let Some(Ok(msg)) = stream.next().await {
-        if let Message::Text(text) = msg {
-            match serde_json::from_str::<GatewayReply>(&text) {
-                Ok(reply) => {
-                    if let Err(e) = orchestrator::handle_reply(&state, &bot_id, reply) {
-                        tracing::error!("handle_reply error: {e}");
+    loop {
+        tokio::select! {
+            _ = disconnect_rx.recv() => break,
+            msg = stream.next() => {
+                let Some(Ok(msg)) = msg else {
+                    break;
+                };
+                last_activity.store(crate::store::now_ms(), Ordering::Relaxed);
+                match msg {
+                    Message::Text(text) => {
+                        match serde_json::from_str::<GatewayReply>(&text) {
+                            Ok(reply) => {
+                                if let Err(e) = orchestrator::handle_reply(&state, &bot_id, reply) {
+                                    tracing::error!("handle_reply error: {e}");
+                                }
+                            }
+                            Err(e) => tracing::warn!("bad reply json from {bot_id}: {e}"),
+                        }
                     }
+                    Message::Pong(_) => {}
+                    Message::Close(_) => break,
+                    _ => {}
                 }
-                Err(e) => tracing::warn!("bad reply json from {bot_id}: {e}"),
             }
-        } else if matches!(msg, Message::Close(_)) {
-            break;
         }
     }
 
