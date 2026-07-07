@@ -158,11 +158,29 @@ fi
 # --watch: follow the SSE stream, echo messages live, print the verdict, exit on close.
 echo "trigger posted. Following… (Ctrl-C to detach; the council keeps running)"
 set +o pipefail   # node exit on close sends SIGPIPE to curl — that's expected, not a failure.
-curl -sN "$STREAM_URL" -H "Authorization: Bearer $KEY" | node -e '
+curl -sN "$STREAM_URL" -H "Authorization: Bearer $KEY" | PLANE="$PLANE" SID="$SID" KEY="$KEY" node -e '
   // Wire format: the plane sends one JSON object per SSE `data:` line
   // ({type, session_id, payload, ts}) — NOT named SSE events. So switch on
   // o.type and read o.payload (see state.rs emit_north / api.rs stream_session).
+  const { execSync } = require("child_process");
   let buf = "";
+  function shQuote(s) {
+    const q = String.fromCharCode(39);
+    return q + String(s).replace(new RegExp(q, "g"), q + "\\" + q + q) + q;
+  }
+  function refetchSession() {
+    const url = `${process.env.PLANE}/v1/sessions/${process.env.SID}`;
+    const auth = `Authorization: Bearer ${process.env.KEY}`;
+    const raw = execSync(`curl -s ${shQuote(url)} -H ${shQuote(auth)}`, { encoding: "utf8" });
+    return JSON.parse(raw);
+  }
+  function recoveredVerdict(snapshot) {
+    const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
+    const chair = snapshot.session && snapshot.session.chair_bot;
+    const chairMessage = messages.slice().reverse().find(m => m.author_id === chair && typeof m.content === "string");
+    const botMessage = messages.slice().reverse().find(m => m.author_kind === "bot" && typeof m.content === "string");
+    return (chairMessage || botMessage || {}).content || "(closed; verdict text not found in fetched session)";
+  }
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", d => {
     buf += d;
@@ -174,6 +192,14 @@ curl -sN "$STREAM_URL" -H "Authorization: Bearer $KEY" | node -e '
       const p = o.payload || {};
       if (o.type === "message") console.error(`  [${p.author}] ${String(p.content).replace(/\s+/g, " ").slice(0, 200)}`);
       else if (o.type === "verdict") console.log("\n===== VERDICT =====\n" + p.text + "\n===================");
+      else if (o.type === "resync") {
+        const snapshot = refetchSession();
+        if (snapshot.session && snapshot.session.state === "closed") {
+          console.log("\n===== VERDICT =====\n" + recoveredVerdict(snapshot) + "\n===================");
+          process.exit(0);
+        }
+        console.error(`resync: ${p.skipped} events dropped, refetched — still open`);
+      }
       else if (o.type === "state" && p.state === "closed") process.exit(0);
     }
   });
