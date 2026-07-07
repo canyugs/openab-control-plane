@@ -284,6 +284,11 @@ pub trait Store: Send + Sync {
     fn pending_outbox(&self, bot_id: &str) -> Result<Vec<(i64, String)>>;
     fn ack_outbox(&self, seq: i64) -> Result<()>;
     fn purge_outbox_for_session_bot(&self, session_id: &str, bot_id: &str) -> Result<()>;
+    /// Drop every durable frame for a terminal/superseded session, across all bots.
+    /// pr-mention-plan P1 supersede should use this same primitive after commit.
+    fn purge_outbox_for_session(&self, session_id: &str) -> Result<()>;
+    /// Boot backstop for crash-between-close-and-purge plus legacy NULL-session rows.
+    fn purge_terminal_outbox(&self) -> Result<()>;
 
     /// Per-`session × role` GitHub installation-token cache (Principle: Agent
     /// Identity). The plane mints a scoped token once per (session, role) and reuses
@@ -1364,6 +1369,25 @@ impl Store for SqliteStore {
         Ok(())
     }
 
+    fn purge_outbox_for_session(&self, session_id: &str) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute("DELETE FROM outbox WHERE session_id = ?1", params![session_id])?;
+        Ok(())
+    }
+
+    fn purge_terminal_outbox(&self) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "DELETE FROM outbox
+             WHERE session_id IN (
+                 SELECT id FROM sessions WHERE state IN ('closed', 'aborted')
+             )
+             OR session_id IS NULL",
+            [],
+        )?;
+        Ok(())
+    }
+
     fn cache_installation_token(
         &self,
         session_id: &str,
@@ -1600,6 +1624,71 @@ mod tests {
         store.ack_outbox(seq).unwrap();
         store.enqueue_outbox("bot1", "s1", key, "frameA").unwrap();
         assert_eq!(store.pending_outbox("bot1").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn purge_outbox_for_session_removes_all_bots_rows() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .enqueue_outbox("bot1", "session-s", "bot1:s1", "s-bot1")
+            .unwrap();
+        store
+            .enqueue_outbox("bot2", "session-s", "bot2:s1", "s-bot2")
+            .unwrap();
+        store
+            .enqueue_outbox("bot1", "session-t", "bot1:t1", "t-bot1")
+            .unwrap();
+
+        store.purge_outbox_for_session("session-s").unwrap();
+
+        let bot1 = store.pending_outbox("bot1").unwrap();
+        assert_eq!(bot1.len(), 1);
+        assert_eq!(bot1[0].1, "t-bot1");
+        assert!(store.pending_outbox("bot2").unwrap().is_empty());
+    }
+
+    #[test]
+    fn purge_terminal_outbox_sweeps_closed_and_null_sessions() {
+        let store = SqliteStore::memory().unwrap();
+        let open = store
+            .create_session("open", Some("t:open"), 1, None, &[], "council")
+            .unwrap();
+        let closed = store
+            .create_session("closed", Some("t:closed"), 1, None, &[], "council")
+            .unwrap();
+        let aborted = store
+            .create_session("aborted", Some("t:aborted"), 1, None, &[], "council")
+            .unwrap();
+        store.set_state(&closed.id, SessionState::Closed).unwrap();
+        store.set_state(&aborted.id, SessionState::Aborted).unwrap();
+        store
+            .enqueue_outbox("bot", &open.id, "bot:open", "open-frame")
+            .unwrap();
+        store
+            .enqueue_outbox("bot", &closed.id, "bot:closed", "closed-frame")
+            .unwrap();
+        store
+            .enqueue_outbox("bot", &aborted.id, "bot:aborted", "aborted-frame")
+            .unwrap();
+        {
+            let c = store.conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO outbox (bot_id, session_id, idem_key, frame, created_at)
+                 VALUES (?1, NULL, ?2, ?3, ?4)",
+                params!["bot", "bot:null", "null-frame", now_ms()],
+            )
+            .unwrap();
+        }
+
+        store.purge_terminal_outbox().unwrap();
+
+        let frames: Vec<_> = store
+            .pending_outbox("bot")
+            .unwrap()
+            .into_iter()
+            .map(|(_, frame)| frame)
+            .collect();
+        assert_eq!(frames, vec!["open-frame"]);
     }
 
     #[test]

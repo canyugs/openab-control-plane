@@ -18,6 +18,8 @@ async fn main() -> anyhow::Result<()> {
     // Swap this one line for a networked Store impl when scale needs it (§6c).
     let store: Arc<dyn Store> = Arc::new(SqliteStore::open(&db)?);
     seed_roster(store.as_ref())?;
+    store.purge_terminal_outbox()?;
+    tracing::info!("terminal/null outbox backstop sweep completed");
     let state = AppState::new(store);
     spawn_watchdog(state.clone());
     spawn_liveness(state.clone());
