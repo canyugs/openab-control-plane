@@ -431,4 +431,12 @@ mod tests {
         assert!(!t.contains("--create-if-none"));
         assert!(!t.contains("{{"));
     }
+
+    #[test]
+    fn ask_trigger_carries_rereview_redirect() {
+        let t = render_ask_trigger("canyugs/ocp", 7, "please review again");
+        assert!(t.contains(
+            "If the question asks for a re-review or another review round, answer: push new commits or comment `/review` to trigger a re-review round."
+        ));
+    }
 }

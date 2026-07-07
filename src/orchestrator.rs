@@ -1795,6 +1795,61 @@ mod tests {
     }
 
     #[test]
+    fn chair_task_pins_reviewed_at_sha() {
+        let session = test_session(Some("chair"), "review_council");
+        let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"";
+
+        let chair_text = recipient_text(&session, "chair", trigger);
+
+        assert!(chair_text.contains("0. Fetch the current PR head SHA before writing the verdict"));
+        assert!(chair_text.contains("Reviewed at <sha>"));
+        assert!(chair_text
+            .contains("Head has advanced since this review — push or comment /review to re-run."));
+    }
+
+    #[test]
+    fn chair_task_starts_comments_with_marker() {
+        let session = test_session(Some("chair"), "review_council");
+        let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"";
+
+        let chair_text = recipient_text(&session, "chair", trigger);
+
+        assert!(chair_text.contains(
+            "Every council-owned PR comment body MUST start with this exact first line:\n  <!-- openab-council -->"
+        ));
+        assert!(chair_text.contains("<!-- openab-council -->\n     OpenAB Council review started."));
+        assert!(chair_text.contains("<!-- openab-council -->\n       LGTM"));
+    }
+
+    #[test]
+    fn chair_task_preserves_ledger_on_rereview() {
+        let session = test_session(Some("chair"), "review_council");
+        let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"";
+
+        let chair_text = recipient_text(&session, "chair", trigger);
+
+        assert!(chair_text.contains("If a council verdict comment already exists"));
+        assert!(chair_text.contains("fetch its current body"));
+        assert!(
+            chair_text.contains("prepend the in-progress status above the retained prior verdict")
+        );
+        assert!(chair_text.contains("never overwrite the prior verdict"));
+    }
+
+    #[test]
+    fn chair_task_checks_marker_before_edit_last() {
+        let session = test_session(Some("chair"), "review_council");
+        let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"";
+
+        let chair_text = recipient_text(&session, "chair", trigger);
+
+        assert!(chair_text.contains("Before ANY --edit-last"));
+        assert!(chair_text.contains("list your own PR comments"));
+        assert!(chair_text.contains("most recent one starts with <!-- openab-council -->"));
+        assert!(chair_text.contains("post a NEW comment with the marker instead"));
+    }
+
+    #[test]
     fn chair_and_reviewer_tasks_keep_security_preamble() {
         let session = test_session(Some("chair"), "review_council");
         let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"\n\nReview focus assignment:\n- rev1 → correctness";
@@ -1822,6 +1877,21 @@ mod tests {
         assert!(pointer_text.contains("Fetch what you need with:"));
         assert!(pointer_text.contains("gh pr diff 53 --repo canyugs/openab-control-plane"));
         assert!(pointer_text.contains("gh pr checkout 53 --repo canyugs/openab-control-plane"));
+    }
+
+    #[test]
+    fn reviewer_task_carries_rereview_delta_protocol() {
+        let session = test_session(Some("chair"), "review_council");
+        let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"\n\nReview focus assignment:\n- rev1 → security";
+
+        let reviewer_text = recipient_text(&session, "rev1", trigger);
+
+        assert!(reviewer_text.contains("If an OpenAB Council verdict comment exists"));
+        assert!(reviewer_text.contains("read it and any author fix-note comments"));
+        assert!(reviewer_text
+            .contains("verify each open finding against the current head keeping its F-number"));
+        assert!(reviewer_text.contains("git merge-base --is-ancestor <reviewed-sha> HEAD"));
+        assert!(reviewer_text.contains("fall back to a full review"));
     }
 
     #[test]
