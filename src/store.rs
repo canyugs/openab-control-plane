@@ -37,7 +37,6 @@ pub struct BotInventory {
     pub role: String,
     pub provider: Option<String>,
     pub capabilities: Vec<String>,
-    pub connected: bool,
     pub enabled: bool,
     pub health: String,
     pub note: Option<String>,
@@ -161,7 +160,7 @@ pub trait Store: Send + Sync {
     /// Plaintext token, for serving /bot-config to a stock OAB pod (spike
     /// convenience; production injects the token via pre_seed/env, §6c).
     fn bot_token_plain(&self, id: &str) -> Result<Option<String>>;
-    fn set_connected(&self, bot_id: &str, connected: bool) -> Result<()>;
+    fn touch_last_seen(&self, bot_id: &str) -> Result<()>;
     fn list_bots(&self) -> Result<Vec<BotInventory>>;
     fn bot_inventory(&self, id: &str) -> Result<Option<BotInventory>>;
     fn discover_bot(
@@ -340,7 +339,7 @@ const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS bots (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
     token_hash TEXT NOT NULL, token_plain TEXT,
-    connected INTEGER NOT NULL DEFAULT 0, last_seen INTEGER,
+    last_seen INTEGER,
     provider TEXT, capabilities TEXT NOT NULL DEFAULT '[]',
     enabled INTEGER NOT NULL DEFAULT 1,
     health TEXT NOT NULL DEFAULT 'ok',
@@ -444,6 +443,7 @@ fn migrate(conn: &Connection) -> Result<()> {
         "ALTER TABLE bots ADD COLUMN source TEXT NOT NULL DEFAULT 'registered'",
         [],
     );
+    let _ = conn.execute("UPDATE bots SET connected = 0", []);
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_outbox_session_bot ON outbox(session_id, bot_id)",
         [],
@@ -531,14 +531,13 @@ fn map_bot_inventory(r: &rusqlite::Row<'_>) -> rusqlite::Result<BotInventory> {
         role: r.get(2)?,
         provider: r.get(3)?,
         capabilities: parse_capabilities(r.get(4)?),
-        connected: r.get::<_, i64>(5)? != 0,
-        enabled: r.get::<_, i64>(6)? != 0,
-        health: r.get(7)?,
-        note: r.get(8)?,
-        version: r.get(9)?,
-        runtime: parse_runtime(r.get(10)?),
-        last_seen_ms: r.get(11)?,
-        source: r.get(12)?,
+        enabled: r.get::<_, i64>(5)? != 0,
+        health: r.get(6)?,
+        note: r.get(7)?,
+        version: r.get(8)?,
+        runtime: parse_runtime(r.get(9)?),
+        last_seen_ms: r.get(10)?,
+        source: r.get(11)?,
     })
 }
 
@@ -700,11 +699,11 @@ impl Store for SqliteStore {
         Ok(bot)
     }
 
-    fn set_connected(&self, bot_id: &str, connected: bool) -> Result<()> {
+    fn touch_last_seen(&self, bot_id: &str) -> Result<()> {
         let c = self.conn.lock().unwrap();
         c.execute(
-            "UPDATE bots SET connected = ?2, last_seen = ?3 WHERE id = ?1",
-            params![bot_id, connected as i64, now_ms()],
+            "UPDATE bots SET last_seen = ?2 WHERE id = ?1",
+            params![bot_id, now_ms()],
         )?;
         Ok(())
     }
@@ -712,7 +711,7 @@ impl Store for SqliteStore {
     fn list_bots(&self) -> Result<Vec<BotInventory>> {
         let c = self.conn.lock().unwrap();
         let mut stmt = c.prepare(
-            "SELECT id, name, role, provider, capabilities, connected, enabled,
+            "SELECT id, name, role, provider, capabilities, enabled,
                     health, note, version, runtime, last_seen, source
              FROM bots
              ORDER BY id ASC",
@@ -727,7 +726,7 @@ impl Store for SqliteStore {
         let c = self.conn.lock().unwrap();
         let bot = c
             .query_row(
-                "SELECT id, name, role, provider, capabilities, connected, enabled,
+                "SELECT id, name, role, provider, capabilities, enabled,
                         health, note, version, runtime, last_seen, source
                  FROM bots
                  WHERE id = ?1",
@@ -1625,9 +1624,7 @@ mod tests {
         let journal_mode: String = c
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .unwrap();
-        let synchronous: i64 = c
-            .query_row("PRAGMA synchronous", [], |r| r.get(0))
-            .unwrap();
+        let synchronous: i64 = c.query_row("PRAGMA synchronous", [], |r| r.get(0)).unwrap();
 
         assert_eq!(journal_mode, "wal");
         assert_eq!(synchronous, 1);
@@ -1651,10 +1648,7 @@ mod tests {
         let rows = stmt
             .query_map(params!["session-1"], |r| r.get::<_, String>(3))
             .unwrap();
-        let plan = rows
-            .map(|r| r.unwrap())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let plan = rows.map(|r| r.unwrap()).collect::<Vec<_>>().join("\n");
 
         assert!(
             plan.contains("USING INDEX idx_messages_session"),
@@ -1687,6 +1681,40 @@ mod tests {
             .unwrap();
 
         assert_eq!(index_count, 1);
+
+        drop(c);
+        drop(store);
+        remove_db_files(&PathBuf::from(path));
+    }
+
+    #[test]
+    fn migrate_zeroes_legacy_connected_flag() {
+        let path = temp_db_path("migrate-zeroes-legacy-connected-flag");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE bots (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
+                    token_hash TEXT NOT NULL, token_plain TEXT,
+                    connected INTEGER NOT NULL DEFAULT 0, last_seen INTEGER
+                );
+                INSERT INTO bots (id, name, role, token_hash, token_plain, connected, last_seen)
+                VALUES ('bot_legacy', 'legacy', 'reviewer', 'h', 't', 1, 123);",
+            )
+            .unwrap();
+        }
+
+        let store = SqliteStore::open(&path).unwrap();
+        let c = store.conn.lock().unwrap();
+        let connected: i64 = c
+            .query_row(
+                "SELECT connected FROM bots WHERE id = 'bot_legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(connected, 0);
 
         drop(c);
         drop(store);

@@ -261,7 +261,6 @@ impl AppState {
         self.flush_outbox(bot_id)
     }
 
-    #[cfg(test)]
     pub fn is_connected(&self, bot_id: &str) -> bool {
         // unregister_conn removes a bot's entry the moment its stack empties, so
         // "present" == "has a live conn" — no need to also check non-empty (#100 F4).
@@ -299,7 +298,10 @@ mod tests {
             !state.unregister_conn("bot_a", gen0),
             "a live newer conn remains → must report bot still connected"
         );
-        assert!(state.is_connected("bot_a"), "newer connection wrongly evicted");
+        assert!(
+            state.is_connected("bot_a"),
+            "newer connection wrongly evicted"
+        );
         // Last connection drops: stack now empty → returns true → ws.rs marks offline.
         assert!(
             state.unregister_conn("bot_a", gen1),
@@ -319,12 +321,15 @@ mod tests {
         let (tx1, _rx1) = mpsc::unbounded_channel();
         let _gen0 = state.register_conn("bot_a", tx0); // survivor pod, connects first
         let gen1 = state.register_conn("bot_a", tx1); // doomed pod, connects second (current)
-        // doomed conn dies while survivor is still live → not fully offline.
+                                                      // doomed conn dies while survivor is still live → not fully offline.
         assert!(
             !state.unregister_conn("bot_a", gen1),
             "surviving older conn remains → bot must stay connected"
         );
-        assert!(state.is_connected("bot_a"), "survivor wrongly evicted → zombie");
+        assert!(
+            state.is_connected("bot_a"),
+            "survivor wrongly evicted → zombie"
+        );
         // Messages now route to the promoted survivor (tx0), not the dead conn.
         assert!(
             state.send_to_bot("bot_a", "ping".into()),

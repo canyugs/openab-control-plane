@@ -40,7 +40,7 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
     let last_activity = Arc::new(AtomicI64::new(crate::store::now_ms()));
 
     let conn_gen = state.register_conn(&bot_id, tx);
-    let _ = state.store.set_connected(&bot_id, true);
+    let _ = state.store.touch_last_seen(&bot_id);
     // Liveness recovery: a reconnected bot is healthy again. Only unwind the
     // sweep's own `unreachable` flip — never an operator-set health value.
     if let Ok(Some(inv)) = state.store.bot_inventory(&bot_id) {
@@ -148,7 +148,7 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
     // abort it now that the conn is off the stack.
     send_task.abort();
     if fully_offline {
-        let _ = state.store.set_connected(&bot_id, false);
+        let _ = state.store.touch_last_seen(&bot_id);
         tracing::info!("bot {bot_id} disconnected (gen {conn_gen})");
     } else {
         // Another connection for this bot is still live (double-connect overlap).
@@ -157,6 +157,8 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
         // instead of stranding on the socket that just died. This is the C8 fix:
         // the surviving pod is promoted back to current, no zombie, no reset.
         state.flush_outbox(&bot_id);
-        tracing::info!("bot {bot_id} connection closed (gen {conn_gen}); still live on another conn");
+        tracing::info!(
+            "bot {bot_id} connection closed (gen {conn_gen}); still live on another conn"
+        );
     }
 }
