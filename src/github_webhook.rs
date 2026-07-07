@@ -37,6 +37,11 @@ pub struct WebhookTrigger {
     /// "auto" for a PR-opened trigger, `/review` for a review command, or `"ask"` for a
     /// conversational follow-up (`@mention` / `/ask`, ADR 011).
     pub reason: String,
+    /// App-opaque supersede fingerprint. Equal non-NULL values dedupe; different
+    /// or NULL values supersede on the review path.
+    pub trigger_fingerprint: Option<String>,
+    /// True only for pull_request.synchronize, where the hourly auto-cap applies.
+    pub is_synchronize: bool,
     /// Review preset from a `review:<preset>` label on the PR, read straight from the
     /// webhook payload (no GitHub call). `None` → convene falls back to the global
     /// env / default. Lets a PR pick its own review depth (lite|quick|standard|full).
@@ -170,6 +175,8 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                 pr_url: pr["url"].as_str()?.to_string(),
                 installation_id,
                 reason: "auto".into(),
+                trigger_fingerprint: pr["head"]["sha"].as_str().map(|sha| format!("sha:{sha}")),
+                is_synchronize: action == "synchronize",
                 preset: preset_from_labels(&pr["labels"]),
                 question: None,
                 comment_id: None,
@@ -182,6 +189,9 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
             // An issue is a PR only when it carries a `pull_request` node — comments
             // on plain issues must not open a review session.
             let pr_url = body["issue"]["pull_request"]["url"].as_str()?;
+            if body["comment"]["user"]["type"].as_str() == Some("Bot") {
+                return None;
+            }
             let comment = body["comment"]["body"].as_str().unwrap_or("");
             let repo = body["repository"]["full_name"].as_str()?.to_string();
             let pr_number = body["issue"]["number"].as_u64()?;
@@ -199,9 +209,13 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                     // Normalized to a fixed value — never reflect raw comment text into
                     // logs / north events.
                     reason: "/review".into(),
+                    trigger_fingerprint: body["comment"]["id"]
+                        .as_u64()
+                        .map(|id| format!("cmd:{id}")),
+                    is_synchronize: false,
                     preset: preset_from_labels(&body["issue"]["labels"]),
                     question: None,
-                    comment_id: None,
+                    comment_id: body["comment"]["id"].as_u64(),
                 });
             }
             // Conversational follow-up (ADR 011): `/ask` or an `@mention` of the bot,
@@ -218,6 +232,10 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                     pr_url: pr_url.to_string(),
                     installation_id,
                     reason: "ask".into(),
+                    trigger_fingerprint: body["comment"]["id"]
+                        .as_u64()
+                        .map(|id| format!("cmd:{id}")),
+                    is_synchronize: false,
                     preset: None,
                     question: Some(question),
                     comment_id: body["comment"]["id"].as_u64(),
@@ -330,29 +348,49 @@ pub async fn handle_webhook(
 
     // 6. Review path: convene a council for this PR (pointer trigger; bots self-fetch).
     let trigger_ref = crate::council::pr_trigger_ref(&trigger.repo, trigger.pr_number);
-
-    // Idempotency: GitHub re-delivers on 5xx (and a PR can get repeated `/review`s).
-    // If a council is already open for this PR, return it instead of convening a dup.
-    if let Some(existing) = state
-        .store
-        .active_session_for_trigger(&trigger_ref)
+    match crate::council::check_review_admission(&state, &trigger_ref, trigger.is_synchronize)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
-        return Ok(Json(
-            json!({ "ok": true, "triggered": true, "session_id": existing, "deduped": true }),
-        )
-        .into_response());
+        crate::council::ReviewAdmission::Allow => {}
+        crate::council::ReviewAdmission::Deduped { session_id, reason } => {
+            return Ok(Json(json!({
+                "ok": true,
+                "triggered": true,
+                "session_id": session_id,
+                "deduped": true,
+                "reason": reason,
+            }))
+            .into_response());
+        }
+        crate::council::ReviewAdmission::Refused { session_id, reason } => {
+            return Ok(Json(json!({
+                "ok": true,
+                "triggered": false,
+                "session_id": session_id,
+                "refused": true,
+                "reason": reason,
+            }))
+            .into_response());
+        }
     }
 
+    // GitHub does not guarantee cross-delivery ordering and the plane deliberately
+    // makes no ancestry call here. A late older synchronize can supersede a newer
+    // round; the next trigger re-supersedes, and the reviewed-head label makes the
+    // stale verdict visible until a payload-only recency rule exists.
     match crate::council::convene_for_pr(
         &state,
         &trigger.repo,
         trigger.pr_number,
         trigger.preset.clone(),
+        trigger.trigger_fingerprint.clone(),
     )
     .await
     {
-        Ok(session_id) => {
+        Ok(crate::controller::ControllerActionResult::SessionOpened {
+            session_id,
+            deduped,
+        }) => {
             state.emit_north(
                 "github_trigger",
                 &session_id,
@@ -369,10 +407,42 @@ pub async fn handle_webhook(
                 pr = trigger.pr_number, reason = %trigger.reason,
                 "convened council from GitHub webhook"
             );
-            Ok(
-                Json(json!({ "ok": true, "triggered": true, "session_id": session_id }))
-                    .into_response(),
-            )
+            Ok(Json(json!({
+                "ok": true,
+                "triggered": true,
+                "session_id": session_id,
+                "deduped": deduped,
+            }))
+            .into_response())
+        }
+        Ok(crate::controller::ControllerActionResult::Superseded { session_id, old_id }) => {
+            crate::orchestrator::handle_superseded_session(&state, &old_id);
+            state.emit_north(
+                "github_trigger",
+                &session_id,
+                json!({
+                    "repo": trigger.repo,
+                    "pr_number": trigger.pr_number,
+                    "pr_url": trigger.pr_url,
+                    "installation_id": trigger.installation_id,
+                    "reason": trigger.reason,
+                    "superseded": old_id,
+                }),
+            );
+            tracing::info!(
+                session = %session_id, old_session = %old_id, repo = %trigger.repo,
+                pr = trigger.pr_number, reason = %trigger.reason,
+                "superseded council from GitHub webhook"
+            );
+            Ok(Json(json!({
+                "ok": true,
+                "triggered": true,
+                "session_id": session_id,
+                "deduped": false,
+                "superseded": true,
+                "old_session_id": old_id,
+            }))
+            .into_response())
         }
         Err(e) => {
             // 500 lets GitHub retry a transient failure (the idempotency check above
@@ -386,11 +456,96 @@ pub async fn handle_webhook(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::AppState;
+    use crate::store::{SessionState, SqliteStore, Store};
+    use axum::body::{to_bytes, Bytes};
+    use axum::extract::State;
+    use axum::http::{HeaderMap, HeaderValue, StatusCode};
+    use std::sync::Arc;
 
     fn sign(secret: &str, body: &[u8]) -> String {
         let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
         mac.update(body);
         format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
+    }
+
+    fn restore_env(key: &str, old: Option<String>) {
+        match old {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    fn state_with_review_bots() -> Arc<AppState> {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        store
+            .seed_bot("chair", "chair", "chair", "h1", "t1")
+            .unwrap();
+        store
+            .seed_bot("rev1", "rev1", "reviewer", "h2", "t2")
+            .unwrap();
+        store
+            .seed_bot("rev2", "rev2", "reviewer", "h3", "t3")
+            .unwrap();
+        AppState::new_with_options(
+            store,
+            None,
+            None,
+            Some("secret".into()),
+            None,
+            "http://control-plane.test".into(),
+            None,
+        )
+    }
+
+    fn synchronize_payload(sha: &str) -> Value {
+        json!({
+            "action": "synchronize",
+            "installation": { "id": 99 },
+            "repository": { "full_name": "o/r" },
+            "pull_request": {
+                "number": 7,
+                "url": "https://api.github.com/repos/o/r/pulls/7",
+                "draft": false,
+                "head": { "sha": sha },
+                "labels": []
+            }
+        })
+    }
+
+    fn review_comment_payload(comment_id: u64) -> Value {
+        json!({
+            "action": "created",
+            "installation": { "id": 99 },
+            "repository": { "full_name": "o/r" },
+            "issue": {
+                "number": 7,
+                "pull_request": { "url": "https://api.github.com/repos/o/r/pulls/7" },
+                "labels": []
+            },
+            "comment": {
+                "id": comment_id,
+                "body": "/review please",
+                "author_association": "MEMBER",
+                "user": { "type": "User" }
+            }
+        })
+    }
+
+    async fn post_webhook(state: Arc<AppState>, event: &str, payload: Value) -> Value {
+        let body = serde_json::to_vec(&payload).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-github-event", HeaderValue::from_str(event).unwrap());
+        headers.insert(
+            "x-hub-signature-256",
+            HeaderValue::from_str(&sign("secret", &body)).unwrap(),
+        );
+        let response = handle_webhook(State(state), headers, Bytes::from(body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
     }
 
     #[test]
@@ -423,6 +578,7 @@ mod tests {
         assert_eq!(t.pr_number, 7);
         assert_eq!(t.installation_id, Some(99));
         assert_eq!(t.reason, "auto");
+        assert_eq!(t.trigger_fingerprint.as_deref(), None);
         assert_eq!(t.preset, None); // no review:<preset> label
     }
 
@@ -438,6 +594,7 @@ mod tests {
         assert_eq!(t.repo, "canyugs/ocp");
         assert_eq!(t.pr_number, 7);
         assert_eq!(t.reason, "auto");
+        assert_eq!(t.trigger_fingerprint.as_deref(), None);
     }
 
     #[test]
@@ -531,6 +688,21 @@ mod tests {
         let t = parse_trigger("issue_comment", &body).expect("should trigger");
         assert_eq!(t.pr_number, 12);
         assert_eq!(t.reason, "/review");
+    }
+
+    #[test]
+    fn review_arm_captures_comment_id_fingerprint() {
+        let t = parse_trigger("issue_comment", &review_comment_payload(4242)).unwrap();
+        assert_eq!(t.comment_id, Some(4242));
+        assert_eq!(t.trigger_fingerprint.as_deref(), Some("cmd:4242"));
+    }
+
+    #[test]
+    fn bot_author_comment_is_ignored() {
+        let mut body = review_comment_payload(4243);
+        body["comment"]["user"]["type"] = json!("Bot");
+
+        assert!(parse_trigger("issue_comment", &body).is_none());
     }
 
     #[test]
@@ -662,5 +834,155 @@ mod tests {
         assert_eq!(t.pr_number, 12);
         // a non-write commenter's /ask is ignored (token-spend gate)
         assert!(parse_trigger("issue_comment", &body("NONE")).is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn synchronize_supersedes_active_review_session() {
+        let _guard = crate::council::review_policy_env_lock().lock().await;
+        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
+        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
+        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
+        std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
+
+        let state = state_with_review_bots();
+        let first = post_webhook(state.clone(), "pull_request", synchronize_payload("old")).await;
+        let old_id = first["session_id"].as_str().unwrap().to_string();
+        let mut north = state.north_tx.subscribe();
+
+        let second = post_webhook(state.clone(), "pull_request", synchronize_payload("new")).await;
+        let new_id = second["session_id"].as_str().unwrap().to_string();
+
+        assert_ne!(new_id, old_id);
+        assert_eq!(second["superseded"], json!(true));
+        assert_eq!(
+            SessionState::from_db_str(&state.store.session(&old_id).unwrap().unwrap().state),
+            SessionState::Closed
+        );
+        assert_eq!(
+            state
+                .store
+                .active_session_for_trigger("github:pr/o/r#7")
+                .unwrap()
+                .as_deref(),
+            Some(new_id.as_str())
+        );
+        let events = std::iter::from_fn(|| north.try_recv().ok())
+            .map(|raw| serde_json::from_str::<Value>(&raw).unwrap())
+            .collect::<Vec<_>>();
+        assert!(events.iter().any(|event| {
+            event["type"] == "state"
+                && event["session_id"] == old_id
+                && event["payload"]["state"] == "closed"
+                && event["payload"]["reason"] == "superseded"
+        }));
+
+        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
+        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn redelivered_same_head_sha_dedupes() {
+        let _guard = crate::council::review_policy_env_lock().lock().await;
+        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
+        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
+        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
+        std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
+
+        let state = state_with_review_bots();
+        let first = post_webhook(state.clone(), "pull_request", synchronize_payload("same")).await;
+        let first_id = first["session_id"].as_str().unwrap().to_string();
+
+        let second = post_webhook(state.clone(), "pull_request", synchronize_payload("same")).await;
+
+        assert_eq!(second["session_id"].as_str(), Some(first_id.as_str()));
+        assert_eq!(second["deduped"], json!(true));
+        assert_eq!(state.store.messages(&first_id).unwrap().len(), 1);
+
+        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
+        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn hourly_cap_dedupes_synchronize_but_explicit_review_bypasses() {
+        let _guard = crate::council::review_policy_env_lock().lock().await;
+        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
+        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
+        std::env::set_var("OABCP_REVIEW_HOURLY_CAP", "1");
+        std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
+
+        let state = state_with_review_bots();
+        let first = post_webhook(state.clone(), "pull_request", synchronize_payload("one")).await;
+        let first_id = first["session_id"].as_str().unwrap().to_string();
+
+        let capped = post_webhook(state.clone(), "pull_request", synchronize_payload("two")).await;
+        assert_eq!(capped["session_id"].as_str(), Some(first_id.as_str()));
+        assert_eq!(capped["deduped"], json!(true));
+        assert_eq!(capped["reason"], "hourly_cap");
+        assert_ne!(
+            SessionState::from_db_str(&state.store.session(&first_id).unwrap().unwrap().state),
+            SessionState::Closed
+        );
+
+        let explicit =
+            post_webhook(state.clone(), "issue_comment", review_comment_payload(9001)).await;
+        let explicit_id = explicit["session_id"].as_str().unwrap().to_string();
+        assert_ne!(explicit_id, first_id);
+        assert_eq!(explicit["superseded"], json!(true));
+        assert_eq!(
+            SessionState::from_db_str(&state.store.session(&first_id).unwrap().unwrap().state),
+            SessionState::Closed
+        );
+
+        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
+        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn round_budget_refuses_all_paths_leaving_live_round_active() {
+        let _guard = crate::council::review_policy_env_lock().lock().await;
+        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
+        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
+        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
+        std::env::set_var("OABCP_REVIEW_ROUND_BUDGET", "1");
+
+        let state = state_with_review_bots();
+        let first = post_webhook(state.clone(), "pull_request", synchronize_payload("one")).await;
+        let first_id = first["session_id"].as_str().unwrap().to_string();
+        let mut north = state.north_tx.subscribe();
+
+        let auto_refused =
+            post_webhook(state.clone(), "pull_request", synchronize_payload("two")).await;
+        assert_eq!(auto_refused["triggered"], json!(false));
+        assert_eq!(auto_refused["refused"], json!(true));
+        assert_eq!(auto_refused["reason"], "round_budget");
+        assert_eq!(
+            state
+                .store
+                .active_session_for_trigger("github:pr/o/r#7")
+                .unwrap()
+                .as_deref(),
+            Some(first_id.as_str())
+        );
+
+        let explicit_refused =
+            post_webhook(state.clone(), "issue_comment", review_comment_payload(9002)).await;
+        assert_eq!(explicit_refused["triggered"], json!(false));
+        assert_eq!(explicit_refused["refused"], json!(true));
+        assert_eq!(explicit_refused["reason"], "round_budget");
+        assert_ne!(
+            SessionState::from_db_str(&state.store.session(&first_id).unwrap().unwrap().state),
+            SessionState::Closed
+        );
+        let events = std::iter::from_fn(|| north.try_recv().ok())
+            .map(|raw| serde_json::from_str::<Value>(&raw).unwrap())
+            .collect::<Vec<_>>();
+        assert!(events.iter().any(|event| {
+            event["type"] == "github_review_refused"
+                && event["session_id"] == first_id
+                && event["payload"]["reason"] == "round_budget"
+        }));
+
+        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
+        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
     }
 }

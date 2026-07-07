@@ -464,6 +464,8 @@ struct OpenSession {
     #[serde(default)]
     trigger_ref: Option<String>,
     #[serde(default)]
+    trigger_fingerprint: Option<String>,
+    #[serde(default)]
     roster: Vec<String>,
     quorum_n: i64,
     #[serde(default)]
@@ -482,9 +484,13 @@ async fn open_session(
     Json(req): Json<OpenSession>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     check_auth(&state, &headers).map_err(error_status)?;
+    let trigger_fingerprint = req
+        .trigger_fingerprint
+        .or_else(|| req.trigger_ref.as_ref().cloned());
     let action = OpenSessionAction {
         title: req.title,
         trigger_ref: req.trigger_ref,
+        trigger_fingerprint,
         roster: req.roster,
         quorum_n: req.quorum_n,
         chair_bot: req.chair_bot,
@@ -498,6 +504,15 @@ async fn open_session(
         }) => Ok(Json(
             json!({ "session_id": session_id, "deduped": deduped }),
         )),
+        Ok(ControllerActionResult::Superseded { session_id, old_id }) => {
+            orchestrator::handle_superseded_session(&state, &old_id);
+            Ok(Json(json!({
+                "session_id": session_id,
+                "deduped": false,
+                "superseded": true,
+                "old_session_id": old_id,
+            })))
+        }
         Err(ControllerError::Invalid(message)) => {
             Err((StatusCode::BAD_REQUEST, Json(json!({ "error": message }))))
         }
@@ -1318,7 +1333,8 @@ struct ReviewReq {
 
 /// Convene a council to review a PR — the north REST primitive a droppable GitHub
 /// Action (or any CI) calls. Same convene path as the webhook (pointer trigger, bots
-/// self-fetch); idempotent (re-runs dedup to the open council for that PR).
+/// self-fetch). REST has no GitHub-redelivery fingerprint, so each accepted call
+/// intentionally supersedes an active review for the PR.
 async fn review_pr(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1326,17 +1342,46 @@ async fn review_pr(
 ) -> Result<axum::response::Response, StatusCode> {
     check_auth(&state, &headers)?;
     let trigger_ref = crate::council::pr_trigger_ref(&req.repo, req.pr);
-    if let Some(existing) = state
-        .store
-        .active_session_for_trigger(&trigger_ref)
+    match crate::council::check_review_admission(&state, &trigger_ref, false)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
-        return Ok(Json(json!({ "session_id": existing, "deduped": true })).into_response());
+        crate::council::ReviewAdmission::Allow => {}
+        crate::council::ReviewAdmission::Deduped { session_id, reason } => {
+            return Ok(Json(
+                json!({ "session_id": session_id, "deduped": true, "reason": reason }),
+            )
+            .into_response());
+        }
+        crate::council::ReviewAdmission::Refused { session_id, reason } => {
+            return Ok(Json(json!({
+                "session_id": session_id,
+                "triggered": false,
+                "refused": true,
+                "reason": reason,
+            }))
+            .into_response());
+        }
     }
-    let sid = crate::council::convene_for_pr(&state, &req.repo, req.pr, req.preset)
+
+    let result = crate::council::convene_for_pr(&state, &req.repo, req.pr, req.preset, None)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(json!({ "session_id": sid })).into_response())
+    match result {
+        ControllerActionResult::SessionOpened {
+            session_id,
+            deduped,
+        } => Ok(Json(json!({ "session_id": session_id, "deduped": deduped })).into_response()),
+        ControllerActionResult::Superseded { session_id, old_id } => {
+            orchestrator::handle_superseded_session(&state, &old_id);
+            Ok(Json(json!({
+                "session_id": session_id,
+                "deduped": false,
+                "superseded": true,
+                "old_session_id": old_id,
+            }))
+            .into_response())
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1358,15 +1403,21 @@ async fn github_token(
     Json(req): Json<GithubTokenReq>,
 ) -> Result<axum::response::Response, StatusCode> {
     check_auth(&state, &headers)?;
-    let Some(app) = state.github_app.as_ref() else {
-        // PAT mode — no App provisioned yet. The pod keeps using the shared GH_TOKEN.
-        return Err(StatusCode::NOT_IMPLEMENTED);
-    };
-    state
+    let session = state
         .store
         .session(&id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
+    if matches!(
+        crate::store::SessionState::from_db_str(&session.state),
+        crate::store::SessionState::Closed | crate::store::SessionState::Aborted
+    ) {
+        return Err(StatusCode::GONE);
+    }
+    let Some(app) = state.github_app.as_ref() else {
+        // PAT mode — no App provisioned yet. The pod keeps using the shared GH_TOKEN.
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    };
     // Authoritative from the bot record — the request carries no role.
     let bot = state
         .store
@@ -1452,10 +1503,12 @@ mod tests {
     };
     use crate::state::AppState;
     use crate::store::now_ms;
-    use crate::store::{SqliteStore, Store};
+    use crate::store::{SessionState, SqliteStore, Store};
     use axum::body::to_bytes;
     use axum::extract::{Path, Query, State};
+    use axum::http::{HeaderMap, StatusCode};
     use axum::response::IntoResponse;
+    use axum::Json;
     use futures::StreamExt;
     use serde_json::{json, Value};
     use std::sync::Arc;
@@ -1470,6 +1523,115 @@ mod tests {
             "ts": now_ms(),
         })
         .to_string()
+    }
+
+    fn state_with_review_bots() -> Arc<AppState> {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        store
+            .seed_bot("chair", "chair", "chair", "h1", "t1")
+            .unwrap();
+        store
+            .seed_bot("rev1", "rev1", "reviewer", "h2", "t2")
+            .unwrap();
+        store
+            .seed_bot("rev2", "rev2", "reviewer", "h3", "t3")
+            .unwrap();
+        AppState::new_with_options(
+            store,
+            None,
+            None,
+            None,
+            None,
+            "http://control-plane.test".into(),
+            None,
+        )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn review_endpoint_always_supersedes() {
+        let _guard = crate::council::review_policy_env_lock().lock().await;
+        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
+        std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
+        let state = state_with_review_bots();
+
+        let first = super::review_pr(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(super::ReviewReq {
+                repo: "o/r".into(),
+                pr: 12,
+                preset: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let first_body = to_bytes(first.into_body(), 1024 * 1024).await.unwrap();
+        let first_json: Value = serde_json::from_slice(&first_body).unwrap();
+        let first_id = first_json["session_id"].as_str().unwrap().to_string();
+
+        let second = super::review_pr(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(super::ReviewReq {
+                repo: "o/r".into(),
+                pr: 12,
+                preset: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let second_body = to_bytes(second.into_body(), 1024 * 1024).await.unwrap();
+        let second_json: Value = serde_json::from_slice(&second_body).unwrap();
+        let second_id = second_json["session_id"].as_str().unwrap().to_string();
+
+        assert_ne!(second_id, first_id);
+        assert_eq!(second_json["superseded"], json!(true));
+        assert_eq!(second_json["old_session_id"], first_id);
+        assert_eq!(
+            SessionState::from_db_str(&state.store.session(&first_id).unwrap().unwrap().state),
+            SessionState::Closed
+        );
+    }
+
+    #[tokio::test]
+    async fn github_token_refused_for_closed_session() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        store
+            .seed_bot("chair", "chair", "chair", "h1", "t1")
+            .unwrap();
+        let session = store
+            .create_session(
+                "closed",
+                Some("github:pr/o/r#9"),
+                0,
+                Some("chair"),
+                &["chair".into()],
+                "solo",
+            )
+            .unwrap();
+        store.set_state(&session.id, SessionState::Closed).unwrap();
+        let state = AppState::new_with_options(
+            store,
+            None,
+            None,
+            None,
+            None,
+            "http://control-plane.test".into(),
+            None,
+        );
+
+        let err = super::github_token(
+            State(state),
+            HeaderMap::new(),
+            Path(session.id),
+            Json(super::GithubTokenReq {
+                bot_id: "chair".into(),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, StatusCode::GONE);
     }
 
     #[tokio::test]

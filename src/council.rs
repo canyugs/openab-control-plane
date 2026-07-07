@@ -24,6 +24,124 @@ pub fn pr_trigger_ref(repo: &str, num: u64) -> String {
     format!("github:pr/{repo}#{num}")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewAdmission {
+    Allow,
+    Deduped {
+        session_id: String,
+        reason: String,
+    },
+    Refused {
+        session_id: Option<String>,
+        reason: String,
+    },
+}
+
+#[cfg(test)]
+pub(crate) fn review_policy_env_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn emit_review_refusal(
+    state: &Arc<AppState>,
+    session_id: Option<&str>,
+    trigger_ref: &str,
+    reason: &str,
+    count: usize,
+    limit: usize,
+) {
+    state.emit_north(
+        "github_review_refused",
+        session_id.unwrap_or("-"),
+        serde_json::json!({
+            "trigger_ref": trigger_ref,
+            "reason": reason,
+            "count": count,
+            "limit": limit,
+        }),
+    );
+}
+
+/// Review cost valves. Checked before the supersede txn so a refusal never closes
+/// the active round. Hourly caps only auto `synchronize`; explicit commands bypass
+/// that cap but all review paths obey the per-PR round budget.
+pub fn check_review_admission(
+    state: &Arc<AppState>,
+    trigger_ref: &str,
+    is_synchronize: bool,
+) -> Result<ReviewAdmission> {
+    let hourly_cap = env_usize("OABCP_REVIEW_HOURLY_CAP", 3);
+    let round_budget = env_usize("OABCP_REVIEW_ROUND_BUDGET", 10);
+    let limit = hourly_cap.max(round_budget).max(1);
+    let sessions = state.store.list_sessions(Some(trigger_ref), None, limit)?;
+    let active = state.store.active_session_for_trigger(trigger_ref)?;
+
+    if round_budget == 0 || sessions.len() >= round_budget {
+        tracing::warn!(
+            trigger_ref,
+            count = sessions.len(),
+            limit = round_budget,
+            "review round budget exhausted; refusing convene"
+        );
+        emit_review_refusal(
+            state,
+            active.as_deref(),
+            trigger_ref,
+            "round_budget",
+            sessions.len(),
+            round_budget,
+        );
+        return Ok(ReviewAdmission::Refused {
+            session_id: active,
+            reason: "round_budget".into(),
+        });
+    }
+
+    if is_synchronize {
+        let cutoff = crate::store::now_ms() - 60 * 60 * 1000;
+        let hourly = sessions
+            .iter()
+            .filter(|session| session.created_at >= cutoff)
+            .count();
+        if hourly_cap == 0 || hourly >= hourly_cap {
+            tracing::warn!(
+                trigger_ref,
+                count = hourly,
+                limit = hourly_cap,
+                "review hourly cap reached; deduping synchronize"
+            );
+            emit_review_refusal(
+                state,
+                active.as_deref(),
+                trigger_ref,
+                "hourly_cap",
+                hourly,
+                hourly_cap,
+            );
+            return match active {
+                Some(session_id) => Ok(ReviewAdmission::Deduped {
+                    session_id,
+                    reason: "hourly_cap".into(),
+                }),
+                None => Ok(ReviewAdmission::Refused {
+                    session_id: None,
+                    reason: "hourly_cap".into(),
+                }),
+            };
+        }
+    }
+
+    Ok(ReviewAdmission::Allow)
+}
+
 /// Env/default standing council roster (`OABCP_COUNCIL_ROSTER`, comma-separated;
 /// default matches the seeded `OABCP_BOTS`). `roster[0]` is the chair; the rest
 /// review. A runtime DB override may replace this via `runtime_council_roster`.
@@ -157,11 +275,17 @@ pub async fn convene_for_pr(
     repo: &str,
     num: u64,
     label_preset: Option<String>,
-) -> Result<String> {
+    trigger_fingerprint: Option<String>,
+) -> Result<ControllerActionResult> {
     let (roster, _) = runtime_council_roster(state)?;
-    let action = review_open_session_action_with_roster(repo, num, label_preset, roster)?;
-    let result = controller::execute(state, ControllerAction::OpenSession(action))?;
-    Ok(session_id(result))
+    let action = review_open_session_action_with_roster_and_fingerprint(
+        repo,
+        num,
+        label_preset,
+        roster,
+        trigger_fingerprint,
+    )?;
+    controller::execute(state, ControllerAction::OpenSession(action)).map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -173,11 +297,28 @@ fn review_open_session_action(
     review_open_session_action_with_roster(repo, num, label_preset, council_roster())
 }
 
+#[cfg(test)]
 fn review_open_session_action_with_roster(
     repo: &str,
     num: u64,
     label_preset: Option<String>,
     roster: Vec<String>,
+) -> Result<OpenSessionAction> {
+    review_open_session_action_with_roster_and_fingerprint(
+        repo,
+        num,
+        label_preset,
+        roster,
+        Some(pr_trigger_ref(repo, num)),
+    )
+}
+
+fn review_open_session_action_with_roster_and_fingerprint(
+    repo: &str,
+    num: u64,
+    label_preset: Option<String>,
+    roster: Vec<String>,
+    trigger_fingerprint: Option<String>,
 ) -> Result<OpenSessionAction> {
     if roster.is_empty() {
         return Err(anyhow!("empty council roster"));
@@ -205,6 +346,7 @@ fn review_open_session_action_with_roster(
     Ok(OpenSessionAction {
         title: "council".into(),
         trigger_ref: Some(trigger_ref),
+        trigger_fingerprint,
         roster: eff_roster,
         quorum_n: quorum,
         chair_bot: Some(chair_bot),
@@ -271,7 +413,8 @@ fn ask_open_session_action_with_roster(
     let trigger = render_ask_trigger(repo, num, question);
     Ok(OpenSessionAction {
         title: "ask".into(),
-        trigger_ref: Some(trigger_ref),
+        trigger_ref: Some(trigger_ref.clone()),
+        trigger_fingerprint: Some(trigger_ref),
         roster: std::slice::from_ref(&chair).to_vec(),
         quorum_n: 0,
         chair_bot: Some(chair),
@@ -283,6 +426,7 @@ fn ask_open_session_action_with_roster(
 fn session_id(result: ControllerActionResult) -> String {
     match result {
         ControllerActionResult::SessionOpened { session_id, .. } => session_id,
+        ControllerActionResult::Superseded { session_id, .. } => session_id,
     }
 }
 

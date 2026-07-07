@@ -331,6 +331,29 @@ fn purge_session_outbox_after_close(state: &Arc<AppState>, session_id: &str) {
     }
 }
 
+/// Post-commit cleanup for a session closed by `create_session_superseding`.
+/// The close+open itself is atomic in the store; these effects are deliberately
+/// after-commit and at-least-once. Crash window: if the process dies here, scoped
+/// GitHub tokens live until expiry, stale outbox rows wait for the terminal-outbox
+/// sweep, and `reason:"superseded"` events/webhooks are lost because there is no
+/// redrive in the pre-P3 plane.
+pub fn handle_superseded_session(state: &Arc<AppState>, session_id: &str) {
+    purge_session_outbox_after_close(state, session_id);
+    if let Err(e) = crate::identity::revoke_session_github_tokens(
+        state.store.as_ref(),
+        state.github_app.as_ref(),
+        session_id,
+    ) {
+        tracing::warn!("revoke github tokens for {session_id} failed: {e}");
+    }
+    state.emit_north(
+        "state",
+        session_id,
+        json!({ "state": "closed", "reason": "superseded" }),
+    );
+    fire_close_webhook(state, session_id, "", "superseded");
+}
+
 /// Liveness policy (A3): a roster member disconnected past the grace window is
 /// flipped to `unreachable`, then replaced from the inventory (connected, healthy,
 /// same-role spare). With no spare, a reviewer that hasn't voted is trimmed and
@@ -1545,6 +1568,7 @@ mod tests {
             title: "t".into(),
             state: "deliberating".into(),
             trigger_ref: None,
+            trigger_fingerprint: None,
             quorum_n: 1,
             chair_bot: chair.map(str::to_string),
             created_at: 0,
