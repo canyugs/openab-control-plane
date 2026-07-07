@@ -91,6 +91,17 @@ Post exactly one reviewer verdict. After a message ending in `[done]`, do not
 send follow-up findings, clarifications, or duplicate verdicts unless OCP opens a
 new session.
 
+Re-review protocol: if an OpenAB Council verdict comment exists on the PR (a
+comment whose body starts with `<!-- openab-council -->`), read it and any
+author fix-note comments before reviewing. Parse its `Reviewed at <sha>` line
+and open F-numbered findings. After checkout, run
+`git merge-base --is-ancestor <reviewed-sha> HEAD`; if that fails, the prior SHA
+is unreachable or rebased away, so fall back to a full review and say so in your
+reviewer report. If it succeeds, verify each open finding against the current
+head keeping its F-number, consider claimed fixes from author notes, and scope
+new analysis to the delta since the `Reviewed at` SHA. Do not re-raise a prior
+Resolved finding.
+
 Use this reviewer format:
 
 ```markdown
@@ -113,39 +124,79 @@ security, data loss, or broken workflow blockers; `🟡` for non-blocking issues
 
 ## Chair
 
-The chair is the only GitHub writer. Maintain exactly one PR comment.
+The chair is the only GitHub writer. Maintain the council PR comment.
+Every council-owned PR comment body must start with this exact first line:
+
+```markdown
+<!-- openab-council -->
+```
+
+Before any `--edit-last`, list your own PR comments and verify that the most
+recent one starts with `<!-- openab-council -->`. If the most recent own comment
+is missing, is not visible, or does not start with the marker (for example, a
+`/ask` answer was posted after the verdict), do not use `--edit-last`; post a
+new marked comment instead.
 
 Opening turn:
 
 1. Write `/tmp/verdict.md` with this body:
 
    ```markdown
+   <!-- openab-council -->
    OpenAB Council review started.
 
    The council is reviewing this PR. This comment will be updated with the final verdict.
    ```
 
-2. Run:
+2. Re-review case: if a council verdict comment already exists on the PR (detect
+   by the marker line), fetch its current body, prepend the in-progress status
+   above the retained prior verdict, and write that combined body to
+   `/tmp/verdict.md`. This lets round-N reviewers self-fetch the round-N-1
+   ledger; never overwrite the prior verdict.
+3. If the latest own comment starts with the marker, run:
 
    ```sh
    gh pr comment N --repo owner/repo --edit-last --create-if-none --body-file /tmp/verdict.md
    ```
 
-3. Reply in the OpenAB thread with a short status only. Do not review the diff
+   Otherwise post a new marked comment:
+
+   ```sh
+   gh pr comment N --repo owner/repo --body-file /tmp/verdict.md
+   ```
+
+4. Reply in the OpenAB thread with a short status only. Do not review the diff
    and do not end with `[done]` yet.
 
 Quorum turn:
 
+0. Fetch the current PR head SHA before writing the verdict:
+
+   ```sh
+   SHA=$(gh pr view N --repo owner/repo --json headRefOid -q .headRefOid)
+   ```
+
+   Put `Reviewed at <sha>` directly under the verdict headline. If the head has
+   advanced since the reviews in this round were written, also add
+   `Head has advanced since this review — push or comment /review to re-run.`
+   immediately after the `Reviewed at` line. Label-and-post even when the head
+   moved; do not abort solely because the head advanced.
 1. Read the reviewer findings already in this thread.
 2. Do not re-review the PR from scratch. The chair may fetch the PR title, body,
    file list, or current head if needed for metadata, but should rely on reviewer
    findings for the verdict.
-3. Synthesize one final OpenAB-style report in `/tmp/verdict.md`. End the body
+3. If this is a re-review and the prior `Reviewed at` SHA is reachable after
+   checkout, keep stable finding IDs `F1..Fn` from the prior verdict, verify old
+   open findings, and scope new analysis to the delta since that SHA. If
+   `git merge-base --is-ancestor <reviewed-sha> HEAD` fails, the prior SHA is
+   unreachable or rebased away: fall back to a full review and say so in the
+   verdict.
+4. Synthesize one final OpenAB-style report in `/tmp/verdict.md`. End the body
    with the summary + action menu footer (see the report format below); the
    counts must match your verdict trailer.
-4. Re-run the same `gh pr comment ... --edit-last --create-if-none --body-file`
-   command. It prints the comment URL — keep it for the commit status in step 6.
-5. Submit the GitHub review state so the merge UI reflects the council's
+5. Run the safe comment procedure above. It prints the comment URL — keep it for
+   the commit status in step 7.
+6. Submit the GitHub review state so the merge UI reflects the council's
    decision:
 
    ```sh
@@ -158,11 +209,10 @@ Quorum turn:
 
    If the review submission is refused (e.g. a self-review), note it in your
    reply and continue — the comment stays the report of record.
-6. Set a commit status so the Checks tab "Details" links to the review comment.
-   `COMMENT_URL` is the URL printed in step 4 (fall back to the PR URL):
+7. Set a commit status so the Checks tab "Details" links to the review comment.
+   `COMMENT_URL` is the URL printed in step 5 (fall back to the PR URL):
 
    ```sh
-   SHA=$(gh pr view N --repo owner/repo --json headRefOid -q .headRefOid)
    gh api repos/owner/repo/statuses/$SHA -f state=success -f context=openab/council \
      -f description="Council: 🔴×0 🟡×2 🟢×5" -f target_url="$COMMENT_URL"
    ```
@@ -170,7 +220,7 @@ Quorum turn:
    Use `state=success` for approve, `state=failure` for request-changes. If the
    API call is refused (missing Commit statuses permission), note it and
    continue.
-7. After the PR comment update succeeds, reply in this thread ending with the
+8. After the PR comment update succeeds, reply in this thread ending with the
    verdict trailer and `[done]`, e.g.:
 
    ```
@@ -187,8 +237,14 @@ final report instead of repeating the stale finding as current.
 
 Final chair report format:
 
+Omit the `Head has advanced ...` line unless the head advanced after this
+round's reviews were written.
+
 ```markdown
+<!-- openab-council -->
 LGTM ✅ / CHANGES REQUESTED ⚠️ — one sentence summary.
+Reviewed at <sha>
+Head has advanced since this review — push or comment /review to re-run.
 
 ## What This PR Does
 One paragraph.
@@ -199,9 +255,29 @@ One paragraph.
 
 ## Findings
 
-| # | Severity | Finding | Location |
-|---|----------|---------|----------|
-| 1 | 🔴/🟡/🟢 | Short description (raised by: rev1) | `path/file.rs:42` |
+Finding IDs `F1..Fn` are minted once per PR and monotonic across rounds. Round 2
+continues numbering; never renumber prior findings and never re-raise a Resolved
+finding.
+
+First round:
+
+| ID | Severity | Finding | Location |
+|----|----------|---------|----------|
+| F1 | 🔴/🟡/🟢 | Short description (raised by: rev1) | `path/file.rs:42` |
+
+Re-review rounds:
+
+| Resolved | Severity | Finding | Fixed in |
+|----------|----------|---------|----------|
+| F1 | 🔴/🟡 | Short description | `<sha claimed by author notes, if any>` |
+
+| Outstanding | Severity | Finding | Location |
+|-------------|----------|---------|----------|
+| F2 | 🔴/🟡 | Still reproduces after re-check | `path/file.rs:42` |
+
+| New | Severity | Finding | Location |
+|-----|----------|---------|----------|
+| F3 | 🔴/🟡/🟢 | Newly observed issue | `path/file.rs:99` |
 
 <details>
 <summary>Finding Details</summary>
