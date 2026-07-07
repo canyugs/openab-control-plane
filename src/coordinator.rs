@@ -9,7 +9,7 @@
 //! required prior state. v1 ships `QuorumCouncil`; a second mode is a new impl
 //! selected in `for_session`, the only seam that changes.
 
-use crate::session::{quorum_reached, DONE_EMOJI};
+use crate::session::quorum_reached;
 use crate::store::SessionState;
 
 /// Read-only view a Coordinator decides from (pure → unit-testable).
@@ -17,8 +17,8 @@ pub trait Ctx {
     fn roster(&self) -> &[String];
     fn chair(&self) -> Option<&str>;
     fn quorum_n(&self) -> i64;
-    /// Distinct bot ids that posted `emoji`.
-    fn reactors(&self, emoji: &str) -> Vec<String>;
+    /// Distinct bot ids with counted done-votes.
+    fn done_voters(&self) -> Vec<String>;
     /// `bot`'s last *settled* (non-stub) message content, if any.
     fn latest_settled(&self, bot: &str) -> Option<String>;
     fn state(&self) -> SessionState;
@@ -71,7 +71,7 @@ pub trait Coordinator: Send + Sync {
 fn quorum_actions(cx: &dyn Ctx, prompt: &str) -> Vec<Action> {
     let mut actions = vec![];
     let chair = cx.chair();
-    if quorum_reached(cx.roster(), chair, &cx.reactors(DONE_EMOJI), cx.quorum_n()) {
+    if quorum_reached(cx.roster(), chair, &cx.done_voters(), cx.quorum_n()) {
         actions.push(Action::Transition {
             from: SessionState::Deliberating,
             to: SessionState::Quorum,
@@ -305,7 +305,7 @@ mod tests {
         fn quorum_n(&self) -> i64 {
             self.quorum_n
         }
-        fn reactors(&self, _: &str) -> Vec<String> {
+        fn done_voters(&self) -> Vec<String> {
             self.reactors.clone()
         }
         fn latest_settled(&self, _: &str) -> Option<String> {

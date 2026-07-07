@@ -309,11 +309,8 @@ pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bo
     }
     let session = state.store.session(session_id)?;
     let roster = state.store.roster(session_id)?;
-    let done: std::collections::HashSet<String> = state
-        .store
-        .reactors_in_session(session_id, DONE_EMOJI)?
-        .into_iter()
-        .collect();
+    let done: std::collections::HashSet<String> =
+        state.store.done_voters(session_id)?.into_iter().collect();
     let absent: Vec<String> = roster
         .iter()
         .filter(|bot| !done.contains(bot.as_str()))
@@ -384,11 +381,8 @@ pub fn sweep_liveness(state: &Arc<AppState>, grace_ms: i64) -> Result<()> {
         let Some(session) = state.store.session(&session_id)? else {
             continue;
         };
-        let done: std::collections::HashSet<String> = state
-            .store
-            .reactors_in_session(&session_id, DONE_EMOJI)?
-            .into_iter()
-            .collect();
+        let done: std::collections::HashSet<String> =
+            state.store.done_voters(&session_id)?.into_iter().collect();
         for bot_id in state.store.roster(&session_id)? {
             let Some(inv) = state.store.bot_inventory(&bot_id)? else {
                 continue;
@@ -974,14 +968,41 @@ fn on_reaction(
     reply: &GatewayReply,
     add: bool,
 ) -> Result<()> {
-    let target = target_msg(reply)
-        .map(String::from)
-        .unwrap_or_else(|| session.id.clone());
     let emoji = &reply.content.text;
+    let target = target_msg(reply).map(String::from);
+    let target_msg = target
+        .as_deref()
+        .map(|target| state.store.message(target))
+        .transpose()?
+        .flatten();
+    let Some(target_msg) = target_msg.filter(|m| m.session_id == session.id) else {
+        tracing::warn!(
+            "bot {bot_id} sent reaction {emoji} with unresolvable target {:?} in {}",
+            target,
+            session.id
+        );
+        state.emit_north(
+            "reaction_rejected",
+            &session.id,
+            json!({
+                "bot": bot_id,
+                "emoji": emoji,
+                "target": target,
+                "reason": "unresolvable_target",
+            }),
+        );
+        ack(state, bot_id, reply, None, None);
+        return Ok(());
+    };
     if add {
-        state.store.add_reaction(&target, bot_id, emoji)?;
+        state.store.add_reaction(&target_msg.id, bot_id, emoji)?;
+    } else if emoji == DONE_EMOJI {
+        tracing::info!(
+            "ignoring remove_reaction {emoji} from {bot_id} in {}; done-votes are monotonic",
+            session.id
+        );
     } else {
-        state.store.remove_reaction(&target, bot_id, emoji)?;
+        state.store.remove_reaction(&target_msg.id, bot_id, emoji)?;
     }
     state.emit_north(
         "reaction",
@@ -990,7 +1011,11 @@ fn on_reaction(
     );
     ack(state, bot_id, reply, None, None);
 
-    if add && emoji == DONE_EMOJI && reaction_counts_as_done(session, bot_id) {
+    if add
+        && emoji == DONE_EMOJI
+        && reaction_counts_as_done(session, bot_id)
+        && matches!(target_msg.author_kind.as_str(), "client" | "system")
+    {
         run_done(state, session, bot_id)?;
     }
     Ok(())
@@ -1080,10 +1105,10 @@ impl Ctx for OrchCtx<'_> {
     fn quorum_n(&self) -> i64 {
         self.session.quorum_n
     }
-    fn reactors(&self, emoji: &str) -> Vec<String> {
+    fn done_voters(&self) -> Vec<String> {
         self.state
             .store
-            .reactors_in_session(&self.session.id, emoji)
+            .done_voters(&self.session.id)
             .unwrap_or_default()
     }
     /// `bot`'s last non-stub message (skips empty / "…" streaming stubs).
@@ -1409,6 +1434,12 @@ mod tests {
         }
     }
 
+    fn remove_reaction_reply(session: &str, target: &str, emoji: &str) -> GatewayReply {
+        let mut reply = reaction_reply(session, target, emoji);
+        reply.command = Some("remove_reaction".into());
+        reply
+    }
+
     /// chair + rev1 + rev2 (quorum 2, review_council), all connected, Deliberating.
     fn liveness_setup() -> (
         Arc<AppState>,
@@ -1468,6 +1499,178 @@ mod tests {
             store.bot_inventory(&rev2).unwrap().unwrap().health,
             "unreachable",
         );
+    }
+
+    #[test]
+    fn peer_ack_reaction_does_not_advance_quorum() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev1 = store.register_bot("rev1", "reviewer", "h2", "t2").unwrap();
+        let rev2 = store.register_bot("rev2", "reviewer", "h3", "t3").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                2,
+                Some(&chair.id),
+                &[chair.id.clone(), rev1.id.clone(), rev2.id.clone()],
+                "review_council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+        let trigger = store
+            .add_message(&session.id, None, "client", None, "review this", None)
+            .unwrap();
+        store
+            .add_message(&session.id, None, "bot", Some(&rev1.id), "rev1 draft", None)
+            .unwrap();
+        let rev2_msg = store
+            .add_message(&session.id, None, "bot", Some(&rev2.id), "rev2 note", None)
+            .unwrap();
+
+        handle_reply(
+            &state,
+            &rev1.id,
+            reaction_reply(&session.id, &rev2_msg.id, DONE_EMOJI),
+        )
+        .unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Deliberating,
+        );
+        assert!(
+            store.pending_outbox(&chair.id).unwrap().is_empty(),
+            "peer ack must not relay a reviewer's settled message to the chair",
+        );
+        assert!(store.done_voters(&session.id).unwrap().is_empty());
+
+        handle_reply(
+            &state,
+            &rev1.id,
+            reaction_reply(&session.id, &trigger.id, DONE_EMOJI),
+        )
+        .unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Deliberating,
+        );
+        handle_reply(
+            &state,
+            &rev2.id,
+            reaction_reply(&session.id, &trigger.id, DONE_EMOJI),
+        )
+        .unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Quorum,
+        );
+    }
+
+    #[test]
+    fn done_vote_is_monotonic_under_remove_reaction() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev = store.register_bot("rev", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), rev.id.clone()],
+                "review_council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+        let trigger = store
+            .add_message(&session.id, None, "client", None, "review this", None)
+            .unwrap();
+
+        handle_reply(
+            &state,
+            &rev.id,
+            reaction_reply(&session.id, &trigger.id, DONE_EMOJI),
+        )
+        .unwrap();
+        assert_eq!(
+            store.done_voters(&session.id).unwrap(),
+            vec![rev.id.clone()]
+        );
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Quorum,
+        );
+
+        handle_reply(
+            &state,
+            &rev.id,
+            remove_reaction_reply(&session.id, &trigger.id, DONE_EMOJI),
+        )
+        .unwrap();
+        assert_eq!(
+            store.done_voters(&session.id).unwrap(),
+            vec![rev.id.clone()]
+        );
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Quorum,
+        );
+    }
+
+    #[test]
+    fn unresolvable_reaction_target_is_rejected() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let rev = store.register_bot("rev", "reviewer", "h1", "t1").unwrap();
+        let session = store
+            .create_session("t", None, 1, None, std::slice::from_ref(&rev.id), "council")
+            .unwrap();
+        let other_session = store
+            .create_session("other", None, 1, None, &[], "council")
+            .unwrap();
+        let other_msg = store
+            .add_message(
+                &other_session.id,
+                None,
+                "client",
+                None,
+                "other trigger",
+                None,
+            )
+            .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        state.register_conn(&rev.id, tx);
+        let mut north = state.north_tx.subscribe();
+
+        for (request_id, target) in [
+            ("empty-target", ""),
+            ("unknown-target", "msg_missing"),
+            ("other-session-target", other_msg.id.as_str()),
+        ] {
+            let mut reply = reaction_reply(&session.id, target, DONE_EMOJI);
+            reply.request_id = Some(request_id.to_string());
+            handle_reply(&state, &rev.id, reply).unwrap();
+
+            let raw = rx.try_recv().unwrap();
+            let ack: GatewayResponse = serde_json::from_str(&raw).unwrap();
+            assert!(ack.success);
+            assert_eq!(ack.request_id, request_id);
+
+            let raw = north.try_recv().unwrap();
+            let event: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(event["type"], "reaction_rejected");
+            assert_eq!(event["payload"]["bot"], rev.id);
+            assert_eq!(event["payload"]["emoji"], DONE_EMOJI);
+            assert_eq!(event["payload"]["reason"], "unresolvable_target");
+        }
+        assert!(store.reactions(&session.id).unwrap().is_empty());
+        assert!(store.reactions(&other_session.id).unwrap().is_empty());
     }
 
     #[test]
