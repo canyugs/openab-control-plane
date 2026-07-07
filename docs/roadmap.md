@@ -2,6 +2,10 @@
 
 Generic multi-agent coordination engine. Code review is the first app, not the product.
 
+> Ordering lives in [route.md](route.md) (2026-07-08): Phase 1 = run
+> CodeRabbit's loop smoothly, no new surface; Phase 2 = depth. This file stays
+> the item-status source of truth.
+
 ## Principle: Agent Identity
 
 A council is always multi-party — there is no single user whose permissions a bot
