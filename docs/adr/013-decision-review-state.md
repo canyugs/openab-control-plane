@@ -56,6 +56,10 @@ verdict trailer in the existing text-directive style (`[[recruit:]]`,
 **plane's** record; the GitHub review is the **repo's** record. Same
 information, two audiences.
 
+The `[[verdict:…]]` trailer is machine-parsed only from the final non-empty
+line of the chair's final message, outside code fences. Any other occurrence is
+prose.
+
 ### 3. Plane parses and stores the structured verdict
 
 At close (normal path), the plane parses the trailer from the chair's final

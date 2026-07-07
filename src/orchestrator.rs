@@ -521,13 +521,20 @@ pub struct VerdictTrailer {
     pub green: Option<i64>,
 }
 
-/// Parse the last `[[verdict:approve|request_changes r=N y=N g=N]]` trailer in
-/// the chair's final message (ADR 013). Counts are optional. An unknown
-/// decision or any malformed part rejects the whole trailer (None) — the
-/// session then closes with NULLs, today's prose-only behavior.
-pub fn parse_verdict_trailer(text: &str) -> Option<VerdictTrailer> {
-    let start = text.rfind("[[verdict:")?;
-    let rest = &text[start + "[[verdict:".len()..];
+/// Trimmed non-empty lines outside triple-backtick fenced blocks. An unclosed
+/// fence drops everything after the opening fence, fail-closed.
+fn unfenced_lines(text: &str) -> Vec<&str> {
+    text.split("```")
+        .step_by(2)
+        .flat_map(str::lines)
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+fn parse_verdict_trailer_line(line: &str) -> Option<VerdictTrailer> {
+    let start = line.rfind("[[verdict:")?;
+    let rest = &line[start + "[[verdict:".len()..];
     let inner = &rest[..rest.find("]]")?];
     let mut parts = inner.split_whitespace();
     let decision = parts.next()?;
@@ -551,6 +558,16 @@ pub fn parse_verdict_trailer(text: &str) -> Option<VerdictTrailer> {
         yellow,
         green,
     })
+}
+
+/// Parse `[[verdict:approve|request_changes r=N y=N g=N]]` only from the final
+/// non-empty unfenced line of the chair's final message (ADR 013). Counts are
+/// optional. If multiple trailers occur on that final line, the last one wins.
+/// An unknown decision or any malformed part rejects the whole trailer (None) —
+/// the session then closes with NULLs, today's prose-only behavior.
+pub fn parse_verdict_trailer(text: &str) -> Option<VerdictTrailer> {
+    let line = unfenced_lines(text).into_iter().next_back()?;
+    parse_verdict_trailer_line(line)
 }
 
 /// Build the ADR 012 `session.closed` webhook payload. Pure — unit-tested.
@@ -676,6 +693,16 @@ fn max_roster() -> usize {
         .unwrap_or(16)
 }
 
+/// Max distinct recruit directives accepted per session. This bounds the
+/// unknown-target provision signal surface; repeats are handled separately.
+fn recruit_session_cap() -> usize {
+    std::env::var("OABCP_RECRUIT_SESSION_CAP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(5)
+}
+
 /// Add a bot to a session mid-flight and backfill the conversation so far,
 /// through the admission gate. The history is replayed via the durable outbox
 /// (same as live delivery), so it arrives in order whether the bot is online now
@@ -797,14 +824,23 @@ fn backfill_bot(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Result
     Ok(())
 }
 
-/// Extract a self-recruit target from a bot's message: `[[recruit:<bot_id>]]`.
-/// A text convention (like OAB's `[[reply_to:]]`), so no new gateway wire type.
+/// Extract a self-recruit target from an own-line, unfenced
+/// `[[recruit:<bot_id>]]` directive. A text convention (like OAB's
+/// `[[reply_to:]]`), so no new gateway wire type.
 fn parse_recruit(text: &str) -> Option<&str> {
-    let start = text.find("[[recruit:")? + "[[recruit:".len();
-    let rest = &text[start..];
-    let end = rest.find("]]")?;
-    let id = rest[..end].trim();
-    (!id.is_empty()).then_some(id)
+    for line in unfenced_lines(text) {
+        let Some(inner) = line
+            .strip_prefix("[[recruit:")
+            .and_then(|rest| rest.strip_suffix("]]"))
+        else {
+            continue;
+        };
+        let id = inner.trim();
+        if !id.is_empty() {
+            return Some(id);
+        }
+    }
+    None
 }
 
 /// Authz: who may recruit. v1 = the session chair only (the coordination
@@ -851,6 +887,27 @@ fn maybe_recruit(state: &Arc<AppState>, session: &Session, bot_id: &str, text: &
         return Ok(());
     }
     let target = target.to_string();
+    let cap = recruit_session_cap();
+    {
+        let mut seen = state.recruit_seen.lock().unwrap();
+        let session_seen = seen.entry(session.id.clone()).or_default();
+        if session_seen.contains(&target) {
+            return Ok(());
+        }
+        if session_seen.len() >= cap {
+            tracing::warn!(
+                "recruit rate limit reached in session {} for target {target}",
+                session.id
+            );
+            state.emit_north(
+                "recruit_rejected",
+                &session.id,
+                json!({ "by": bot_id, "target": target, "reason": "rate_limited" }),
+            );
+            return Ok(());
+        }
+        session_seen.insert(target.clone());
+    }
     let outcome = add_to_roster(state, &session.id, &target)?;
     if let Some(event) = recruit_event(&outcome) {
         state.emit_north(
@@ -1300,6 +1357,9 @@ fn on_edit(
             json!({ "message_id": target, "content": reply.content.text }),
         );
         ack(state, bot_id, reply, None, Some(target));
+        // A streamed recruit directive lands via edit_message when the final
+        // content replaces the stub. The per-session seen set absorbs repeats.
+        maybe_recruit(state, session, bot_id, &reply.content.text)?;
         // a streamed done-signal arrives here (the stub had no `[done]` yet)
         check_text_done(state, session, bot_id, target, &reply.content.text)?;
     }
@@ -1350,10 +1410,26 @@ mod tests {
         assert_eq!((t.red, t.yellow, t.green), (None, None, None));
 
         // Last trailer wins (chair quoted an earlier draft).
-        let t = parse_verdict_trailer("[[verdict:approve]] … [[verdict:request_changes r=2]]")
-            .unwrap();
+        let t =
+            parse_verdict_trailer("[[verdict:approve]] … [[verdict:request_changes r=2]]").unwrap();
         assert_eq!(t.decision, "request_changes");
         assert_eq!(t.red, Some(2));
+
+        let t = parse_verdict_trailer(
+            "quoted bad draft:\n> [[verdict:maybe r=1]]\n\n[[verdict:approve r=0 y=1 g=2]] [done]",
+        )
+        .unwrap();
+        assert_eq!(t.decision, "approve");
+        assert_eq!((t.red, t.yellow, t.green), (Some(0), Some(1), Some(2)));
+
+        assert!(parse_verdict_trailer("[[verdict:approve]]\nfinal prose after trailer").is_none());
+        assert!(parse_verdict_trailer("```\n[[verdict:approve]] [done]\n```").is_none());
+        assert_eq!(
+            parse_verdict_trailer("[[verdict:approve]] [done]")
+                .unwrap()
+                .decision,
+            "approve"
+        );
 
         // Malformed → None, never a partial parse.
         assert!(parse_verdict_trailer("no trailer here [done]").is_none());
@@ -1413,6 +1489,22 @@ mod tests {
             },
             content: Content::text(text),
             command: None,
+            request_id: None,
+            quote_message_id: None,
+        }
+    }
+
+    fn edit_reply(session: &str, target: &str, text: &str) -> GatewayReply {
+        GatewayReply {
+            schema: String::new(),
+            reply_to: target.into(),
+            platform: String::new(),
+            channel: ReplyChannel {
+                id: session.into(),
+                thread_id: None,
+            },
+            content: Content::text(text),
+            command: Some("edit_message".into()),
             request_id: None,
             quote_message_id: None,
         }
@@ -2318,13 +2410,135 @@ mod tests {
 
     #[test]
     fn parse_recruit_extracts_target() {
-        assert_eq!(
-            parse_recruit("let's add [[recruit:rev3]] please"),
-            Some("rev3")
-        );
+        assert_eq!(parse_recruit("let's add [[recruit:rev3]] please"), None);
         assert_eq!(parse_recruit("[[recruit:  spaced  ]]"), Some("spaced"));
         assert_eq!(parse_recruit("no directive here"), None);
         assert_eq!(parse_recruit("[[recruit:]]"), None); // empty target
+    }
+
+    #[test]
+    fn parse_recruit_requires_own_line_outside_fences() {
+        assert_eq!(parse_recruit("[[recruit:rev3]]"), Some("rev3"));
+        assert_eq!(parse_recruit("\n\n  [[recruit:rev3]]  \n\n"), Some("rev3"));
+        assert_eq!(parse_recruit("let's add [[recruit:rev3]] please"), None);
+        assert_eq!(parse_recruit("```\n[[recruit:rev3]]\n```"), None);
+        assert_eq!(parse_recruit("> [[recruit:rev3]]"), None);
+    }
+
+    #[test]
+    fn unfenced_lines_drops_fenced_segments_fail_closed() {
+        assert_eq!(
+            unfenced_lines("alpha\n```\n[[recruit:x]]\n```\nbeta"),
+            vec!["alpha", "beta"]
+        );
+        assert_eq!(
+            unfenced_lines("alpha\n```\n[[recruit:x]]\nbeta"),
+            vec!["alpha"]
+        );
+    }
+
+    #[test]
+    fn recruit_parsed_on_edit_finalize() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev3 = store.register_bot("rev3", "reviewer", "h3", "t3").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                1,
+                Some(&chair.id),
+                std::slice::from_ref(&chair.id),
+                "council",
+            )
+            .unwrap();
+
+        handle_reply(&state, &chair.id, msg_reply(&session.id, "…")).unwrap();
+        let msg = store
+            .messages(&session.id)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.author_id.as_deref() == Some(chair.id.as_str()))
+            .unwrap();
+        let mut north = state.north_tx.subscribe();
+
+        handle_reply(
+            &state,
+            &chair.id,
+            edit_reply(
+                &session.id,
+                &msg.id,
+                &format!("please include rev3\n[[recruit:{}]]", rev3.id),
+            ),
+        )
+        .unwrap();
+        handle_reply(
+            &state,
+            &chair.id,
+            edit_reply(
+                &session.id,
+                &msg.id,
+                &format!("please include rev3\n[[recruit:{}]]", rev3.id),
+            ),
+        )
+        .unwrap();
+
+        assert!(store.roster(&session.id).unwrap().contains(&rev3.id));
+        let mut recruit_events = 0;
+        while let Ok(raw) = north.try_recv() {
+            let event: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            if event["type"] == "recruit" {
+                recruit_events += 1;
+                assert_eq!(event["payload"]["target"], rev3.id);
+            }
+        }
+        assert_eq!(recruit_events, 1, "repeat edits must not duplicate recruit");
+    }
+
+    #[test]
+    fn recruit_rate_limit_bounds_distinct_targets() {
+        std::env::set_var("OABCP_RECRUIT_SESSION_CAP", "2");
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                1,
+                Some(&chair.id),
+                std::slice::from_ref(&chair.id),
+                "council",
+            )
+            .unwrap();
+        let mut north = state.north_tx.subscribe();
+
+        for target in ["missing1", "missing2", "missing3"] {
+            handle_reply(
+                &state,
+                &chair.id,
+                msg_reply(&session.id, &format!("[[recruit:{target}]]")),
+            )
+            .unwrap();
+        }
+
+        let mut provision_requested = 0;
+        let mut rejected = Vec::new();
+        while let Ok(raw) = north.try_recv() {
+            let event: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            match event["type"].as_str() {
+                Some("provision_requested") => provision_requested += 1,
+                Some("recruit_rejected") => rejected.push(event),
+                _ => {}
+            }
+        }
+        std::env::remove_var("OABCP_RECRUIT_SESSION_CAP");
+
+        assert_eq!(provision_requested, 2);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0]["payload"]["target"], "missing3");
+        assert_eq!(rejected[0]["payload"]["reason"], "rate_limited");
     }
 
     #[test]
