@@ -365,12 +365,7 @@ async fn connect(
 async fn wait_for_connected(state: &Arc<AppState>, bot_id: &str, connected: bool) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
     loop {
-        let actual = state
-            .store
-            .bot_inventory(bot_id)
-            .unwrap()
-            .unwrap()
-            .connected;
+        let actual = state.is_connected(bot_id);
         if actual == connected {
             return;
         }
@@ -436,8 +431,64 @@ async fn live_peer_stays_connected() {
     });
     reader.await.unwrap();
 
-    let inv = state.store.bot_inventory(&bot_id).unwrap().unwrap();
-    assert!(inv.connected, "live peer should remain connected");
+    assert!(
+        state.is_connected(&bot_id),
+        "live peer should remain connected"
+    );
+}
+
+#[tokio::test]
+async fn bot_inventory_connected_filter_reads_connection_stack() {
+    let (addr, state) = spawn_server_with_state().await;
+    let base = addr.to_string();
+    let client = reqwest::Client::new();
+    let (bot_id, token) = register_bot(&base, "presence", "reviewer").await;
+
+    let offline: Value = client
+        .get(format!("http://{base}/v1/bots?connected=false"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(offline["bots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|bot| bot["id"] == bot_id && bot["connected"] == false));
+
+    let ws = connect(addr, &token).await;
+    wait_for_connected(&state, &bot_id, true).await;
+    let online: Value = client
+        .get(format!("http://{base}/v1/bots?connected=true"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(online["bots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|bot| bot["id"] == bot_id && bot["connected"] == true));
+
+    drop(ws);
+    wait_for_connected(&state, &bot_id, false).await;
+    let offline_again: Value = client
+        .get(format!("http://{base}/v1/bots?connected=false"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(offline_again["bots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|bot| bot["id"] == bot_id && bot["connected"] == false));
 }
 
 #[derive(Clone, Copy)]
@@ -1075,7 +1126,10 @@ async fn council_closes_on_text_done_signal() {
         "council must close on text [done] (no reactions sent): {last}"
     );
     // ADR 013: the [[verdict:…]] trailer in the chair final lands as columns.
-    assert_eq!(last["session"]["decision"], "approve", "structured decision: {last}");
+    assert_eq!(
+        last["session"]["decision"], "approve",
+        "structured decision: {last}"
+    );
     assert_eq!(last["session"]["findings_red"], 0);
     assert_eq!(last["session"]["findings_yellow"], 1);
     assert_eq!(last["session"]["findings_green"], 2);

@@ -135,7 +135,7 @@ async fn stats(
         .store
         .list_bots()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let connected = bots.iter().filter(|b| b.connected).count();
+    let connected = bots.iter().filter(|b| state.is_connected(&b.id)).count();
     let mut by_health: std::collections::BTreeMap<String, usize> = Default::default();
     for b in &bots {
         *by_health.entry(b.health.clone()).or_default() += 1;
@@ -146,7 +146,7 @@ async fn stats(
         "by_health": by_health,
         "detail": bots.iter().map(|b| json!({
             "id": b.id,
-            "connected": b.connected,
+            "connected": state.is_connected(&b.id),
             "health": b.health,
             "last_seen_ms": b.last_seen_ms,
             "version": b.version,
@@ -212,7 +212,7 @@ async fn list_bots(
             None => true,
         })
         .filter(|bot| match params.connected {
-            Some(connected) => bot.connected == connected,
+            Some(connected) => state.is_connected(&bot.id) == connected,
             None => true,
         })
         .filter(|bot| match params.enabled {
@@ -223,7 +223,10 @@ async fn list_bots(
             Some(health) => bot.health == *health,
             None => true,
         })
-        .map(|bot| inventory_json(bot, &standing, standing_chair.as_deref()))
+        .map(|bot| {
+            let connected = state.is_connected(&bot.id);
+            inventory_json(bot, connected, &standing, standing_chair.as_deref())
+        })
         .collect::<Vec<_>>();
     Ok(Json(json!({
         "standing_roster": standing_roster,
@@ -234,6 +237,7 @@ async fn list_bots(
 
 fn inventory_json(
     bot: BotInventory,
+    connected: bool,
     standing: &BTreeSet<String>,
     standing_chair: Option<&str>,
 ) -> Value {
@@ -243,7 +247,7 @@ fn inventory_json(
         "role": bot.role,
         "provider": bot.provider,
         "capabilities": bot.capabilities,
-        "connected": bot.connected,
+        "connected": connected,
         "enabled": bot.enabled,
         "health": bot.health,
         "note": bot.note,
@@ -396,8 +400,9 @@ async fn patch_bot(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let standing: BTreeSet<_> = standing_roster.iter().cloned().collect();
     let standing_chair = standing_roster.first().cloned();
+    let connected = state.is_connected(&bot.id);
     Ok(Json(json!({
-        "bot": inventory_json(bot, &standing, standing_chair.as_deref())
+        "bot": inventory_json(bot, connected, &standing, standing_chair.as_deref())
     })))
 }
 

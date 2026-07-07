@@ -350,7 +350,7 @@ pub fn sweep_liveness(state: &Arc<AppState>, grace_ms: i64) -> Result<()> {
             let Some(inv) = state.store.bot_inventory(&bot_id)? else {
                 continue;
             };
-            if inv.connected {
+            if state.is_connected(&bot_id) {
                 continue;
             }
             // Never-connected bots have no last_seen — age them from session open.
@@ -362,16 +362,7 @@ pub fn sweep_liveness(state: &Arc<AppState>, grace_ms: i64) -> Result<()> {
             if !is_chair && done.contains(&bot_id) {
                 continue; // vote already recorded; the chair has its findings
             }
-            mark_unreachable(state, &inv);
-            if let Some(spare) = find_spare(state, &session_id, &inv, is_chair)? {
-                match replace_roster_bot(state, &session_id, &bot_id, &spare)? {
-                    Replacement::Replaced => {
-                        tracing::info!("liveness: replaced {bot_id} with {spare} in {session_id}");
-                    }
-                    other => tracing::warn!(
-                        "liveness: replace {bot_id}→{spare} in {session_id} rejected: {other:?}"
-                    ),
-                }
+            if replace_unreachable(state, &session_id, &inv, is_chair)? {
                 continue;
             }
             if is_chair {
@@ -406,6 +397,31 @@ fn mark_unreachable(state: &Arc<AppState>, inv: &crate::store::BotInventory) {
     );
 }
 
+fn replace_unreachable(
+    state: &Arc<AppState>,
+    session_id: &str,
+    inv: &crate::store::BotInventory,
+    is_chair: bool,
+) -> Result<bool> {
+    if state.is_connected(&inv.id) {
+        return Ok(true);
+    }
+    mark_unreachable(state, inv);
+    let Some(spare) = find_spare(state, session_id, inv, is_chair)? else {
+        return Ok(false);
+    };
+    match replace_roster_bot(state, session_id, &inv.id, &spare)? {
+        Replacement::Replaced => {
+            tracing::info!("liveness: replaced {} with {spare} in {session_id}", inv.id);
+        }
+        other => tracing::warn!(
+            "liveness: replace {}→{spare} in {session_id} rejected: {other:?}",
+            inv.id
+        ),
+    }
+    Ok(true)
+}
+
 /// A connected, enabled, healthy inventory bot of the required role that is not
 /// already in the session roster. First match wins.
 fn find_spare(
@@ -421,7 +437,7 @@ fn find_spare(
         .list_bots()?
         .into_iter()
         .find(|b| {
-            b.connected
+            state.is_connected(&b.id)
                 && b.enabled
                 && b.health == "ok"
                 && b.role == want_role
@@ -437,10 +453,8 @@ fn find_spare(
 fn trim_reviewer(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Result<()> {
     // Narrow the check→trim race (council review on #68): a bot that reconnected
     // since the sweep's connected check keeps its seat.
-    if let Some(inv) = state.store.bot_inventory(bot_id)? {
-        if inv.connected {
-            return Ok(());
-        }
+    if state.is_connected(bot_id) {
+        return Ok(());
     }
     if !state.store.remove_session_bot(session_id, bot_id)? {
         return Ok(());
@@ -1454,6 +1468,8 @@ mod tests {
     use crate::protocol::ReplyChannel;
     use crate::state::AppState;
     use crate::store::{SqliteStore, Store};
+    use std::collections::HashMap;
+    use tokio::sync::mpsc;
 
     static BACKFILL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1611,6 +1627,27 @@ mod tests {
         reply
     }
 
+    type TestConns = HashMap<String, (u64, mpsc::UnboundedReceiver<String>)>;
+
+    fn connect_bot(state: &Arc<AppState>, conns: &mut TestConns, bot_id: &str) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let gen = state.register_conn(bot_id, tx);
+        conns.insert(bot_id.to_string(), (gen, rx));
+    }
+
+    fn disconnect_bot(
+        state: &Arc<AppState>,
+        store: &Arc<SqliteStore>,
+        conns: &mut TestConns,
+        bot_id: &str,
+    ) {
+        let (gen, _rx) = conns
+            .remove(bot_id)
+            .unwrap_or_else(|| panic!("{bot_id} was not connected"));
+        assert!(state.unregister_conn(bot_id, gen));
+        store.touch_last_seen(bot_id).unwrap();
+    }
+
     /// chair + rev1 + rev2 (quorum 2, review_council), all connected, Deliberating.
     fn liveness_setup() -> (
         Arc<AppState>,
@@ -1619,14 +1656,16 @@ mod tests {
         String, // chair id
         String, // rev1 id
         String, // rev2 id
+        TestConns,
     ) {
         let store = Arc::new(SqliteStore::memory().unwrap());
         let state = AppState::new(store.clone());
         let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
         let rev1 = store.register_bot("rev1", "reviewer", "h2", "t2").unwrap();
         let rev2 = store.register_bot("rev2", "reviewer", "h3", "t3").unwrap();
+        let mut conns = TestConns::new();
         for id in [&chair.id, &rev1.id, &rev2.id] {
-            store.set_connected(id, true).unwrap();
+            connect_bot(&state, &mut conns, id);
         }
         let session = store
             .create_session(
@@ -1641,7 +1680,7 @@ mod tests {
         store
             .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
             .unwrap();
-        (state, store, session, chair.id, rev1.id, rev2.id)
+        (state, store, session, chair.id, rev1.id, rev2.id, conns)
     }
 
     fn pending_message_frames(
@@ -1849,7 +1888,7 @@ mod tests {
 
     #[test]
     fn liveness_trims_dead_reviewer_shrinks_quorum_and_reevaluates() {
-        let (state, store, session, _chair, rev1, rev2) = liveness_setup();
+        let (state, store, session, _chair, rev1, rev2, mut conns) = liveness_setup();
         // rev1 votes; quorum 2 not reached → still deliberating
         handle_reply(&state, &rev1, msg_reply(&session.id, "findings [done]")).unwrap();
         assert_eq!(
@@ -1857,7 +1896,7 @@ mod tests {
             SessionState::Deliberating,
         );
         // rev2 dies (no spare registered)
-        store.set_connected(&rev2, false).unwrap();
+        disconnect_bot(&state, &store, &mut conns, &rev2);
         sweep_liveness(&state, 0).unwrap();
 
         let roster = store.roster(&session.id).unwrap();
@@ -2066,11 +2105,11 @@ mod tests {
 
     #[test]
     fn liveness_replaces_dead_reviewer_when_spare_exists() {
-        let (state, store, session, _chair, _rev1, rev2) = liveness_setup();
+        let (state, store, session, _chair, _rev1, rev2, mut conns) = liveness_setup();
         let rev3 = store.register_bot("rev3", "reviewer", "h4", "t4").unwrap();
-        store.set_connected(&rev3.id, true).unwrap();
+        connect_bot(&state, &mut conns, &rev3.id);
 
-        store.set_connected(&rev2, false).unwrap();
+        disconnect_bot(&state, &store, &mut conns, &rev2);
         sweep_liveness(&state, 0).unwrap();
 
         let roster = store.roster(&session.id).unwrap();
@@ -2085,11 +2124,45 @@ mod tests {
     }
 
     #[test]
+    fn liveness_replace_rechecks_connection_before_acting() {
+        let (state, store, session, chair, rev1, rev2, mut conns) = liveness_setup();
+        let rev3 = store.register_bot("rev3", "reviewer", "h4", "t4").unwrap();
+        connect_bot(&state, &mut conns, &rev3.id);
+        disconnect_bot(&state, &store, &mut conns, &rev2);
+        let inv = store.bot_inventory(&rev2).unwrap().unwrap();
+        connect_bot(&state, &mut conns, &rev2);
+        let mut north = state.north_tx.subscribe();
+
+        assert!(
+            replace_unreachable(&state, &session.id, &inv, false).unwrap(),
+            "a reconnect race is handled by keeping the original roster seat",
+        );
+
+        let roster = store.roster(&session.id).unwrap();
+        assert!(roster.contains(&chair));
+        assert!(roster.contains(&rev1));
+        assert!(roster.contains(&rev2), "reconnected bot keeps its seat");
+        assert!(
+            !roster.contains(&rev3.id),
+            "spare must not replace a reconnected bot",
+        );
+        assert_eq!(
+            store.bot_inventory(&rev2).unwrap().unwrap().health,
+            "ok",
+            "reconnected bot must not be marked unreachable",
+        );
+        assert!(
+            north.try_recv().is_err(),
+            "no roster_replace or bot_health event should be emitted",
+        );
+    }
+
+    #[test]
     fn liveness_leaves_done_reviewer_and_live_bots_alone() {
-        let (state, store, session, _chair, rev1, rev2) = liveness_setup();
+        let (state, store, session, _chair, rev1, rev2, mut conns) = liveness_setup();
         // rev1 votes then dies — its vote is recorded, leave the seat alone
         handle_reply(&state, &rev1, msg_reply(&session.id, "findings [done]")).unwrap();
-        store.set_connected(&rev1, false).unwrap();
+        disconnect_bot(&state, &store, &mut conns, &rev1);
         sweep_liveness(&state, 0).unwrap();
 
         let roster = store.roster(&session.id).unwrap();
@@ -2103,7 +2176,7 @@ mod tests {
 
     #[test]
     fn liveness_trim_rechecks_connection_before_dropping() {
-        let (state, store, session, _chair, _rev1, rev2) = liveness_setup();
+        let (state, store, session, _chair, _rev1, rev2, _conns) = liveness_setup();
         // rev2 is connected again by the time the trim runs (check→trim race)
         trim_reviewer(&state, &session.id, &rev2).unwrap();
         assert!(
@@ -2115,8 +2188,8 @@ mod tests {
 
     #[test]
     fn liveness_respects_grace_window() {
-        let (state, store, session, _chair, _rev1, rev2) = liveness_setup();
-        store.set_connected(&rev2, false).unwrap(); // last_seen = now
+        let (state, store, session, _chair, _rev1, rev2, mut conns) = liveness_setup();
+        disconnect_bot(&state, &store, &mut conns, &rev2); // last_seen = now
         sweep_liveness(&state, 60_000).unwrap();
         assert!(
             store.roster(&session.id).unwrap().contains(&rev2),
@@ -2164,11 +2237,11 @@ mod tests {
 
     #[test]
     fn liveness_replaces_dead_chair_with_chair_capable_spare() {
-        let (state, store, session, chair, _rev1, _rev2) = liveness_setup();
+        let (state, store, session, chair, _rev1, _rev2, mut conns) = liveness_setup();
         let chair2 = store.register_bot("chair2", "chair", "h5", "t5").unwrap();
-        store.set_connected(&chair2.id, true).unwrap();
+        connect_bot(&state, &mut conns, &chair2.id);
 
-        store.set_connected(&chair, false).unwrap();
+        disconnect_bot(&state, &store, &mut conns, &chair);
         sweep_liveness(&state, 0).unwrap();
 
         let s = store.session(&session.id).unwrap().unwrap();
@@ -2180,8 +2253,8 @@ mod tests {
 
     #[test]
     fn liveness_never_trims_the_chair() {
-        let (state, store, session, chair, _rev1, _rev2) = liveness_setup();
-        store.set_connected(&chair, false).unwrap();
+        let (state, store, session, chair, _rev1, _rev2, mut conns) = liveness_setup();
+        disconnect_bot(&state, &store, &mut conns, &chair);
         sweep_liveness(&state, 0).unwrap(); // no chair spare registered
         let roster = store.roster(&session.id).unwrap();
         assert!(
