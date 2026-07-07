@@ -22,6 +22,9 @@ pub struct AppState {
     /// marked offline. `connected` = "this stack is non-empty".
     hub: Mutex<HashMap<String, Vec<Conn>>>,
     conn_seq: AtomicU64,
+    /// Per-bot flush mutexes. Entries are retained for process lifetime; the set
+    /// is bounded by bot inventory and avoids reconnect-storm duplicate sends.
+    flush_locks: Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>,
     /// north SSE fanout (serialized NorthEvent JSON).
     pub north_tx: broadcast::Sender<String>,
     /// Platform label on the wire. "feishu" unlocks streaming-edit acks (§2).
@@ -46,6 +49,8 @@ pub struct AppState {
     pub github_mint_lock: tokio::sync::Mutex<()>,
     /// Optional outbound webhook POSTed on session close (ADR 012). None = off.
     pub close_webhook_url: Option<String>,
+    /// South WebSocket ping interval in seconds. 0 disables ping deadlines.
+    pub ws_ping_secs: u64,
 }
 
 impl AppState {
@@ -71,11 +76,39 @@ impl AppState {
         config_base_url: String,
         close_webhook_url: Option<String>,
     ) -> Arc<AppState> {
+        let ws_ping_secs = std::env::var("OABCP_WS_PING_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(20);
+        Self::new_with_options_and_ws_ping_secs(
+            store,
+            api_key,
+            github_app,
+            github_webhook_secret,
+            bot_discovery_token,
+            config_base_url,
+            close_webhook_url,
+            ws_ping_secs,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_options_and_ws_ping_secs(
+        store: Arc<dyn Store>,
+        api_key: Option<String>,
+        github_app: Option<GitHubApp>,
+        github_webhook_secret: Option<String>,
+        bot_discovery_token: Option<String>,
+        config_base_url: String,
+        close_webhook_url: Option<String>,
+        ws_ping_secs: u64,
+    ) -> Arc<AppState> {
         let (north_tx, _) = broadcast::channel(1024);
         Arc::new(AppState {
             store,
             hub: Mutex::new(HashMap::new()),
             conn_seq: AtomicU64::new(0),
+            flush_locks: Mutex::new(HashMap::new()),
             north_tx,
             platform: "feishu".into(),
             api_key,
@@ -85,6 +118,7 @@ impl AppState {
             config_base_url,
             github_mint_lock: tokio::sync::Mutex::new(()),
             close_webhook_url,
+            ws_ping_secs,
         })
     }
 
@@ -136,6 +170,20 @@ impl AppState {
     /// and the rest waits for the next connect. Call on reconnect and after each
     /// enqueue. Returns true if anything was delivered.
     pub fn flush_outbox(&self, bot_id: &str) -> bool {
+        let flush_lock = {
+            let mut locks = self.flush_locks.lock().unwrap();
+            locks
+                .entry(bot_id.to_string())
+                .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
+                .clone()
+        };
+        // Lock hierarchy: flush_lock(bot) -> hub lock (send_to_bot) -> store conn.
+        // No code acquires those in reverse order, and callers do not await while
+        // holding this std mutex.
+        let _guard = flush_lock.lock().unwrap();
+        // This remains at-least-once across process crashes between send and ack;
+        // socket-confirmed ack is Stage 2. Within a live process, one flusher owns
+        // the full read -> send -> ack loop for this bot.
         let pending = self.store.pending_outbox(bot_id).unwrap_or_default();
         let mut delivered = false;
         for (seq, frame) in pending {
@@ -318,5 +366,82 @@ mod tests {
         );
         let frame = rx.try_recv().expect("frame delivered on reconnect");
         assert!(frame.contains("hello while offline"));
+    }
+
+    #[test]
+    fn deliver_event_dedups_same_message_id_after_ack() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        state.register_conn("bot_x", tx);
+        let sender = SenderInfo {
+            id: "client".into(),
+            name: "client".into(),
+            display_name: "client".into(),
+            is_bot: false,
+        };
+
+        assert!(state.deliver_event(
+            "bot_x",
+            "ses_1",
+            None,
+            sender.clone(),
+            Content::text("hello"),
+            vec![],
+            "msg_1",
+        ));
+        assert!(!state.deliver_event(
+            "bot_x",
+            "ses_1",
+            None,
+            sender,
+            Content::text("hello"),
+            vec![],
+            "msg_1",
+        ));
+
+        let frames: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].contains("msg_1"));
+    }
+
+    #[test]
+    fn concurrent_flush_outbox_sends_each_pending_frame_once() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let frames = 50;
+        for i in 0..frames {
+            store
+                .enqueue_outbox(
+                    "bot_x",
+                    "ses_1",
+                    &format!("bot_x:msg_{i}"),
+                    &format!("frame_{i}"),
+                )
+                .unwrap();
+        }
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        state.register_conn("bot_x", tx);
+
+        let barrier = Arc::new(std::sync::Barrier::new(9));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let state = state.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                state.flush_outbox("bot_x")
+            }));
+        }
+        barrier.wait();
+        for handle in handles {
+            let _ = handle.join().unwrap();
+        }
+
+        let delivered: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let unique: std::collections::HashSet<_> = delivered.iter().cloned().collect();
+        assert_eq!(delivered.len(), frames);
+        assert_eq!(unique.len(), frames);
+        assert!(store.pending_outbox("bot_x").unwrap().is_empty());
     }
 }

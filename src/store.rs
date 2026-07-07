@@ -274,7 +274,8 @@ pub trait Store: Send + Sync {
 
     /// Durable per-bot outbox (offline delivery). Frames queued here are flushed
     /// in `seq` order when the bot is connected; a disconnected bot keeps them
-    /// and gets them on reconnect. `ack_outbox` removes a delivered frame.
+    /// and gets them on reconnect. `ack_outbox` marks a frame delivered; the row
+    /// is retained so `idem_key` dedup survives ack until session outbox purge.
     fn enqueue_outbox(
         &self,
         bot_id: &str,
@@ -368,14 +369,16 @@ CREATE TABLE IF NOT EXISTS reactions (
 );
 CREATE TABLE IF NOT EXISTS outbox (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    bot_id TEXT NOT NULL, session_id TEXT, idem_key TEXT, frame TEXT NOT NULL, created_at INTEGER NOT NULL
+    bot_id TEXT NOT NULL, session_id TEXT, idem_key TEXT, frame TEXT NOT NULL, created_at INTEGER NOT NULL,
+    delivered_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_bot ON outbox(bot_id, seq);
+CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(bot_id, seq) WHERE delivered_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_outbox_session_bot ON outbox(session_id, bot_id);
--- Idempotency key = "{bot_id}:{message_id}". UNIQUE makes enqueue idempotent while a
--- frame is still pending, so a retry / backfill re-enqueue of the same logical message
--- to the same bot can't queue a duplicate (C2). NULLs (legacy rows) are distinct in
--- SQLite, so old frames are unaffected. Cleared on ack, so legit re-delivery still works.
+-- Idempotency key = "{bot_id}:{message_id}". A row per (bot_id, message_id)
+-- persists from first enqueue until the session's outbox is purged (A5/trim/replace);
+-- delivered_at NULL = pending. This is what makes idem_key dedup survive ack (A2).
+-- NULLs (legacy rows) are distinct in SQLite, so old frames are unaffected.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_idem ON outbox(idem_key);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY, value TEXT NOT NULL
@@ -404,8 +407,13 @@ fn migrate(conn: &Connection) -> Result<()> {
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN findings_green INTEGER", []);
     let _ = conn.execute("ALTER TABLE outbox ADD COLUMN session_id TEXT", []);
     let _ = conn.execute("ALTER TABLE outbox ADD COLUMN idem_key TEXT", []);
+    let _ = conn.execute("ALTER TABLE outbox ADD COLUMN delivered_at INTEGER", []);
     let _ = conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_idem ON outbox(idem_key)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(bot_id, seq) WHERE delivered_at IS NULL",
         [],
     );
     let _ = conn.execute("ALTER TABLE bots ADD COLUMN provider TEXT", []);
@@ -1367,8 +1375,9 @@ impl Store for SqliteStore {
         frame: &str,
     ) -> Result<()> {
         let c = self.conn.lock().unwrap();
-        // OR IGNORE: a duplicate idem_key means the same frame is already pending —
-        // dropping the second insert is the whole point (idempotent enqueue).
+        // OR IGNORE: a duplicate idem_key means this logical frame is already
+        // pending or delivered for the session — dropping the second insert is
+        // the whole point (idempotent enqueue).
         c.execute(
             "INSERT OR IGNORE INTO outbox (bot_id, session_id, idem_key, frame, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![bot_id, session_id, idem_key, frame, now_ms()],
@@ -1378,15 +1387,21 @@ impl Store for SqliteStore {
 
     fn pending_outbox(&self, bot_id: &str) -> Result<Vec<(i64, String)>> {
         let c = self.conn.lock().unwrap();
-        let mut stmt =
-            c.prepare("SELECT seq, frame FROM outbox WHERE bot_id = ?1 ORDER BY seq ASC")?;
+        let mut stmt = c.prepare(
+            "SELECT seq, frame FROM outbox
+             WHERE bot_id = ?1 AND delivered_at IS NULL
+             ORDER BY seq ASC",
+        )?;
         let rows = stmt.query_map(params![bot_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     fn ack_outbox(&self, seq: i64) -> Result<()> {
         let c = self.conn.lock().unwrap();
-        c.execute("DELETE FROM outbox WHERE seq = ?1", params![seq])?;
+        c.execute(
+            "UPDATE outbox SET delivered_at = ?2 WHERE seq = ?1",
+            params![seq, now_ms()],
+        )?;
         Ok(())
     }
 
@@ -1530,8 +1545,11 @@ impl Store for SqliteStore {
             0.0
         };
 
-        let outbox_pending: i64 =
-            c.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))?;
+        let outbox_pending: i64 = c.query_row(
+            "SELECT COUNT(*) FROM outbox WHERE delivered_at IS NULL",
+            [],
+            |r| r.get(0),
+        )?;
 
         Ok(json!({
             "sessions": {
@@ -1615,6 +1633,22 @@ mod tests {
     }
 
     #[test]
+    fn stats_counts_only_pending_outbox_rows() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .enqueue_outbox("bot1", "s1", "bot1:m1", "frameA")
+            .unwrap();
+        store
+            .enqueue_outbox("bot1", "s1", "bot1:m2", "frameB")
+            .unwrap();
+        let seq = store.pending_outbox("bot1").unwrap()[0].0;
+        store.ack_outbox(seq).unwrap();
+
+        let s = store.stats(now_ms()).unwrap();
+        assert_eq!(s["outbox"]["pending"], json!(1));
+    }
+
+    #[test]
     fn active_session_for_trigger_dedups_only_while_open() {
         let store = SqliteStore::memory().unwrap();
         let pr = "https://api.github.com/repos/o/r/pulls/1";
@@ -1643,17 +1677,66 @@ mod tests {
         store.enqueue_outbox("bot1", "s1", key, "frameA").unwrap();
         assert_eq!(store.pending_outbox("bot1").unwrap().len(), 1);
 
+        // After ack, the retained delivered marker keeps the idem_key occupied:
+        // retrying the same logical message during this session is still a no-op.
+        let seq = store.pending_outbox("bot1").unwrap()[0].0;
+        store.ack_outbox(seq).unwrap();
+        store.enqueue_outbox("bot1", "s1", key, "frameA").unwrap();
+        assert!(store.pending_outbox("bot1").unwrap().is_empty());
+
         // A different message to the same bot still queues.
         store
             .enqueue_outbox("bot1", "s1", "bot1:msg2", "frameB")
             .unwrap();
-        assert_eq!(store.pending_outbox("bot1").unwrap().len(), 2);
+        assert_eq!(store.pending_outbox("bot1").unwrap().len(), 1);
+    }
 
-        // After ack the key frees up, so a legit re-delivery works again.
+    #[test]
+    fn ack_outbox_marks_delivered_and_pending_excludes_it() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .enqueue_outbox("bot1", "s1", "bot1:m1", "frameA")
+            .unwrap();
+        let seq = store.pending_outbox("bot1").unwrap()[0].0;
+
+        store.ack_outbox(seq).unwrap();
+
+        assert!(store.pending_outbox("bot1").unwrap().is_empty());
+        let delivered_at: Option<i64> = {
+            let c = store.conn.lock().unwrap();
+            c.query_row(
+                "SELECT delivered_at FROM outbox WHERE seq = ?1",
+                params![seq],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(delivered_at.is_some());
+    }
+
+    #[test]
+    fn purge_outbox_for_session_bot_deletes_delivered_rows_and_rearms_idem_key() {
+        let store = SqliteStore::memory().unwrap();
+        let key = "bot1:m1";
+        store
+            .enqueue_outbox("bot1", "s1", key, "frameA")
+            .unwrap();
         let seq = store.pending_outbox("bot1").unwrap()[0].0;
         store.ack_outbox(seq).unwrap();
-        store.enqueue_outbox("bot1", "s1", key, "frameA").unwrap();
-        assert_eq!(store.pending_outbox("bot1").unwrap().len(), 2);
+        assert!(store.pending_outbox("bot1").unwrap().is_empty());
+
+        store.purge_outbox_for_session_bot("s1", "bot1").unwrap();
+        let rows: i64 = {
+            let c = store.conn.lock().unwrap();
+            c.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(rows, 0);
+
+        store
+            .enqueue_outbox("bot1", "s1", key, "frameA")
+            .unwrap();
+        assert_eq!(store.pending_outbox("bot1").unwrap().len(), 1);
     }
 
     #[test]

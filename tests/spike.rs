@@ -4,6 +4,7 @@
 //! closed verdict (3 and 5 bots), incl. one-thread-per-session convergence.
 
 use futures_util::{SinkExt, StreamExt};
+use openab_control_plane::protocol::{Content, SenderInfo};
 use openab_control_plane::store::{SqliteStore, Store};
 use openab_control_plane::{build_router, orchestrator, state::AppState};
 use serde_json::{json, Value};
@@ -37,6 +38,21 @@ async fn spawn_server_with_discovery_token(token: &str) -> SocketAddr {
     );
     let (addr, _) = spawn_server_with_app_state(state).await;
     addr
+}
+
+async fn spawn_server_with_ping_secs(secs: u64) -> (SocketAddr, Arc<AppState>) {
+    let store: Arc<dyn Store> = Arc::new(SqliteStore::memory().unwrap());
+    let state = AppState::new_with_options_and_ws_ping_secs(
+        store,
+        None,
+        None,
+        None,
+        None,
+        "http://control-plane.zeabur.internal:8090".to_string(),
+        None,
+        secs,
+    );
+    spawn_server_with_app_state(state).await
 }
 
 async fn spawn_server_with_app_state(state: Arc<AppState>) -> (SocketAddr, Arc<AppState>) {
@@ -344,6 +360,84 @@ async fn connect(
         .await
         .unwrap();
     ws
+}
+
+async fn wait_for_connected(state: &Arc<AppState>, bot_id: &str, connected: bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    loop {
+        let actual = state
+            .store
+            .bot_inventory(bot_id)
+            .unwrap()
+            .unwrap()
+            .connected;
+        if actual == connected {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "bot {bot_id} did not reach connected={connected}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn silent_peer_is_disconnected_by_ping_deadline() {
+    let (addr, state) = spawn_server_with_ping_secs(1).await;
+    let base = addr.to_string();
+    let (bot_id, token) = register_bot(&base, "silent", "reviewer").await;
+    let _silent_ws = connect(addr, &token).await;
+    wait_for_connected(&state, &bot_id, true).await;
+
+    wait_for_connected(&state, &bot_id, false).await;
+
+    let sender = SenderInfo {
+        id: "client".into(),
+        name: "client".into(),
+        display_name: "client".into(),
+        is_bot: false,
+    };
+    assert!(!state.deliver_event(
+        &bot_id,
+        "ses_ping",
+        None,
+        sender,
+        Content::text("queued after silent disconnect"),
+        vec![],
+        "msg_ping",
+    ));
+    let pending = state.store.pending_outbox(&bot_id).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(pending[0].1.contains("queued after silent disconnect"));
+}
+
+#[tokio::test]
+async fn live_peer_stays_connected() {
+    let (addr, state) = spawn_server_with_ping_secs(1).await;
+    let base = addr.to_string();
+    let (bot_id, token) = register_bot(&base, "live", "reviewer").await;
+    let mut ws = connect(addr, &token).await;
+    wait_for_connected(&state, &bot_id, true).await;
+
+    let reader = tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
+                Ok(Some(Ok(Message::Ping(payload)))) => {
+                    ws.send(Message::Pong(payload)).await.unwrap();
+                }
+                Ok(Some(Ok(Message::Close(_)))) => panic!("server closed a live peer"),
+                Ok(Some(Ok(_))) | Err(_) => {}
+                Ok(Some(Err(e))) => panic!("websocket error: {e}"),
+                Ok(None) => panic!("websocket closed"),
+            }
+        }
+    });
+    reader.await.unwrap();
+
+    let inv = state.store.bot_inventory(&bot_id).unwrap().unwrap();
+    assert!(inv.connected, "live peer should remain connected");
 }
 
 #[derive(Clone, Copy)]

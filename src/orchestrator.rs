@@ -1731,6 +1731,43 @@ mod tests {
     }
 
     #[test]
+    fn relay_settled_twice_delivers_logical_message_once() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let from = store.register_bot("from", "reviewer", "h1", "t1").unwrap();
+        let to = store.register_bot("to", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                1,
+                None,
+                &[from.id.clone(), to.id.clone()],
+                "review_council",
+            )
+            .unwrap();
+        store
+            .add_message(
+                &session.id,
+                None,
+                "bot",
+                Some(&from.id),
+                "settled final [done]",
+                None,
+            )
+            .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        state.register_conn(&to.id, tx);
+
+        relay_settled(&state, &session, &from.id, &to.id).unwrap();
+        relay_settled(&state, &session, &from.id, &to.id).unwrap();
+
+        let frames: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].contains("settled final"));
+    }
+
+    #[test]
     fn liveness_replaces_dead_chair_with_chair_capable_spare() {
         let (state, store, session, chair, _rev1, _rev2) = liveness_setup();
         let chair2 = store.register_bot("chair2", "chair", "h5", "t5").unwrap();
