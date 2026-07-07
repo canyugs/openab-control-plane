@@ -363,6 +363,7 @@ CREATE TABLE IF NOT EXISTS messages (
     author_kind TEXT NOT NULL, author_id TEXT, content TEXT NOT NULL,
     reply_to TEXT, created_at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 CREATE TABLE IF NOT EXISTS reactions (
     message_id TEXT NOT NULL, bot_id TEXT NOT NULL, emoji TEXT NOT NULL,
     PRIMARY KEY (message_id, bot_id, emoji)
@@ -438,6 +439,10 @@ fn migrate(conn: &Connection) -> Result<()> {
     );
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_outbox_session_bot ON outbox(session_id, bot_id)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at)",
         [],
     )?;
     ensure_no_duplicate_active_trigger_refs(conn)?;
@@ -540,6 +545,9 @@ pub struct SqliteStore {
 impl SqliteStore {
     pub fn open(path: &str) -> Result<SqliteStore> {
         let conn = Connection::open(path)?;
+        // Boundary-review C1 measured a 10x delivery-path win with WAL + NORMAL.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
         Ok(SqliteStore {
@@ -1575,6 +1583,101 @@ impl Store for SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn temp_db_path(test_name: &str) -> String {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "ocp-{test_name}-{}-{}.db",
+            std::process::id(),
+            now_ms()
+        ));
+        remove_db_files(&path);
+        path.to_string_lossy().into_owned()
+    }
+
+    fn remove_db_files(path: &PathBuf) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn open_applies_wal_and_normal_synchronous() {
+        let path = temp_db_path("open-applies-wal-and-normal-synchronous");
+        let store = SqliteStore::open(&path).unwrap();
+        let c = store.conn.lock().unwrap();
+
+        let journal_mode: String = c
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        let synchronous: i64 = c
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .unwrap();
+
+        assert_eq!(journal_mode, "wal");
+        assert_eq!(synchronous, 1);
+
+        drop(c);
+        drop(store);
+        remove_db_files(&PathBuf::from(path));
+    }
+
+    #[test]
+    fn messages_query_uses_session_index() {
+        let store = SqliteStore::memory().unwrap();
+        let c = store.conn.lock().unwrap();
+        let mut stmt = c
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT id, session_id, thread_id, author_kind, author_id, content, reply_to, created_at
+                 FROM messages WHERE session_id = ?1 ORDER BY created_at ASC",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map(params!["session-1"], |r| r.get::<_, String>(3))
+            .unwrap();
+        let plan = rows
+            .map(|r| r.unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            plan.contains("USING INDEX idx_messages_session"),
+            "unexpected query plan:\n{plan}"
+        );
+        assert!(
+            !plan.contains("USE TEMP B-TREE FOR ORDER BY"),
+            "unexpected query plan:\n{plan}"
+        );
+    }
+
+    #[test]
+    fn migrate_adds_index_to_legacy_db() {
+        let path = temp_db_path("migrate-adds-index-to-legacy-db");
+        {
+            let store = SqliteStore::open(&path).unwrap();
+            let c = store.conn.lock().unwrap();
+            c.execute("DROP INDEX IF EXISTS idx_messages_session", [])
+                .unwrap();
+        }
+
+        let store = SqliteStore::open(&path).unwrap();
+        let c = store.conn.lock().unwrap();
+        let index_count: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_session'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(index_count, 1);
+
+        drop(c);
+        drop(store);
+        remove_db_files(&PathBuf::from(path));
+    }
 
     #[test]
     fn percentile_nearest_rank() {
