@@ -1363,7 +1363,7 @@ async fn review_pr(
         }
     }
 
-    let result = crate::council::convene_for_pr(&state, &req.repo, req.pr, req.preset, None)
+    let result = crate::council::convene_for_pr(&state, &req.repo, req.pr, req.preset, None, None)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     match result {

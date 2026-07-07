@@ -18,6 +18,19 @@ use std::sync::Arc;
 /// `include_str!` so the CI/manual path and the webhook path post identical prompts.
 const TRIGGER_TMPL: &str = include_str!("../scripts/pr-review-trigger-pointer.tmpl");
 
+pub(crate) const REREVIEW_CONTEXT_START: &str = "===== RE-REVIEW CONTEXT =====";
+pub(crate) const REREVIEW_CONTEXT_END: &str = "===== END RE-REVIEW CONTEXT =====";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewRereviewContext {
+    /// Prior review round head, carried only when the prior fingerprint was `sha:<sha>`.
+    pub base_sha: Option<String>,
+    /// Author fix notes from `@handle review [notes]`. `Some("")` preserves a bare command.
+    pub author_notes: Option<String>,
+    /// `@handle full review`: omit the delta header and tell bots to review from scratch.
+    pub from_scratch: bool,
+}
+
 /// Session `trigger_ref` for a PR — also the idempotency key (a re-delivered webhook
 /// dedups to the open council). Matches open-council.sh's `REF`.
 pub fn pr_trigger_ref(repo: &str, num: u64) -> String {
@@ -260,11 +273,49 @@ fn assign_angles(roster: &[String], angles: &[&str]) -> (Vec<String>, i64, Strin
 /// see the real title when they fetch the PR). `angle_assignment` is the preset block
 /// (empty = generic review, no angles).
 pub fn render_trigger(repo: &str, num: u64, angle_assignment: &str) -> String {
+    render_trigger_with_context(repo, num, angle_assignment, None)
+}
+
+pub fn render_trigger_with_context(
+    repo: &str,
+    num: u64,
+    angle_assignment: &str,
+    rereview_context: Option<&ReviewRereviewContext>,
+) -> String {
+    let mut trigger = render_base_trigger(repo, num, angle_assignment);
+    if let Some(ctx) = rereview_context {
+        trigger.push_str(&render_rereview_context(ctx));
+    }
+    trigger
+}
+
+fn render_base_trigger(repo: &str, num: u64, angle_assignment: &str) -> String {
     TRIGGER_TMPL
         .replace("{{REPO}}", repo)
         .replace("{{NUM}}", &num.to_string())
         .replace("{{TITLE}}", "")
         .replace("{{ANGLE_ASSIGNMENT}}", angle_assignment)
+}
+
+fn render_rereview_context(ctx: &ReviewRereviewContext) -> String {
+    let mut out = format!("\n\n{REREVIEW_CONTEXT_START}\n");
+    if ctx.from_scratch {
+        out.push_str("Mode: full review from scratch\n");
+    } else if let Some(sha) = ctx.base_sha.as_deref().filter(|sha| !sha.is_empty()) {
+        out.push_str(&format!("Delta: review the diff since `{sha}`\n"));
+        out.push_str(&format!(
+            "Rebase fallback: If `git merge-base --is-ancestor {sha} HEAD` fails, fall back to a full review and say so in the verdict.\n"
+        ));
+    }
+    if let Some(notes) = ctx.author_notes.as_deref() {
+        out.push_str("Author fix notes:\n");
+        out.push_str(notes);
+        if !notes.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out.push_str(REREVIEW_CONTEXT_END);
+    out
 }
 
 /// Convene a council for a PR: open a session with the standing roster (chair =
@@ -276,16 +327,39 @@ pub async fn convene_for_pr(
     num: u64,
     label_preset: Option<String>,
     trigger_fingerprint: Option<String>,
+    mut rereview_context: Option<ReviewRereviewContext>,
 ) -> Result<ControllerActionResult> {
     let (roster, _) = runtime_council_roster(state)?;
+    let trigger_ref = pr_trigger_ref(repo, num);
+    if let Some(ctx) = rereview_context.as_mut() {
+        if !ctx.from_scratch && ctx.base_sha.is_none() {
+            ctx.base_sha = latest_prior_review_sha(state, &trigger_ref)?;
+        }
+    }
     let action = review_open_session_action_with_roster_and_fingerprint(
         repo,
         num,
         label_preset,
         roster,
         trigger_fingerprint,
+        rereview_context,
     )?;
     controller::execute(state, ControllerAction::OpenSession(action)).map_err(Into::into)
+}
+
+fn latest_prior_review_sha(state: &Arc<AppState>, trigger_ref: &str) -> Result<Option<String>> {
+    Ok(state
+        .store
+        .list_sessions(Some(trigger_ref), None, 1)?
+        .into_iter()
+        .find_map(|session| sha_from_fingerprint(session.trigger_fingerprint.as_deref())))
+}
+
+fn sha_from_fingerprint(fingerprint: Option<&str>) -> Option<String> {
+    fingerprint?
+        .strip_prefix("sha:")
+        .filter(|sha| !sha.is_empty())
+        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -310,6 +384,7 @@ fn review_open_session_action_with_roster(
         label_preset,
         roster,
         Some(pr_trigger_ref(repo, num)),
+        None,
     )
 }
 
@@ -319,6 +394,7 @@ fn review_open_session_action_with_roster_and_fingerprint(
     label_preset: Option<String>,
     roster: Vec<String>,
     trigger_fingerprint: Option<String>,
+    rereview_context: Option<ReviewRereviewContext>,
 ) -> Result<OpenSessionAction> {
     if roster.is_empty() {
         return Err(anyhow!("empty council roster"));
@@ -330,7 +406,7 @@ fn review_open_session_action_with_roster_and_fingerprint(
     let (eff_roster, quorum, assignment) = assign_angles(&roster, &angles);
     tracing::info!(preset = %preset, quorum, "convene preset resolved");
     let trigger_ref = pr_trigger_ref(repo, num);
-    let trigger = render_trigger(repo, num, &assignment);
+    let trigger = render_trigger_with_context(repo, num, &assignment, rereview_context.as_ref());
     let chair_bot = eff_roster
         .first()
         .cloned()
@@ -493,6 +569,44 @@ mod tests {
     fn render_trigger_includes_angle_assignment() {
         let t = render_trigger("o/r", 1, "- rev1 → security");
         assert!(t.contains("- rev1 → security"));
+    }
+
+    #[test]
+    fn render_trigger_includes_rereview_context() {
+        let t = render_trigger_with_context(
+            "o/r",
+            1,
+            "- rev1 → security",
+            Some(&ReviewRereviewContext {
+                base_sha: Some("abc123".into()),
+                author_notes: Some("Fixed F1 without touching F2.".into()),
+                from_scratch: false,
+            }),
+        );
+
+        assert!(t.contains("===== RE-REVIEW CONTEXT ====="));
+        assert!(t.contains("Delta: review the diff since `abc123`"));
+        assert!(t.contains("Author fix notes:\nFixed F1 without touching F2."));
+        assert!(t.contains("===== END RE-REVIEW CONTEXT ====="));
+    }
+
+    #[test]
+    fn render_trigger_full_review_omits_delta_context() {
+        let t = render_trigger_with_context(
+            "o/r",
+            1,
+            "- rev1 → security",
+            Some(&ReviewRereviewContext {
+                base_sha: Some("abc123".into()),
+                author_notes: Some("Start over.".into()),
+                from_scratch: true,
+            }),
+        );
+
+        assert!(t.contains("===== RE-REVIEW CONTEXT ====="));
+        assert!(t.contains("Mode: full review from scratch"));
+        assert!(!t.contains("diff since `abc123`"));
+        assert!(t.contains("Author fix notes:\nStart over."));
     }
 
     #[test]
