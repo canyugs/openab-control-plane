@@ -38,7 +38,7 @@ There is no outbound HTTP callback.
      "trigger_ref": "github:pr/owner/repo#123",
      "mode": "review_council",
      "verdict": "LGTM ✅ — …",
-     "reason": "normal" | "timeout",
+     "reason": "normal" | "timeout" | "superseded",
      "roster": ["chair", "rev1", "rev2"],
      "ts": 1782967850544
    }
@@ -57,6 +57,11 @@ There is no outbound HTTP callback.
    called from both close paths. It reads session metadata from the store,
    builds the payload, and spawns the POST. The helper is a no-op when
    `state.close_webhook_url` is `None`.
+
+   Amendment 2026-07 (M1): `"superseded"` is emitted by the P1 supersede path.
+   Until Stage 3 adds a durable close reason, the declared crash window is: a
+   crash after the supersede transaction commits but before side effects fire
+   loses the webhook event. It is lost, not delayed; there is no pre-P3 re-drive.
 
 5. **No HMAC signature in v1.** The webhook receiver should validate the source
    by network policy (internal URL, VPN, firewall) rather than a shared secret.

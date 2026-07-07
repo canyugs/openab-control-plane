@@ -29,6 +29,14 @@ participate and quorum = every reviewer in it.
 
 `OABCP_MAX_ROSTER` (default 16) caps a session: chair + 15 reviewers.
 
+**C5 provider ceiling:** the measured quota knee is much lower than the plane's
+mechanical roster cap. In `docs/eval/scale-knee.md`, 429s appeared at N=5
+reviewers even split across two provider keys, and N=6 degraded into a 630s close
+with `decision=None` plus a missed 🔴. Rule of thumb: plan around ~4 reviewers
+per provider key; provider quota binds an order of magnitude before OCP's
+fanout/state machinery. K-of-N quorum remains a Stage 4 app-layer policy, not a
+Stage 0 mechanism change.
+
 ## ⚠️ Three papercuts that make "just scale the plane" not work
 
 Learned the hard way scaling 2→4 reviewers. Each dial has a *separate* source of
@@ -179,7 +187,9 @@ curl -s -H "Authorization: Bearer $KEY" "$PLANE/v1/sessions?limit=1" \
 - **Shared model quota.** N reviewers on one provider key hit rate limits. The
   2026-07-05 4-way run split 3 Kiro / 2 Claude across two keys → zero throttling.
   Mix providers (`--bot-agents rev=claude,…` + that provider's Secret) before a
-  single key saturates.
+  single key saturates. For C5 capacity planning, treat ~4 reviewers per provider
+  key as the ceiling until the provider quota story changes; adding more reviewers
+  has already failed before the plane mechanisms did.
 - **Double-connect on fresh-pod startup (C8 — FIXED #100).** A fresh pod that
   briefly overlaps the old one (two replicasets during a roll, or a scale-0→1
   dial) used to be able to win the hub slot then die and orphan the survivor →

@@ -210,8 +210,12 @@ pub fn post_client_message(
     let thread = state.store.thread_for_session(session_id)?;
     // Who is prompted to act now is a coordinator decision: PR councils mention
     // reviewers first, solo mentions the lone bot, and pipeline mentions stage 0.
-    // Non-starters still get the trigger as context (gates/history) but aren't
-    // mentioned, so they wait.
+    // A9: Non-starters are not mentioned. On stock OAB the opening trigger is
+    // delivered before any recipient thread exists; if the group mention gate
+    // skips it, the event is dropped, not deferred. They first learn the session
+    // through a later Relay or backfill. Stage 1 in-thread trigger re-delivery
+    // must mint a new message row/message_id, because A2's outbox idem_key will
+    // survive ack once delivered markers land.
     // A stock OAB bot in a group gates on @mention before a thread exists
     // (gateway.rs is_responder); bot_username == the plane's bot name (served in
     // /bot-config), so a recipient's own name matches its gate.

@@ -129,18 +129,18 @@ This is deliberately the minimum that closes the hole:
   matching value to its pod as `OABCP_BOT_TOKEN`. This closes the real remaining
   exposure: the templates deploy into environments we don't control, and until
   now they shipped with the plaintext-serving path live.
-- **Step 3 (flip the process-global default, drop `token_plain`)** — **deferred,
-  by design**:
-  - *Not flipping the default.* `externalize_tokens()` and `seed()` read the
-    process-global env; flipping the default makes any `seed()` without a
-    `OABCP_BOT_TOKEN_<NAME>` fail (including hermetic unit tests and a bare
-    `cargo run`), for no gain now that the shipped templates set `=1` explicitly.
-    The default's value is moot for real deploys.
-  - *Not dropping `token_plain`.* It still backs the API-registration path
-    (`POST /v1/bots` → `/bot-config`, which reads `bot_token_plain`). Seeded bots
-    store an empty string, so it is harmless at rest under externalized mode.
-    Removing it means reworking that path — separate from the template channel
-    this ADR targets.
+- **Step 3 (D1, flip the process-global default, then drop `token_plain`)** —
+  deferred behind named blockers, in this order:
+  1. `identity::issue()` still persists plaintext unconditionally and never
+     consults `externalize_tokens()`. With the flag on, an API-registered bot is
+     unbootable: `POST /v1/bots` stores plaintext while `/bot-config` serves only
+     the env reference.
+  2. `POST /v1/bots` needs an externalized-token story, either operator-supplied
+     token material or a registration flow that never depends on OCP rendering the
+     plaintext token back through `/bot-config`.
+  3. After API registration is externalization-safe, flip the default for new
+     deployments.
+  4. Only then drop `token_plain`.
 
 ## References
 

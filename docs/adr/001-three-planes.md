@@ -65,3 +65,20 @@ Both land on the **membership plane**, today's weakest seam:
 - **Sequencing**: liveness watchdog (make what exists *trustworthy*) precedes
   dynamic membership / self-recruit (make membership *grow*). A system that
   neither guarantees termination nor bounds its own population is the wrong order.
+
+## Armed split test (2026-07)
+
+The split decision is falsifiable only after the Stage 1 data-plane hardening
+lands: SQLite WAL PRAGMAs (C1), the messages index (C2), and A2's delivered-marker
+definition of pending. After that point, revisit a networked `Store` swap if
+`/v1/stats` shows either of these sustained conditions:
+
+- `outbox.pending > 100` for 10 minutes; or
+- `sessions.time_to_verdict_ms.p95 > watchdog/2` (with the default
+  `OABCP_SESSION_TIMEOUT_SECS=600`, that is `p95 > 300000` ms).
+
+A2 interplay: once delivered markers land, `outbox.pending` means
+`delivered_at IS NULL`; retained delivered rows must not poison the split metric.
+Separately, the first false-trim or zombie-connected incident after Stage 1
+reopens the membership-registry split, because membership is the weakest plane
+identified above.
