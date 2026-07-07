@@ -103,7 +103,8 @@ directly at its final `config.toml`; see [ADR 010](docs/adr/010-openab-configurl
 Full install docs:
 
 - [docs/install-pat.md](docs/install-pat.md) for the PAT copied Action path.
-- [docs/install-github-app.md](docs/install-github-app.md) for the GitHub App webhook path.
+- [docs/install-github-app-quickstart.md](docs/install-github-app-quickstart.md) — 一頁 Quick Start（非技術用戶，繁中）.
+- [docs/install-github-app.md](docs/install-github-app.md) — 完整 SOP（`scripts/install-github-app.sh`）.
 
 ## Run A Review
 
