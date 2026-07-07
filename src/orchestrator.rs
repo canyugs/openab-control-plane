@@ -298,6 +298,7 @@ pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bo
     if !state.store.close_if_active(session_id)? {
         return Ok(false); // already terminal
     }
+    purge_session_outbox_after_close(state, session_id);
     // Central revoke: scoped GitHub tokens die with the session (Agent Identity).
     if let Err(e) = crate::identity::revoke_session_github_tokens(
         state.store.as_ref(),
@@ -359,6 +360,15 @@ pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bo
     fire_close_webhook(state, session_id, &verdict, "timeout");
     tracing::warn!("watchdog force-closed stale session {session_id}");
     Ok(true)
+}
+
+fn purge_session_outbox_after_close(state: &Arc<AppState>, session_id: &str) {
+    // Post-close drop used to hold only on the ledger (`deliver_event` gate). Purging
+    // the durable queue makes it hold at the bot's eyes too. Reopened sessions post
+    // fresh messages with fresh ids, so they do not depend on these stale frames.
+    if let Err(e) = state.store.purge_outbox_for_session(session_id) {
+        tracing::warn!("purge outbox for closed session {session_id} failed: {e}");
+    }
 }
 
 /// Liveness policy (A3): a roster member disconnected past the grace window is
@@ -1131,6 +1141,7 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     .store
                     .advance_state(&session.id, from, SessionState::Closed)?
                 {
+                    purge_session_outbox_after_close(state, &session.id);
                     // Central revoke: scoped GitHub tokens die with the session.
                     if let Err(e) = crate::identity::revoke_session_github_tokens(
                         state.store.as_ref(),
@@ -1879,6 +1890,105 @@ mod tests {
         let session = store.session(&session.id).unwrap().unwrap();
         assert_eq!(session.chair_bot.as_deref(), Some(chair2.id.as_str()));
         assert_eq!(store.roster(&session.id).unwrap(), vec![chair2.id]);
+    }
+
+    fn pending_frames_for_session(store: &SqliteStore, bot_id: &str, session_id: &str) -> usize {
+        store
+            .pending_outbox(bot_id)
+            .unwrap()
+            .into_iter()
+            .filter(|(_, frame)| {
+                serde_json::from_str::<serde_json::Value>(frame)
+                    .ok()
+                    .and_then(|v| v["channel"]["id"].as_str().map(str::to_string))
+                    .as_deref()
+                    == Some(session_id)
+            })
+            .count()
+    }
+
+    #[test]
+    fn normal_close_purges_session_outbox() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev1 = store.register_bot("rev1", "reviewer", "h2", "t2").unwrap();
+        let offline = store
+            .register_bot("offline", "reviewer", "h3", "t3")
+            .unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), rev1.id.clone(), offline.id.clone()],
+                "council",
+            )
+            .unwrap();
+
+        post_client_message(&state, &session.id, "review this").unwrap();
+        assert!(
+            pending_frames_for_session(&store, &offline.id, &session.id) > 0,
+            "offline reviewer should hold queued session frames before close"
+        );
+
+        handle_reply(&state, &rev1.id, msg_reply(&session.id, "findings [done]")).unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Quorum,
+        );
+        handle_reply(
+            &state,
+            &chair.id,
+            msg_reply(&session.id, "final verdict [[verdict:approve]] [done]"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Closed,
+        );
+        assert_eq!(
+            pending_frames_for_session(&store, &offline.id, &session.id),
+            0,
+            "closed session frames must not replay when the offline reviewer reconnects"
+        );
+    }
+
+    #[test]
+    fn watchdog_close_purges_session_outbox() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev = store.register_bot("rev", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), rev.id.clone()],
+                "council",
+            )
+            .unwrap();
+
+        post_client_message(&state, &session.id, "review this").unwrap();
+        assert!(
+            pending_frames_for_session(&store, &rev.id, &session.id) > 0,
+            "offline reviewer should hold queued session frames before watchdog close"
+        );
+
+        assert!(force_close_timeout(&state, &session.id).unwrap());
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Closed,
+        );
+        assert_eq!(
+            pending_frames_for_session(&store, &rev.id, &session.id),
+            0,
+            "watchdog close must purge stale reconnect frames"
+        );
     }
 
     #[test]
