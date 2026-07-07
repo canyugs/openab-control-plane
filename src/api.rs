@@ -1124,9 +1124,7 @@ fn chair_pre_boot_hook_script(working_dir: &str) -> String {
 }
 
 /// Serves a stock OAB pod its full config.toml with `[gateway]` pointing back at
-/// this plane. Mirrors openab-hub's `/bot-config/{id}`. The chair's "open a
-/// thread + @mention reviewers" behavior comes from the trigger message, not
-/// steering — so the config stays minimal.
+/// this plane. Mirrors openab-hub's `/bot-config/{id}`.
 async fn bot_config(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -1208,6 +1206,9 @@ allow_all_users = true
 allow_bot_messages = true
 bot_username = {name}
 streaming = true
+# OCP backfill and council cross-talk intentionally arrive as in-thread bursts;
+# per-thread mode lets OAB batch that burst into one context turn.
+message_processing_mode = "per-thread"
 
 [agent]
 command = {command}{args_line}
@@ -1345,9 +1346,15 @@ async fn stream_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_profile_from, chair_pre_boot_hook_script, parse_extra_agent_inherit_env, toml_string,
-        AgentProfile,
+        agent_profile_from, bot_config, chair_pre_boot_hook_script, parse_extra_agent_inherit_env,
+        toml_string, AgentProfile, BotConfigParams,
     };
+    use crate::state::AppState;
+    use crate::store::{SqliteStore, Store};
+    use axum::body::to_bytes;
+    use axum::extract::{Path, Query, State};
+    use axum::response::IntoResponse;
+    use std::sync::Arc;
 
     #[test]
     fn maps_known_provider_profiles_and_splits_args() {
@@ -1450,6 +1457,28 @@ mod tests {
         assert!(!encoded.contains("'''"));
         assert!(encoded.contains("/home/o"));
         assert!(encoded.contains("malley"));
+    }
+
+    #[tokio::test]
+    async fn bot_config_pins_per_thread_processing() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let bot = store
+            .register_bot("rev", "reviewer", "hash", "plain-token")
+            .unwrap();
+
+        let response = bot_config(
+            State(state),
+            Path(bot.id),
+            Query(BotConfigParams { agent: None }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let rendered = std::str::from_utf8(&body).unwrap();
+
+        assert!(rendered.contains("message_processing_mode = \"per-thread\""));
     }
 
     #[test]

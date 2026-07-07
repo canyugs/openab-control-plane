@@ -123,6 +123,8 @@ pub struct Message {
     pub thread_id: Option<String>,
     pub author_kind: String, // "bot" | "client" | "system"
     pub author_id: Option<String>,
+    /// NULL = broadcast; Some(bot_id) = scoped to one bot/seat owner.
+    pub audience: Option<String>,
     pub content: String,
     pub reply_to: Option<String>,
     pub created_at: i64,
@@ -260,6 +262,7 @@ pub trait Store: Send + Sync {
         thread_id: Option<&str>,
         author_kind: &str,
         author_id: Option<&str>,
+        audience: Option<&str>,
         content: &str,
         reply_to: Option<&str>,
     ) -> Result<Message>;
@@ -360,7 +363,7 @@ CREATE TABLE IF NOT EXISTS threads (
 );
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY, session_id TEXT NOT NULL, thread_id TEXT,
-    author_kind TEXT NOT NULL, author_id TEXT, content TEXT NOT NULL,
+    author_kind TEXT NOT NULL, author_id TEXT, audience TEXT, content TEXT NOT NULL,
     reply_to TEXT, created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
@@ -404,8 +407,12 @@ fn migrate(conn: &Connection) -> Result<()> {
     );
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN decision TEXT", []);
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN findings_red INTEGER", []);
-    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN findings_yellow INTEGER", []);
+    let _ = conn.execute(
+        "ALTER TABLE sessions ADD COLUMN findings_yellow INTEGER",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN findings_green INTEGER", []);
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN audience TEXT", []);
     let _ = conn.execute("ALTER TABLE outbox ADD COLUMN session_id TEXT", []);
     let _ = conn.execute("ALTER TABLE outbox ADD COLUMN idem_key TEXT", []);
     let _ = conn.execute("ALTER TABLE outbox ADD COLUMN delivered_at INTEGER", []);
@@ -1245,6 +1252,7 @@ impl Store for SqliteStore {
         thread_id: Option<&str>,
         author_kind: &str,
         author_id: Option<&str>,
+        audience: Option<&str>,
         content: &str,
         reply_to: Option<&str>,
     ) -> Result<Message> {
@@ -1252,9 +1260,9 @@ impl Store for SqliteStore {
         let created_at = now_ms();
         let c = self.conn.lock().unwrap();
         c.execute(
-            "INSERT INTO messages (id, session_id, thread_id, author_kind, author_id, content, reply_to, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![id, session_id, thread_id, author_kind, author_id, content, reply_to, created_at],
+            "INSERT INTO messages (id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at],
         )?;
         Ok(Message {
             id,
@@ -1262,6 +1270,7 @@ impl Store for SqliteStore {
             thread_id: thread_id.map(String::from),
             author_kind: author_kind.to_string(),
             author_id: author_id.map(String::from),
+            audience: audience.map(String::from),
             content: content.to_string(),
             reply_to: reply_to.map(String::from),
             created_at,
@@ -1281,7 +1290,7 @@ impl Store for SqliteStore {
         let c = self.conn.lock().unwrap();
         let msg = c
             .query_row(
-                "SELECT id, session_id, thread_id, author_kind, author_id, content, reply_to, created_at
+                "SELECT id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at
                  FROM messages WHERE id = ?1",
                 params![id],
                 |r| {
@@ -1291,9 +1300,10 @@ impl Store for SqliteStore {
                         thread_id: r.get(2)?,
                         author_kind: r.get(3)?,
                         author_id: r.get(4)?,
-                        content: r.get(5)?,
-                        reply_to: r.get(6)?,
-                        created_at: r.get(7)?,
+                        audience: r.get(5)?,
+                        content: r.get(6)?,
+                        reply_to: r.get(7)?,
+                        created_at: r.get(8)?,
                     })
                 },
             )
@@ -1304,7 +1314,7 @@ impl Store for SqliteStore {
     fn messages(&self, session_id: &str) -> Result<Vec<Message>> {
         let c = self.conn.lock().unwrap();
         let mut stmt = c.prepare(
-            "SELECT id, session_id, thread_id, author_kind, author_id, content, reply_to, created_at
+            "SELECT id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at
              FROM messages WHERE session_id = ?1 ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map(params![session_id], |r| {
@@ -1314,9 +1324,10 @@ impl Store for SqliteStore {
                 thread_id: r.get(2)?,
                 author_kind: r.get(3)?,
                 author_id: r.get(4)?,
-                content: r.get(5)?,
-                reply_to: r.get(6)?,
-                created_at: r.get(7)?,
+                audience: r.get(5)?,
+                content: r.get(6)?,
+                reply_to: r.get(7)?,
+                created_at: r.get(8)?,
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1424,7 +1435,10 @@ impl Store for SqliteStore {
 
     fn purge_outbox_for_session(&self, session_id: &str) -> Result<()> {
         let c = self.conn.lock().unwrap();
-        c.execute("DELETE FROM outbox WHERE session_id = ?1", params![session_id])?;
+        c.execute(
+            "DELETE FROM outbox WHERE session_id = ?1",
+            params![session_id],
+        )?;
         Ok(())
     }
 
@@ -1472,8 +1486,7 @@ impl Store for SqliteStore {
 
     fn session_installation_tokens(&self, session_id: &str) -> Result<Vec<String>> {
         let c = self.conn.lock().unwrap();
-        let mut stmt =
-            c.prepare("SELECT token FROM installation_tokens WHERE session_id = ?1")?;
+        let mut stmt = c.prepare("SELECT token FROM installation_tokens WHERE session_id = ?1")?;
         let rows = stmt.query_map(params![session_id], |r| r.get::<_, String>(0))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -1495,7 +1508,8 @@ impl Store for SqliteStore {
             let mut stmt = c.prepare(sql)?;
             let rows = stmt.query_map([], |r| {
                 Ok((
-                    r.get::<_, Option<String>>(0)?.unwrap_or_else(|| "unknown".into()),
+                    r.get::<_, Option<String>>(0)?
+                        .unwrap_or_else(|| "unknown".into()),
                     r.get::<_, i64>(1)?,
                 ))
             })?;
@@ -1707,7 +1721,9 @@ mod tests {
             .set_session_verdict(&done.id, "approve", Some(0), Some(2), Some(5))
             .unwrap();
         store.set_state(&done.id, SessionState::Closed).unwrap();
-        store.enqueue_outbox("bot1", &open.id, "bot1:m1", "f").unwrap();
+        store
+            .enqueue_outbox("bot1", &open.id, "bot1:m1", "f")
+            .unwrap();
 
         // An aborted session stamps closed_at but never reached a verdict — it
         // must NOT count toward throughput or time-to-verdict (council reds F1/F2).
@@ -1821,9 +1837,7 @@ mod tests {
     fn purge_outbox_for_session_bot_deletes_delivered_rows_and_rearms_idem_key() {
         let store = SqliteStore::memory().unwrap();
         let key = "bot1:m1";
-        store
-            .enqueue_outbox("bot1", "s1", key, "frameA")
-            .unwrap();
+        store.enqueue_outbox("bot1", "s1", key, "frameA").unwrap();
         let seq = store.pending_outbox("bot1").unwrap()[0].0;
         store.ack_outbox(seq).unwrap();
         assert!(store.pending_outbox("bot1").unwrap().is_empty());
@@ -1836,9 +1850,7 @@ mod tests {
         };
         assert_eq!(rows, 0);
 
-        store
-            .enqueue_outbox("bot1", "s1", key, "frameA")
-            .unwrap();
+        store.enqueue_outbox("bot1", "s1", key, "frameA").unwrap();
         assert_eq!(store.pending_outbox("bot1").unwrap().len(), 1);
     }
 
@@ -1991,6 +2003,57 @@ mod tests {
     }
 
     #[test]
+    fn message_audience_roundtrips() {
+        let store = SqliteStore::memory().unwrap();
+        let session = store
+            .create_session("one", None, 0, None, &[], "council")
+            .unwrap();
+        let broadcast = store
+            .add_message(&session.id, None, "client", None, None, "broadcast", None)
+            .unwrap();
+        let targeted = store
+            .add_message(
+                &session.id,
+                None,
+                "system",
+                None,
+                Some("chair"),
+                "targeted",
+                None,
+            )
+            .unwrap();
+        {
+            let c = store.conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO messages (id, session_id, author_kind, author_id, content, reply_to, created_at)
+                 VALUES ('msg_legacy', ?1, 'client', NULL, 'legacy', NULL, ?2)",
+                params![session.id, now_ms()],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(broadcast.audience, None);
+        assert_eq!(targeted.audience.as_deref(), Some("chair"));
+        let rows = store.messages(&session.id).unwrap();
+        assert_eq!(
+            rows.iter().find(|m| m.id == broadcast.id).unwrap().audience,
+            None
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|m| m.id == targeted.id)
+                .unwrap()
+                .audience
+                .as_deref(),
+            Some("chair")
+        );
+        assert_eq!(
+            rows.iter().find(|m| m.id == "msg_legacy").unwrap().audience,
+            None
+        );
+    }
+
+    #[test]
     fn reactions_returns_only_the_requested_session() {
         let store = SqliteStore::memory().unwrap();
         let s1 = store
@@ -2000,10 +2063,10 @@ mod tests {
             .create_session("two", None, 0, None, &[], "council")
             .unwrap();
         let m1 = store
-            .add_message(&s1.id, None, "bot", Some("rev1"), "done", None)
+            .add_message(&s1.id, None, "bot", Some("rev1"), None, "done", None)
             .unwrap();
         let m2 = store
-            .add_message(&s2.id, None, "bot", Some("rev2"), "done", None)
+            .add_message(&s2.id, None, "bot", Some("rev2"), None, "done", None)
             .unwrap();
         store.add_reaction(&m1.id, "rev1", "🆗").unwrap();
         store.add_reaction(&m2.id, "rev2", "🆗").unwrap();
@@ -2021,16 +2084,16 @@ mod tests {
             .create_session("one", None, 0, None, &[], "council")
             .unwrap();
         let client = store
-            .add_message(&s.id, None, "client", None, "trigger", None)
+            .add_message(&s.id, None, "client", None, None, "trigger", None)
             .unwrap();
         let system = store
-            .add_message(&s.id, None, "system", None, "prompt", None)
+            .add_message(&s.id, None, "system", None, None, "prompt", None)
             .unwrap();
         let own = store
-            .add_message(&s.id, None, "bot", Some("rev1"), "final", None)
+            .add_message(&s.id, None, "bot", Some("rev1"), None, "final", None)
             .unwrap();
         let peer = store
-            .add_message(&s.id, None, "bot", Some("rev2"), "peer", None)
+            .add_message(&s.id, None, "bot", Some("rev2"), None, "peer", None)
             .unwrap();
 
         store.add_reaction(&client.id, "rev1", "🆗").unwrap();

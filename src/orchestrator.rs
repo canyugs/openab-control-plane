@@ -200,15 +200,21 @@ pub fn post_client_message(
     };
     let msg = state
         .store
-        .add_message(session_id, None, "client", None, content, None)?;
+        .add_message(session_id, None, "client", None, None, content, None)?;
     let cur = SessionState::from_db_str(&session.state);
     match cur {
         SessionState::Open => {
-            state.store.advance_state(session_id, SessionState::Open, SessionState::Deliberating)?;
+            state.store.advance_state(
+                session_id,
+                SessionState::Open,
+                SessionState::Deliberating,
+            )?;
         }
         SessionState::Closed | SessionState::Aborted => {
             // Staff follow-up on a finished solo/chat turn — reopen for the next bot pass.
-            state.store.advance_state(session_id, cur, SessionState::Deliberating)?;
+            state
+                .store
+                .advance_state(session_id, cur, SessionState::Deliberating)?;
         }
         SessionState::Deliberating | SessionState::Quorum => {}
     }
@@ -223,12 +229,10 @@ pub fn post_client_message(
     let thread = state.store.thread_for_session(session_id)?;
     // Who is prompted to act now is a coordinator decision: PR councils mention
     // reviewers first, solo mentions the lone bot, and pipeline mentions stage 0.
-    // A9: Non-starters are not mentioned. On stock OAB the opening trigger is
-    // delivered before any recipient thread exists; if the group mention gate
-    // skips it, the event is dropped, not deferred. They first learn the session
-    // through a later Relay or backfill. Stage 1 in-thread trigger re-delivery
-    // must mint a new message row/message_id, because A2's outbox idem_key will
-    // survive ack once delivered markers land.
+    // A9: Pre-thread, an unmentioned stock bot drops the trigger at the group
+    // mention gate. The non-starter chair receives it in-thread once the topic
+    // exists; other future non-starter trigger delivery needs a named
+    // Coordinator hook, not blanket re-fanout.
     // A stock OAB bot in a group gates on @mention before a thread exists
     // (gateway.rs is_responder); bot_username == the plane's bot name (served in
     // /bot-config), so a recipient's own name matches its gate.
@@ -403,9 +407,7 @@ pub fn sweep_liveness(state: &Arc<AppState>, grace_ms: i64) -> Result<()> {
             if let Some(spare) = find_spare(state, &session_id, &inv, is_chair)? {
                 match replace_roster_bot(state, &session_id, &bot_id, &spare)? {
                     Replacement::Replaced => {
-                        tracing::info!(
-                            "liveness: replaced {bot_id} with {spare} in {session_id}"
-                        );
+                        tracing::info!("liveness: replaced {bot_id} with {spare} in {session_id}");
                     }
                     other => tracing::warn!(
                         "liveness: replace {bot_id}→{spare} in {session_id} rejected: {other:?}"
@@ -484,7 +486,9 @@ fn trim_reviewer(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Resul
     if !state.store.remove_session_bot(session_id, bot_id)? {
         return Ok(());
     }
-    state.store.purge_outbox_for_session_bot(session_id, bot_id)?;
+    state
+        .store
+        .purge_outbox_for_session_bot(session_id, bot_id)?;
     let Some(session) = state.store.session(session_id)? else {
         return Ok(());
     };
@@ -611,10 +615,7 @@ fn fire_close_webhook(state: &Arc<AppState>, session_id: &str, verdict: &str, re
         let client = reqwest::Client::new();
         match client.post(&url).json(&payload).send().await {
             Ok(resp) if !resp.status().is_success() => {
-                tracing::warn!(
-                    "close webhook for {session_id} returned {}",
-                    resp.status()
-                );
+                tracing::warn!("close webhook for {session_id} returned {}", resp.status());
             }
             Err(e) => tracing::warn!("close webhook for {session_id} failed: {e}"),
             _ => {}
@@ -703,10 +704,22 @@ fn recruit_session_cap() -> usize {
         .unwrap_or(5)
 }
 
+/// Max history frames replayed to a late/replacement bot. `0` disables the cap.
+/// A joiner must not cost O(full history) agent turns; the opening client
+/// trigger is pinned because it carries the task.
+fn backfill_max() -> Option<usize> {
+    let max = std::env::var("OABCP_BACKFILL_MAX")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(40);
+    (max > 0).then_some(max)
+}
+
 /// Add a bot to a session mid-flight and backfill the conversation so far,
 /// through the admission gate. The history is replayed via the durable outbox
 /// (same as live delivery), so it arrives in order whether the bot is online now
-/// or connects later — OAB batches the in-thread burst into context. Errors only
+/// or connects later. `/bot-config` pins OAB to per-thread processing so this
+/// burst is one context turn instead of one agent turn per message. Errors only
 /// on an unknown session; rejection/idempotency are reported via `Admission`.
 pub fn add_to_roster(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Result<Admission> {
     if state.store.session(session_id)?.is_none() {
@@ -788,7 +801,11 @@ pub fn replace_roster_bot(
     state
         .store
         .purge_outbox_for_session_bot(session_id, old_bot_id)?;
-    backfill_bot(state, session_id, new_bot_id)?;
+    if replacing_chair {
+        backfill_bot_with_audience_alias(state, session_id, new_bot_id, Some(old_bot_id))?;
+    } else {
+        backfill_bot(state, session_id, new_bot_id)?;
+    }
     state.emit_north(
         "roster_replace",
         session_id,
@@ -798,14 +815,66 @@ pub fn replace_roster_bot(
 }
 
 fn backfill_bot(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Result<()> {
+    backfill_bot_with_audience_alias(state, session_id, bot_id, None)
+}
+
+fn backfill_bot_with_audience_alias(
+    state: &Arc<AppState>,
+    session_id: &str,
+    bot_id: &str,
+    audience_alias: Option<&str>,
+) -> Result<()> {
     let Some(session) = state.store.session(session_id)? else {
         anyhow::bail!("unknown session {session_id}");
     };
     let thread = state.store.thread_for_session(session_id)?;
+    let mut eligible = vec![];
     for m in state.store.messages(session_id)? {
         if m.author_id.as_deref() == Some(bot_id) {
             continue; // don't echo the joiner's own messages
         }
+        if let Some(audience) = m.audience.as_deref() {
+            let owns_audience =
+                audience == bot_id || audience_alias.is_some_and(|alias| audience == alias);
+            if !owns_audience {
+                continue;
+            }
+        }
+        eligible.push(m);
+    }
+
+    let selected = match backfill_max() {
+        Some(cap) if eligible.len() > cap => {
+            let trigger = eligible.iter().find(|m| m.author_kind == "client").cloned();
+            let mut selected = vec![];
+            if let Some(trigger) = trigger {
+                selected.push(trigger.clone());
+                let mut recent: Vec<_> = eligible
+                    .iter()
+                    .rev()
+                    .filter(|m| m.id != trigger.id)
+                    .take(cap.saturating_sub(1))
+                    .cloned()
+                    .collect();
+                recent.reverse();
+                selected.extend(recent);
+            } else {
+                selected = eligible.iter().rev().take(cap).cloned().collect();
+                selected.reverse();
+            }
+            tracing::warn!(
+                session_id,
+                bot_id,
+                skipped = eligible.len().saturating_sub(selected.len()),
+                cap,
+                "backfill capped"
+            );
+            selected
+        }
+        _ => eligible,
+    };
+
+    for m in selected {
         let content = if m.author_kind == "client" {
             recipient_text(&session, bot_id, &m.content)
         } else {
@@ -985,6 +1054,7 @@ fn on_send(
         thread.as_deref(),
         "bot",
         Some(bot_id),
+        None,
         &reply.content.text,
         reply.quote_message_id.as_deref(),
     )?;
@@ -1010,12 +1080,47 @@ fn on_create_topic(
     bot_id: &str,
     reply: &GatewayReply,
 ) -> Result<()> {
+    let had_thread = state.store.thread_for_session(&session.id)?.is_some();
     let thread_id = state
         .store
         .upsert_thread(&session.id, reply.quote_message_id.as_deref())?;
+    if !had_thread {
+        redeliver_trigger_to_non_starter_chair(state, session)?;
+    }
     state.emit_north("thread", &session.id, json!({ "thread_id": thread_id }));
     ack(state, bot_id, reply, Some(&thread_id), None);
     Ok(())
+}
+
+fn redeliver_trigger_to_non_starter_chair(state: &Arc<AppState>, session: &Session) -> Result<()> {
+    let Some(chair) = session.chair_bot.as_deref() else {
+        return Ok(());
+    };
+    let roster = state.store.roster(&session.id)?;
+    let starters = coordinator::for_session(&session.mode).starters(&roster, Some(chair));
+    if starters.iter().any(|bot| bot == chair) {
+        return Ok(());
+    }
+    let Some(trigger) = state
+        .store
+        .messages(&session.id)?
+        .into_iter()
+        .find(|m| m.author_kind == "client")
+    else {
+        return Ok(());
+    };
+
+    // A9: pre-thread, an unmentioned stock bot drops the opening trigger at the
+    // group mention gate. Once the topic exists, re-deliver only to the
+    // non-starter chair as a new audience-scoped system row/message_id; A2 keeps
+    // the original outbox idem_key after ack. Chair done from this prompt is
+    // inert before Quorum, and chair votes never count toward reviewer quorum.
+    deliver_system_prompt(
+        state,
+        session,
+        chair,
+        &recipient_text(session, chair, &trigger.content),
+    )
 }
 
 fn on_reaction(
@@ -1130,8 +1235,8 @@ fn check_text_done(
         // done-signal, so a chair [done] only counts on a message that starts
         // with "TRIAGE" (the template's mandated report prefix). Ignored acks
         // leave the session open; the watchdog stays the backstop.
-        let triage_chair = session.mode == "triage_council"
-            && session.chair_bot.as_deref() == Some(bot_id);
+        let triage_chair =
+            session.mode == "triage_council" && session.chair_bot.as_deref() == Some(bot_id);
         if triage_chair && !text.trim_start().starts_with("TRIAGE") {
             tracing::warn!(
                 "triage chair {bot_id} sent [done] without a TRIAGE report in {} — ignored",
@@ -1244,10 +1349,7 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                                 t.yellow,
                                 t.green,
                             ) {
-                                tracing::warn!(
-                                    "record verdict for {} failed: {e}",
-                                    session.id
-                                );
+                                tracing::warn!("record verdict for {} failed: {e}", session.id);
                             }
                         }
                         None => tracing::warn!(
@@ -1318,6 +1420,7 @@ fn deliver_system_prompt(
         thread.as_deref(),
         "system",
         None,
+        Some(to),
         content,
         None,
     )?;
@@ -1393,6 +1496,8 @@ mod tests {
     use crate::protocol::ReplyChannel;
     use crate::state::AppState;
     use crate::store::{SqliteStore, Store};
+
+    static BACKFILL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn verdict_trailer_parsing() {
@@ -1510,6 +1615,22 @@ mod tests {
         }
     }
 
+    fn create_topic_reply(session: &str, root_message: &str) -> GatewayReply {
+        GatewayReply {
+            schema: String::new(),
+            reply_to: String::new(),
+            platform: String::new(),
+            channel: ReplyChannel {
+                id: session.into(),
+                thread_id: None,
+            },
+            content: Content::text(""),
+            command: Some("create_topic".into()),
+            request_id: None,
+            quote_message_id: Some(root_message.into()),
+        }
+    }
+
     fn reaction_reply(session: &str, target: &str, emoji: &str) -> GatewayReply {
         GatewayReply {
             schema: String::new(),
@@ -1614,13 +1735,29 @@ mod tests {
             .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
             .unwrap();
         let trigger = store
-            .add_message(&session.id, None, "client", None, "review this", None)
+            .add_message(&session.id, None, "client", None, None, "review this", None)
             .unwrap();
         store
-            .add_message(&session.id, None, "bot", Some(&rev1.id), "rev1 draft", None)
+            .add_message(
+                &session.id,
+                None,
+                "bot",
+                Some(&rev1.id),
+                None,
+                "rev1 draft",
+                None,
+            )
             .unwrap();
         let rev2_msg = store
-            .add_message(&session.id, None, "bot", Some(&rev2.id), "rev2 note", None)
+            .add_message(
+                &session.id,
+                None,
+                "bot",
+                Some(&rev2.id),
+                None,
+                "rev2 note",
+                None,
+            )
             .unwrap();
 
         handle_reply(
@@ -1681,7 +1818,7 @@ mod tests {
             .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
             .unwrap();
         let trigger = store
-            .add_message(&session.id, None, "client", None, "review this", None)
+            .add_message(&session.id, None, "client", None, None, "review this", None)
             .unwrap();
 
         handle_reply(
@@ -1731,6 +1868,7 @@ mod tests {
                 &other_session.id,
                 None,
                 "client",
+                None,
                 None,
                 "other trigger",
                 None,
@@ -1795,7 +1933,10 @@ mod tests {
 
         let roster = store.roster(&session.id).unwrap();
         assert!(roster.contains(&rev1), "voted reviewer must not be trimmed");
-        assert!(roster.contains(&rev2), "connected reviewer must not be trimmed");
+        assert!(
+            roster.contains(&rev2),
+            "connected reviewer must not be trimmed"
+        );
         assert_eq!(store.session(&session.id).unwrap().unwrap().quorum_n, 2);
     }
 
@@ -1844,6 +1985,7 @@ mod tests {
                 None,
                 "bot",
                 Some(&from.id),
+                None,
                 "settled final [done]",
                 None,
             )
@@ -1881,9 +2023,17 @@ mod tests {
         store.set_connected(&chair, false).unwrap();
         sweep_liveness(&state, 0).unwrap(); // no chair spare registered
         let roster = store.roster(&session.id).unwrap();
-        assert!(roster.contains(&chair), "chair is replace-only, never trimmed");
+        assert!(
+            roster.contains(&chair),
+            "chair is replace-only, never trimmed"
+        );
         assert_eq!(
-            store.session(&session.id).unwrap().unwrap().chair_bot.as_deref(),
+            store
+                .session(&session.id)
+                .unwrap()
+                .unwrap()
+                .chair_bot
+                .as_deref(),
             Some(chair.as_str()),
         );
     }
@@ -2049,7 +2199,15 @@ mod tests {
             .advance_state(&session.id, SessionState::Open, SessionState::Quorum)
             .unwrap();
         let quorum_prompt = store
-            .add_message(&session.id, None, "system", None, "Quorum reached.", None)
+            .add_message(
+                &session.id,
+                None,
+                "system",
+                None,
+                None,
+                "Quorum reached.",
+                None,
+            )
             .unwrap();
 
         handle_reply(
@@ -2114,6 +2272,7 @@ mod tests {
                 None,
                 "system",
                 None,
+                None,
                 "Quorum reached. Chair, synthesize.",
                 None,
             )
@@ -2164,7 +2323,7 @@ mod tests {
             .unwrap();
         // history exists before the latecomer joins
         store
-            .add_message(&session.id, None, "client", None, "the task", None)
+            .add_message(&session.id, None, "client", None, None, "the task", None)
             .unwrap();
         store
             .add_message(
@@ -2172,6 +2331,7 @@ mod tests {
                 None,
                 "bot",
                 Some(&chair.id),
+                None,
                 "chair's take",
                 None,
             )
@@ -2216,7 +2376,7 @@ mod tests {
             .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
             .unwrap();
         let msg = store
-            .add_message(&session.id, None, "client", None, "review this", None)
+            .add_message(&session.id, None, "client", None, None, "review this", None)
             .unwrap();
 
         // The old bot is offline, so the task is waiting in its durable outbox.
@@ -2307,6 +2467,242 @@ mod tests {
                     == Some(session_id)
             })
             .count()
+    }
+
+    fn pending_frame_values(store: &SqliteStore, bot_id: &str) -> Vec<serde_json::Value> {
+        store
+            .pending_outbox(bot_id)
+            .unwrap()
+            .into_iter()
+            .map(|(_, frame)| serde_json::from_str(&frame).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn backfill_skips_other_bots_audience_messages() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let chair2 = store.register_bot("chair2", "chair", "h2", "t2").unwrap();
+        let rev = store.register_bot("rev", "reviewer", "h3", "t3").unwrap();
+        let late = store.register_bot("late", "reviewer", "h4", "t4").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), rev.id.clone()],
+                "council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+        store
+            .add_message(
+                &session.id,
+                None,
+                "client",
+                None,
+                None,
+                "broadcast task",
+                None,
+            )
+            .unwrap();
+        store
+            .add_message(
+                &session.id,
+                None,
+                "bot",
+                Some(&rev.id),
+                None,
+                "broadcast finding",
+                None,
+            )
+            .unwrap();
+        deliver_system_prompt(&state, &session, &chair.id, "chair-only prompt").unwrap();
+
+        assert_eq!(
+            add_to_roster(&state, &session.id, &late.id).unwrap(),
+            Admission::Added
+        );
+        let late_frames = pending_frame_values(&store, &late.id);
+        assert_eq!(late_frames.len(), 2);
+        assert!(late_frames
+            .iter()
+            .any(|v| v["content"]["text"].as_str() == Some("broadcast task")));
+        assert!(late_frames
+            .iter()
+            .any(|v| v["content"]["text"].as_str() == Some("broadcast finding")));
+        assert!(!late_frames
+            .iter()
+            .any(|v| v["content"]["text"].as_str() == Some("chair-only prompt")));
+
+        assert_eq!(
+            replace_roster_bot(&state, &session.id, &chair.id, &chair2.id).unwrap(),
+            Replacement::Replaced
+        );
+        let chair2_frames = pending_frame_values(&store, &chair2.id);
+        assert!(chair2_frames
+            .iter()
+            .any(|v| v["content"]["text"].as_str() == Some("chair-only prompt")));
+    }
+
+    #[test]
+    fn backfill_is_capped_but_keeps_the_trigger() {
+        let _guard = BACKFILL_ENV_LOCK.lock().unwrap();
+        std::env::set_var("OABCP_BACKFILL_MAX", "3");
+
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let late = store.register_bot("late", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                0,
+                Some(&chair.id),
+                std::slice::from_ref(&chair.id),
+                "council",
+            )
+            .unwrap();
+        store
+            .add_message(
+                &session.id,
+                None,
+                "client",
+                None,
+                None,
+                "opening trigger",
+                None,
+            )
+            .unwrap();
+        for i in 0..12 {
+            store
+                .add_message(
+                    &session.id,
+                    None,
+                    "bot",
+                    Some(&chair.id),
+                    None,
+                    &format!("history {i}"),
+                    None,
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            add_to_roster(&state, &session.id, &late.id).unwrap(),
+            Admission::Added
+        );
+        std::env::remove_var("OABCP_BACKFILL_MAX");
+
+        let frames = pending_frame_values(&store, &late.id);
+        assert_eq!(frames.len(), 3);
+        assert!(frames
+            .iter()
+            .any(|v| v["content"]["text"].as_str() == Some("opening trigger")));
+        assert!(frames
+            .iter()
+            .any(|v| v["content"]["text"].as_str() == Some("history 10")));
+        assert!(frames
+            .iter()
+            .any(|v| v["content"]["text"].as_str() == Some("history 11")));
+    }
+
+    #[test]
+    fn first_topic_redelivers_trigger_to_non_starter_chair() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev = store.register_bot("rev", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session(
+                "plain",
+                None,
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), rev.id.clone()],
+                "council",
+            )
+            .unwrap();
+        let trigger = post_client_message(&state, &session.id, "investigate the incident").unwrap();
+
+        handle_reply(
+            &state,
+            &rev.id,
+            create_topic_reply(&session.id, &trigger.id),
+        )
+        .unwrap();
+        let chair_frames = pending_frame_values(&store, &chair.id);
+        let redelivered: Vec<_> = chair_frames
+            .iter()
+            .filter(|v| {
+                v["sender"]["id"].as_str() == Some("system")
+                    && v["content"]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("investigate the incident"))
+            })
+            .collect();
+        assert_eq!(redelivered.len(), 1);
+        let stored = store.messages(&session.id).unwrap();
+        let stored_redelivery = stored
+            .iter()
+            .filter(|m| {
+                m.author_kind == "system"
+                    && m.audience.as_deref() == Some(chair.id.as_str())
+                    && m.content.contains("investigate the incident")
+            })
+            .count();
+        assert_eq!(stored_redelivery, 1);
+
+        handle_reply(
+            &state,
+            &rev.id,
+            create_topic_reply(&session.id, &trigger.id),
+        )
+        .unwrap();
+        let duplicate_count = store
+            .messages(&session.id)
+            .unwrap()
+            .iter()
+            .filter(|m| {
+                m.author_kind == "system"
+                    && m.audience.as_deref() == Some(chair.id.as_str())
+                    && m.content.contains("investigate the incident")
+            })
+            .count();
+        assert_eq!(duplicate_count, 1);
+
+        let review_session = store
+            .create_session(
+                "review",
+                None,
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), rev.id.clone()],
+                "review_council",
+            )
+            .unwrap();
+        let review_trigger =
+            post_client_message(&state, &review_session.id, "review the PR").unwrap();
+        handle_reply(
+            &state,
+            &rev.id,
+            create_topic_reply(&review_session.id, &review_trigger.id),
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .messages(&review_session.id)
+                .unwrap()
+                .iter()
+                .filter(|m| m.author_kind == "system" && m.content.contains("review the PR"))
+                .count(),
+            0
+        );
     }
 
     #[test]
