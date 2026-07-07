@@ -34,32 +34,16 @@ spec:
 
     ## GitHub App setup
 
-    1. Create a GitHub App with:
-       - Permissions: `Pull requests: Read and write`, `Contents: Read-only`.
-       - Events: Pull requests and Issue comments.
-       - Webhook URL: `https://my-council.zeabur.app/api/v1/github_webhooks`.
-       - Webhook secret: the same `GITHUB_WEBHOOK_SECRET` value.
-    2. Install the App on the target repo.
-    3. Generate a private key (`.pem`) and note the App ID and installation ID.
-
-    ## Chair App identity
-
-    1. Copy `scripts/get-gh-app-token.sh` from the source repo and set its `APP_ID`
-       and `INSTALLATION_ID`:
-       `https://github.com/canyugs/openab-control-plane/blob/main/scripts/get-gh-app-token.sh`
-    2. Upload the private key to the chair service at `/home/node/.github-app.pem`.
-    3. Upload the edited token-minter to `/home/node/bin/get-gh-app-token.sh`.
-    4. Set permissions in the chair service:
-
-       ```sh
-       chmod 600 /home/node/.github-app.pem
-       chmod +x /home/node/bin/get-gh-app-token.sh
-       chown node:node /home/node/.github-app.pem /home/node/bin/get-gh-app-token.sh
-       ```
-
-    5. Restart the chair service.
-    6. Verify in the chair service that `HOME=/home/node gh auth status` shows the
-       App bot account.
+    1. Create a GitHub App — follow `docs/install-github-app.md` (SOP) or run
+       `scripts/install-github-app.sh`. Required permissions: Pull requests
+       (write), Contents (read), Commit statuses (write), Issues (write). Events:
+       Pull requests, Issue comments. Webhook:
+       `https://my-council.zeabur.app/api/v1/github_webhooks` with the same
+       `GITHUB_WEBHOOK_SECRET`.
+    2. Install the App on the target org/repos.
+    3. Wire with `scripts/setup-github-app.sh` (sets chair App identity and
+       `OABCP_BOT_HANDLE`). Use `/home/node` for Claude chair images or
+       `/home/agent` for Kiro.
 
     ## Triggers
 
@@ -77,7 +61,9 @@ spec:
     PR diff. Public repos work anonymously; private repos should add read-only
     reviewer credentials or use the separate per-role App token path.
 
-    Full guide:
+    Quick start (non-technical):
+    `https://github.com/canyugs/openab-control-plane/blob/main/docs/install-github-app-quickstart.md`
+    Full SOP:
     `https://github.com/canyugs/openab-control-plane/blob/main/docs/install-github-app.md`
   icon: https://cdn-console.zeabur.com/f/6qNF8/ocp-icon.webp
   tags:
