@@ -8,7 +8,7 @@
 //! what `Action`s to take, and executes them — keeping the CAS guards so a single
 //! call can safely emit both a transition and a close, each firing only from its
 //! required prior state. v1 ships `QuorumCouncil`; a second mode is a new impl
-//! selected in `for_session`, the only seam that changes.
+//! selected in `lookup`, the only seam that changes.
 
 use crate::session::quorum_reached;
 use crate::store::SessionState;
@@ -263,16 +263,24 @@ impl Coordinator for Pipeline {
     }
 }
 
-/// Pick the coordinator for a session's `mode`. The only place a mode is mapped
-/// to a policy; a new mode is a new arm + impl, nothing else changes.
-pub fn for_session(mode: &str) -> Box<dyn Coordinator> {
+/// Pick a known coordinator for a session's `mode`. The only place a mode is
+/// mapped to a policy; a new mode is a new arm + impl, nothing else changes.
+pub fn lookup(mode: &str) -> Option<Box<dyn Coordinator>> {
     match mode {
-        "review_council" => Box::new(ReviewCouncil),
-        "triage_council" => Box::new(TriageCouncil),
-        "solo" => Box::new(Solo),
-        "pipeline" => Box::new(Pipeline),
-        _ => Box::new(QuorumCouncil),
+        "council" => Some(Box::new(QuorumCouncil)),
+        "review_council" => Some(Box::new(ReviewCouncil)),
+        "triage_council" => Some(Box::new(TriageCouncil)),
+        "solo" => Some(Box::new(Solo)),
+        "pipeline" => Some(Box::new(Pipeline)),
+        _ => None,
     }
+}
+
+/// Pick the coordinator for persisted session rows. Unknown legacy rows retain
+/// the historical fallback to `QuorumCouncil`; new opens validate through
+/// `lookup` first.
+pub fn for_session(mode: &str) -> Box<dyn Coordinator> {
+    lookup(mode).unwrap_or_else(|| Box::new(QuorumCouncil))
 }
 
 #[cfg(test)]
@@ -324,6 +332,16 @@ mod tests {
         assert_eq!(for_session("triage_council").kind(), "triage_council");
         assert_eq!(for_session("council").kind(), "quorum_council");
         assert_eq!(for_session("anything-else").kind(), "quorum_council");
+    }
+
+    #[test]
+    fn lookup_knows_exactly_the_dispatchable_modes() {
+        assert_eq!(lookup("council").unwrap().kind(), "quorum_council");
+        assert_eq!(lookup("review_council").unwrap().kind(), "review_council");
+        assert_eq!(lookup("triage_council").unwrap().kind(), "triage_council");
+        assert_eq!(lookup("solo").unwrap().kind(), "solo");
+        assert_eq!(lookup("pipeline").unwrap().kind(), "pipeline");
+        assert!(lookup("anything-else").is_none());
     }
 
     #[test]

@@ -137,9 +137,14 @@ OPEN_BODY=$(ROSTER="$EFF_ROSTER" REF="$REF" QUORUM="$QUORUM_EFF" MODE="${MODE:-}
 RESP=$(curl -s -X POST "$PLANE/v1/sessions" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -d "$OPEN_BODY")
 SID=$(printf '%s' "$RESP" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).session_id||"")}catch{}})')
+DEDUPED=$(printf '%s' "$RESP" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).deduped ? "1" : "0")}catch{process.stdout.write("0")}})')
 if [[ -z "$SID" ]]; then
-  echo "error: session open failed — an active session may already hold trigger_ref \"$REF\" (plane said: ${RESP:0:200})" >&2
+  echo "error: session open failed (plane said: ${RESP:0:200})" >&2
   exit 1
+fi
+if [[ "$DEDUPED" == "1" ]]; then
+  echo "already active: $SID"
+  exit 0
 fi
 echo "session: $SID"
 [[ -n "$ASSIGN_TEXT" ]] && echo "preset: $PRESET → $EFF_ROSTER"

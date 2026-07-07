@@ -53,12 +53,13 @@ POST /v1/sessions
 }
 ```
 
-then posts the rendered trigger as the opening message. The store's active
-`trigger_ref` uniqueness gives the same dedup `/v1/review` has. **The plane
-gains no endpoint and no triage logic** (the whole plane diff is the one
-done-semantics guard arm in §3). This is the ADR 007 plugin model exercised
-for real: a panel is a template + steering + an external shim, and the kernel
-barely knows it exists. `/v1/review` stays as
+then posts the rendered trigger as the opening message. `POST /v1/sessions`
+routes through the controller interpreter, so an active `trigger_ref` retry
+returns the existing session with `deduped:true`, matching `/v1/review`.
+**The plane gains no endpoint and no triage logic** (the whole plane diff is
+the one done-semantics guard arm in §3). This is the ADR 007 plugin model
+exercised for real: a panel is a template + steering + an external shim, and
+the kernel barely knows it exists. `/v1/review` stays as
 the historical exception (it earns its keep as the one-curl GitHub Action
 surface); it is not the pattern new panels copy.
 

@@ -324,6 +324,143 @@ async fn get_session(base: &str, session_id: &str) -> Value {
         .unwrap()
 }
 
+#[tokio::test]
+async fn post_sessions_dedupes_active_trigger_ref() {
+    let (addr, state) = spawn_server_with_state().await;
+    let base = addr.to_string();
+    let (chair, _) = register_bot(&base, "chair", "chair").await;
+    let (rev, _) = register_bot(&base, "rev", "reviewer").await;
+    let roster = vec![chair.clone(), rev.clone()];
+    let client = reqwest::Client::new();
+    let body = json!({
+        "title": "spike-dedupe",
+        "trigger_ref": "test:dedupe",
+        "roster": roster,
+        "chair_bot": chair,
+        "quorum_n": 1,
+        "mode": "council",
+    });
+
+    let first: Value = client
+        .post(format!("http://{base}/v1/sessions"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(first["deduped"], false);
+    let first_id = first["session_id"].as_str().unwrap();
+
+    let second: Value = client
+        .post(format!("http://{base}/v1/sessions"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(second["session_id"], first_id);
+    assert_eq!(second["deduped"], true);
+
+    let sessions = state
+        .store
+        .list_sessions(Some("test:dedupe"), None, 10)
+        .unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].id, first_id);
+}
+
+#[tokio::test]
+async fn post_sessions_rejects_unregistered_roster_bot() {
+    let (addr, state) = spawn_server_with_state().await;
+    let base = addr.to_string();
+    let (chair, _) = register_bot(&base, "chair", "chair").await;
+    let response = reqwest::Client::new()
+        .post(format!("http://{base}/v1/sessions"))
+        .json(&json!({
+            "title": "spike-bad-roster",
+            "trigger_ref": "test:bad-roster",
+            "roster": [chair.clone(), "ghost"],
+            "chair_bot": chair,
+            "quorum_n": 1,
+            "mode": "council",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: Value = response.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("unknown bot"));
+    assert!(state
+        .store
+        .list_sessions(Some("test:bad-roster"), None, 10)
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn post_sessions_rejects_quorum_over_capacity() {
+    let (addr, state) = spawn_server_with_state().await;
+    let base = addr.to_string();
+    let (chair, _) = register_bot(&base, "chair", "chair").await;
+    let (rev, _) = register_bot(&base, "rev", "reviewer").await;
+    let response = reqwest::Client::new()
+        .post(format!("http://{base}/v1/sessions"))
+        .json(&json!({
+            "title": "spike-bad-quorum",
+            "trigger_ref": "test:bad-quorum",
+            "roster": [chair.clone(), rev],
+            "chair_bot": chair,
+            "quorum_n": 2,
+            "mode": "council",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: Value = response.json().await.unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("exceeds reviewer count"));
+    assert!(state
+        .store
+        .list_sessions(Some("test:bad-quorum"), None, 10)
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn post_sessions_accepts_triage_council_mode() {
+    let (addr, _state) = spawn_server_with_state().await;
+    let base = addr.to_string();
+    let (chair, _) = register_bot(&base, "chair", "chair").await;
+    let (rev, _) = register_bot(&base, "rev", "reviewer").await;
+    let response = reqwest::Client::new()
+        .post(format!("http://{base}/v1/sessions"))
+        .json(&json!({
+            "title": "spike-triage",
+            "trigger_ref": "test:triage",
+            "roster": [chair.clone(), rev],
+            "chair_bot": chair,
+            "quorum_n": 1,
+            "mode": "triage_council",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["deduped"], false);
+    assert!(body["session_id"].as_str().is_some());
+}
+
 // --- wire reply builders (what a stock OAB gateway adapter emits) ---
 
 fn reply(

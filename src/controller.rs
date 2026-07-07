@@ -4,9 +4,9 @@
 //! actions; this module is the core-owned boundary that validates and executes
 //! them. The first slice supports opening a session with an initial prompt.
 
+use crate::coordinator;
 use crate::orchestrator;
 use crate::state::AppState;
-use anyhow::{bail, Result};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,7 +30,42 @@ pub enum ControllerActionResult {
     SessionOpened { session_id: String, deduped: bool },
 }
 
-pub fn execute(state: &Arc<AppState>, action: ControllerAction) -> Result<ControllerActionResult> {
+#[derive(Debug)]
+pub enum ControllerError {
+    Invalid(String),
+    Internal(anyhow::Error),
+}
+
+impl std::fmt::Display for ControllerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ControllerError::Invalid(message) => f.write_str(message),
+            ControllerError::Internal(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for ControllerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ControllerError::Invalid(_) => None,
+            ControllerError::Internal(err) => err.source(),
+        }
+    }
+}
+
+impl From<anyhow::Error> for ControllerError {
+    fn from(err: anyhow::Error) -> Self {
+        ControllerError::Internal(err)
+    }
+}
+
+type ControllerResult<T> = std::result::Result<T, ControllerError>;
+
+pub fn execute(
+    state: &Arc<AppState>,
+    action: ControllerAction,
+) -> ControllerResult<ControllerActionResult> {
     match action {
         ControllerAction::OpenSession(action) => open_session(state, action),
     }
@@ -39,7 +74,7 @@ pub fn execute(state: &Arc<AppState>, action: ControllerAction) -> Result<Contro
 fn open_session(
     state: &Arc<AppState>,
     action: OpenSessionAction,
-) -> Result<ControllerActionResult> {
+) -> ControllerResult<ControllerActionResult> {
     if let Some(trigger_ref) = action.trigger_ref.as_deref() {
         // Idempotent retry: return the existing session without re-validating.
         // The active session is the source of truth even if retried config drifted.
@@ -78,20 +113,31 @@ fn open_session(
     })
 }
 
-fn validate_open_session(state: &Arc<AppState>, action: &OpenSessionAction) -> Result<()> {
+fn validate_open_session(
+    state: &Arc<AppState>,
+    action: &OpenSessionAction,
+) -> ControllerResult<()> {
     if action.roster.is_empty() {
-        bail!("open_session action needs a non-empty roster");
+        return Err(ControllerError::Invalid(
+            "open_session action needs a non-empty roster".into(),
+        ));
     }
     if action.quorum_n < 0 {
-        bail!("open_session action quorum_n must be non-negative");
+        return Err(ControllerError::Invalid(
+            "open_session action quorum_n must be non-negative".into(),
+        ));
     }
-    match action.mode.as_str() {
-        "council" | "review_council" | "solo" | "pipeline" => {}
-        mode => bail!("open_session action has unknown mode '{mode}'"),
+    if coordinator::lookup(&action.mode).is_none() {
+        return Err(ControllerError::Invalid(format!(
+            "open_session action has unknown mode '{}'",
+            action.mode
+        )));
     }
     if let Some(chair) = action.chair_bot.as_deref() {
         if !action.roster.iter().any(|bot| bot == chair) {
-            bail!("open_session action chair_bot must be in roster");
+            return Err(ControllerError::Invalid(
+                "open_session action chair_bot must be in roster".into(),
+            ));
         }
     }
     let reviewer_capacity = action
@@ -100,15 +146,16 @@ fn validate_open_session(state: &Arc<AppState>, action: &OpenSessionAction) -> R
         .filter(|bot| Some(bot.as_str()) != action.chair_bot.as_deref())
         .count();
     if action.quorum_n as usize > reviewer_capacity {
-        bail!(
+        return Err(ControllerError::Invalid(format!(
             "open_session action quorum_n ({}) exceeds reviewer count ({})",
-            action.quorum_n,
-            reviewer_capacity
-        );
+            action.quorum_n, reviewer_capacity
+        )));
     }
     for bot in &action.roster {
         if state.store.bot(bot)?.is_none() {
-            bail!("open_session action references unknown bot '{bot}'");
+            return Err(ControllerError::Invalid(format!(
+                "open_session action references unknown bot '{bot}'"
+            )));
         }
     }
     Ok(())
@@ -272,6 +319,34 @@ mod tests {
         let mut bad_mode = review_action();
         bad_mode.mode = "mystery".into();
         assert!(execute(&state, ControllerAction::OpenSession(bad_mode))
+            .unwrap_err()
+            .to_string()
+            .contains("unknown mode"));
+    }
+
+    #[test]
+    fn validate_accepts_every_dispatchable_mode() {
+        let state = state_with_bots();
+
+        for mode in [
+            "council",
+            "review_council",
+            "triage_council",
+            "solo",
+            "pipeline",
+        ] {
+            let mut action = review_action();
+            action.trigger_ref = Some(format!("test:{mode}"));
+            action.mode = mode.into();
+            assert!(
+                validate_open_session(&state, &action).is_ok(),
+                "mode {mode} should validate"
+            );
+        }
+
+        let mut action = review_action();
+        action.mode = "mystery".into();
+        assert!(validate_open_session(&state, &action)
             .unwrap_err()
             .to_string()
             .contains("unknown mode"));
