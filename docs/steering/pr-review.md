@@ -70,8 +70,10 @@ Default workflow:
 
 1. Run `gh pr diff N --repo owner/repo --name-only`.
 2. Run `gh pr diff N --repo owner/repo`.
-3. Read only the files needed to validate the assigned focus.
-4. Stop and post the reviewer verdict.
+3. Expand the bare assigned focus keyword into a short checklist of PR-specific
+   checks based on the changed files, diff shape, and PR claims.
+4. Read only the files needed to validate that expanded checklist.
+5. Stop and post the reviewer verdict.
 
 Budget:
 
@@ -86,6 +88,10 @@ Post one compact message with all findings. Keep it under 2500 characters so the
 trailing `[done]` token is preserved by chat/gateway limits. Do not write the
 full OpenAB-style final report; the chair synthesizes that final PR comment
 after quorum.
+
+Open the report with the expanded checklist you used for the assigned focus. Keep
+it short; it should explain what `correctness`, `security`, `tests`, or another
+bare angle means for this PR, not restate generic review categories.
 
 Post exactly one reviewer verdict. After a message ending in `[done]`, do not
 send follow-up findings, clarifications, or duplicate verdicts unless OCP opens a
@@ -106,6 +112,10 @@ Use this reviewer format:
 
 ```markdown
 VERDICT ✅/⚠️/❌ — one sentence summary.
+
+Expanded checklist:
+- ...
+- ...
 
 Findings:
 - 🔴/🟡 `path/file.rs:42` — what is wrong, why it matters, and fix direction.
@@ -139,21 +149,30 @@ new marked comment instead.
 
 Opening turn:
 
-1. Write `/tmp/verdict.md` with this body:
+1. Read the PR diff and CI status. Establish a concise baseline before
+   delegating: change scope, current CI/checks state, and important PR/body
+   cross-references.
+2. Write `/tmp/verdict.md` with this body and fill the `Baseline` block with
+   2-4 short lines:
 
    ```markdown
    <!-- openab-council -->
    OpenAB Council review started.
 
+   Baseline:
+   - Scope: ...
+   - CI/checks: ...
+   - Cross-refs: ...
+
    The council is reviewing this PR. This comment will be updated with the final verdict.
    ```
 
-2. Re-review case: if a council verdict comment already exists on the PR (detect
+3. Re-review case: if a council verdict comment already exists on the PR (detect
    by the marker line), fetch its current body, prepend the in-progress status
    above the retained prior verdict, and write that combined body to
    `/tmp/verdict.md`. This lets round-N reviewers self-fetch the round-N-1
    ledger; never overwrite the prior verdict.
-3. If the latest own comment starts with the marker, run:
+4. If the latest own comment starts with the marker, run:
 
    ```sh
    gh pr comment N --repo owner/repo --edit-last --create-if-none --body-file /tmp/verdict.md
@@ -165,7 +184,7 @@ Opening turn:
    gh pr comment N --repo owner/repo --body-file /tmp/verdict.md
    ```
 
-4. Reply in the OpenAB thread with a short status only. Do not review the diff
+5. Reply in the OpenAB thread with a short status only. Do not do a full review
    and do not end with `[done]` yet.
 
 Quorum turn:
