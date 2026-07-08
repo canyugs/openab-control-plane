@@ -505,7 +505,6 @@ async fn open_session(
             json!({ "session_id": session_id, "deduped": deduped }),
         )),
         Ok(ControllerActionResult::Superseded { session_id, old_id }) => {
-            orchestrator::handle_superseded_session(&state, &old_id);
             Ok(Json(json!({
                 "session_id": session_id,
                 "deduped": false,
@@ -1376,7 +1375,6 @@ async fn review_pr(
             deduped,
         } => Ok(Json(json!({ "session_id": session_id, "deduped": deduped })).into_response()),
         ControllerActionResult::Superseded { session_id, old_id } => {
-            orchestrator::handle_superseded_session(&state, &old_id);
             Ok(Json(json!({
                 "session_id": session_id,
                 "deduped": false,

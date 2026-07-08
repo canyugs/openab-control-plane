@@ -519,7 +519,6 @@ pub async fn handle_webhook(
             .into_response())
         }
         Ok(crate::controller::ControllerActionResult::Superseded { session_id, old_id }) => {
-            crate::orchestrator::handle_superseded_session(&state, &old_id);
             state.emit_north(
                 "github_trigger",
                 &session_id,
