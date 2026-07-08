@@ -406,13 +406,14 @@ CREATE TABLE IF NOT EXISTS outbox (
     delivered_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_bot ON outbox(bot_id, seq);
-CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(bot_id, seq) WHERE delivered_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_outbox_session_bot ON outbox(session_id, bot_id);
+-- Indexes on migrated-in columns (session_id, idem_key, delivered_at) live in
+-- migrate(), AFTER the ALTERs that add those columns: on a legacy DB this table
+-- already exists without them, and an index referencing a missing column aborts
+-- the whole schema batch at boot (the 0.1.13 → delivered_at upgrade crash).
 -- Idempotency key = "{bot_id}:{message_id}". A row per (bot_id, message_id)
 -- persists from first enqueue until the session's outbox is purged (A5/trim/replace);
 -- delivered_at NULL = pending. This is what makes idem_key dedup survive ack (A2).
 -- NULLs (legacy rows) are distinct in SQLite, so old frames are unaffected.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_idem ON outbox(idem_key);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY, value TEXT NOT NULL
 );
@@ -449,14 +450,21 @@ fn migrate(conn: &Connection) -> Result<()> {
     let _ = conn.execute("ALTER TABLE outbox ADD COLUMN session_id TEXT", []);
     let _ = conn.execute("ALTER TABLE outbox ADD COLUMN idem_key TEXT", []);
     let _ = conn.execute("ALTER TABLE outbox ADD COLUMN delivered_at INTEGER", []);
-    let _ = conn.execute(
+    // These reference the columns added just above, so they run here and not in
+    // SCHEMA. Real errors must surface: a swallowed failure here means silent
+    // full-table outbox scans and broken idem dedup, not a cosmetic miss.
+    conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_idem ON outbox(idem_key)",
         [],
-    );
-    let _ = conn.execute(
+    )?;
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(bot_id, seq) WHERE delivered_at IS NULL",
         [],
-    );
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_outbox_session_bot ON outbox(session_id, bot_id)",
+        [],
+    )?;
     let _ = conn.execute("ALTER TABLE bots ADD COLUMN provider TEXT", []);
     let _ = conn.execute(
         "ALTER TABLE bots ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'",
@@ -1825,6 +1833,56 @@ mod tests {
             .unwrap();
 
         assert_eq!(index_count, 1);
+
+        drop(c);
+        drop(store);
+        remove_db_files(&PathBuf::from(path));
+    }
+
+    #[test]
+    fn legacy_outbox_without_delivered_at_opens_and_migrates() {
+        // The 0.1.13 → delivered_at upgrade crash: a legacy outbox table (no
+        // session_id/idem_key/delivered_at) must not abort the boot-time schema
+        // batch via an index that references a not-yet-migrated column.
+        let path = temp_db_path("legacy-outbox-opens-and-migrates");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE outbox (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bot_id TEXT NOT NULL, frame TEXT NOT NULL, created_at INTEGER NOT NULL
+                );
+                CREATE INDEX idx_outbox_bot ON outbox(bot_id, seq);
+                INSERT INTO outbox (bot_id, frame, created_at) VALUES ('bot1', 'f', 1);",
+            )
+            .unwrap();
+        }
+
+        let store = SqliteStore::open(&path).unwrap();
+        let c = store.conn.lock().unwrap();
+        for idx in [
+            "idx_outbox_idem",
+            "idx_outbox_pending",
+            "idx_outbox_session_bot",
+        ] {
+            let n: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    params![idx],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "missing index {idx} after migrate");
+        }
+        // The legacy row survives as pending (delivered_at NULL).
+        let pending: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM outbox WHERE delivered_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 1);
 
         drop(c);
         drop(store);
