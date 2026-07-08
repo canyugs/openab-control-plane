@@ -395,6 +395,13 @@ Keep starting the instance with **your own** config
 (`openab run -c <your-configUrl>`). All original settings are preserved; OCP only
 coordinates sessions and rosters on top.
 
+Ready-made reference: [`docs/pod-config/`](pod-config/) holds the exact
+credential-free `config.toml` files the Zeabur template pods mount at
+`/etc/openab/config.toml` (ADR 010 B2 demotion). They demonstrate the full
+Path B shape — `${OABCP_BOT_TOKEN}`/`${OABCP_BOT_NAME}` env expansion, the
+pinned trust fields, and an `[agent]` section that deliberately names no
+command so the pod image's own `OPENAB_AGENT_COMMAND` decides.
+
 Either path is **reversible and non-destructive**: `-c` is a per-run argument and
 never rewrites the on-disk config. To detach: Path A — stop the run and point the
 instance back at its own config; Path B — remove the `[gateway]` block and restart
