@@ -82,7 +82,8 @@ then the features that need controller state, with eval keeping score.
 1. **Stage 3 extraction** — `plugins/pr_review` bundled controller behind
    `controller.rs`; `/bot-config` freeze/demotion; ADR 016 finish. Trigger:
    forum north-client build or nuphos Gen-1 migration (both are queued
-   consumers).
+   consumers). Plan: [stage3-extraction-plan.md](stage3-extraction-plan.md)
+   (S1–S17 sequence, proposed 2026-07-08).
 2. **Structured delta review (M4)** — findings table, machine findings block
    (Q3), `status` / `resolve Fn` / `help`, comment-by-ID lifecycle closing M3
    structurally. This is the "更扎實" core: never-re-raise becomes a diff
