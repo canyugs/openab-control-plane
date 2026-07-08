@@ -329,8 +329,9 @@ spec:
               1. Read the PR diff and CI status. Establish a concise baseline before
                  delegating: change scope, current CI/checks state, and important PR/body
                  cross-references.
-              2. Write `/tmp/verdict.md` with this body and fill the `Baseline` block with
-                 2-4 short lines:
+              2. Write `/tmp/verdict-N.md` (N = the PR number: concurrent councils share
+                 the pod's `/tmp`, so a fixed filename races across sessions — issue #159)
+                 with this body and fill the `Baseline` block with 2-4 short lines:
 
                  ```markdown
                  <!-- openab-council -->
@@ -347,18 +348,18 @@ spec:
               3. Re-review case: if a council verdict comment already exists on the PR (detect
                  by the marker line), fetch its current body, prepend the in-progress status
                  above the retained prior verdict, and write that combined body to
-                 `/tmp/verdict.md`. This lets round-N reviewers self-fetch the round-N-1
+                 `/tmp/verdict-N.md`. This lets round-N reviewers self-fetch the round-N-1
                  ledger; never overwrite the prior verdict.
               4. If the latest own comment starts with the marker, run:
 
                  ```sh
-                 gh pr comment N --repo owner/repo --edit-last --create-if-none --body-file /tmp/verdict.md
+                 gh pr comment N --repo owner/repo --edit-last --create-if-none --body-file /tmp/verdict-N.md
                  ```
 
                  Otherwise post a new marked comment:
 
                  ```sh
-                 gh pr comment N --repo owner/repo --body-file /tmp/verdict.md
+                 gh pr comment N --repo owner/repo --body-file /tmp/verdict-N.md
                  ```
 
               5. Reply in the OpenAB thread with a short status only. Do not do a full review
@@ -387,7 +388,7 @@ spec:
                  `git merge-base --is-ancestor <reviewed-sha> HEAD` fails, the prior SHA is
                  unreachable or rebased away: fall back to a full review and say so in the
                  verdict.
-              4. Synthesize one final OpenAB-style report in `/tmp/verdict.md`. End the body
+              4. Synthesize one final OpenAB-style report in `/tmp/verdict-N.md`. End the body
                  with the summary + action menu footer (see the report format below); the
                  counts must match your verdict trailer.
               5. Run the safe comment procedure above. It prints the comment URL — keep it for
