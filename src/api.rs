@@ -4,6 +4,7 @@
 
 use crate::controller::{
     self, ControllerAction, ControllerActionResult, ControllerError, OpenSessionAction,
+    PostMessageAction,
 };
 use crate::identity;
 use crate::orchestrator;
@@ -472,6 +473,8 @@ struct OpenSession {
     chair_bot: Option<String>,
     #[serde(default = "default_mode")]
     mode: String,
+    #[serde(default)]
+    prompt: String,
 }
 
 fn default_mode() -> String {
@@ -495,7 +498,7 @@ async fn open_session(
         quorum_n: req.quorum_n,
         chair_bot: req.chair_bot,
         mode: req.mode,
-        prompt: String::new(),
+        prompt: req.prompt,
     };
     match controller::execute(&state, ControllerAction::OpenSession(action)) {
         Ok(ControllerActionResult::SessionOpened {
@@ -504,13 +507,14 @@ async fn open_session(
         }) => Ok(Json(
             json!({ "session_id": session_id, "deduped": deduped }),
         )),
-        Ok(ControllerActionResult::Superseded { session_id, old_id }) => {
-            Ok(Json(json!({
-                "session_id": session_id,
-                "deduped": false,
-                "superseded": true,
-                "old_session_id": old_id,
-            })))
+        Ok(ControllerActionResult::Superseded { session_id, old_id }) => Ok(Json(json!({
+            "session_id": session_id,
+            "deduped": false,
+            "superseded": true,
+            "old_session_id": old_id,
+        }))),
+        Ok(ControllerActionResult::MessagePosted { .. }) => {
+            Err(error_status(StatusCode::INTERNAL_SERVER_ERROR))
         }
         Err(ControllerError::Invalid(message)) => {
             Err((StatusCode::BAD_REQUEST, Json(json!({ "error": message }))))
@@ -746,9 +750,18 @@ async fn post_message(
     Json(req): Json<PostMessage>,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
-    let msg = orchestrator::post_client_message(&state, &id, &req.content)
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    Ok(Json(json!({ "message_id": msg.id })))
+    let action = PostMessageAction {
+        session_id: id,
+        content: req.content,
+    };
+    match controller::execute(&state, ControllerAction::PostMessage(action)) {
+        Ok(ControllerActionResult::MessagePosted { message_id }) => {
+            Ok(Json(json!({ "message_id": message_id })))
+        }
+        Ok(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(ControllerError::Invalid(_)) => Err(StatusCode::NOT_FOUND),
+        Err(ControllerError::Internal(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1374,15 +1387,14 @@ async fn review_pr(
             session_id,
             deduped,
         } => Ok(Json(json!({ "session_id": session_id, "deduped": deduped })).into_response()),
-        ControllerActionResult::Superseded { session_id, old_id } => {
-            Ok(Json(json!({
-                "session_id": session_id,
-                "deduped": false,
-                "superseded": true,
-                "old_session_id": old_id,
-            }))
-            .into_response())
-        }
+        ControllerActionResult::Superseded { session_id, old_id } => Ok(Json(json!({
+            "session_id": session_id,
+            "deduped": false,
+            "superseded": true,
+            "old_session_id": old_id,
+        }))
+        .into_response()),
+        ControllerActionResult::MessagePosted { .. } => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
 
@@ -1547,6 +1559,36 @@ mod tests {
             "http://control-plane.test".into(),
             None,
         )
+    }
+
+    #[tokio::test]
+    async fn open_session_with_prompt_creates_session_and_message_atomically() {
+        let state = state_with_review_bots();
+
+        let response = super::open_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(super::OpenSession {
+                title: "prompted council".into(),
+                trigger_ref: Some("test:prompted".into()),
+                trigger_fingerprint: None,
+                roster: vec!["chair".into(), "rev1".into()],
+                quorum_n: 1,
+                chair_bot: Some("chair".into()),
+                mode: "council".into(),
+                prompt: "please review this".into(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let session_id = response["session_id"].as_str().unwrap().to_string();
+        assert_eq!(response["deduped"], json!(false));
+
+        let messages = state.store.messages(&session_id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].author_kind, "client");
+        assert_eq!(messages[0].content, "please review this");
     }
 
     #[tokio::test(flavor = "current_thread")]
