@@ -2507,6 +2507,18 @@ mod tests {
     }
 
     #[test]
+    fn chair_task_renders_baseline_step_instruction() {
+        let session = test_session(Some("chair"), "review_council");
+        let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"";
+
+        let chair_text = recipient_text(&session, "chair", trigger);
+
+        assert!(chair_text.contains("Read the PR diff and CI status"));
+        assert!(chair_text.contains("2-4 line baseline block"));
+        assert!(chair_text.contains("before delegating"));
+    }
+
+    #[test]
     fn chair_and_reviewer_tasks_keep_security_preamble() {
         let session = test_session(Some("chair"), "review_council");
         let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"\n\nReview focus assignment:\n- rev1 → correctness";
@@ -2534,6 +2546,18 @@ mod tests {
         assert!(pointer_text.contains("Fetch what you need with:"));
         assert!(pointer_text.contains("gh pr diff 53 --repo canyugs/openab-control-plane"));
         assert!(pointer_text.contains("gh pr checkout 53 --repo canyugs/openab-control-plane"));
+    }
+
+    #[test]
+    fn reviewer_task_renders_angle_self_expansion_instruction() {
+        let session = test_session(Some("chair"), "review_council");
+        let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"\n\nReview focus assignment:\n- rev1 → security";
+
+        let reviewer_text = recipient_text(&session, "rev1", trigger);
+
+        assert!(reviewer_text.contains("First expand the bare focus keyword"));
+        assert!(reviewer_text.contains("PR-specific checks"));
+        assert!(reviewer_text.contains("Open your report with that expanded checklist"));
     }
 
     #[test]
