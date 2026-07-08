@@ -62,7 +62,7 @@ in Phase 2.
 |------|--------|-------|
 | **Liveness watchdog — timeout → forced `Close`** | ✅ | **Completes OCP's reason to exist** (the *guarantee* layer — see [design: steering vs policy](design.md)). `orchestrator::force_close_timeout` + a 30s background scan in `main.rs`; deadline via `OABCP_SESSION_TIMEOUT_SECS` (default 600s / 10 min). Closes a stuck session with a `TIMEOUT` verdict, emits a structured north `timeout` event for app shims/controllers, and names absentees. CAS once-only. Richer per-step/heartbeat detection stays Phase 3 |
 | **BYOK** — accept user-provided `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` | ✅ | The template's primary path: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) is a deploy var passed to every pod; runs on the user's own Claude subscription. AI Hub keys stay an opt-in add-on — the AI Hub onboarding doc was deliberately skipped to keep BYOK the single primary story |
-| **Shared steering via `pre_seed`** — review output format + rules delivered to bots as a bot/OpenAB property, not stuffed in every trigger | **TODO (deferred)** | OAB's job, not the plane's (see [design scope](design.md) and [ADR 010](adr/010-openab-configurl-boundary.md)). Mechanism: OAB `[hooks.pre_seed]` in final `config.toml`, delivered through OpenAB `configUrl` / `configFile`, a bot image, or deployment-owned storage. OCP may keep the source file (`docs/steering/pr-review.md`) and package docs, but must not host a steering blob origin or emit `[hooks.pre_seed]` from `/bot-config`. Trigger-based steering remains acceptable until a concrete driver needs role-split layers or hot steering iteration. |
+| **Shared steering via `pre_seed`** — review output format + rules delivered to bots as a bot/OpenAB property, not stuffed in every trigger | **✅ v1** (PR #149, 0.1.15) | Landed on the deployment-owned path (not the plane): both Zeabur templates mount `docs/steering/pr-review.md` into every bot pod (`/home/node/AGENTS.md` for Claude images; `/home/agent/.kiro/steering/` for Kiro variants). The boundary held — the plane never serves steering from `/bot-config` ([ADR 010](adr/010-openab-configurl-boundary.md)); `tests/steering_sync.rs` makes template↔doc drift a CI failure. The concrete driver was hot steering iteration: 0.1.14's binary shipped without the #144/#147/#148 template text. OAB-native `[hooks.pre_seed]` remains an alternative delivery, no longer blocking. |
 | **Preset-driven roster** — quick=2, standard=3, full=5; idle bots don't join | ✅ | Solves slowness. `council.rs` `preset_angles` (lite=1 / quick=3 / standard=5 / full=7 angles) + `assign_angles` round-robin trims idle reviewers (quorum = participants only). Default **lite** keeps small PRs fast/cheap; per-PR `review:<preset>` label or env `OABCP_COUNCIL_PRESET` override. Live-proven on canyugs/openab#14 |
 | **Application shim** — code-review logic (gh pr diff/comment/label) lives outside the plane | ✅ | Three shims shipped, all outside the plane: (1) copied **GitHub Action** `examples/pr-review.yml` → `POST /v1/review`; (2) the chair pod runs `gh pr diff/comment/label` from the trigger; (3) `scripts/open-council.sh` on demand. The plane only convenes + guarantees close — never calls GitHub itself |
 | **Clean template** — one-click deploy, no manual bot registration | ✅ | `seed_bot` on boot + `npx zeabur template deploy` (3 vars, no manual bot registration) + dedicated install docs for the [PAT copied Action](install-pat.md) and [GitHub App webhook](install-github-app.md) tracks |
@@ -123,7 +123,7 @@ the three planes today; see [ADR 001](adr/001-three-planes.md).
 | **Session-scoped credentials** — plane mints `session × role` tokens at open, expires at close | TODO | Completes [Agent Identity](#principle-agent-identity); current tokens are static |
 | **Audit log** — every side-effect (verdict, comment, label) tagged to the bot identity that did it | TODO | Plane is the identity registry → single place to audit |
 | **Central revoke** — kill a bot/session token once → access ends everywhere | TODO | Pairs with audit; no per-system cleanup |
-| **/bot-config token leak** — externalize gateway tokens and demote `/bot-config` to bootstrap | TODO | Spike convenience, not production-safe. Align with [ADR 010](adr/010-openab-configurl-boundary.md): production bots should use OpenAB `configUrl` / `configFile`; OCP should not render runtime config. The blocker is a gateway token flow that does not require OCP to serve `token_plain` inside a full `config.toml`. |
+| **/bot-config token leak** — externalize gateway tokens and demote `/bot-config` to bootstrap | **✅ v1** (#76–#80, [ADR 016](adr/016-gateway-token-externalization.md)) | The blocker fell: with `OABCP_EXTERNALIZE_TOKENS=1` the plane serves `token = "${OABCP_BOT_TOKEN}"` (env-resolved inside the pod) and stores only token hashes, so an unauthenticated `/bot-config` fetch leaks nothing; one-time token revoke shipped alongside (#76). Both templates feed per-bot `BOT_TOKEN_*` deploy vars. Default-flip and column-drop deliberately deferred. |
 
 ## Future
 
@@ -161,25 +161,24 @@ Coordination substrate — south `/ws` gateway, north REST+SSE, SQLite store, pe
 
 ## Known Issues
 
-- **At-least-once delivery** — ack = handed-to-channel, not socket-confirmed; OAB has no `event_id` dedup → rare reprocessing on redelivery.
-- **Backfill is active** — OAB responds to in-thread history (no silent-context-load mode).
+- **At-least-once delivery** — plane side hardened in Phase 1 (#116 `delivered_at` ack marker, #82 idempotent enqueue via `idem_key`), but OAB still has no `event_id` dedup → rare reprocessing on redelivery until the Stage 2 typed-wire ADR lands upstream.
+- **Backfill is active** — now audience-aware and capped (Phase 1), but OAB still responds to in-thread history (no silent-context-load mode; needs the Stage 2 `context` flag).
 - **Trailing `…` stub** — status stub can momentarily appear mid-stream (fills via edits).
 - **Large diffs untested** — demo PR was tiny; deep repo context (clone/`pr checkout`) untested.
 - **Static PAT fallback** — quickstart can still use a chair PAT; production should prefer pod-local App auth or scoped session credentials.
 
-## Live Infra
+## Live Infra (2026-07-08)
 
-Zeabur project `openab-hub` = `6a3abba9e41f9f1d193022cb`
+Two council lanes, one GitHub App each (a plane binds one App identity: one
+webhook secret, one `OABCP_BOT_HANDLE`, chair binds one installation).
 
-| Service | ID | URL |
-|---------|-----|-----|
-| plane | `6a3ca6cde5f256c9f3d43e01` | `https://openab-control-plane.zeabur.app` (internal `:8080`, volume `/data`) |
-| chair (gandalf-red) | `6a3cb4d3e5f256c9f3d440bb` | bot_3d9d… |
-| rev1 | `6a3cf6a4bdba1c7a91f8c1a3` | — |
-| rev2 | `6a3cf6a6bdba1c7a91f8c1a6` | — |
-| rev3 | `6a3cfcb5bdba1c7a91f8c461` | — |
-| rev4 | `6a3cfcbdbdba1c7a91f8c466` | — |
+| Lane | GitHub App (owner) | Plane URL | Zeabur project | Covers |
+|------|--------------------|-----------|----------------|--------|
+| dev | `zeabur-council` (canyugs) | `https://openab-council.zeabur.app` | `openab-council` | canyugs openab repos (selected) |
+| prod | `opencodezebra` (zeabur org) | `https://opencodezebra.zeabur.app` | `opencodezebra-council` | zeabur org (all repos) |
 
-5 OAB pods still running — stop when not demoing.
-
-Redeploy: `npx zeabur@latest deploy --project-id 6a3abba9e41f9f1d193022cb --service-id 6a3ca6cde5f256c9f3d43e01`
+Both run `canyu/openab-control-plane:0.1.15` + 3 Kiro OAB pods (chair, rev1,
+rev2) on the Code Review dedicated server; chairs post as their App bot via
+pod-local keys (`scripts/setup-github-app.sh`). A third local dogfood cluster
+(`oabcp-local`, docker-desktop k8s) is used for pre-release verification.
+The earlier `openab-hub` demo project is deleted.

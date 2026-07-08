@@ -29,9 +29,9 @@ Definition of done — an author lives the full CodeRabbit loop with no holes:
 |------|--------|--------|
 | Auto review on open / `/review` / preset labels | roadmap Phase 1–2 | ✅ shipped |
 | `/ask` + `@mention` Q&A (solo) | ADR 011 | ✅ shipped |
-| P0 steering belts: `Reviewed at <sha>`, ledger preservation vs `--edit-last`, marker check, rebase fallback; Q4 single-source pre-task | pr-mention-plan §4–5, §9 | TODO |
-| P1 supersede mechanism (M1): `trigger_fingerprint`, atomic close+open via interpreter, bot-author guard, hourly cap + round budget | pr-mention-plan §3 | TODO — **hard dep: A5 purge-on-close** |
-| P2 `@handle review [notes]` / `full review` + carried delta strings | pr-mention-plan §2, §7 | TODO |
+| P0 steering belts: `Reviewed at <sha>`, ledger preservation vs `--edit-last`, marker check, rebase fallback; Q4 single-source pre-task | pr-mention-plan §4–5, §9 | ✅ shipped (#113, #125) |
+| P1 supersede mechanism (M1): `trigger_fingerprint`, atomic close+open via interpreter, bot-author guard, hourly cap + round budget | pr-mention-plan §3 | ✅ shipped (#126; A5 dep landed as #117) — live-verified on prod (push mid-round superseded the stale session, PR #149) |
+| P2 `@handle review [notes]` / `full review` + carried delta strings | pr-mention-plan §2, §7 | ✅ shipped (#127) — live-verified end-to-end from GitHub (`cmd:<comment_id>` fingerprint convene + supersede, PR #148) |
 
 ### 1b. Reliability substrate (boundary-review Stages 0–1)
 
@@ -64,6 +64,15 @@ this is the "smoothly", none of it is new feature surface:
 **Phase 1 exit:** pr-mention P0 + P1 + P2 exit criteria live-verified on
 dogfood, and the Stage 1 checklist merged. At that point the product does what
 CodeRabbit does — reliably — and nothing more.
+
+> **EXIT REACHED 2026-07-08.** All 16 Stage-1/P0–P2 issues (#112–#127,
+> milestone "Phase 1 — CodeRabbit parity") merged via PRs #128–#143; every
+> loop segment live-verified: PR-open auto-convene and push-supersede on
+> PR #149, mention grammar + `cmd:` supersede on PR #148, verdict-cites-head
+> and cost valves throughout. Follow-ups also landed: #144/#147 chair
+> baseline + angle expansion, #148 trust wording, #145 legacy-DB upgrade fix,
+> 0.1.15 published with steering preloaded into bot pods. Phase 2 is next,
+> starting at Stage 3 extraction.
 
 ## Phase 2 — make review solid
 
