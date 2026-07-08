@@ -1,0 +1,46 @@
+# Pod-owned OpenAB config (ADR 010 B2 demotion execution, 2026-07-09).
+# Mounted at /etc/openab/config.toml — the upstream image-CMD convention.
+# Byte-synced into both Zeabur templates by tests/pod_config_sync.rs.
+#
+# Philosophy (upstream ADR "configurl-over-helm-rendering"): the config file
+# is a shareable, credential-free artifact. Secrets and per-pod identity
+# arrive via OpenAB's whole-file ${VAR} env expansion at boot —
+# ${OABCP_BOT_TOKEN} and ${OABCP_BOT_NAME} come from the pod's own env.
+#
+# Deliberately absent: [agent] command / args / working_dir. Every published
+# openab image variant bakes its own OPENAB_AGENT_COMMAND (claude /
+# "kiro-cli acp --trust-all-tools" / codex-acp) and HOME, and OpenAB falls
+# back to them when the config stays silent — so this file can never pin an
+# agent the image does not contain. Baking the agent into fetched config is
+# exactly what killed the prod lane (2026-07: /bot-config served the default
+# claude profile to kiro images; every spawn failed "Agent Not Found").
+
+[gateway]
+url = "ws://control-plane.zeabur.internal:8090/ws"
+platform = "feishu"
+token = "${OABCP_BOT_TOKEN}"
+# Explicit: survives OAB's trust-pyramid Phase 3 default flip (L3 deny-all).
+# This surface is private and token-authed; senders are the plane itself
+# ("client"/"system") plus roster bots, and the roster is dynamic — an
+# allowed_users list would go stale after recruit/replace. The WS token is
+# the trust boundary, not sender ids.
+allow_all_users = true
+allow_bot_messages = true
+bot_username = "${OABCP_BOT_NAME}"
+streaming = true
+# OCP backfill and council cross-talk intentionally arrive as in-thread bursts;
+# per-thread mode lets OAB batch that burst into one context turn.
+message_processing_mode = "per-thread"
+
+[agent]
+# Whitelist only — OpenAB builds the agent child env from this list (plus any
+# explicit [agent].env); the credential values live in the pod env, never here.
+inherit_env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GROK_CODE_XAI_API_KEY", "KIRO_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN"]
+
+[pool]
+max_sessions = 4
+session_ttl_hours = 2
+
+[reactions]
+# A6: a cosmetic OAB flag must not be able to erase quorum votes.
+remove_after_reply = false
