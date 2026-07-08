@@ -1,0 +1,21 @@
+{
+  "limit": 20,
+  "sessions": [
+    {
+      "chair_bot": "wire-chair",
+      "closed_at": "<dyn>",
+      "created_at": "<dyn>",
+      "decision": "approve",
+      "findings_green": 2,
+      "findings_red": 0,
+      "findings_yellow": 0,
+      "id": "<dyn>",
+      "mode": "council",
+      "quorum_n": 2,
+      "state": "closed",
+      "title": "wire-shape council",
+      "trigger_fingerprint": "github:pr/acme/widgets#156",
+      "trigger_ref": "github:pr/acme/widgets#156"
+    }
+  ]
+}

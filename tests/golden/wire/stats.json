@@ -1,0 +1,58 @@
+{
+  "bots": {
+    "by_health": {
+      "ok": 3
+    },
+    "connected": 3,
+    "detail": [
+      {
+        "connected": true,
+        "health": "ok",
+        "id": "wire-chair",
+        "last_seen_ms": "<dyn>",
+        "version": "openab:test"
+      },
+      {
+        "connected": true,
+        "health": "ok",
+        "id": "wire-rev-a",
+        "last_seen_ms": "<dyn>",
+        "version": "openab:test"
+      },
+      {
+        "connected": true,
+        "health": "ok",
+        "id": "wire-rev-b",
+        "last_seen_ms": "<dyn>",
+        "version": "openab:test"
+      }
+    ],
+    "total": 3
+  },
+  "outbox": {
+    "pending": 0
+  },
+  "sessions": {
+    "by_decision": {
+      "approve": 1
+    },
+    "by_mode": {
+      "council": 1
+    },
+    "by_state": {
+      "closed": 1
+    },
+    "closed_24h": 1,
+    "findings": {
+      "avg_per_session": 2.0,
+      "green": 2,
+      "red": 0,
+      "yellow": 0
+    },
+    "time_to_verdict_ms": {
+      "count": 1,
+      "p50": "<dyn>",
+      "p95": "<dyn>"
+    }
+  }
+}

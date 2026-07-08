@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "decision": "approve",
+    "findings_green": 2,
+    "findings_red": 0,
+    "findings_yellow": 0,
+    "text": "VERDICT: approved [[verdict:approve r=0 y=0 g=2]]"
+  },
+  "session_id": "<dyn>",
+  "ts": "<dyn>",
+  "type": "verdict"
+}
