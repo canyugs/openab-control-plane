@@ -52,6 +52,27 @@ the kind of trust/gateway field growth this ADR's "should not add" list targets.
 Future production work must move through OpenAB-owned profiles, `pre_boot`, and
 deployment-owned `configUrl` artifacts instead of expanding this renderer.
 
+### Amendment 2026-07-09 (B2 demotion execution): templates on pod-owned config
+
+Both Zeabur templates now mount `docs/pod-config/pod-config-{chair,reviewer}.toml`
+at `/etc/openab/config.toml` (the upstream image-CMD convention) and boot
+`openab run -c /etc/openab/config.toml` — no template bot pod fetches
+`/bot-config` anymore. The file is a credential-free artifact per upstream
+OpenAB ADR "configurl-over-helm-rendering": `${OABCP_BOT_TOKEN}` and
+`${OABCP_BOT_NAME}` expand from the pod's own env at boot, and `[agent]`
+deliberately names no command/args/working_dir — the image's baked
+`OPENAB_AGENT_COMMAND`/`HOME` decide, so a config can never pin a CLI the
+image lacks (the 2026-07 prod-lane outage class: `/bot-config` served the
+default claude profile to kiro images and every agent spawn failed
+"Agent Not Found"). `tests/pod_config_sync.rs` pins doc↔template parity plus
+both invariants (no secret, no agent identity). This executes migration
+steps 3–4 for the template path — legitimate ahead of Stage 3 S14/S15
+because template installs have carried operator-supplied externalized
+tokens since #80, so the B2→D1 coupling is already satisfied there;
+S14/S15 still govern the `/v1/bots` registration path. `/bot-config/:id`
+remains the local-dogfood bootstrap (migration step 1) until the S17
+evidence-gated removal.
+
 ## Scope Rules
 
 OCP may keep doing these things:

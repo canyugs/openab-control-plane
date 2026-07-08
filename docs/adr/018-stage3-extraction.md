@@ -147,7 +147,7 @@ landed PRs must not be invalidated by re-litigating the governing ADRs.
 | Watchdog `created_at`-anchored reopen trap (reopened session force-closes in ~30s) | orchestrator watchdog | forum dogfood shows session-per-turn churn cost → chat-mode coordinator arm; until then the forum contract is **fresh session after close** (S13 pins the trap with a regression test) |
 | Plugin config via process-global env | plugins/* | precondition for any crate split: config injection first |
 | Single shared `OABCP_API_KEY` north auth (forum proxy can touch every session) | api.rs | first non-first-party north client, or forum leaving the owned lanes → scoped second bearer |
-| B2 demotion execution (template `configUrl`) | Zeabur templates | S15 landed + configUrl file-mount semantics verified on the dev lane |
+| B2 demotion execution (template config) | Zeabur templates | **executed 2026-07-09** — pod-owned config.toml mounts (ADR 010 amendment; templates externalized since #80 satisfied the D1 coupling on this path). Endpoint removal stays S17-evidence-gated |
 | `quorum_n` in core schema | store.rs | second coordinator config |
 | Durable `close_reason` column | (none yet) | decided in the M3/M4 ADR alongside the `CloseSession` verb |
 

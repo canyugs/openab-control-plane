@@ -348,6 +348,14 @@ into the plugin would be churn on dead code.
   (c) /bot-config demotes to a compatibility endpoint; (d) removal only on
   evidence — the S17 per-serve warn log is the counter, trigger = no lane
   fetches it for a full release.
+  **Status 2026-07-09: (b) executed ahead of (a)** — pod-owned config.toml
+  mounted at `/etc/openab/config.toml` in both templates (ADR 010 amendment,
+  `tests/pod_config_sync.rs`, `docs/pod-config/`). Legitimate re-ordering:
+  template installs have carried operator-supplied externalized tokens since
+  #80, so the B2→D1 coupling was already satisfied on this path; S14/S15
+  still govern the `/v1/bots` registration path. Zeabur file-mount semantics
+  get live verification on the lanes (prod pilots — it is already down from
+  the very failure class this removes).
 - Until removal, the frozen renderer + snapshot + warn log are the only
   mechanisms preventing expansion — exactly what B2 asked for. Note honestly:
   configUrl behavior under Zeabur file-mount semantics is **unverified** (the

@@ -160,11 +160,79 @@ spec:
             - openab
             - run
             - -c
-            - http://control-plane.zeabur.internal:8090/bot-config/chair
+            - /etc/openab/config.toml
         volumes:
           - id: home
             dir: /home/node
         configs:
+          # Pod-owned OpenAB config (ADR 010 B2 demotion). Byte-synced with
+          # docs/pod-config/pod-config-chair.toml by tests/pod_config_sync.rs.
+          - path: /etc/openab/config.toml
+            template: &pod_config_chair |
+              # Pod-owned OpenAB config (ADR 010 B2 demotion execution, 2026-07-09).
+              # Mounted at /etc/openab/config.toml — the upstream image-CMD convention.
+              # Byte-synced into both Zeabur templates by tests/pod_config_sync.rs.
+              #
+              # Philosophy (upstream ADR "configurl-over-helm-rendering"): the config file
+              # is a shareable, credential-free artifact. Secrets and per-pod identity
+              # arrive via OpenAB's whole-file ${VAR} env expansion at boot —
+              # ${OABCP_BOT_TOKEN} and ${OABCP_BOT_NAME} come from the pod's own env.
+              #
+              # Deliberately absent: [agent] command / args / working_dir. Every published
+              # openab image variant bakes its own OPENAB_AGENT_COMMAND (claude /
+              # "kiro-cli acp --trust-all-tools" / codex-acp) and HOME, and OpenAB falls
+              # back to them when the config stays silent — so this file can never pin an
+              # agent the image does not contain. Baking the agent into fetched config is
+              # exactly what killed the prod lane (2026-07: /bot-config served the default
+              # claude profile to kiro images; every spawn failed "Agent Not Found").
+
+              [gateway]
+              url = "ws://control-plane.zeabur.internal:8090/ws"
+              platform = "feishu"
+              token = "${OABCP_BOT_TOKEN}"
+              # Explicit: survives OAB's trust-pyramid Phase 3 default flip (L3 deny-all).
+              # This surface is private and token-authed; senders are the plane itself
+              # ("client"/"system") plus roster bots, and the roster is dynamic — an
+              # allowed_users list would go stale after recruit/replace. The WS token is
+              # the trust boundary, not sender ids.
+              allow_all_users = true
+              allow_bot_messages = true
+              bot_username = "${OABCP_BOT_NAME}"
+              streaming = true
+              # OCP backfill and council cross-talk intentionally arrive as in-thread bursts;
+              # per-thread mode lets OAB batch that burst into one context turn.
+              message_processing_mode = "per-thread"
+
+              [agent]
+              # Whitelist only — OpenAB builds the agent child env from this list (plus any
+              # explicit [agent].env); the credential values live in the pod env, never here.
+              inherit_env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GROK_CODE_XAI_API_KEY", "KIRO_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN"]
+
+              [pool]
+              max_sessions = 4
+              session_ttl_hours = 2
+
+              [reactions]
+              # A6: a cosmetic OAB flag must not be able to erase quorum votes.
+              remove_after_reply = false
+
+              [hooks.pre_boot]
+              # GitHub App auth for the chair (ADR 004: the App key lives on the pod volume,
+              # never in env). Safe no-op until $HOME/bin/get-gh-app-token.sh is provisioned.
+              # Uses the image's own $HOME (claude=/home/node, kiro=/home/agent) — the hook
+              # inherits HOME from the pod, so one script serves every image variant.
+              on_failure = "warn"
+              timeout_seconds = 60
+              inline = '''
+              #!/bin/sh
+              set -e
+              if [ ! -x "$HOME/bin/get-gh-app-token.sh" ]; then echo "github app auth not provisioned (no get-gh-app-token.sh); skipping"; exit 0; fi
+              auth() { "$HOME/bin/get-gh-app-token.sh" | gh auth login --with-token; }
+              auth
+              git config --global credential.helper '!gh auth git-credential' || true
+              # refresh before the 1h installation-token expiry
+              ( while sleep 3000; do auth || true; done ) &
+              '''
           # Deployment-owned steering channel (design.md: agent steering is the
           # bot deployer's job; the plane must not serve it from /bot-config).
           # Content is byte-synced with docs/steering/pr-review.md by
@@ -517,6 +585,8 @@ spec:
             default: ${CLAUDE_CODE_OAUTH_TOKEN}
           OABCP_BOT_TOKEN:
             default: ${BOT_TOKEN_CHAIR}
+          OABCP_BOT_NAME:
+            default: chair
 
     - name: rev1
       icon: https://cdn-console.zeabur.com/f/0Ewi6/openab-icon.webp
@@ -530,8 +600,58 @@ spec:
             - openab
             - run
             - -c
-            - http://control-plane.zeabur.internal:8090/bot-config/rev1
+            - /etc/openab/config.toml
         configs:
+          # Byte-synced with docs/pod-config/pod-config-reviewer.toml
+          # by tests/pod_config_sync.rs.
+          - path: /etc/openab/config.toml
+            template: &pod_config_reviewer |
+              # Pod-owned OpenAB config (ADR 010 B2 demotion execution, 2026-07-09).
+              # Mounted at /etc/openab/config.toml — the upstream image-CMD convention.
+              # Byte-synced into both Zeabur templates by tests/pod_config_sync.rs.
+              #
+              # Philosophy (upstream ADR "configurl-over-helm-rendering"): the config file
+              # is a shareable, credential-free artifact. Secrets and per-pod identity
+              # arrive via OpenAB's whole-file ${VAR} env expansion at boot —
+              # ${OABCP_BOT_TOKEN} and ${OABCP_BOT_NAME} come from the pod's own env.
+              #
+              # Deliberately absent: [agent] command / args / working_dir. Every published
+              # openab image variant bakes its own OPENAB_AGENT_COMMAND (claude /
+              # "kiro-cli acp --trust-all-tools" / codex-acp) and HOME, and OpenAB falls
+              # back to them when the config stays silent — so this file can never pin an
+              # agent the image does not contain. Baking the agent into fetched config is
+              # exactly what killed the prod lane (2026-07: /bot-config served the default
+              # claude profile to kiro images; every spawn failed "Agent Not Found").
+
+              [gateway]
+              url = "ws://control-plane.zeabur.internal:8090/ws"
+              platform = "feishu"
+              token = "${OABCP_BOT_TOKEN}"
+              # Explicit: survives OAB's trust-pyramid Phase 3 default flip (L3 deny-all).
+              # This surface is private and token-authed; senders are the plane itself
+              # ("client"/"system") plus roster bots, and the roster is dynamic — an
+              # allowed_users list would go stale after recruit/replace. The WS token is
+              # the trust boundary, not sender ids.
+              allow_all_users = true
+              allow_bot_messages = true
+              bot_username = "${OABCP_BOT_NAME}"
+              streaming = true
+              # OCP backfill and council cross-talk intentionally arrive as in-thread bursts;
+              # per-thread mode lets OAB batch that burst into one context turn.
+              message_processing_mode = "per-thread"
+
+              [agent]
+              # Whitelist only — OpenAB builds the agent child env from this list (plus any
+              # explicit [agent].env); the credential values live in the pod env, never here.
+              inherit_env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GROK_CODE_XAI_API_KEY", "KIRO_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN"]
+
+              [pool]
+              max_sessions = 4
+              session_ttl_hours = 2
+
+              [reactions]
+              # A6: a cosmetic OAB flag must not be able to erase quorum votes.
+              remove_after_reply = false
           - path: /home/node/AGENTS.md
             template: *steering_doc
         env:
@@ -539,6 +659,8 @@ spec:
             default: ${CLAUDE_CODE_OAUTH_TOKEN}
           OABCP_BOT_TOKEN:
             default: ${BOT_TOKEN_REV1}
+          OABCP_BOT_NAME:
+            default: rev1
 
     - name: rev2
       icon: https://cdn-console.zeabur.com/f/0Ewi6/openab-icon.webp
@@ -552,8 +674,10 @@ spec:
             - openab
             - run
             - -c
-            - http://control-plane.zeabur.internal:8090/bot-config/rev2
+            - /etc/openab/config.toml
         configs:
+          - path: /etc/openab/config.toml
+            template: *pod_config_reviewer
           - path: /home/node/AGENTS.md
             template: *steering_doc
         env:
@@ -561,3 +685,5 @@ spec:
             default: ${CLAUDE_CODE_OAUTH_TOKEN}
           OABCP_BOT_TOKEN:
             default: ${BOT_TOKEN_REV2}
+          OABCP_BOT_NAME:
+            default: rev2
