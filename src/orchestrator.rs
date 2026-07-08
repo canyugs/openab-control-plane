@@ -1225,25 +1225,19 @@ fn on_reaction(
     );
     ack(state, bot_id, reply, None, None);
 
-    if add
-        && emoji == DONE_EMOJI
-        && reaction_counts_as_done(session, bot_id)
-        && matches!(target_msg.author_kind.as_str(), "client" | "system")
+    if add && emoji == DONE_EMOJI && matches!(target_msg.author_kind.as_str(), "client" | "system")
     {
-        run_done(state, session, bot_id)?;
+        let coord = coordinator::for_session(&session.mode);
+        let cx = OrchCtx {
+            state,
+            session,
+            roster: state.store.roster(&session.id)?,
+        };
+        if coord.reaction_counts_as_done(&cx, bot_id) {
+            run_done(state, session, bot_id)?;
+        }
     }
     Ok(())
-}
-
-fn reaction_counts_as_done(session: &Session, bot_id: &str) -> bool {
-    // Prompt-driven chairs (CLI bots) often acknowledge the system quorum prompt
-    // with an automatic 🆗 reaction — that must not close the session before the
-    // chair posts the synthesized final (live-hit twice: review councils, then
-    // the ADR 014 triage dogfood). In these modes chair completion is the
-    // explicit text `[done]`. Generic `council` keeps the native OAB contract
-    // (set_done → 🆗 closes), as do solo/pipeline.
-    !(matches!(session.mode.as_str(), "review_council" | "triage_council")
-        && session.chair_bot.as_deref() == Some(bot_id))
 }
 
 /// Run the active coordinator's done-handling for `bot` and execute the actions.
@@ -1282,16 +1276,16 @@ fn check_text_done(
     text: &str,
 ) -> Result<()> {
     if is_done_signal(text) {
-        // Triage chairs habitually append [done] to acknowledgments (hit on
-        // dogfood rounds 2 and 5) — in triage_council the report IS the chair's
-        // done-signal, so a chair [done] only counts on a message that starts
-        // with "TRIAGE" (the template's mandated report prefix). Ignored acks
-        // leave the session open; the watchdog stays the backstop.
-        let triage_chair =
-            session.mode == "triage_council" && session.chair_bot.as_deref() == Some(bot_id);
-        if triage_chair && !text.trim_start().starts_with("TRIAGE") {
+        let coord = coordinator::for_session(&session.mode);
+        let cx = OrchCtx {
+            state,
+            session,
+            roster: state.store.roster(&session.id)?,
+        };
+        if !coord.accepts_text_done(&cx, bot_id, text) {
             tracing::warn!(
-                "triage chair {bot_id} sent [done] without a TRIAGE report in {} — ignored",
+                "done-signal from {bot_id} rejected by {} policy in {}",
+                session.mode,
                 session.id
             );
             return Ok(());

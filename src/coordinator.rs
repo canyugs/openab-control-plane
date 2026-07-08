@@ -56,6 +56,19 @@ pub trait Coordinator: Send + Sync {
     fn starters(&self, roster: &[String], _chair: Option<&str>) -> Vec<String> {
         roster.to_vec()
     }
+    /// Does a 🆗 reaction from `bot` count as its done-signal? Native OAB
+    /// contract: yes (set_done → 🆗 closes). Prompt-driven chairs in
+    /// review/triage auto-🆗 the quorum prompt — those coordinators return
+    /// false for their chair; completion there is the explicit text [done].
+    fn reaction_counts_as_done(&self, _cx: &dyn Ctx, _bot: &str) -> bool {
+        true
+    }
+    /// Does a done-signal found in message *text* from `bot` count, given the
+    /// full text? Default: yes. TriageCouncil requires the chair's [done] to
+    /// ride the TRIAGE report itself.
+    fn accepts_text_done(&self, _cx: &dyn Ctx, _bot: &str, _text: &str) -> bool {
+        true
+    }
     /// The roster changed outside a done-signal (liveness trim/replace). Default:
     /// nothing; quorum modes re-check whether the already-recorded done-count now
     /// meets the (possibly shrunk) quorum.
@@ -174,6 +187,20 @@ impl Coordinator for TriageCouncil {
         QuorumCouncil.starters(roster, chair)
     }
 
+    fn reaction_counts_as_done(&self, cx: &dyn Ctx, bot: &str) -> bool {
+        // Prompt-driven chairs often acknowledge the system quorum prompt with
+        // an automatic 🆗 reaction. That must not close the session before the
+        // chair posts the synthesized final; chair completion is explicit text.
+        cx.chair() != Some(bot)
+    }
+
+    fn accepts_text_done(&self, cx: &dyn Ctx, bot: &str, text: &str) -> bool {
+        // Triage chairs habitually append [done] to acknowledgments. In
+        // triage_council the report is the chair's done-signal, so the chair's
+        // [done] only counts when attached to the mandated report prefix.
+        cx.chair() != Some(bot) || text.trim_start().starts_with("TRIAGE")
+    }
+
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
         council_on_done(cx, bot, TRIAGE_QUORUM_PROMPT)
     }
@@ -195,6 +222,13 @@ impl Coordinator for ReviewCouncil {
 
     fn starters(&self, roster: &[String], _chair: Option<&str>) -> Vec<String> {
         roster.to_vec()
+    }
+
+    fn reaction_counts_as_done(&self, cx: &dyn Ctx, bot: &str) -> bool {
+        // Prompt-driven chairs often acknowledge the system quorum prompt with
+        // an automatic 🆗 reaction. Review chair completion is the explicit text
+        // [done] after the synthesized PR verdict and side effects.
+        cx.chair() != Some(bot)
     }
 
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
@@ -289,6 +323,7 @@ mod tests {
 
     struct FakeCtx {
         roster: Vec<String>,
+        chair: Option<String>,
         final_msg: Option<String>,
         quorum_n: i64,
         reactors: Vec<String>,
@@ -298,6 +333,7 @@ mod tests {
     fn ctx(roster: &[&str], final_msg: Option<&str>) -> FakeCtx {
         FakeCtx {
             roster: roster.iter().map(|s| s.to_string()).collect(),
+            chair: roster.first().map(|s| s.to_string()),
             final_msg: final_msg.map(String::from),
             quorum_n: 0,
             reactors: vec![],
@@ -309,7 +345,7 @@ mod tests {
             &self.roster
         }
         fn chair(&self) -> Option<&str> {
-            self.roster.first().map(String::as_str)
+            self.chair.as_deref()
         }
         fn quorum_n(&self) -> i64 {
             self.quorum_n
@@ -342,6 +378,68 @@ mod tests {
         assert_eq!(lookup("solo").unwrap().kind(), "solo");
         assert_eq!(lookup("pipeline").unwrap().kind(), "pipeline");
         assert!(lookup("anything-else").is_none());
+    }
+
+    #[test]
+    fn reaction_done_policy_covers_all_coordinators() {
+        let cx = ctx(&["chair", "rev"], None);
+        let cases: Vec<(&str, Box<dyn Coordinator>, bool, bool)> = vec![
+            ("quorum_council", Box::new(QuorumCouncil), true, true),
+            ("triage_council", Box::new(TriageCouncil), false, true),
+            ("review_council", Box::new(ReviewCouncil), false, true),
+            ("solo", Box::new(Solo), true, true),
+            ("pipeline", Box::new(Pipeline), true, true),
+        ];
+
+        for (name, coord, chair_counts, non_chair_counts) in cases {
+            assert_eq!(
+                coord.reaction_counts_as_done(&cx, "chair"),
+                chair_counts,
+                "{name} chair reaction policy"
+            );
+            assert_eq!(
+                coord.reaction_counts_as_done(&cx, "rev"),
+                non_chair_counts,
+                "{name} non-chair reaction policy"
+            );
+        }
+    }
+
+    #[test]
+    fn text_done_policy_covers_all_coordinators() {
+        let cx = ctx(&["chair", "rev"], None);
+        let report = "  TRIAGE high — final report\n[done]";
+        let ack = "ok then [done]";
+
+        assert!(
+            TriageCouncil.accepts_text_done(&cx, "chair", report),
+            "triage chair report text counts"
+        );
+        assert!(
+            !TriageCouncil.accepts_text_done(&cx, "chair", ack),
+            "triage chair bare ack text does not count"
+        );
+        assert!(
+            TriageCouncil.accepts_text_done(&cx, "rev", ack),
+            "triage reviewer text keeps default done semantics"
+        );
+
+        let default_cases: Vec<(&str, Box<dyn Coordinator>)> = vec![
+            ("quorum_council", Box::new(QuorumCouncil)),
+            ("review_council", Box::new(ReviewCouncil)),
+            ("solo", Box::new(Solo)),
+            ("pipeline", Box::new(Pipeline)),
+        ];
+        for (name, coord) in default_cases {
+            assert!(
+                coord.accepts_text_done(&cx, "chair", ack),
+                "{name} chair text done keeps default semantics"
+            );
+            assert!(
+                coord.accepts_text_done(&cx, "rev", ack),
+                "{name} non-chair text done keeps default semantics"
+            );
+        }
     }
 
     #[test]
