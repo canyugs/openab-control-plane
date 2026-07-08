@@ -2,7 +2,7 @@
 //! lifecycle, client-trigger fanout, and quorum; the chair bot is the only LLM
 //! judgment.
 
-use crate::coordinator::{self, Action, Ctx};
+use crate::coordinator::{self, Action, Coordinator, Ctx};
 use crate::protocol::{Content, GatewayReply, GatewayResponse, SenderInfo, RESPONSE_SCHEMA};
 use crate::routing;
 use crate::session::DONE_EMOJI;
@@ -236,7 +236,9 @@ pub fn post_client_message(
     // A stock OAB bot in a group gates on @mention before a thread exists
     // (gateway.rs is_responder); bot_username == the plane's bot name (served in
     // /bot-config), so a recipient's own name matches its gate.
-    let coord = coordinator::for_session(&session.mode);
+    let Some(coord) = dispatch_coordinator(state, &session)? else {
+        return Ok(msg);
+    };
     let starters = coord.starters(&roster, session.chair_bot.as_deref());
     let cx = OrchCtx {
         state,
@@ -360,6 +362,48 @@ pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bo
     fire_close_webhook(state, session_id, &verdict, "timeout");
     tracing::warn!("watchdog force-closed stale session {session_id}");
     Ok(true)
+}
+
+/// Resolve the coordinator for a persisted session row. Unknown mode →
+/// error log + north `dispatch_error` + force-close reason:"unknown_mode"
+/// (CAS-idempotent; no-op if already terminal), and None — refusal, never
+/// silent quorum adoption. Unreachable in a correctly built binary (new
+/// opens validate via controller); insurance against registry refactors.
+fn dispatch_coordinator(
+    state: &Arc<AppState>,
+    session: &Session,
+) -> Result<Option<Box<dyn Coordinator>>> {
+    if let Some(coord) = coordinator::lookup(&session.mode) {
+        return Ok(Some(coord));
+    }
+
+    tracing::error!(
+        session_id = %session.id,
+        mode = %session.mode,
+        "unknown persisted coordinator mode; force-closing session"
+    );
+    state.emit_north(
+        "dispatch_error",
+        &session.id,
+        json!({ "mode": session.mode.clone(), "reason": "unknown_mode" }),
+    );
+    if state.store.close_if_active(&session.id)? {
+        purge_session_outbox_after_close(state, &session.id);
+        if let Err(e) = crate::identity::revoke_session_github_tokens(
+            state.store.as_ref(),
+            state.github_app.as_ref(),
+            &session.id,
+        ) {
+            tracing::warn!("revoke github tokens for {} failed: {e}", session.id);
+        }
+        state.emit_north(
+            "state",
+            &session.id,
+            json!({ "state": "closed", "reason": "unknown_mode" }),
+        );
+        fire_close_webhook(state, &session.id, "", "unknown_mode");
+    }
+    Ok(None)
 }
 
 fn purge_session_outbox_after_close(state: &Arc<AppState>, session_id: &str) {
@@ -548,7 +592,10 @@ fn trim_reviewer(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Resul
         session: &session,
         roster: state.store.roster(session_id)?,
     };
-    let actions = coordinator::for_session(&session.mode).on_roster_change(&cx);
+    let Some(coord) = dispatch_coordinator(state, &session)? else {
+        return Ok(());
+    };
+    let actions = coord.on_roster_change(&cx);
     run_actions(state, &session, actions)
 }
 
@@ -910,7 +957,9 @@ fn backfill_bot_with_audience_alias(
         _ => eligible,
     };
 
-    let coord = coordinator::for_session(&session.mode);
+    let Some(coord) = dispatch_coordinator(state, &session)? else {
+        return Ok(());
+    };
     let cx = OrchCtx {
         state,
         session: &session,
@@ -1138,7 +1187,9 @@ fn redeliver_trigger_to_non_starter_chair(state: &Arc<AppState>, session: &Sessi
         return Ok(());
     };
     let roster = state.store.roster(&session.id)?;
-    let coord = coordinator::for_session(&session.mode);
+    let Some(coord) = dispatch_coordinator(state, session)? else {
+        return Ok(());
+    };
     let starters = coord.starters(&roster, Some(chair));
     if starters.iter().any(|bot| bot == chair) {
         return Ok(());
@@ -1222,7 +1273,9 @@ fn on_reaction(
 
     if add && emoji == DONE_EMOJI && matches!(target_msg.author_kind.as_str(), "client" | "system")
     {
-        let coord = coordinator::for_session(&session.mode);
+        let Some(coord) = dispatch_coordinator(state, session)? else {
+            return Ok(());
+        };
         let cx = OrchCtx {
             state,
             session,
@@ -1238,7 +1291,9 @@ fn on_reaction(
 /// Run the active coordinator's done-handling for `bot` and execute the actions.
 /// Shared by the 🆗-reaction path and the text done-signal path.
 fn run_done(state: &Arc<AppState>, session: &Session, bot_id: &str) -> Result<()> {
-    let coord = coordinator::for_session(&session.mode);
+    let Some(coord) = dispatch_coordinator(state, session)? else {
+        return Ok(());
+    };
     let cx = OrchCtx {
         state,
         session,
@@ -1271,7 +1326,9 @@ fn check_text_done(
     text: &str,
 ) -> Result<()> {
     if is_done_signal(text) {
-        let coord = coordinator::for_session(&session.mode);
+        let Some(coord) = dispatch_coordinator(state, session)? else {
+            return Ok(());
+        };
         let cx = OrchCtx {
             state,
             session,
@@ -1383,13 +1440,17 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     }
                     // ADR 013: record the chair's structured verdict before the
                     // webhook fires (it re-reads the session from the store).
-                    let coord = coordinator::for_session(&session.mode);
-                    let cx = OrchCtx {
-                        state,
-                        session,
-                        roster: state.store.roster(&session.id)?,
+                    let structured_verdict = if let Some(coord) = coordinator::lookup(&session.mode)
+                    {
+                        let cx = OrchCtx {
+                            state,
+                            session,
+                            roster: state.store.roster(&session.id)?,
+                        };
+                        coord.structured_verdict(&cx, &verdict)
+                    } else {
+                        None
                     };
-                    let structured_verdict = coord.structured_verdict(&cx, &verdict);
                     if let Some(t) = &structured_verdict {
                         if let Err(e) = state.store.set_session_verdict(
                             &session.id,
@@ -1662,6 +1723,110 @@ mod tests {
         assert_eq!(payload["findings_red"], 1);
         assert_eq!(payload["findings_yellow"], 0);
         assert_eq!(payload["findings_green"], 2);
+    }
+
+    #[tokio::test]
+    async fn persisted_unknown_mode_force_closes_without_quorum_dispatch() {
+        let (webhook_url, mut webhook_rx) = spawn_close_webhook_listener().await;
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new_with_options(
+            store.clone(),
+            None,
+            None,
+            None,
+            None,
+            "http://control-plane.zeabur.internal:8090".to_string(),
+            Some(webhook_url),
+        );
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev = store.register_bot("rev", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session(
+                "legacy",
+                None,
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), rev.id.clone()],
+                "bogus_mode",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+        let trigger = store
+            .add_message(&session.id, None, "client", None, None, "review this", None)
+            .unwrap();
+        store
+            .add_message(
+                &session.id,
+                None,
+                "bot",
+                Some(&rev.id),
+                None,
+                "reviewer finding",
+                None,
+            )
+            .unwrap();
+        let mut north = state.north_tx.subscribe();
+
+        handle_reply(
+            &state,
+            &rev.id,
+            reaction_reply(&session.id, &trigger.id, DONE_EMOJI),
+        )
+        .unwrap();
+
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Closed,
+        );
+        assert_eq!(
+            pending_frames_for_session(&store, &chair.id, &session.id),
+            0
+        );
+        assert_eq!(pending_frames_for_session(&store, &rev.id, &session.id), 0);
+        assert!(
+            store
+                .messages(&session.id)
+                .unwrap()
+                .iter()
+                .all(|m| m.author_kind != "system"),
+            "unknown mode must not deliver the quorum chair prompt",
+        );
+
+        let mut saw_dispatch_error = false;
+        let mut saw_unknown_mode_close = false;
+        let mut saw_quorum = false;
+        while let Ok(raw) = north.try_recv() {
+            let event: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            match event["type"].as_str() {
+                Some("dispatch_error") => {
+                    saw_dispatch_error = true;
+                    assert_eq!(event["payload"]["mode"], "bogus_mode");
+                    assert_eq!(event["payload"]["reason"], "unknown_mode");
+                }
+                Some("state") if event["payload"]["state"] == "closed" => {
+                    saw_unknown_mode_close = event["payload"]["reason"] == "unknown_mode";
+                }
+                Some("state") if event["payload"]["state"] == "quorum" => {
+                    saw_quorum = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_dispatch_error, "unknown mode must emit dispatch_error");
+        assert!(
+            saw_unknown_mode_close,
+            "unknown mode close must surface reason"
+        );
+        assert!(!saw_quorum, "unknown mode must not silently adopt quorum");
+
+        let payload = tokio::time::timeout(std::time::Duration::from_secs(5), webhook_rx.recv())
+            .await
+            .expect("timed out waiting for close webhook")
+            .expect("close webhook listener stopped");
+        assert_eq!(payload["reason"], "unknown_mode");
+        assert_eq!(payload["mode"], "bogus_mode");
     }
 
     async fn spawn_close_webhook_listener() -> (String, mpsc::UnboundedReceiver<serde_json::Value>)
