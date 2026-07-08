@@ -56,6 +56,14 @@ pub trait Coordinator: Send + Sync {
     fn starters(&self, roster: &[String], _chair: Option<&str>) -> Vec<String> {
         roster.to_vec()
     }
+    /// Rewrite the opening trigger `text` for delivery to `recipient`. Pure —
+    /// the orchestrator applies it at ALL trigger-delivery sites: fanout,
+    /// backfill, chair redelivery. Default: verbatim passthrough (the
+    /// solo/forum contract — forum carries no code and must see its trigger
+    /// unchanged).
+    fn recipient_trigger_text(&self, _cx: &dyn Ctx, _recipient: &str, text: &str) -> String {
+        text.to_string()
+    }
     /// Does a 🆗 reaction from `bot` count as its done-signal? Native OAB
     /// contract: yes (set_done → 🆗 closes). Prompt-driven chairs in
     /// review/triage auto-🆗 the quorum prompt — those coordinators return
@@ -222,6 +230,10 @@ impl Coordinator for ReviewCouncil {
 
     fn starters(&self, roster: &[String], _chair: Option<&str>) -> Vec<String> {
         roster.to_vec()
+    }
+
+    fn recipient_trigger_text(&self, cx: &dyn Ctx, recipient: &str, text: &str) -> String {
+        crate::orchestrator::review_recipient_trigger_text(cx.chair(), recipient, text)
     }
 
     fn reaction_counts_as_done(&self, cx: &dyn Ctx, bot: &str) -> bool {
@@ -440,6 +452,46 @@ mod tests {
                 "{name} non-chair text done keeps default semantics"
             );
         }
+    }
+
+    #[test]
+    fn recipient_trigger_text_default_is_verbatim_passthrough() {
+        let cx = ctx(&["chair", "rev"], None);
+        let trigger = "PR Review Council — canyugs/openab-control-plane #17 \"\"\n\nReview focus assignment:\n- rev → security";
+        let cases: Vec<(&str, Box<dyn Coordinator>)> = vec![
+            ("quorum_council", Box::new(QuorumCouncil)),
+            ("triage_council", Box::new(TriageCouncil)),
+            ("solo", Box::new(Solo)),
+            ("pipeline", Box::new(Pipeline)),
+        ];
+
+        for (name, coord) in cases {
+            assert_eq!(
+                coord.recipient_trigger_text(&cx, "rev", trigger),
+                trigger,
+                "{name} must deliver triggers verbatim"
+            );
+        }
+    }
+
+    #[test]
+    fn review_council_recipient_trigger_text_rewrites_only_review_triggers() {
+        let cx = ctx(&["chair", "rev"], None);
+        let trigger = "PR Review Council — canyugs/openab-control-plane #17 \"\"\n\nReview focus assignment:\n- rev → security";
+
+        let chair_text = ReviewCouncil.recipient_trigger_text(&cx, "chair", trigger);
+        assert!(chair_text.contains("Task: manage the GitHub PR status comment"));
+        assert!(chair_text.contains("gh pr comment 17 --repo canyugs/openab-control-plane"));
+
+        let reviewer_text = ReviewCouncil.recipient_trigger_text(&cx, "rev", trigger);
+        assert!(reviewer_text.contains("Task: review GitHub PR canyugs/openab-control-plane #17"));
+        assert!(reviewer_text.contains("focus: security"));
+
+        let non_review = "plain forum trigger";
+        assert_eq!(
+            ReviewCouncil.recipient_trigger_text(&cx, "chair", non_review),
+            non_review
+        );
     }
 
     #[test]
