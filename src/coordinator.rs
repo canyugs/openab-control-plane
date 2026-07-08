@@ -15,6 +15,7 @@ use crate::store::SessionState;
 
 /// Read-only view a Coordinator decides from (pure → unit-testable).
 pub trait Ctx {
+    fn session_id(&self) -> &str;
     fn roster(&self) -> &[String];
     fn chair(&self) -> Option<&str>;
     fn quorum_n(&self) -> i64;
@@ -40,6 +41,14 @@ pub enum Action {
     },
     /// CAS `from`→Closed; emits `verdict` + `state:closed` on success.
     Close { from: SessionState, verdict: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuredVerdict {
+    pub decision: String,
+    pub red: Option<i64>,
+    pub yellow: Option<i64>,
+    pub green: Option<i64>,
 }
 
 pub trait Coordinator: Send + Sync {
@@ -82,6 +91,13 @@ pub trait Coordinator: Send + Sync {
     /// meets the (possibly shrunk) quorum.
     fn on_roster_change(&self, _cx: &dyn Ctx) -> Vec<Action> {
         vec![]
+    }
+    /// Parse the chair's closing text into a structured verdict, or None. Called
+    /// by the Close arm BEFORE the close webhook reads the session row. Default:
+    /// None — modes without a verdict contract never parse trailers and never
+    /// write review columns (forum/solo contract).
+    fn structured_verdict(&self, _cx: &dyn Ctx, _verdict_text: &str) -> Option<StructuredVerdict> {
+        None
     }
 }
 
@@ -137,6 +153,28 @@ impl Coordinator for QuorumCouncil {
 
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
         council_on_done(cx, bot, COUNCIL_QUORUM_PROMPT)
+    }
+
+    fn structured_verdict(&self, cx: &dyn Ctx, verdict_text: &str) -> Option<StructuredVerdict> {
+        parse_structured_verdict(cx, verdict_text)
+    }
+}
+
+fn parse_structured_verdict(cx: &dyn Ctx, verdict_text: &str) -> Option<StructuredVerdict> {
+    match crate::orchestrator::parse_verdict_trailer(verdict_text) {
+        Some(t) => Some(StructuredVerdict {
+            decision: t.decision,
+            red: t.red,
+            yellow: t.yellow,
+            green: t.green,
+        }),
+        None => {
+            tracing::warn!(
+                "no [[verdict:…]] trailer in chair final for {}; structured verdict stays NULL",
+                cx.session_id()
+            );
+            None
+        }
     }
 }
 
@@ -250,6 +288,10 @@ impl Coordinator for ReviewCouncil {
     fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<Action> {
         QuorumCouncil.on_roster_change(cx)
     }
+
+    fn structured_verdict(&self, cx: &dyn Ctx, verdict_text: &str) -> Option<StructuredVerdict> {
+        QuorumCouncil.structured_verdict(cx, verdict_text)
+    }
 }
 
 /// Single-bot lifecycle: the lone bot's own done closes the session directly.
@@ -334,6 +376,7 @@ mod tests {
     use super::*;
 
     struct FakeCtx {
+        session_id: String,
         roster: Vec<String>,
         chair: Option<String>,
         final_msg: Option<String>,
@@ -344,6 +387,7 @@ mod tests {
     /// A Deliberating ctx with no done-signals yet (the common starting point).
     fn ctx(roster: &[&str], final_msg: Option<&str>) -> FakeCtx {
         FakeCtx {
+            session_id: "ses_fake".into(),
             roster: roster.iter().map(|s| s.to_string()).collect(),
             chair: roster.first().map(|s| s.to_string()),
             final_msg: final_msg.map(String::from),
@@ -353,6 +397,9 @@ mod tests {
         }
     }
     impl Ctx for FakeCtx {
+        fn session_id(&self) -> &str {
+            &self.session_id
+        }
         fn roster(&self) -> &[String] {
             &self.roster
         }
@@ -450,6 +497,54 @@ mod tests {
             assert!(
                 coord.accepts_text_done(&cx, "rev", ack),
                 "{name} non-chair text done keeps default semantics"
+            );
+        }
+    }
+
+    #[test]
+    fn structured_verdict_policy_covers_all_coordinators() {
+        let cx = ctx(&["chair", "rev"], None);
+        let text = "final\n[[verdict:request_changes r=1 y=2 g=3]] [done]";
+
+        for (name, coord) in [
+            (
+                "quorum_council",
+                Box::new(QuorumCouncil) as Box<dyn Coordinator>,
+            ),
+            ("review_council", Box::new(ReviewCouncil)),
+        ] {
+            let verdict = coord
+                .structured_verdict(&cx, text)
+                .unwrap_or_else(|| panic!("{name} should parse trailer"));
+            assert_eq!(
+                verdict,
+                StructuredVerdict {
+                    decision: "request_changes".into(),
+                    red: Some(1),
+                    yellow: Some(2),
+                    green: Some(3),
+                },
+                "{name} maps trailer fields"
+            );
+            assert!(
+                coord
+                    .structured_verdict(&cx, "plain final [done]")
+                    .is_none(),
+                "{name} returns None without a trailer"
+            );
+        }
+
+        for (name, coord) in [
+            (
+                "triage_council",
+                Box::new(TriageCouncil) as Box<dyn Coordinator>,
+            ),
+            ("solo", Box::new(Solo)),
+            ("pipeline", Box::new(Pipeline)),
+        ] {
+            assert!(
+                coord.structured_verdict(&cx, text).is_none(),
+                "{name} must not parse even valid-looking trailers"
             );
         }
     }

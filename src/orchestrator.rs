@@ -1299,6 +1299,9 @@ struct OrchCtx<'a> {
 }
 
 impl Ctx for OrchCtx<'_> {
+    fn session_id(&self) -> &str {
+        &self.session.id
+    }
     fn roster(&self) -> &[String] {
         &self.roster
     }
@@ -1380,34 +1383,33 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     }
                     // ADR 013: record the chair's structured verdict before the
                     // webhook fires (it re-reads the session from the store).
-                    let trailer = parse_verdict_trailer(&verdict);
-                    match &trailer {
-                        Some(t) => {
-                            if let Err(e) = state.store.set_session_verdict(
-                                &session.id,
-                                &t.decision,
-                                t.red,
-                                t.yellow,
-                                t.green,
-                            ) {
-                                tracing::warn!("record verdict for {} failed: {e}", session.id);
-                            }
+                    let coord = coordinator::for_session(&session.mode);
+                    let cx = OrchCtx {
+                        state,
+                        session,
+                        roster: state.store.roster(&session.id)?,
+                    };
+                    let structured_verdict = coord.structured_verdict(&cx, &verdict);
+                    if let Some(t) = &structured_verdict {
+                        if let Err(e) = state.store.set_session_verdict(
+                            &session.id,
+                            &t.decision,
+                            t.red,
+                            t.yellow,
+                            t.green,
+                        ) {
+                            tracing::warn!("record verdict for {} failed: {e}", session.id);
                         }
-                        None => tracing::warn!(
-                            "no [[verdict:…]] trailer in chair final for {}; \
-                             structured verdict stays NULL",
-                            session.id
-                        ),
                     }
                     state.emit_north(
                         "verdict",
                         &session.id,
                         json!({
                             "text": verdict.clone(),
-                            "decision": trailer.as_ref().map(|t| t.decision.clone()),
-                            "findings_red": trailer.as_ref().and_then(|t| t.red),
-                            "findings_yellow": trailer.as_ref().and_then(|t| t.yellow),
-                            "findings_green": trailer.as_ref().and_then(|t| t.green),
+                            "decision": structured_verdict.as_ref().map(|t| t.decision.clone()),
+                            "findings_red": structured_verdict.as_ref().and_then(|t| t.red),
+                            "findings_yellow": structured_verdict.as_ref().and_then(|t| t.yellow),
+                            "findings_green": structured_verdict.as_ref().and_then(|t| t.green),
                         }),
                     );
                     state.emit_north("state", &session.id, json!({ "state": "closed" }));
@@ -1537,7 +1539,13 @@ mod tests {
     use crate::protocol::ReplyChannel;
     use crate::state::AppState;
     use crate::store::{SqliteStore, Store};
+    use axum::body::Bytes;
+    use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::routing::post;
+    use axum::Router;
     use std::collections::HashMap;
+    use tokio::net::TcpListener;
     use tokio::sync::mpsc;
 
     static BACKFILL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1606,6 +1614,77 @@ mod tests {
         let p = close_webhook_payload(None, "ses_x", &[], "v", "timeout");
         assert!(p["trigger_ref"].is_null());
         assert!(p["mode"].is_null());
+    }
+
+    #[tokio::test]
+    async fn review_close_webhook_reads_structured_verdict_columns() {
+        let (webhook_url, mut webhook_rx) = spawn_close_webhook_listener().await;
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new_with_options(
+            store.clone(),
+            None,
+            None,
+            None,
+            None,
+            "http://control-plane.zeabur.internal:8090".to_string(),
+            Some(webhook_url),
+        );
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let session = store
+            .create_session(
+                "review",
+                None,
+                0,
+                Some(&chair.id),
+                std::slice::from_ref(&chair.id),
+                "review_council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Quorum)
+            .unwrap();
+
+        handle_reply(
+            &state,
+            &chair.id,
+            msg_reply(
+                &session.id,
+                "VERDICT: approve [[verdict:approve r=1 y=0 g=2]] [done]",
+            ),
+        )
+        .unwrap();
+
+        let payload = tokio::time::timeout(std::time::Duration::from_secs(5), webhook_rx.recv())
+            .await
+            .expect("timed out waiting for close webhook")
+            .expect("close webhook listener stopped");
+        assert_eq!(payload["decision"], "approve");
+        assert_eq!(payload["findings_red"], 1);
+        assert_eq!(payload["findings_yellow"], 0);
+        assert_eq!(payload["findings_green"], 2);
+    }
+
+    async fn spawn_close_webhook_listener() -> (String, mpsc::UnboundedReceiver<serde_json::Value>)
+    {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let app = Router::new()
+            .route("/", post(capture_close_webhook))
+            .with_state(tx);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}/"), rx)
+    }
+
+    async fn capture_close_webhook(
+        State(tx): State<mpsc::UnboundedSender<serde_json::Value>>,
+        body: Bytes,
+    ) -> StatusCode {
+        let value = serde_json::from_slice(&body).unwrap();
+        tx.send(value).unwrap();
+        StatusCode::NO_CONTENT
     }
 
     fn test_session(chair: Option<&str>, mode: &str) -> Session {
@@ -2784,6 +2863,54 @@ mod tests {
         let frames = pending_frame_values(&store, &bot.id);
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0]["content"]["text"].as_str(), Some(trigger));
+    }
+
+    #[test]
+    fn solo_close_keeps_structured_verdict_null_even_with_trailer() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let bot = store.register_bot("solo", "reviewer", "h1", "t1").unwrap();
+        let session = store
+            .create_session("solo", None, 0, None, std::slice::from_ref(&bot.id), "solo")
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+        let mut north = state.north_tx.subscribe();
+
+        handle_reply(
+            &state,
+            &bot.id,
+            msg_reply(
+                &session.id,
+                "solo final [[verdict:approve r=1 y=0 g=2]] [done]",
+            ),
+        )
+        .unwrap();
+
+        let closed = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&closed.state),
+            SessionState::Closed
+        );
+        assert!(closed.decision.is_none());
+        assert!(closed.findings_red.is_none());
+        assert!(closed.findings_yellow.is_none());
+        assert!(closed.findings_green.is_none());
+
+        let mut verdict_event = None;
+        while let Ok(raw) = north.try_recv() {
+            let event: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            if event["type"] == "verdict" {
+                verdict_event = Some(event);
+                break;
+            }
+        }
+        let event = verdict_event.expect("solo close should emit a north verdict event");
+        assert!(event["payload"]["decision"].is_null());
+        assert!(event["payload"]["findings_red"].is_null());
+        assert!(event["payload"]["findings_yellow"].is_null());
+        assert!(event["payload"]["findings_green"].is_null());
     }
 
     #[test]
