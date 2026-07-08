@@ -1212,6 +1212,10 @@ fn chair_pre_boot_hook_script(working_dir: &str) -> String {
 
 /// Serves a stock OAB pod its full config.toml with `[gateway]` pointing back at
 /// this plane. Mirrors openab-hub's `/bot-config/{id}`.
+///
+/// Frozen compatibility surface (ADR 010 B2): bugfix-only until demotion/removal.
+/// `tests/bot_config_freeze.rs` snapshot-guards the full response body; any
+/// deliberate render change must regenerate those goldens and cite ADR 010 B2.
 async fn bot_config(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

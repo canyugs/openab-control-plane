@@ -1,0 +1,30 @@
+[gateway]
+url = "ws://control-plane.test/ws"
+platform = "feishu"
+token = "oabct_fixedfixedfixedfixedfixedfix"
+# Explicit: survives OAB's trust-pyramid Phase 3 default flip (L3 deny-all).
+# This surface is private and token-authed; senders are the plane itself
+# ("client"/"system") plus roster bots, and the roster is dynamic — an
+# allowed_users list would go stale after recruit/replace. The WS token is
+# the trust boundary, not sender ids.
+allow_all_users = true
+allow_bot_messages = true
+bot_username = "reviewer"
+streaming = true
+# OCP backfill and council cross-talk intentionally arrive as in-thread bursts;
+# per-thread mode lets OAB batch that burst into one context turn.
+message_processing_mode = "per-thread"
+
+[agent]
+command = "kiro-cli"
+args = ["acp", "--trust-all-tools"]
+working_dir = "/home/agent"
+inherit_env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GROK_CODE_XAI_API_KEY", "KIRO_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN"]
+
+[pool]
+max_sessions = 4
+session_ttl_hours = 2
+
+[reactions]
+# A6: a cosmetic OAB flag must not be able to erase quorum votes.
+remove_after_reply = false
