@@ -1,0 +1,18 @@
+{
+  "decision": "approve",
+  "event": "session.closed",
+  "findings_green": 2,
+  "findings_red": 0,
+  "findings_yellow": 0,
+  "mode": "council",
+  "reason": "normal",
+  "roster": [
+    "wire-chair",
+    "wire-rev-a",
+    "wire-rev-b"
+  ],
+  "session_id": "<dyn>",
+  "trigger_ref": "github:pr/acme/widgets#156",
+  "ts": "<dyn>",
+  "verdict": "VERDICT: approved [[verdict:approve r=0 y=0 g=2]]"
+}
