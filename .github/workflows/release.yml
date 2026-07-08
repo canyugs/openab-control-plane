@@ -4,6 +4,11 @@ name: release
 #   git tag v0.1.1 && git push origin v0.1.1   → pushes :0.1.1 and :latest
 # Needs repo secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
 #
+# Multi-arch: amd64 (Zeabur) + arm64 (k8s on Graviton/Ampere/Apple Silicon),
+# each built natively on its own runner — no QEMU — then stitched into one
+# manifest by the `manifest` job. Per-arch tags (:X.Y.Z-amd64/-arm64) stay
+# published as harmless build artifacts.
+#
 # Third-party actions are pinned to a full commit SHA (not a movable tag) to
 # block supply-chain tampering — a tag can be force-moved to malicious code, a
 # SHA can't. The trailing comment tracks the human-readable version; bump both
@@ -23,7 +28,14 @@ jobs:
 
   image:
     needs: test
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -31,21 +43,37 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        id: meta
-        with:
-          images: canyu/openab-control-plane
-          # v0.1.1 → tags 0.1.1 + latest (matches the template's :0.1.0 scheme)
-          tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest
+      - name: Derive version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # ponytail: amd64 only (what Zeabur runs). Add linux/arm64 here when a
-          # target needs it — QEMU arm64 Rust builds are slow, so not by default.
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          platforms: linux/${{ matrix.arch }}
+          tags: canyu/openab-control-plane:${{ env.VERSION }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+  manifest:
+    needs: image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Stitch multi-arch manifest (:X.Y.Z + :latest)
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          docker buildx imagetools create \
+            -t "canyu/openab-control-plane:${VERSION}" \
+            -t "canyu/openab-control-plane:latest" \
+            "canyu/openab-control-plane:${VERSION}-amd64" \
+            "canyu/openab-control-plane:${VERSION}-arm64"
+      - name: Verify both platforms present
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          out=$(docker buildx imagetools inspect "canyu/openab-control-plane:${VERSION}")
+          echo "$out"
+          echo "$out" | grep -q 'linux/amd64' || { echo 'missing linux/amd64' >&2; exit 1; }
+          echo "$out" | grep -q 'linux/arm64' || { echo 'missing linux/arm64' >&2; exit 1; }
