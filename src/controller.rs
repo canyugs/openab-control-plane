@@ -104,6 +104,7 @@ fn open_session(
             })
         }
         SessionCreateOutcome::Superseded { old_id } => {
+            orchestrator::handle_superseded_session(state, &old_id);
             if !action.prompt.trim().is_empty() {
                 orchestrator::post_client_message(state, &session.id, &action.prompt)?;
             }
@@ -193,6 +194,25 @@ mod tests {
         }
     }
 
+    fn pending_frames_for_session(
+        store: &dyn Store,
+        bot_id: &str,
+        session_id: &str,
+    ) -> usize {
+        store
+            .pending_outbox(bot_id)
+            .unwrap()
+            .into_iter()
+            .filter(|(_, frame)| {
+                serde_json::from_str::<serde_json::Value>(frame)
+                    .ok()
+                    .and_then(|value| value["channel"]["id"].as_str().map(str::to_string))
+                    .as_deref()
+                    == Some(session_id)
+            })
+            .count()
+    }
+
     #[test]
     fn open_session_action_creates_session_and_posts_prompt() {
         let state = state_with_bots();
@@ -273,6 +293,64 @@ mod tests {
         );
         assert_eq!(state.store.messages(&new_id).unwrap().len(), 1);
         assert_eq!(state.store.messages(&old_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn open_session_supersede_cleans_up_without_caller_cooperation() {
+        let state = state_with_bots();
+        let first = execute(&state, ControllerAction::OpenSession(review_action())).unwrap();
+        let ControllerActionResult::SessionOpened {
+            session_id: old_id,
+            ..
+        } = first
+        else {
+            panic!("first open should create a session");
+        };
+        state
+            .store
+            .cache_installation_token(&old_id, "reviewer", "ghs_old", i64::MAX)
+            .unwrap();
+        assert!(pending_frames_for_session(state.store.as_ref(), "rev1", &old_id) > 0);
+
+        let mut north = state.north_tx.subscribe();
+        let mut next = review_action();
+        next.trigger_fingerprint = Some("sha:head2".into());
+        next.prompt = "review new head".into();
+        let second = execute(&state, ControllerAction::OpenSession(next)).unwrap();
+        let ControllerActionResult::Superseded {
+            session_id: new_id,
+            old_id: reported_old,
+        } = second
+        else {
+            panic!("new fingerprint should supersede");
+        };
+
+        assert_eq!(reported_old, old_id);
+        assert_eq!(
+            pending_frames_for_session(state.store.as_ref(), "rev1", &old_id),
+            0
+        );
+        assert!(
+            pending_frames_for_session(state.store.as_ref(), "rev1", &new_id) > 0,
+            "new session prompt should still be queued"
+        );
+        assert!(state
+            .store
+            .session_installation_tokens(&old_id)
+            .unwrap()
+            .is_empty());
+
+        let events = std::iter::from_fn(|| north.try_recv().ok())
+            .map(|raw| serde_json::from_str::<serde_json::Value>(&raw).unwrap())
+            .collect::<Vec<_>>();
+        assert!(events.iter().any(|event| {
+            event["type"] == "state"
+                && event["session_id"] == old_id
+                && event["payload"] == serde_json::json!({
+                    "state": "closed",
+                    "reason": "superseded"
+                })
+        }));
     }
 
     #[test]
