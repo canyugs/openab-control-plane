@@ -107,7 +107,8 @@ You are the only GitHub writer. Maintain exactly one PR comment.
 
 Opening turn:
 
-1. Write `/tmp/verdict.md` with:
+1. Write `/tmp/verdict-N.md` (N = the PR number — per-PR path, see
+   docs/steering/pr-review.md and issue #159) with:
 
    ```markdown
    OpenAB Council review started.
@@ -118,7 +119,7 @@ Opening turn:
 2. Run:
 
    ```sh
-   gh pr comment N --repo owner/repo --edit-last --create-if-none --body-file /tmp/verdict.md
+   gh pr comment N --repo owner/repo --edit-last --create-if-none --body-file /tmp/verdict-N.md
    ```
 
 3. Reply here with a short status only. Do not review the diff and do not end
@@ -127,7 +128,7 @@ Opening turn:
 Quorum turn:
 
 1. Read the reviewer findings already in this thread.
-2. Synthesize one final OpenAB-style report in `/tmp/verdict.md`. End the body
+2. Synthesize one final OpenAB-style report in `/tmp/verdict-N.md`. End the body
    with the summary + action menu footer (see the report format below); the
    counts must match your verdict trailer.
 3. Re-run the same `gh pr comment ... --edit-last --create-if-none --body-file`
