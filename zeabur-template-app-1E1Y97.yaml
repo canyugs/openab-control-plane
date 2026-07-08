@@ -52,6 +52,13 @@ spec:
     - Follow-up questions: `/ask <question>` works through the webhook path.
       `@mention` also works after setting `OABCP_BOT_HANDLE` on the control-plane.
 
+    ## Steering
+
+    Every bot pod ships `docs/steering/pr-review.md` preloaded at
+    `/home/node/AGENTS.md` (the deployment-owned steering channel). To iterate on
+    review protocol without a plane release, edit that file on the pod or update
+    this template's `configs` block — the plane never serves steering itself.
+
     Use this GitHub App template or the PAT template, not both on one repo, or one
     PR event can convene two councils. The control plane does not need
     `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, or `GITHUB_APP_PRIVATE_KEY` for

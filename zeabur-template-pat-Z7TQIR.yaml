@@ -57,6 +57,13 @@ spec:
 
     The chair posts one verdict comment as the PAT owner.
 
+    ## Steering
+
+    Every bot pod ships `docs/steering/pr-review.md` preloaded at
+    `/home/node/AGENTS.md` (the deployment-owned steering channel). To iterate on
+    review protocol without a plane release, edit that file on the pod or update
+    this template's `configs` block — the plane never serves steering itself.
+
     ## Verify
 
     1. Open or update a PR in the target repo.
