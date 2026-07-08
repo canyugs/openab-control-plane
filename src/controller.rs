@@ -563,6 +563,10 @@ mod tests {
             "solo",
             "pipeline",
         ] {
+            assert!(
+                coordinator::lookup(mode).is_some(),
+                "mode {mode} should dispatch"
+            );
             let mut action = review_action();
             action.trigger_ref = Some(format!("test:{mode}"));
             action.mode = mode.into();
@@ -574,6 +578,7 @@ mod tests {
 
         let mut action = review_action();
         action.mode = "mystery".into();
+        assert!(coordinator::lookup(&action.mode).is_none());
         assert!(validate_open_session(&state, &action)
             .unwrap_err()
             .to_string()

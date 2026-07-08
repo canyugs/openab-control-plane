@@ -364,13 +364,6 @@ pub fn lookup(mode: &str) -> Option<Box<dyn Coordinator>> {
     }
 }
 
-/// Pick the coordinator for persisted session rows. Unknown legacy rows retain
-/// the historical fallback to `QuorumCouncil`; new opens validate through
-/// `lookup` first.
-pub fn for_session(mode: &str) -> Box<dyn Coordinator> {
-    lookup(mode).unwrap_or_else(|| Box::new(QuorumCouncil))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,15 +411,6 @@ mod tests {
         fn state(&self) -> SessionState {
             self.state.clone()
         }
-    }
-
-    #[test]
-    fn for_session_dispatches_mode() {
-        assert_eq!(for_session("solo").kind(), "solo");
-        assert_eq!(for_session("review_council").kind(), "review_council");
-        assert_eq!(for_session("triage_council").kind(), "triage_council");
-        assert_eq!(for_session("council").kind(), "quorum_council");
-        assert_eq!(for_session("anything-else").kind(), "quorum_council");
     }
 
     #[test]
