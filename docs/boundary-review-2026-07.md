@@ -690,6 +690,11 @@ Overflow from the critic pass — **not adversarially verified**; treat as leads
   decision/findings): honestly-labeled defer-extract, currently unowned — bind
   extraction to named events (verdict columns move with the Stage 3 plugin;
   `quorum_n` when a second coordinator config lands).
+  *Amended at Stage 3 S1 ([ADR 018](adr/018-stage3-extraction.md) ruling 4):
+  Stage 3 moves the verdict columns' interpretation (`[[verdict:]]` parsing
+  behind the `structured_verdict` hook); their storage moves at M4 into a
+  plugin-owned findings table — route.md ordering wins over the "move with
+  the Stage 3 plugin" phrasing above.*
 - **Forum "chat mode"**: a long-lived completion condition is legitimate
   `Coordinator` policy (one `for_session` arm, watchdog unchanged), not new
   mechanism; adopt when forum Phase 1 dogfood shows session-per-turn churn

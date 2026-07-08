@@ -123,13 +123,14 @@ split:
 | **the session always terminates** | **liveness** | ✅ `force_close_timeout` watchdog (deadline → terminal state). B4: verdict content and GitHub posting remain steering/controller responsibilities, not kernel guarantees |
 
 M1 review-trigger rule: a same-delivery retry dedupes; a new-head or
-new-command trigger supersedes the active review session. Today's implementation
-does not yet hold that rule: a `synchronize` during an active council is swallowed
-as a dedupe (`src/github_webhook.rs:334-345`; same pre-check on
-`POST /v1/review`, `src/api.rs:1251-1258`), so the council can verdict on a stale
-head. This is a declared defect until the P1 supersede mechanism in
-[pr-mention-plan §3](pr-mention-plan.md#3-supersession-m1--the-one-new-kernel-mechanism)
-lands, including its out-of-order residual.
+new-command trigger supersedes the active review session. **Held since #126**
+(P1 supersede mechanism, [pr-mention-plan §3](pr-mention-plan.md#3-supersession-m1--the-one-new-kernel-mechanism)):
+`create_session_superseding` closes the old session and opens the new one in a
+single transaction keyed on `trigger_fingerprint` (`sha:<head>` /
+`cmd:<comment_id>`), live-verified on both lanes (push mid-round on PR #149,
+mention supersede on PR #148). Supersede cleanup moves from caller memory into
+the controller interpreter at Stage 3 S4
+([stage3-extraction-plan.md](stage3-extraction-plan.md)).
 
 **Test for "is it OCP's job":** must it hold even if a bot is slow, dead, buggy,
 malicious, or hallucinating? → plane. Only when bots behave? → steering.
