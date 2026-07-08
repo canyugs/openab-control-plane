@@ -177,7 +177,7 @@ webhook secret, one `OABCP_BOT_HANDLE`, chair binds one installation).
 | dev | `zeabur-council` (canyugs) | `https://openab-council.zeabur.app` | `openab-council` | canyugs openab repos (selected) |
 | prod | `opencodezebra` (zeabur org) | `https://opencodezebra.zeabur.app` | `opencodezebra-council` | zeabur org (all repos) |
 
-Both run `canyu/openab-control-plane:0.1.16` + 3 Kiro OAB pods (chair, rev1,
+Both run `canyu/openab-control-plane:0.1.17` + 3 Kiro OAB pods (chair, rev1,
 rev2) on the Code Review dedicated server; chairs post as their App bot via
 pod-local keys (`scripts/setup-github-app.sh`). A third local dogfood cluster
 (`oabcp-local`, docker-desktop k8s) is used for pre-release verification.
