@@ -546,6 +546,9 @@ pub async fn handle_webhook(
             }))
             .into_response())
         }
+        Ok(crate::controller::ControllerActionResult::MessagePosted { .. }) => {
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
         Err(e) => {
             // 500 lets GitHub retry a transient failure (the idempotency check above
             // prevents a duplicate council if a retry lands after a partial success).

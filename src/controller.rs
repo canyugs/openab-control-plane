@@ -2,7 +2,7 @@
 //!
 //! Bundled controllers and future external controllers both propose declarative
 //! actions; this module is the core-owned boundary that validates and executes
-//! them. The first slice supports opening a session with an initial prompt.
+//! them. The first slice supports opening a session and posting client messages.
 
 use crate::coordinator;
 use crate::orchestrator;
@@ -13,6 +13,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControllerAction {
     OpenSession(OpenSessionAction),
+    PostMessage(PostMessageAction),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,9 +29,16 @@ pub struct OpenSessionAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostMessageAction {
+    pub session_id: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControllerActionResult {
     SessionOpened { session_id: String, deduped: bool },
     Superseded { session_id: String, old_id: String },
+    MessagePosted { message_id: String },
 }
 
 #[derive(Debug)]
@@ -71,6 +79,7 @@ pub fn execute(
 ) -> ControllerResult<ControllerActionResult> {
     match action {
         ControllerAction::OpenSession(action) => open_session(state, action),
+        ControllerAction::PostMessage(action) => post_message(state, action),
     }
 }
 
@@ -114,6 +123,21 @@ fn open_session(
             })
         }
     }
+}
+
+fn post_message(
+    state: &Arc<AppState>,
+    action: PostMessageAction,
+) -> ControllerResult<ControllerActionResult> {
+    if state.store.session(&action.session_id)?.is_none() {
+        return Err(ControllerError::Invalid(format!(
+            "unknown session {}",
+            action.session_id
+        )));
+    }
+
+    let msg = orchestrator::post_client_message(state, &action.session_id, &action.content)?;
+    Ok(ControllerActionResult::MessagePosted { message_id: msg.id })
 }
 
 fn validate_open_session(
@@ -194,11 +218,7 @@ mod tests {
         }
     }
 
-    fn pending_frames_for_session(
-        store: &dyn Store,
-        bot_id: &str,
-        session_id: &str,
-    ) -> usize {
+    fn pending_frames_for_session(store: &dyn Store, bot_id: &str, session_id: &str) -> usize {
         store
             .pending_outbox(bot_id)
             .unwrap()
@@ -239,6 +259,85 @@ mod tests {
         let messages = state.store.messages(&session_id).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "review o/r#1");
+    }
+
+    #[test]
+    fn post_message_action_posts_client_message() {
+        let state = state_with_bots();
+        let mut action = review_action();
+        action.trigger_ref = Some("github:pr/o/r#post".into());
+        action.prompt.clear();
+        let result = execute(&state, ControllerAction::OpenSession(action)).unwrap();
+        let ControllerActionResult::SessionOpened { session_id, .. } = result else {
+            panic!("open should create a session");
+        };
+
+        let result = execute(
+            &state,
+            ControllerAction::PostMessage(PostMessageAction {
+                session_id: session_id.clone(),
+                content: "follow-up".into(),
+            }),
+        )
+        .unwrap();
+        let ControllerActionResult::MessagePosted { message_id } = result else {
+            panic!("post should create a message");
+        };
+
+        let messages = state.store.messages(&session_id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, message_id);
+        assert_eq!(messages[0].author_kind, "client");
+        assert_eq!(messages[0].content, "follow-up");
+    }
+
+    #[test]
+    fn post_message_action_rejects_unknown_session() {
+        let state = state_with_bots();
+        let err = execute(
+            &state,
+            ControllerAction::PostMessage(PostMessageAction {
+                session_id: "ses_missing".into(),
+                content: "hello".into(),
+            }),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, ControllerError::Invalid(message) if message == "unknown session ses_missing")
+        );
+    }
+
+    #[test]
+    fn open_session_with_prompt_and_follow_up_both_land_in_session() {
+        let state = state_with_bots();
+        let mut action = review_action();
+        action.trigger_ref = Some("github:pr/o/r#prompt-followup".into());
+        action.prompt = "initial prompt".into();
+        let result = execute(&state, ControllerAction::OpenSession(action)).unwrap();
+        let ControllerActionResult::SessionOpened { session_id, .. } = result else {
+            panic!("open should create a session");
+        };
+
+        let result = execute(
+            &state,
+            ControllerAction::PostMessage(PostMessageAction {
+                session_id: session_id.clone(),
+                content: "follow-up".into(),
+            }),
+        )
+        .unwrap();
+        assert!(matches!(
+            result,
+            ControllerActionResult::MessagePosted { .. }
+        ));
+
+        let messages = state.store.messages(&session_id).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].author_kind, "client");
+        assert_eq!(messages[0].content, "initial prompt");
+        assert_eq!(messages[1].author_kind, "client");
+        assert_eq!(messages[1].content, "follow-up");
     }
 
     #[test]
@@ -300,8 +399,7 @@ mod tests {
         let state = state_with_bots();
         let first = execute(&state, ControllerAction::OpenSession(review_action())).unwrap();
         let ControllerActionResult::SessionOpened {
-            session_id: old_id,
-            ..
+            session_id: old_id, ..
         } = first
         else {
             panic!("first open should create a session");
@@ -346,10 +444,11 @@ mod tests {
         assert!(events.iter().any(|event| {
             event["type"] == "state"
                 && event["session_id"] == old_id
-                && event["payload"] == serde_json::json!({
-                    "state": "closed",
-                    "reason": "superseded"
-                })
+                && event["payload"]
+                    == serde_json::json!({
+                        "state": "closed",
+                        "reason": "superseded"
+                    })
         }));
     }
 

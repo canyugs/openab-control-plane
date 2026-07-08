@@ -503,6 +503,9 @@ fn session_id(result: ControllerActionResult) -> String {
     match result {
         ControllerActionResult::SessionOpened { session_id, .. } => session_id,
         ControllerActionResult::Superseded { session_id, .. } => session_id,
+        ControllerActionResult::MessagePosted { .. } => {
+            unreachable!("post_message action cannot produce a council session id")
+        }
     }
 }
 
