@@ -1,6 +1,10 @@
 # ADR 007 — Control plugins and OAB Father
 
-Status: proposed · 2026-06-30
+Status: accepted-as-amended · 2026-07-09 (was proposed 2026-06-30) — ratified
+at Stage 3 S1; amendments in [ADR 018](018-stage3-extraction.md): the
+kernel→plugins static lookup arms are by-design (dispatch safety), kernel
+purity is proven by the S12 grep gate, and the extraction sequence lives in
+[stage3-extraction-plan.md](../stage3-extraction-plan.md)
 
 ## Context
 

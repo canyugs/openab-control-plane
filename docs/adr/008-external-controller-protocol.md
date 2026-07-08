@@ -1,6 +1,11 @@
 # ADR 008 — External controller protocol
 
-Status: proposed · 2026-06-30
+Status: accepted-as-amended · 2026-07-09 (was proposed 2026-06-30) — ratified
+at Stage 3 S1; amendments in [ADR 018](018-stage3-extraction.md): the
+in-process ControllerAction structs are the v1 action vocabulary
+(OpenSession/PostMessage implemented; AddRoster/CloseSession/EmitStatus
+reserved with pinned serialized shapes); the external transport stays dormant
+until a plugin needs independent deploy cadence or a third-party author appears
 
 ## Context
 

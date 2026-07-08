@@ -1,6 +1,10 @@
 # ADR 016 — Gateway token externalization
 
-Status: proposed · 2026-07-03
+Status: accepted-as-amended · 2026-07-09 (was proposed 2026-07-03) — ratified
+at Stage 3 S1; amendments in [ADR 018](018-stage3-extraction.md): blockers 1–3
+land as S14/S15 (default flip gains a boot-time legacy-DB guard — warn, never
+brick); blocker 4 (token_plain drop) deferred to one release after the
+default-on warning ships, via the connected-column soft-drop pattern
 
 ## Context
 
