@@ -1,0 +1,34 @@
+[gateway]
+url = "ws://control-plane.test/ws"
+platform = "feishu"
+token = "${OABCP_BOT_TOKEN}"
+# Explicit: survives OAB's trust-pyramid Phase 3 default flip (L3 deny-all).
+# This surface is private and token-authed; senders are the plane itself
+# ("client"/"system") plus roster bots, and the roster is dynamic — an
+# allowed_users list would go stale after recruit/replace. The WS token is
+# the trust boundary, not sender ids.
+allow_all_users = true
+allow_bot_messages = true
+bot_username = "chair"
+streaming = true
+# OCP backfill and council cross-talk intentionally arrive as in-thread bursts;
+# per-thread mode lets OAB batch that burst into one context turn.
+message_processing_mode = "per-thread"
+
+[agent]
+command = "codex-acp"
+working_dir = "/home/node"
+inherit_env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GROK_CODE_XAI_API_KEY", "KIRO_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN"]
+
+[pool]
+max_sessions = 4
+session_ttl_hours = 2
+
+[reactions]
+# A6: a cosmetic OAB flag must not be able to erase quorum votes.
+remove_after_reply = false
+
+[hooks.pre_boot]
+on_failure = "warn"
+timeout_seconds = 60
+inline = "#!/bin/sh\nset -e\nexport HOME='/home/node'\nif [ ! -x \"$HOME/bin/get-gh-app-token.sh\" ]; then echo \"github app auth not provisioned (no get-gh-app-token.sh); skipping\"; exit 0; fi\nauth() { \"$HOME/bin/get-gh-app-token.sh\" | gh auth login --with-token; }\nauth\ngit config --global credential.helper '!gh auth git-credential' || true\n# refresh before the 1h installation-token expiry\n( while sleep 3000; do auth || true; done ) &\n"
