@@ -6,7 +6,9 @@ item ([ADR 007](adr/007-control-plugins-and-oab-father.md) bundled plugins,
 finishes [ADR 016](adr/016-gateway-token-externalization.md) (D1) and the
 ADR 010 B2 freeze. Trigger: **fired** — the forum-support north client
 (docs/forum-north-client-plan.md) is the second consumer the boundary review
-named. Planning only — no implementation in this document.
+named. Planning only — no implementation in this document. References to
+**ADR 018** are forward references: that ADR is this plan's own first
+deliverable (S1) and does not exist yet.
 
 ## Summary
 
@@ -267,7 +269,10 @@ allow **no logic edits** (review rule recorded in ADR 018); the pinned
 integration tests (orchestrator.rs:2598-2724 chair-auto-🆗/TRIAGE-gate,
 :3361-3412 trigger round-trip, :3577-3600 forum-shaped reopen) stay
 **unmodified** through S4-S9 as the regression harness and move only with
-their subjects.
+their subjects. S7/S8's dependency on S6 is scheduling, not logic — the hook
+PRs share that pinned harness, and landing them serially keeps each diff's
+regression signal attributable to one hook; S7 may land in parallel with S6
+if scheduling needs it (both depend only on S3 logically).
 
 | ID | Title | Scope | Depends on | Acceptance test |
 |---|---|---|---|---|
