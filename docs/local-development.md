@@ -107,13 +107,17 @@ OCP alone is not enough for an end-to-end review. The bot pods are the southboun
 execution layer: they fetch `/bot-config/<name>`, connect to `/ws`, run the
 selected CLI, and post replies back to OCP.
 
-By default `/bot-config` renders the bot's gateway token as plaintext (legacy,
-spike-era). To close that (ADR 016), set `OABCP_EXTERNALIZE_TOKENS=1` and provide
-each bot's token as a deploy secret in **two** places — the plane env
-`OABCP_BOT_TOKEN_<NAME>` (uppercased, non-alphanumerics → `_`) and the pod env
-`OABCP_BOT_TOKEN`. Then `/bot-config` serves `token = "${OABCP_BOT_TOKEN}"` and
-OpenAB expands it from the pod's own env at boot, so the response body carries no
-secret. Generic — no Zeabur-specific secret generation required.
+Token externalization (ADR 016) is the **default since S15**: on a fresh DB with
+`OABCP_EXTERNALIZE_TOKENS` unset, the plane externalizes and boot fails loudly
+unless each bot's token is provided as a deploy secret in **two** places — the
+plane env `OABCP_BOT_TOKEN_<NAME>` (uppercased, non-alphanumerics → `_`) and the
+pod env `OABCP_BOT_TOKEN`. `/bot-config` then serves
+`token = "${OABCP_BOT_TOKEN}"` and OpenAB expands it from the pod's own env at
+boot, so the response body carries no secret. Generic — no Zeabur-specific
+secret generation required. For a quick local spike you can skip the secrets by
+setting `OABCP_EXTERNALIZE_TOKENS=0` (legacy plaintext rendering, deprecated);
+an upgraded DB that still holds plaintext tokens stays legacy automatically and
+logs a deprecation warning naming the vars to set.
 
 For the current Kiro local test, create a Kubernetes Secret first:
 

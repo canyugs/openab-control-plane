@@ -1540,7 +1540,9 @@ mod tests {
     async fn register_bot_with_operator_token_echoes_once_and_stores_hash_only() {
         let _guard = identity::token_env_lock().lock().await;
         let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
-        std::env::remove_var("OABCP_EXTERNALIZE_TOKENS");
+        // Pin legacy explicitly (S15 flipped the unset default): this pins that a
+        // provided token stores hash-only even in legacy plaintext mode.
+        std::env::set_var("OABCP_EXTERNALIZE_TOKENS", "0");
 
         let store = Arc::new(SqliteStore::memory().unwrap());
         let state = AppState::new(store.clone());
@@ -1639,7 +1641,9 @@ mod tests {
     async fn operator_token_legacy_bot_config_returns_not_found() {
         let _guard = identity::token_env_lock().lock().await;
         let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
-        std::env::remove_var("OABCP_EXTERNALIZE_TOKENS");
+        // S15 flipped the unset default to externalized; pin legacy mode explicitly
+        // so this test keeps exercising the legacy hash-only-serve path.
+        std::env::set_var("OABCP_EXTERNALIZE_TOKENS", "0");
 
         let store = Arc::new(SqliteStore::memory().unwrap());
         let state = AppState::new(store.clone());

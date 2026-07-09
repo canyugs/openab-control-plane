@@ -175,6 +175,9 @@ pub trait Store: Send + Sync {
     /// Plaintext token, for serving /bot-config to a stock OAB pod (spike
     /// convenience; production injects the token via pre_seed/env, §6c).
     fn bot_token_plain(&self, id: &str) -> Result<Option<String>>;
+    /// Names of bots whose plaintext token is still stored (legacy mode). Used at
+    /// boot to decide whether an unset OABCP_EXTERNALIZE_TOKENS may safely default on.
+    fn bots_with_plaintext_token(&self) -> Result<Vec<String>>;
     fn touch_last_seen(&self, bot_id: &str) -> Result<()>;
     fn list_bots(&self) -> Result<Vec<BotInventory>>;
     fn bot_inventory(&self, id: &str) -> Result<Option<BotInventory>>;
@@ -704,6 +707,17 @@ impl Store for SqliteStore {
         )
         .optional()?
         .flatten())
+    }
+
+    fn bots_with_plaintext_token(&self) -> Result<Vec<String>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt = c.prepare(
+            "SELECT name FROM bots
+             WHERE token_plain IS NOT NULL AND token_plain != ''
+             ORDER BY name",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     fn bot_by_token_hash(&self, token_hash: &str) -> Result<Option<Bot>> {
@@ -1809,6 +1823,28 @@ mod tests {
         assert!(
             !plan.contains("USE TEMP B-TREE FOR ORDER BY"),
             "unexpected query plan:\n{plan}"
+        );
+    }
+
+    #[test]
+    fn bots_with_plaintext_token_returns_only_legacy_names() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .seed_bot(
+                "rev_legacy",
+                "rev-legacy",
+                "reviewer",
+                "legacy-hash",
+                "legacy-token",
+            )
+            .unwrap();
+        store
+            .seed_bot("rev_ext", "rev-ext", "reviewer", "ext-hash", "")
+            .unwrap();
+
+        assert_eq!(
+            store.bots_with_plaintext_token().unwrap(),
+            vec!["rev-legacy".to_string()]
         );
     }
 
