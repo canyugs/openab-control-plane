@@ -13,11 +13,16 @@ pub fn hash_token(token: &str) -> String {
     hex::encode(h.finalize())
 }
 
-/// Register a bot and return (bot, plaintext token). The token is shown once;
-/// only its hash is stored.
-pub fn issue(store: &dyn Store, name: &str, role: &str) -> Result<(Bot, String)> {
-    let token = format!("oabct_{}", uuid::Uuid::new_v4().simple());
-    let bot = store.register_bot(name, role, &hash_token(&token), &token)?;
+/// Register a bot and return (bot, plaintext token). The token is shown once to
+/// the API caller; plaintext-at-rest is controlled by ADR 016 compatibility.
+pub fn issue(
+    store: &dyn Store,
+    name: &str,
+    role: &str,
+    provided: Option<String>,
+) -> Result<(Bot, String)> {
+    let (token, plaintext) = issue_token(provided);
+    let bot = store.register_bot(name, role, &hash_token(&token), &plaintext)?;
     Ok((bot, token))
 }
 
@@ -28,6 +33,12 @@ pub fn externalize_tokens() -> bool {
     std::env::var("OABCP_EXTERNALIZE_TOKENS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+pub(crate) fn token_env_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 /// The plane env var an operator sets to supply bot `<name>`'s gateway token in
@@ -57,6 +68,24 @@ fn seed_token(provided: Option<String>) -> (String, String) {
         None => {
             let token = format!("oabct_{}", uuid::Uuid::new_v4().simple());
             (token.clone(), token)
+        }
+    }
+}
+
+/// Pick an API-registered bot's `(token, plaintext_to_store)`. Supplied tokens
+/// are operator-owned, so the plane stores only the hash. Generated tokens remain
+/// plaintext-at-rest only in legacy mode for `/bot-config` compatibility.
+fn issue_token(provided: Option<String>) -> (String, String) {
+    match provided {
+        Some(token) => (token, String::new()),
+        None => {
+            let token = format!("oabct_{}", uuid::Uuid::new_v4().simple());
+            let plaintext = if externalize_tokens() {
+                String::new()
+            } else {
+                token.clone()
+            };
+            (token, plaintext)
         }
     }
 }
@@ -164,12 +193,12 @@ pub fn revoke_session_github_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::SqliteStore;
+    use crate::store::{SqliteStore, Store};
 
     #[test]
     fn issued_token_verifies_to_same_bot() {
         let store = SqliteStore::memory().unwrap();
-        let (bot, token) = issue(&store, "gandalf", "chair").unwrap();
+        let (bot, token) = issue(&store, "gandalf", "chair", None).unwrap();
         let resolved = verify(&store, &token).unwrap();
         assert_eq!(resolved.id, bot.id);
         assert_eq!(resolved.role, "chair");
@@ -178,18 +207,23 @@ mod tests {
     #[test]
     fn wrong_token_rejected() {
         let store = SqliteStore::memory().unwrap();
-        issue(&store, "gandalf", "chair").unwrap();
+        issue(&store, "gandalf", "chair", None).unwrap();
         assert!(verify(&store, "oabct_nope").is_err());
     }
 
-    #[test]
-    fn seed_is_idempotent_and_id_equals_name() {
+    #[tokio::test]
+    async fn seed_is_idempotent_and_id_equals_name() {
+        let _guard = token_env_lock().lock().await;
+        let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
+        std::env::remove_var("OABCP_EXTERNALIZE_TOKENS");
+
         let store = SqliteStore::memory().unwrap();
         assert!(seed(&store, "rev1", "reviewer").unwrap()); // first → inserted
         assert!(!seed(&store, "rev1", "reviewer").unwrap()); // again → skipped
         let bot = store.bot("rev1").unwrap().unwrap();
         assert_eq!(bot.id, "rev1"); // id == name, so /bot-config/rev1 resolves
         assert_eq!(bot.role, "reviewer");
+        restore_env("OABCP_EXTERNALIZE_TOKENS", old);
     }
 
     #[test]
@@ -215,11 +249,58 @@ mod tests {
         assert!(token.starts_with("oabct_"));
     }
 
+    #[tokio::test]
+    async fn issue_generated_externalized_stores_no_plaintext_and_verifies() {
+        let _guard = token_env_lock().lock().await;
+        let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
+        std::env::set_var("OABCP_EXTERNALIZE_TOKENS", "1");
+
+        let store = SqliteStore::memory().unwrap();
+        let (bot, token) = issue(&store, "rev-ext", "reviewer", None).unwrap();
+
+        assert_eq!(store.bot_token_plain(&bot.id).unwrap().as_deref(), Some(""));
+        assert_eq!(verify(&store, &token).unwrap().id, bot.id);
+        restore_env("OABCP_EXTERNALIZE_TOKENS", old);
+    }
+
+    #[tokio::test]
+    async fn issue_generated_legacy_stores_plaintext() {
+        let _guard = token_env_lock().lock().await;
+        let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
+        std::env::remove_var("OABCP_EXTERNALIZE_TOKENS");
+
+        let store = SqliteStore::memory().unwrap();
+        let (bot, token) = issue(&store, "rev-legacy", "reviewer", None).unwrap();
+
+        assert_eq!(
+            store.bot_token_plain(&bot.id).unwrap().as_deref(),
+            Some(token.as_str())
+        );
+        restore_env("OABCP_EXTERNALIZE_TOKENS", old);
+    }
+
+    #[tokio::test]
+    async fn issue_provided_legacy_stores_no_plaintext_and_verifies() {
+        let _guard = token_env_lock().lock().await;
+        let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
+        std::env::remove_var("OABCP_EXTERNALIZE_TOKENS");
+
+        let store = SqliteStore::memory().unwrap();
+        let provided = "operator_token_123".to_string();
+        let (bot, token) =
+            issue(&store, "rev-provided", "reviewer", Some(provided.clone())).unwrap();
+
+        assert_eq!(token, provided);
+        assert_eq!(store.bot_token_plain(&bot.id).unwrap().as_deref(), Some(""));
+        assert_eq!(verify(&store, &token).unwrap().id, bot.id);
+        restore_env("OABCP_EXTERNALIZE_TOKENS", old);
+    }
+
     #[test]
     fn tokens_are_distinct_per_bot() {
         let store = SqliteStore::memory().unwrap();
-        let (_, t1) = issue(&store, "aragorn", "reviewer").unwrap();
-        let (_, t2) = issue(&store, "gimli", "reviewer").unwrap();
+        let (_, t1) = issue(&store, "aragorn", "reviewer", None).unwrap();
+        let (_, t2) = issue(&store, "gimli", "reviewer", None).unwrap();
         assert_ne!(t1, t2);
         assert_ne!(
             verify(&store, &t1).unwrap().id,
@@ -279,5 +360,12 @@ mod tests {
             .installation_token("ses_1", "reviewer")
             .unwrap()
             .is_none());
+    }
+
+    fn restore_env(key: &str, old: Option<String>) {
+        match old {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
     }
 }
