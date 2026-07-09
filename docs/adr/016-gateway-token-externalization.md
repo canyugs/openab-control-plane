@@ -124,9 +124,10 @@ This is deliberately the minimum that closes the hole:
 3. Once the templates are externalized, the plaintext path is legacy-only;
    consider flipping the default and removing `token_plain` in a later ADR.
 
-## Migration Status (2026-07-03)
+## Migration Status (2026-07-09)
 
-- **Step 1 (flag off by default)** — shipped (#77/#78).
+- **Step 1 (flag off by default)** — shipped (#77/#78); superseded by Step 3's
+  default flip.
 - **Step 2 (externalize the distributed templates)** — done. Both Zeabur
   templates now set `OABCP_EXTERNALIZE_TOKENS=1`, provision three per-bot
   `BOT_TOKEN_*` secrets on the plane (`OABCP_BOT_TOKEN_<NAME>`), and pass each
@@ -134,17 +135,24 @@ This is deliberately the minimum that closes the hole:
   exposure: the templates deploy into environments we don't control, and until
   now they shipped with the plaintext-serving path live.
 - **Step 3 (D1, flip the process-global default, then drop `token_plain`)** —
-  deferred behind named blockers, in this order:
-  1. `identity::issue()` still persists plaintext unconditionally and never
-     consults `externalize_tokens()`. With the flag on, an API-registered bot is
-     unbootable: `POST /v1/bots` stores plaintext while `/bot-config` serves only
-     the env reference.
-  2. `POST /v1/bots` needs an externalized-token story, either operator-supplied
-     token material or a registration flow that never depends on OCP rendering the
-     plaintext token back through `/bot-config`.
-  3. After API registration is externalization-safe, flip the default for new
-     deployments.
-  4. Only then drop `token_plain`.
+  blockers 1–3 closed; blocker 4 deferred:
+  1. **Done (S14, #187):** `identity::issue()` consults `externalize_tokens()`
+     via `issue_token` — flag-on stores hash + empty plaintext, the token is
+     returned once in the `POST /v1/bots` response.
+  2. **Done (S14, #187):** `RegisterBot` accepts an optional operator-supplied
+     `token` (validated), so registration never round-trips plaintext through
+     `/bot-config`.
+  3. **Done (S15):** the default flips **on** when `OABCP_EXTERNALIZE_TOKENS` is
+     unset, with a boot-time legacy-DB guard — an unset env plus surviving
+     `token_plain` rows keeps the deploy in legacy mode and logs a loud
+     deprecation warning naming each `OABCP_BOT_TOKEN_<NAME>` var, so an in-place
+     upgrade never bricks. Explicit `=0`/`=1` always wins; `=0` is the
+     kill-switch and rollback is a plain image revert.
+  4. **Deferred:** drop `token_plain`. It cannot land while legacy plaintext mode
+     is still supported (`bot_token_plain` serves it). Named trigger: removal of
+     legacy plaintext mode itself, one release cycle after the default-on warning
+     ships. Soft-drop pattern (remove from fresh `SCHEMA`, stop reading/writing,
+     tolerate in legacy DBs, never `ALTER DROP`) — the connected-column precedent.
 
 ## References
 

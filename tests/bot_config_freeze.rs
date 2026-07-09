@@ -65,7 +65,9 @@ async fn bot_config_response_body_matches_golden_snapshots() {
 
 async fn render_bot_config(combo: Combo) -> Vec<u8> {
     match combo.token_mode {
-        TokenMode::Legacy => std::env::remove_var("OABCP_EXTERNALIZE_TOKENS"),
+        // S15 flipped the unset default to externalized; pin legacy explicitly so
+        // this combo keeps rendering the legacy (plaintext-token) golden.
+        TokenMode::Legacy => std::env::set_var("OABCP_EXTERNALIZE_TOKENS", "0"),
         TokenMode::Externalized => std::env::set_var("OABCP_EXTERNALIZE_TOKENS", "1"),
     }
 

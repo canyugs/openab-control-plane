@@ -27,6 +27,9 @@ impl Drop for EnvGuard {
 #[test]
 fn seed_roster_is_first_boot_only() {
     let _bots = EnvGuard::set("OABCP_BOTS", "existing:reviewer,newbie:reviewer");
+    // S15 flipped the unset default to externalized (which requires per-bot token
+    // env vars); this test exercises first-boot gating, not token mode, so pin legacy.
+    let _ext = EnvGuard::set("OABCP_EXTERNALIZE_TOKENS", "0");
     let store = SqliteStore::memory().unwrap();
     identity::seed(&store, "existing", "reviewer").unwrap();
 

@@ -7,6 +7,8 @@ use crate::store::{now_ms, Bot, Store};
 use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
 
+static EXTERNALIZE_DEFAULT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 pub fn hash_token(token: &str) -> String {
     let mut h = Sha256::new();
     h.update(token.as_bytes());
@@ -28,11 +30,46 @@ pub fn issue(
 
 /// Whether gateway tokens are delivered through the pod's env
 /// (`token = "${OABCP_BOT_TOKEN}"` in `/bot-config`, OpenAB env-expands at boot)
-/// instead of rendered plaintext (ADR 016). Off by default — legacy plaintext.
+/// instead of rendered plaintext (ADR 016).
 pub fn externalize_tokens() -> bool {
-    std::env::var("OABCP_EXTERNALIZE_TOKENS")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    match std::env::var("OABCP_EXTERNALIZE_TOKENS") {
+        Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
+        Err(_) => *EXTERNALIZE_DEFAULT.get().unwrap_or(&true),
+    }
+}
+
+/// Decide the externalize default from DB state (ADR 016 S15). Returns
+/// (default_on, legacy_bot_names). Only meaningful when the env is unset;
+/// callers with an explicit env never invoke this. Emits the deprecation
+/// warning when falling back to legacy.
+pub fn decide_externalize_default(store: &dyn Store) -> anyhow::Result<(bool, Vec<String>)> {
+    let legacy = store.bots_with_plaintext_token()?;
+    if legacy.is_empty() {
+        return Ok((true, legacy));
+    }
+    let vars: Vec<String> = legacy.iter().map(|n| bot_token_env_var(n)).collect();
+    tracing::warn!(
+        "OABCP_EXTERNALIZE_TOKENS is unset and {} bot(s) still hold plaintext \
+         tokens in the DB; staying in LEGACY plaintext mode so this in-place \
+         upgrade keeps booting. To migrate to externalized tokens, set these \
+         plane env vars to each bot's token and OABCP_EXTERNALIZE_TOKENS=1: {} \
+         — and set OABCP_BOT_TOKEN on each bot pod to its own token, since \
+         /bot-config will then serve the env reference instead of plaintext",
+        legacy.len(),
+        vars.join(", ")
+    );
+    Ok((false, legacy))
+}
+
+/// Resolve + install the boot decision into the process global. Called once at
+/// startup BEFORE roster seeding. Explicit env → no-op (explicit always wins).
+pub fn resolve_externalize_default(store: &dyn Store) -> anyhow::Result<()> {
+    if std::env::var("OABCP_EXTERNALIZE_TOKENS").is_ok() {
+        return Ok(());
+    }
+    let (default_on, _) = decide_externalize_default(store)?;
+    let _ = EXTERNALIZE_DEFAULT.set(default_on);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -99,7 +136,11 @@ pub fn seed(store: &dyn Store, name: &str, role: &str) -> Result<bool> {
     let provided = if externalize_tokens() {
         let var = bot_token_env_var(name);
         Some(std::env::var(&var).map_err(|_| {
-            anyhow!("OABCP_EXTERNALIZE_TOKENS is set but {var} is unset for bot '{name}'")
+            anyhow!(
+                "token externalization is on (OABCP_EXTERNALIZE_TOKENS set, or \
+                 defaulting on since S15) but {var} is unset for bot '{name}'; \
+                 set {var}, or OABCP_EXTERNALIZE_TOKENS=0 for legacy plaintext mode"
+            )
         })?)
     } else {
         None
@@ -215,7 +256,7 @@ mod tests {
     async fn seed_is_idempotent_and_id_equals_name() {
         let _guard = token_env_lock().lock().await;
         let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
-        std::env::remove_var("OABCP_EXTERNALIZE_TOKENS");
+        std::env::set_var("OABCP_EXTERNALIZE_TOKENS", "0");
 
         let store = SqliteStore::memory().unwrap();
         assert!(seed(&store, "rev1", "reviewer").unwrap()); // first → inserted
@@ -267,7 +308,7 @@ mod tests {
     async fn issue_generated_legacy_stores_plaintext() {
         let _guard = token_env_lock().lock().await;
         let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
-        std::env::remove_var("OABCP_EXTERNALIZE_TOKENS");
+        std::env::set_var("OABCP_EXTERNALIZE_TOKENS", "0");
 
         let store = SqliteStore::memory().unwrap();
         let (bot, token) = issue(&store, "rev-legacy", "reviewer", None).unwrap();
@@ -283,7 +324,7 @@ mod tests {
     async fn issue_provided_legacy_stores_no_plaintext_and_verifies() {
         let _guard = token_env_lock().lock().await;
         let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
-        std::env::remove_var("OABCP_EXTERNALIZE_TOKENS");
+        std::env::set_var("OABCP_EXTERNALIZE_TOKENS", "0");
 
         let store = SqliteStore::memory().unwrap();
         let provided = "operator_token_123".to_string();
@@ -293,6 +334,53 @@ mod tests {
         assert_eq!(token, provided);
         assert_eq!(store.bot_token_plain(&bot.id).unwrap().as_deref(), Some(""));
         assert_eq!(verify(&store, &token).unwrap().id, bot.id);
+        restore_env("OABCP_EXTERNALIZE_TOKENS", old);
+    }
+
+    #[tokio::test]
+    async fn decide_default_fresh_db_externalizes() {
+        let _guard = token_env_lock().lock().await;
+        let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
+        std::env::remove_var("OABCP_EXTERNALIZE_TOKENS");
+
+        let store = SqliteStore::memory().unwrap();
+        let decision = decide_externalize_default(&store).unwrap();
+
+        assert_eq!(decision, (true, vec![]));
+        restore_env("OABCP_EXTERNALIZE_TOKENS", old);
+    }
+
+    #[tokio::test]
+    async fn decide_default_legacy_rows_stays_legacy() {
+        let _guard = token_env_lock().lock().await;
+        let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
+        std::env::set_var("OABCP_EXTERNALIZE_TOKENS", "0");
+
+        let store = SqliteStore::memory().unwrap();
+        seed(&store, "rev1", "reviewer").unwrap();
+        std::env::remove_var("OABCP_EXTERNALIZE_TOKENS");
+
+        let decision = decide_externalize_default(&store).unwrap();
+
+        assert_eq!(decision, (false, vec!["rev1".to_string()]));
+        assert_eq!(bot_token_env_var(&decision.1[0]), "OABCP_BOT_TOKEN_REV1");
+        restore_env("OABCP_EXTERNALIZE_TOKENS", old);
+    }
+
+    /// Pins the boot wiring, not just the pure decision: with the env unset,
+    /// resolve_externalize_default on a fresh DB must leave externalize_tokens()
+    /// reading true. Safe against OnceLock cross-test pollution — the fresh-DB
+    /// direction latches `true`, which matches the unresolved fallback.
+    #[tokio::test]
+    async fn resolve_fresh_db_installs_externalized_default() {
+        let _guard = token_env_lock().lock().await;
+        let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
+        std::env::remove_var("OABCP_EXTERNALIZE_TOKENS");
+
+        let store = SqliteStore::memory().unwrap();
+        resolve_externalize_default(&store).unwrap();
+
+        assert!(externalize_tokens());
         restore_env("OABCP_EXTERNALIZE_TOKENS", old);
     }
 
