@@ -1,7 +1,7 @@
 pub mod council;
-pub mod webhook;
 pub mod tasks;
 pub mod verdict;
+pub mod webhook;
 
 use crate::coordinator::{Coordinator, Ctx, QuorumCouncil, StructuredVerdict};
 
@@ -45,10 +45,10 @@ impl Coordinator for ReviewCouncil {
 
 #[cfg(test)]
 mod tests {
-    use crate::store::Store as _;
     use super::*;
     use crate::coordinator::{Action, Ctx};
     use crate::store::SessionState;
+    use crate::store::Store as _;
 
     struct FakeCtx {
         session_id: String,
@@ -185,7 +185,11 @@ mod tests {
             )
             .unwrap();
         store
-            .advance_state(&session.id, crate::store::SessionState::Open, crate::store::SessionState::Quorum)
+            .advance_state(
+                &session.id,
+                crate::store::SessionState::Open,
+                crate::store::SessionState::Quorum,
+            )
             .unwrap();
         let quorum_prompt = store
             .add_message(
@@ -202,11 +206,17 @@ mod tests {
         crate::orchestrator::handle_reply(
             &state,
             &chair.id,
-            crate::orchestrator::test_support::reaction_reply(&session.id, &quorum_prompt.id, crate::session::DONE_EMOJI),
+            crate::orchestrator::test_support::reaction_reply(
+                &session.id,
+                &quorum_prompt.id,
+                crate::session::DONE_EMOJI,
+            ),
         )
         .unwrap();
         assert_eq!(
-            crate::store::SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            crate::store::SessionState::from_db_str(
+                &store.session(&session.id).unwrap().unwrap().state
+            ),
             crate::store::SessionState::Quorum,
             "chair ack reaction to the quorum prompt must not close the review",
         );
@@ -214,17 +224,21 @@ mod tests {
         crate::orchestrator::handle_reply(
             &state,
             &chair.id,
-            crate::orchestrator::test_support::msg_reply(&session.id, "LGTM ✅ — final verdict\n[done]"),
+            crate::orchestrator::test_support::msg_reply(
+                &session.id,
+                "LGTM ✅ — final verdict\n[done]",
+            ),
         )
         .unwrap();
         assert_eq!(
-            crate::store::SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            crate::store::SessionState::from_db_str(
+                &store.session(&session.id).unwrap().unwrap().state
+            ),
             crate::store::SessionState::Closed,
         );
     }
 
-
-#[test]
+    #[test]
     fn structured_verdict_policy_covers_all_coordinators() {
         let cx = ctx(&["chair", "rev"], None);
         let text = "final\n[[verdict:request_changes r=1 y=2 g=3]] [done]";
@@ -250,7 +264,10 @@ mod tests {
         );
 
         for (name, coord) in [
-            ("solo", Box::new(crate::coordinator::Solo) as Box<dyn crate::coordinator::Coordinator>),
+            (
+                "solo",
+                Box::new(crate::coordinator::Solo) as Box<dyn crate::coordinator::Coordinator>,
+            ),
             ("pipeline", Box::new(crate::coordinator::Pipeline)),
         ] {
             assert!(
@@ -260,12 +277,15 @@ mod tests {
         }
     }
 
-#[test]
+    #[test]
     fn recipient_trigger_text_default_is_verbatim_passthrough() {
         let cx = ctx(&["chair", "rev"], None);
         let trigger = "PR Review Council — canyugs/openab-control-plane #17 \"\"\n\nReview focus assignment:\n- rev → security";
         let cases: Vec<(&str, Box<dyn crate::coordinator::Coordinator>)> = vec![
-            ("quorum_council", Box::new(crate::coordinator::QuorumCouncil)),
+            (
+                "quorum_council",
+                Box::new(crate::coordinator::QuorumCouncil),
+            ),
             ("solo", Box::new(crate::coordinator::Solo)),
             ("pipeline", Box::new(crate::coordinator::Pipeline)),
         ];

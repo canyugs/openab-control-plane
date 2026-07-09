@@ -164,8 +164,8 @@ pub(crate) fn render_review_reviewer_task(
 
 #[cfg(test)]
 mod tests {
-    use crate::store::Store as _;
     use super::*;
+    use crate::store::Store as _;
 
     struct TestSession {
         chair_bot: Option<String>,
@@ -509,7 +509,11 @@ mod tests {
             )
             .unwrap();
         store
-            .advance_state(&session.id, crate::store::SessionState::Open, crate::store::SessionState::Deliberating)
+            .advance_state(
+                &session.id,
+                crate::store::SessionState::Open,
+                crate::store::SessionState::Deliberating,
+            )
             .unwrap();
         let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"\n\nReview focus assignment:\n- rev1 → correctness";
         store
@@ -517,7 +521,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            crate::orchestrator::replace_roster_bot(&state, &session.id, &chair.id, &chair2.id).unwrap(),
+            crate::orchestrator::replace_roster_bot(&state, &session.id, &chair.id, &chair2.id)
+                .unwrap(),
             crate::orchestrator::Replacement::Replaced,
         );
 
@@ -531,5 +536,4 @@ mod tests {
             "replacement chair must not receive the raw review trigger"
         );
     }
-
 }

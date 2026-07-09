@@ -53,8 +53,8 @@ pub(crate) fn trailer(text: &str) -> Option<VerdictTrailer> {
 
 #[cfg(test)]
 mod tests {
-    use crate::store::Store as _;
     use super::*;
+    use crate::store::Store as _;
 
     #[test]
     fn verdict_trailer_parsing() {
@@ -104,7 +104,8 @@ mod tests {
 
     #[tokio::test]
     async fn review_close_webhook_reads_structured_verdict_columns() {
-        let (webhook_url, mut webhook_rx) = crate::orchestrator::test_support::spawn_close_webhook_listener().await;
+        let (webhook_url, mut webhook_rx) =
+            crate::orchestrator::test_support::spawn_close_webhook_listener().await;
         let store = std::sync::Arc::new(crate::store::SqliteStore::memory().unwrap());
         let state = crate::state::AppState::new_with_options(
             store.clone(),
@@ -127,7 +128,11 @@ mod tests {
             )
             .unwrap();
         store
-            .advance_state(&session.id, crate::store::SessionState::Open, crate::store::SessionState::Quorum)
+            .advance_state(
+                &session.id,
+                crate::store::SessionState::Open,
+                crate::store::SessionState::Quorum,
+            )
             .unwrap();
 
         crate::orchestrator::handle_reply(
@@ -159,7 +164,11 @@ mod tests {
             .create_session("solo", None, 0, None, std::slice::from_ref(&bot.id), "solo")
             .unwrap();
         store
-            .advance_state(&session.id, crate::store::SessionState::Open, crate::store::SessionState::Deliberating)
+            .advance_state(
+                &session.id,
+                crate::store::SessionState::Open,
+                crate::store::SessionState::Deliberating,
+            )
             .unwrap();
         let mut north = state.north_tx.subscribe();
 
@@ -197,5 +206,4 @@ mod tests {
         assert!(event["payload"]["findings_yellow"].is_null());
         assert!(event["payload"]["findings_green"].is_null());
     }
-
 }

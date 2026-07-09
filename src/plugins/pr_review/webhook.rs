@@ -10,6 +10,7 @@
 //! `servers/utils.py:verify_signature` (HMAC-SHA256 over the raw body). Auth here is
 //! the signature, NOT the north bearer key — GitHub can't send one.
 
+use crate::controller::ControllerActionResult;
 use crate::state::AppState;
 use axum::body::Bytes;
 use axum::extract::State;
@@ -17,7 +18,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use hmac::{Hmac, Mac};
-use crate::controller::ControllerActionResult;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Sha256;
@@ -442,9 +442,14 @@ pub async fn handle_webhook(
     }
 
     // 6. Review path: convene a council for this PR (pointer trigger; bots self-fetch).
-    let trigger_ref = crate::plugins::pr_review::council::pr_trigger_ref(&trigger.repo, trigger.pr_number);
-    match crate::plugins::pr_review::council::check_review_admission(&state, &trigger_ref, trigger.is_synchronize)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    let trigger_ref =
+        crate::plugins::pr_review::council::pr_trigger_ref(&trigger.repo, trigger.pr_number);
+    match crate::plugins::pr_review::council::check_review_admission(
+        &state,
+        &trigger_ref,
+        trigger.is_synchronize,
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
         crate::plugins::pr_review::council::ReviewAdmission::Allow => {}
         crate::plugins::pr_review::council::ReviewAdmission::Deduped { session_id, reason } => {
@@ -602,9 +607,11 @@ pub(crate) async fn review_pr(
         }
     }
 
-    let result = crate::plugins::pr_review::council::convene_for_pr(&state, &req.repo, req.pr, req.preset, None, None)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let result = crate::plugins::pr_review::council::convene_for_pr(
+        &state, &req.repo, req.pr, req.preset, None, None,
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     match result {
         ControllerActionResult::SessionOpened {
             session_id,
@@ -1147,17 +1154,25 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn mention_review_delivers_prior_sha_delta_context_to_reviewer() {
-        let _policy_guard = crate::plugins::pr_review::council::review_policy_env_lock().lock().await;
+        let _policy_guard = crate::plugins::pr_review::council::review_policy_env_lock()
+            .lock()
+            .await;
         let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
         let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
         std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
         std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
 
         let state = state_with_review_bots();
-        let first =
-            crate::plugins::pr_review::council::convene_for_pr(&state, "o/r", 7, None, Some("sha:abc123".into()), None)
-                .await
-                .unwrap();
+        let first = crate::plugins::pr_review::council::convene_for_pr(
+            &state,
+            "o/r",
+            7,
+            None,
+            Some("sha:abc123".into()),
+            None,
+        )
+        .await
+        .unwrap();
         let crate::controller::ControllerActionResult::SessionOpened {
             session_id: first_id,
             ..
@@ -1215,7 +1230,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn synchronize_supersedes_active_review_session() {
-        let _guard = crate::plugins::pr_review::council::review_policy_env_lock().lock().await;
+        let _guard = crate::plugins::pr_review::council::review_policy_env_lock()
+            .lock()
+            .await;
         let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
         let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
         std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
@@ -1259,7 +1276,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn redelivered_same_head_sha_dedupes() {
-        let _guard = crate::plugins::pr_review::council::review_policy_env_lock().lock().await;
+        let _guard = crate::plugins::pr_review::council::review_policy_env_lock()
+            .lock()
+            .await;
         let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
         let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
         std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
@@ -1281,7 +1300,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn hourly_cap_dedupes_synchronize_but_explicit_review_bypasses() {
-        let _guard = crate::plugins::pr_review::council::review_policy_env_lock().lock().await;
+        let _guard = crate::plugins::pr_review::council::review_policy_env_lock()
+            .lock()
+            .await;
         let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
         let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
         std::env::set_var("OABCP_REVIEW_HOURLY_CAP", "1");
@@ -1316,7 +1337,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn round_budget_refuses_all_paths_leaving_live_round_active() {
-        let _guard = crate::plugins::pr_review::council::review_policy_env_lock().lock().await;
+        let _guard = crate::plugins::pr_review::council::review_policy_env_lock()
+            .lock()
+            .await;
         let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
         let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
         std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
@@ -1364,7 +1387,9 @@ mod tests {
     }
     #[tokio::test(flavor = "current_thread")]
     async fn review_endpoint_always_supersedes() {
-        let _guard = crate::plugins::pr_review::council::review_policy_env_lock().lock().await;
+        let _guard = crate::plugins::pr_review::council::review_policy_env_lock()
+            .lock()
+            .await;
         std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
         std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
         let state = state_with_review_bots();
@@ -1407,7 +1432,6 @@ mod tests {
             SessionState::Closed
         );
     }
-
 
     /// Plan S12 acceptance: /v1/review (REST) and the GitHub webhook share ONE
     /// admission valve — the same store/env state must refuse both ingresses
@@ -1452,5 +1476,4 @@ mod tests {
         restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
         restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
     }
-
 }

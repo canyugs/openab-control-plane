@@ -45,10 +45,10 @@ impl Coordinator for TriageCouncil {
 
 #[cfg(test)]
 mod tests {
-    use crate::store::Store as _;
     use super::*;
     use crate::coordinator::Ctx;
     use crate::store::SessionState;
+    use crate::store::Store as _;
 
     struct FakeCtx {
         session_id: String,
@@ -161,7 +161,11 @@ mod tests {
             )
             .unwrap();
         store
-            .advance_state(&session.id, crate::store::SessionState::Open, crate::store::SessionState::Quorum)
+            .advance_state(
+                &session.id,
+                crate::store::SessionState::Open,
+                crate::store::SessionState::Quorum,
+            )
             .unwrap();
         let quorum_prompt = store
             .add_message(
@@ -178,11 +182,17 @@ mod tests {
         crate::orchestrator::handle_reply(
             &state,
             &chair.id,
-            crate::orchestrator::test_support::reaction_reply(&session.id, &quorum_prompt.id, crate::session::DONE_EMOJI),
+            crate::orchestrator::test_support::reaction_reply(
+                &session.id,
+                &quorum_prompt.id,
+                crate::session::DONE_EMOJI,
+            ),
         )
         .unwrap();
         assert_eq!(
-            crate::store::SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            crate::store::SessionState::from_db_str(
+                &store.session(&session.id).unwrap().unwrap().state
+            ),
             crate::store::SessionState::Quorum,
             "council chair ack reaction must not close before the text [done]",
         );
@@ -191,11 +201,16 @@ mod tests {
         crate::orchestrator::handle_reply(
             &state,
             &chair.id,
-            crate::orchestrator::test_support::msg_reply(&session.id, "Acknowledged, standing by.\n[done]"),
+            crate::orchestrator::test_support::msg_reply(
+                &session.id,
+                "Acknowledged, standing by.\n[done]",
+            ),
         )
         .unwrap();
         assert_eq!(
-            crate::store::SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            crate::store::SessionState::from_db_str(
+                &store.session(&session.id).unwrap().unwrap().state
+            ),
             crate::store::SessionState::Quorum,
             "chair [done] without a TRIAGE report must not close",
         );
@@ -203,13 +218,17 @@ mod tests {
         crate::orchestrator::handle_reply(
             &state,
             &chair.id,
-            crate::orchestrator::test_support::msg_reply(&session.id, "TRIAGE low — final report\n[done]"),
+            crate::orchestrator::test_support::msg_reply(
+                &session.id,
+                "TRIAGE low — final report\n[done]",
+            ),
         )
         .unwrap();
         assert_eq!(
-            crate::store::SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            crate::store::SessionState::from_db_str(
+                &store.session(&session.id).unwrap().unwrap().state
+            ),
             crate::store::SessionState::Closed,
         );
     }
-
 }

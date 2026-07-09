@@ -197,8 +197,9 @@ async fn list_bots(
     Query(params): Query<ListBots>,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
-    let (standing_roster, source) = crate::plugins::pr_review::council::runtime_council_roster(&state)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (standing_roster, source) =
+        crate::plugins::pr_review::council::runtime_council_roster(&state)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let standing: BTreeSet<_> = standing_roster.iter().cloned().collect();
     let standing_chair = standing_roster.first().cloned();
     let bots = state

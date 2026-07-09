@@ -1395,18 +1395,18 @@ pub(crate) mod test_support {
     //! Shared test fixtures: gateway reply builders, outbox frame readers, and a
     //! local close-webhook listener — used by orchestrator tests and the plugin
     //! test modules (same crate).
+    use crate::protocol::{Content, GatewayReply, ReplyChannel};
+    use crate::store::{SqliteStore, Store};
     use axum::body::Bytes;
     use axum::extract::State;
     use axum::http::StatusCode;
     use axum::routing::post;
     use axum::Router;
     use tokio::net::TcpListener;
-    use crate::protocol::{Content, GatewayReply, ReplyChannel};
-    use crate::store::{SqliteStore, Store};
     use tokio::sync::mpsc;
 
-        pub async fn spawn_close_webhook_listener() -> (String, mpsc::UnboundedReceiver<serde_json::Value>)
-    {
+    pub async fn spawn_close_webhook_listener(
+    ) -> (String, mpsc::UnboundedReceiver<serde_json::Value>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let app = Router::new()
             .route("/", post(capture_close_webhook))
@@ -1419,7 +1419,7 @@ pub(crate) mod test_support {
         (format!("http://{addr}/"), rx)
     }
 
-        pub async fn capture_close_webhook(
+    pub async fn capture_close_webhook(
         State(tx): State<mpsc::UnboundedSender<serde_json::Value>>,
         body: Bytes,
     ) -> StatusCode {
@@ -1428,7 +1428,7 @@ pub(crate) mod test_support {
         StatusCode::NO_CONTENT
     }
 
-        pub fn msg_reply(session: &str, text: &str) -> GatewayReply {
+    pub fn msg_reply(session: &str, text: &str) -> GatewayReply {
         GatewayReply {
             schema: String::new(),
             reply_to: String::new(),
@@ -1444,7 +1444,7 @@ pub(crate) mod test_support {
         }
     }
 
-        pub fn reaction_reply(session: &str, target: &str, emoji: &str) -> GatewayReply {
+    pub fn reaction_reply(session: &str, target: &str, emoji: &str) -> GatewayReply {
         GatewayReply {
             schema: String::new(),
             reply_to: target.into(),
@@ -1460,7 +1460,11 @@ pub(crate) mod test_support {
         }
     }
 
-        pub fn pending_frames_for_session(store: &SqliteStore, bot_id: &str, session_id: &str) -> usize {
+    pub fn pending_frames_for_session(
+        store: &SqliteStore,
+        bot_id: &str,
+        session_id: &str,
+    ) -> usize {
         store
             .pending_outbox(bot_id)
             .unwrap()
@@ -1475,7 +1479,7 @@ pub(crate) mod test_support {
             .count()
     }
 
-        pub fn pending_frame_values(store: &SqliteStore, bot_id: &str) -> Vec<serde_json::Value> {
+    pub fn pending_frame_values(store: &SqliteStore, bot_id: &str) -> Vec<serde_json::Value> {
         store
             .pending_outbox(bot_id)
             .unwrap()
@@ -1483,7 +1487,6 @@ pub(crate) mod test_support {
             .map(|(_, frame)| serde_json::from_str(&frame).unwrap())
             .collect()
     }
-
 }
 
 #[cfg(test)]
