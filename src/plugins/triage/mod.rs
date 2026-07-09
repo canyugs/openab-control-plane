@@ -45,6 +45,7 @@ impl Coordinator for TriageCouncil {
 
 #[cfg(test)]
 mod tests {
+    use crate::store::Store as _;
     use super::*;
     use crate::coordinator::Ctx;
     use crate::store::SessionState;
@@ -136,4 +137,79 @@ mod tests {
             vec!["rev0".to_string(), "rev1".to_string()]
         );
     }
+
+    #[test]
+    fn triage_chair_quorum_reaction_does_not_close_without_text_done() {
+        // Same footgun as the review_council variant below, hit live by the
+        // ADR 014 triage dogfood: a prompt-driven chair auto-🆗s the quorum
+        // prompt and the session closed with a "still waiting" verdict.
+        // `triage_council` rides QuorumCouncil (for_session default arm) but
+        // gets the text-done chair guard; generic `council` keeps native
+        // set_done semantics (spike tests pin that contract).
+        let store = std::sync::Arc::new(crate::store::SqliteStore::memory().unwrap());
+        let state = crate::state::AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev = store.register_bot("rev", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), rev.id.clone()],
+                "triage_council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, crate::store::SessionState::Open, crate::store::SessionState::Quorum)
+            .unwrap();
+        let quorum_prompt = store
+            .add_message(
+                &session.id,
+                None,
+                "system",
+                None,
+                None,
+                "Quorum reached.",
+                None,
+            )
+            .unwrap();
+
+        crate::orchestrator::handle_reply(
+            &state,
+            &chair.id,
+            crate::orchestrator::test_support::reaction_reply(&session.id, &quorum_prompt.id, crate::session::DONE_EMOJI),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::store::SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            crate::store::SessionState::Quorum,
+            "council chair ack reaction must not close before the text [done]",
+        );
+
+        // ack-style [done] without a report must NOT close (dogfood rounds 2/5)
+        crate::orchestrator::handle_reply(
+            &state,
+            &chair.id,
+            crate::orchestrator::test_support::msg_reply(&session.id, "Acknowledged, standing by.\n[done]"),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::store::SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            crate::store::SessionState::Quorum,
+            "chair [done] without a TRIAGE report must not close",
+        );
+
+        crate::orchestrator::handle_reply(
+            &state,
+            &chair.id,
+            crate::orchestrator::test_support::msg_reply(&session.id, "TRIAGE low — final report\n[done]"),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::store::SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            crate::store::SessionState::Closed,
+        );
+    }
+
 }

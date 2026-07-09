@@ -53,6 +53,7 @@ pub(crate) fn trailer(text: &str) -> Option<VerdictTrailer> {
 
 #[cfg(test)]
 mod tests {
+    use crate::store::Store as _;
     use super::*;
 
     #[test]
@@ -100,4 +101,101 @@ mod tests {
         assert!(parse_verdict_trailer("[[verdict:approve x=1]]").is_none());
         assert!(parse_verdict_trailer("[[verdict:approve r=1").is_none()); // unclosed
     }
+
+    #[tokio::test]
+    async fn review_close_webhook_reads_structured_verdict_columns() {
+        let (webhook_url, mut webhook_rx) = crate::orchestrator::test_support::spawn_close_webhook_listener().await;
+        let store = std::sync::Arc::new(crate::store::SqliteStore::memory().unwrap());
+        let state = crate::state::AppState::new_with_options(
+            store.clone(),
+            None,
+            None,
+            None,
+            None,
+            "http://control-plane.zeabur.internal:8090".to_string(),
+            Some(webhook_url),
+        );
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let session = store
+            .create_session(
+                "review",
+                None,
+                0,
+                Some(&chair.id),
+                std::slice::from_ref(&chair.id),
+                "review_council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, crate::store::SessionState::Open, crate::store::SessionState::Quorum)
+            .unwrap();
+
+        crate::orchestrator::handle_reply(
+            &state,
+            &chair.id,
+            crate::orchestrator::test_support::msg_reply(
+                &session.id,
+                "VERDICT: approve [[verdict:approve r=1 y=0 g=2]] [done]",
+            ),
+        )
+        .unwrap();
+
+        let payload = tokio::time::timeout(std::time::Duration::from_secs(5), webhook_rx.recv())
+            .await
+            .expect("timed out waiting for close webhook")
+            .expect("close webhook listener stopped");
+        assert_eq!(payload["decision"], "approve");
+        assert_eq!(payload["findings_red"], 1);
+        assert_eq!(payload["findings_yellow"], 0);
+        assert_eq!(payload["findings_green"], 2);
+    }
+
+    #[test]
+    fn solo_close_keeps_structured_verdict_null_even_with_trailer() {
+        let store = std::sync::Arc::new(crate::store::SqliteStore::memory().unwrap());
+        let state = crate::state::AppState::new(store.clone());
+        let bot = store.register_bot("solo", "reviewer", "h1", "t1").unwrap();
+        let session = store
+            .create_session("solo", None, 0, None, std::slice::from_ref(&bot.id), "solo")
+            .unwrap();
+        store
+            .advance_state(&session.id, crate::store::SessionState::Open, crate::store::SessionState::Deliberating)
+            .unwrap();
+        let mut north = state.north_tx.subscribe();
+
+        crate::orchestrator::handle_reply(
+            &state,
+            &bot.id,
+            crate::orchestrator::test_support::msg_reply(
+                &session.id,
+                "solo final [[verdict:approve r=1 y=0 g=2]] [done]",
+            ),
+        )
+        .unwrap();
+
+        let closed = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(
+            crate::store::SessionState::from_db_str(&closed.state),
+            crate::store::SessionState::Closed
+        );
+        assert!(closed.decision.is_none());
+        assert!(closed.findings_red.is_none());
+        assert!(closed.findings_yellow.is_none());
+        assert!(closed.findings_green.is_none());
+
+        let mut verdict_event = None;
+        while let Ok(raw) = north.try_recv() {
+            let event: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            if event["type"] == "verdict" {
+                verdict_event = Some(event);
+                break;
+            }
+        }
+        let event = verdict_event.expect("solo close should emit a north verdict event");
+        assert!(event["payload"]["decision"].is_null());
+        assert!(event["payload"]["findings_red"].is_null());
+        assert!(event["payload"]["findings_yellow"].is_null());
+        assert!(event["payload"]["findings_green"].is_null());
+    }
+
 }

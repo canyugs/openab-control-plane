@@ -164,6 +164,7 @@ pub(crate) fn render_review_reviewer_task(
 
 #[cfg(test)]
 mod tests {
+    use crate::store::Store as _;
     use super::*;
 
     struct TestSession {
@@ -473,4 +474,62 @@ mod tests {
             Some("diff --git a/src/lib.rs b/src/lib.rs")
         );
     }
+
+    #[test]
+    fn solo_trigger_delivery_is_verbatim_passthrough() {
+        let store = std::sync::Arc::new(crate::store::SqliteStore::memory().unwrap());
+        let state = crate::state::AppState::new(store.clone());
+        let bot = store.register_bot("solo", "reviewer", "h1", "t1").unwrap();
+        let session = store
+            .create_session("solo", None, 0, None, std::slice::from_ref(&bot.id), "solo")
+            .unwrap();
+        let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"\n\nReview focus assignment:\n- solo → correctness";
+
+        crate::orchestrator::post_client_message(&state, &session.id, trigger).unwrap();
+
+        let frames = crate::orchestrator::test_support::pending_frame_values(&store, &bot.id);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0]["content"]["text"].as_str(), Some(trigger));
+    }
+
+    #[test]
+    fn replacement_chair_backfill_receives_rewritten_chair_task() {
+        let store = std::sync::Arc::new(crate::store::SqliteStore::memory().unwrap());
+        let state = crate::state::AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let chair2 = store.register_bot("chair2", "chair", "h2", "t2").unwrap();
+        let session = store
+            .create_session(
+                "review",
+                None,
+                0,
+                Some(&chair.id),
+                std::slice::from_ref(&chair.id),
+                "review_council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, crate::store::SessionState::Open, crate::store::SessionState::Deliberating)
+            .unwrap();
+        let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"\n\nReview focus assignment:\n- rev1 → correctness";
+        store
+            .add_message(&session.id, None, "client", None, None, trigger, None)
+            .unwrap();
+
+        assert_eq!(
+            crate::orchestrator::replace_roster_bot(&state, &session.id, &chair.id, &chair2.id).unwrap(),
+            crate::orchestrator::Replacement::Replaced,
+        );
+
+        let frames = crate::orchestrator::test_support::pending_frame_values(&store, &chair2.id);
+        assert_eq!(frames.len(), 1);
+        let text = frames[0]["content"]["text"].as_str().unwrap();
+        assert!(text.contains("Task: manage the GitHub PR status comment"));
+        assert!(text.contains("gh pr comment 53 --repo canyugs/openab-control-plane"));
+        assert!(
+            !text.contains("PR Review Council — canyugs/openab-control-plane #53"),
+            "replacement chair must not receive the raw review trigger"
+        );
+    }
+
 }
