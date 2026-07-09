@@ -44,13 +44,16 @@ pub enum ControllerActionResult {
 #[derive(Debug)]
 pub enum ControllerError {
     Invalid(String),
+    Gone(String),
     Internal(anyhow::Error),
 }
 
 impl std::fmt::Display for ControllerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ControllerError::Invalid(message) => f.write_str(message),
+            ControllerError::Invalid(message) | ControllerError::Gone(message) => {
+                f.write_str(message)
+            }
             ControllerError::Internal(err) => write!(f, "{err}"),
         }
     }
@@ -59,7 +62,7 @@ impl std::fmt::Display for ControllerError {
 impl std::error::Error for ControllerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            ControllerError::Invalid(_) => None,
+            ControllerError::Invalid(_) | ControllerError::Gone(_) => None,
             ControllerError::Internal(err) => err.source(),
         }
     }
@@ -68,6 +71,20 @@ impl std::error::Error for ControllerError {
 impl From<anyhow::Error> for ControllerError {
     fn from(err: anyhow::Error) -> Self {
         ControllerError::Internal(err)
+    }
+}
+
+impl From<orchestrator::PostClientMessageError> for ControllerError {
+    fn from(err: orchestrator::PostClientMessageError) -> Self {
+        match err {
+            orchestrator::PostClientMessageError::UnknownSession(message) => {
+                ControllerError::Invalid(message)
+            }
+            orchestrator::PostClientMessageError::ReopenRefused(message) => {
+                ControllerError::Gone(message)
+            }
+            orchestrator::PostClientMessageError::Internal(err) => ControllerError::Internal(err),
+        }
     }
 }
 
@@ -306,6 +323,116 @@ mod tests {
         assert!(
             matches!(err, ControllerError::Invalid(message) if message == "unknown session ses_missing")
         );
+    }
+
+    fn terminal_session(state: &Arc<AppState>, mode: &str, terminal: SessionState) -> String {
+        let (chair, roster, quorum_n) = if mode == "solo" {
+            (Some("chair"), vec!["chair".to_string()], 0)
+        } else {
+            (
+                Some("chair"),
+                vec!["chair".to_string(), "rev1".to_string()],
+                1,
+            )
+        };
+        let session = state
+            .store
+            .create_session("terminal", None, quorum_n, chair, &roster, mode)
+            .unwrap();
+        state.store.set_state(&session.id, terminal).unwrap();
+        session.id
+    }
+
+    #[test]
+    fn post_message_reopen_matrix_is_coordinator_owned() {
+        let state = state_with_bots();
+        for mode in [
+            "solo",
+            "council",
+            "pipeline",
+            "review_council",
+            "triage_council",
+        ] {
+            let session_id = terminal_session(&state, mode, SessionState::Closed);
+            let before = state.store.messages(&session_id).unwrap().len();
+            let result = execute(
+                &state,
+                ControllerAction::PostMessage(PostMessageAction {
+                    session_id: session_id.clone(),
+                    content: format!("follow-up for {mode}"),
+                }),
+            );
+
+            if mode == "solo" {
+                assert!(matches!(
+                    result.unwrap(),
+                    ControllerActionResult::MessagePosted { .. }
+                ));
+                assert_eq!(
+                    SessionState::from_db_str(
+                        &state.store.session(&session_id).unwrap().unwrap().state
+                    ),
+                    SessionState::Deliberating
+                );
+                assert_eq!(state.store.messages(&session_id).unwrap().len(), before + 1);
+            } else {
+                let err = result.unwrap_err();
+                assert!(
+                    matches!(
+                        err,
+                        ControllerError::Gone(message)
+                            if message.contains(&session_id)
+                                && message.contains(mode)
+                                && message.contains("does not reopen on client messages")
+                    ),
+                    "mode {mode} should refuse terminal follow-up with Gone",
+                );
+                assert_eq!(
+                    SessionState::from_db_str(
+                        &state.store.session(&session_id).unwrap().unwrap().state
+                    ),
+                    SessionState::Closed
+                );
+                assert_eq!(state.store.messages(&session_id).unwrap().len(), before);
+            }
+        }
+    }
+
+    #[test]
+    fn post_message_aborted_reopen_policy_matches_closed() {
+        let state = state_with_bots();
+
+        let solo_id = terminal_session(&state, "solo", SessionState::Aborted);
+        execute(
+            &state,
+            ControllerAction::PostMessage(PostMessageAction {
+                session_id: solo_id.clone(),
+                content: "resume solo".into(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&state.store.session(&solo_id).unwrap().unwrap().state),
+            SessionState::Deliberating
+        );
+        assert_eq!(state.store.messages(&solo_id).unwrap().len(), 1);
+
+        let council_id = terminal_session(&state, "council", SessionState::Aborted);
+        let before = state.store.messages(&council_id).unwrap().len();
+        let err = execute(
+            &state,
+            ControllerAction::PostMessage(PostMessageAction {
+                session_id: council_id.clone(),
+                content: "resume council".into(),
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ControllerError::Gone(_)));
+        assert_eq!(
+            SessionState::from_db_str(&state.store.session(&council_id).unwrap().unwrap().state),
+            SessionState::Aborted
+        );
+        assert_eq!(state.store.messages(&council_id).unwrap().len(), before);
     }
 
     #[test]
