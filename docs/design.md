@@ -32,7 +32,7 @@ enough to test.
 | The **coordination seam** (`Coordinator` trait) | The engine owns the *seam*; the *policy* plugged into it (quorum, solo, …) is not core — see "Policy vs mechanism vs substrate" below |
 | Durable delivery (outbox, replay) | Cross-bot message reliability |
 | Bot identity + per-bot gateway tokens | The plane manages the registry and gateway credentials; production OpenAB runtime config belongs outside the plane |
-| `/bot-config/:id` legacy bootstrap | Compatibility path for current templates and local dogfood; frozen bugfix-only (B2) and retired when ADR 010's Stage 3 profile/`pre_boot` migration moves templates to OpenAB-native `configUrl` artifacts |
+| `/bot-config/:id` legacy bootstrap | **Demoted compatibility endpoint** (ADR 010 S17 runbook): templates already boot on pod-owned `config.toml`; the render is frozen bugfix-only (B2 goldens) and every serve logs a deprecation warn — removal fires on evidence (no lane serves it for a full release) |
 | North API (sessions, messages, SSE) | The client-facing interface |
 
 ## OCP does NOT own

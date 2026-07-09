@@ -1261,6 +1261,13 @@ async fn bot_config(
     Path(id): Path<String>,
     Query(params): Query<BotConfigParams>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    // ADR 010 S17: per-serve deprecation telemetry. Lane logs are the evidence
+    // for the removal trigger ("no consumer for a full release" — see the ADR 010
+    // demotion runbook). No behavior change; pods on pod-owned config never hit this.
+    tracing::warn!(
+        bot = %id,
+        "deprecated /bot-config served; migrate this pod to pod-owned config.toml (ADR 010)"
+    );
     let bot = state
         .store
         .bot(&id)
