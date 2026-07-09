@@ -2040,7 +2040,7 @@ mod tests {
     #[test]
     fn delete_bot_removes_identity_and_token() {
         let store = SqliteStore::memory().unwrap();
-        let (bot, token) = crate::identity::issue(&store, "retire-me", "reviewer").unwrap();
+        let (bot, token) = crate::identity::issue(&store, "retire-me", "reviewer", None).unwrap();
         let token_hash = crate::identity::hash_token(&token);
 
         assert_eq!(
@@ -2055,7 +2055,7 @@ mod tests {
     #[test]
     fn delete_bot_refuses_active_session_member() {
         let store = SqliteStore::memory().unwrap();
-        let (bot, _) = crate::identity::issue(&store, "active", "reviewer").unwrap();
+        let (bot, _) = crate::identity::issue(&store, "active", "reviewer", None).unwrap();
         let session = store
             .create_session(
                 "active review",

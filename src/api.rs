@@ -123,6 +123,8 @@ fn normalize_list(values: Vec<String>) -> Vec<String> {
 struct RegisterBot {
     name: String,
     role: String,
+    #[serde(default)]
+    token: Option<String>,
 }
 
 /// Read-only observability snapshot (C6): session outcome aggregates from the DB
@@ -166,10 +168,26 @@ async fn register_bot(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(req): Json<RegisterBot>,
-) -> Result<impl IntoResponse, StatusCode> {
-    check_auth(&state, &headers)?;
-    let (bot, token) = identity::issue(state.store.as_ref(), &req.name, &req.role)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    check_auth(&state, &headers).map_err(error_status)?;
+    if let Some(token) = req.token.as_deref() {
+        if !is_safe_token(token) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "token may contain only ASCII letters, digits, '-', '_', or '.'"
+                })),
+            ));
+        }
+        if token.len() < 16 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "token must be at least 16 characters" })),
+            ));
+        }
+    }
+    let (bot, token) = identity::issue(state.store.as_ref(), &req.name, &req.role, req.token)
+        .map_err(|_| error_status(StatusCode::INTERNAL_SERVER_ERROR))?;
     Ok(Json(
         json!({ "bot_id": bot.id, "token": token, "role": bot.role }),
     ))
@@ -1464,6 +1482,7 @@ mod tests {
         agent_profile_from, bot_config, chair_pre_boot_hook_script, parse_extra_agent_inherit_env,
         toml_string, AgentProfile, BotConfigParams,
     };
+    use crate::identity;
     use crate::state::AppState;
     use crate::store::now_ms;
     use crate::store::{SessionState, SqliteStore, Store};
@@ -1508,6 +1527,187 @@ mod tests {
             "http://control-plane.test".into(),
             None,
         )
+    }
+
+    fn restore_env(key: &str, old: Option<String>) {
+        match old {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[tokio::test]
+    async fn register_bot_with_operator_token_echoes_once_and_stores_hash_only() {
+        let _guard = identity::token_env_lock().lock().await;
+        let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
+        std::env::remove_var("OABCP_EXTERNALIZE_TOKENS");
+
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let provided = "operator.token_16".to_string();
+
+        let Json(body) = super::register_bot(
+            State(state),
+            HeaderMap::new(),
+            Json(super::RegisterBot {
+                name: "operator-owned".into(),
+                role: "reviewer".into(),
+                token: Some(provided.clone()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let bot_id = body["bot_id"].as_str().unwrap();
+        assert_eq!(body["token"], json!(provided));
+        assert_eq!(store.bot_token_plain(bot_id).unwrap().as_deref(), Some(""));
+        assert_eq!(
+            identity::verify(store.as_ref(), &provided).unwrap().id,
+            bot_id
+        );
+        restore_env("OABCP_EXTERNALIZE_TOKENS", old);
+    }
+
+    #[tokio::test]
+    async fn register_bot_rejects_unsafe_operator_token() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store);
+
+        let Err((status, Json(body))) = super::register_bot(
+            State(state),
+            HeaderMap::new(),
+            Json(super::RegisterBot {
+                name: "unsafe".into(),
+                role: "reviewer".into(),
+                token: Some("operator token$bad".into()),
+            }),
+        )
+        .await
+        else {
+            panic!("unsafe operator token should fail");
+        };
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("ASCII"));
+    }
+
+    #[tokio::test]
+    async fn register_bot_rejects_short_operator_token() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store);
+
+        let Err((status, Json(body))) = super::register_bot(
+            State(state),
+            HeaderMap::new(),
+            Json(super::RegisterBot {
+                name: "short".into(),
+                role: "reviewer".into(),
+                token: Some("abcdefghijklmno".into()),
+            }),
+        )
+        .await
+        else {
+            panic!("short operator token should fail");
+        };
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("at least 16"));
+    }
+
+    #[tokio::test]
+    async fn register_bot_accepts_sixteen_char_safe_operator_token() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store);
+        let provided = "abcdefghijklmnop".to_string();
+
+        let Json(body) = super::register_bot(
+            State(state),
+            HeaderMap::new(),
+            Json(super::RegisterBot {
+                name: "safe16".into(),
+                role: "reviewer".into(),
+                token: Some(provided.clone()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(body["token"], json!(provided));
+    }
+
+    #[tokio::test]
+    async fn operator_token_legacy_bot_config_returns_not_found() {
+        let _guard = identity::token_env_lock().lock().await;
+        let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
+        std::env::remove_var("OABCP_EXTERNALIZE_TOKENS");
+
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let Json(body) = super::register_bot(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(super::RegisterBot {
+                name: "hash-only".into(),
+                role: "reviewer".into(),
+                token: Some("operator_token_123".into()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let bot_id = body["bot_id"].as_str().unwrap().to_string();
+        assert_eq!(store.bot_token_plain(&bot_id).unwrap().as_deref(), Some(""));
+        let result = bot_config(
+            State(state),
+            Path(bot_id),
+            Query(BotConfigParams { agent: None }),
+        )
+        .await;
+        match result {
+            Ok(_) => panic!("hash-only bot config should not render in legacy mode"),
+            Err(status) => assert_eq!(status, StatusCode::NOT_FOUND),
+        }
+        restore_env("OABCP_EXTERNALIZE_TOKENS", old);
+    }
+
+    #[tokio::test]
+    async fn register_generated_externalized_bot_config_uses_env_ref_and_hash_auth() {
+        let _guard = identity::token_env_lock().lock().await;
+        let old = std::env::var("OABCP_EXTERNALIZE_TOKENS").ok();
+        std::env::set_var("OABCP_EXTERNALIZE_TOKENS", "1");
+
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let Json(body) = super::register_bot(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(super::RegisterBot {
+                name: "registered-ext".into(),
+                role: "reviewer".into(),
+                token: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let bot_id = body["bot_id"].as_str().unwrap().to_string();
+        let token = body["token"].as_str().unwrap();
+        assert_eq!(store.bot_token_plain(&bot_id).unwrap().as_deref(), Some(""));
+        assert_eq!(identity::verify(store.as_ref(), token).unwrap().id, bot_id);
+
+        let response = bot_config(
+            State(state),
+            Path(bot_id),
+            Query(BotConfigParams { agent: None }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let rendered = std::str::from_utf8(&body).unwrap();
+        assert!(rendered.contains("token = \"${OABCP_BOT_TOKEN}\""));
+        restore_env("OABCP_EXTERNALIZE_TOKENS", old);
     }
 
     #[tokio::test]
