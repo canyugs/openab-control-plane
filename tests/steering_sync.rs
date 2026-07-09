@@ -75,7 +75,7 @@ fn steering_doc_is_anchored_once_and_aliased_per_bot() {
 #[test]
 fn templates_pin_current_cargo_version() {
     let want = format!(
-        "image: docker.io/canyu/openab-control-plane:{}",
+        "image: ghcr.io/canyugs/openab-control-plane:{}",
         env!("CARGO_PKG_VERSION")
     );
     assert!(
