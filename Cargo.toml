@@ -1,6 +1,6 @@
 [package]
 name = "openab-control-plane"
-version = "0.1.21"
+version = "0.1.22"
 edition = "2021"
 license = "MIT"
 
@@ -21,7 +21,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 # GitHub App identity (ROADMAP "GitHub App identity" + "Per-role scoped tokens"):
 # RS256 App JWT + installation-token exchange. rustls (no OpenSSL C dep) keeps the
 # build self-contained; base64 decodes a base64-wrapped private key from env.
-jsonwebtoken = "10"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 base64 = "0.22"
 # Webhook signature verification (x-hub-signature-256). sha2 is already a dep.

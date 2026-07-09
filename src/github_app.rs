@@ -314,4 +314,49 @@ mod tests {
         let b64 = STANDARD.encode(pem);
         assert_eq!(normalize_pem(&b64), pem);
     }
+
+    /// A throwaway 2048-bit RSA key (NOT any real GitHub App key) — only used to
+    /// exercise the RS256 signing path.
+    const TEST_RSA_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDAfQyDG9OtDdzd\n\
+XNj4oZHg17GZ6VgUeIa0TWqsIC1IOqTmDcjNSvYpAc/5l5DIqksDI62XoPGUNYmY\n\
+3soYNFl/8QKtx7RBdehhKphcSeSQWcwghosdeBNmpTSlp0VR4yhRG/U/d20zQuxz\n\
+ps5WLun9l/BDNqkWe7HA3K+18EIi4vmB5O1AOEw3JaiRCAH0vLNU8WW2N1PkNhUV\n\
+JLdbAQtGAUCV3exrnLXbCUX2RUasonSfYO3hFC89Mm5RhUtJldJR+AXCJXvCJhAT\n\
+dPU1KMPDhSd/bdWqNbSxbRfpZ+bX51pc5tT/xQYXXIJGqqOuP9123iIrZOkgf9MS\n\
+IvUx6q4JAgMBAAECgf9G/3JXnMvwTxl7P+PhN4PQpIsKQHQPsn6Wj0RPq9tuTzMp\n\
+wUVvc1bLiUxmVoej4pJu3GbX2eVBMjFIBLGse9XT+wsITicoF47yFMpd2ZauJ6Qp\n\
+dKoBrjVGhwKdymfz7EI5DuoTa4yiFVOU1NHTUaDwIjqpXMZa8WtLvhqRYPnQvU+B\n\
+0jAAzK+g2Lk7jEtz7ZjKuDIrvQxr2nWEuQcLKOjIw6gD4b1NVpVCMszos/FBEt/T\n\
+QrEDV4S+VRRI52qzltJdkrWpKsi7/tC+oIX+kJAp8dXzQxhXW1MnpJu9s/gOLVvN\n\
+qoVz9l6NLQBziyby01arBXtQCyUKOWvLjqbLzTECgYEA9izSnLafm5u4jtG32Dp7\n\
+UCt5GTaUC/LWd2iHkqWI6HL5lT0gp0O7mwMK8M79JsQGZTMmVZJ6EXOSVe9zhNjk\n\
++amKUIfodGwHy5PMvsSjk1FPvQjUo3VdJACzurKwn3Gc9rbUyKB1QA1CdcoFGGlt\n\
+2ElrcHvmGkGivZ5WyVeq6XkCgYEAyCu1Z5Wg2kiDH6H5ZmMZD1VYnIDmZavT13+F\n\
+xUzJH6enycRncydDFdY2szXHAKS4LcpYx2rGflgYAHqD6P4PmwjS5q6Kt3023zJX\n\
+kyufIMeWreq1ik9GUrWOSfCrdVSttwBaO8QB1dy0CHtwdsDZGq5ErE5vibaej+Aq\n\
+qelsVRECgYAuQTnJjF7tBBNncmxSyppE9AYrAKBMpnI5uYBPw5633nKa4gNyqj1j\n\
+4Ox7VskmMYrqFPRM+9rH0KlcUEOqYH6Vko+UlhTNW0cTr0+3QIdjtNGAuVoK5JB9\n\
+pUwf9ldNfjF6Adx1XgDp6hPkwfK3JYgoLZNsbTtND6weaNPxvPE2MQKBgQC7wHub\n\
+mDZS6BbNceD7T1IvFq9RxHnWvY+rHvq7MCWp4li4INejpB0Be3a9K2DoUphKovQY\n\
+wCdEVJ7WvBPEU6ERmvou02Jbb0ArpA2Ohijw1ySXJoJ3I5pjc9XttqcsG2wBLXx1\n\
+eIj8LtJS7m1zhbldlD3nnH50Hm2lp+58huxM8QKBgQDMCxV4fpTUWxTX84faIxdV\n\
+KTCx5xnRe2f/cvb9JfSntCRc9JhltGy+zX6x0Ww6ktM5noKFs3AZupXp4MqQaVwF\n\
+14pBM8Ud33/71pfRHCOnk6IsdVdlsbw24300dR62vfk7sZhgVjPyd32skVqnHqtP\n\
++MXJ9jccJUY05qbYgulOYg==\n\
+-----END PRIVATE KEY-----\n";
+
+    /// Regression guard for the jsonwebtoken CryptoProvider panic: `app_jwt` must
+    /// actually sign (RS256) and return a well-formed 3-part JWT. Before enabling
+    /// the `rust_crypto` backend, signing panicked with "Could not automatically
+    /// determine the process-level CryptoProvider" — the mint path (never exercised
+    /// by unit tests, only the ignored L3) 502'd every request. This test signs with
+    /// a throwaway key so the failure is caught in CI, not in a live deploy.
+    #[test]
+    fn app_jwt_signs_and_returns_three_part_token() {
+        let app = GitHubApp::from_parts("123456", TEST_RSA_PEM, 42, "https://api.github.com");
+        let jwt = app.app_jwt().expect("app_jwt must sign, not panic");
+        assert_eq!(jwt.split('.').count(), 3, "a JWT is header.payload.signature");
+        assert!(jwt.split('.').all(|p| !p.is_empty()), "no empty JWT segment");
+    }
 }
