@@ -12,6 +12,41 @@ use anyhow::Result;
 use serde_json::json;
 use std::sync::Arc;
 
+#[derive(Debug)]
+pub enum PostClientMessageError {
+    UnknownSession(String),
+    ReopenRefused(String),
+    Internal(anyhow::Error),
+}
+
+impl std::fmt::Display for PostClientMessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PostClientMessageError::UnknownSession(message)
+            | PostClientMessageError::ReopenRefused(message) => f.write_str(message),
+            PostClientMessageError::Internal(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for PostClientMessageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            PostClientMessageError::UnknownSession(_)
+            | PostClientMessageError::ReopenRefused(_) => None,
+            PostClientMessageError::Internal(err) => Some(err.as_ref()),
+        }
+    }
+}
+
+impl From<anyhow::Error> for PostClientMessageError {
+    fn from(err: anyhow::Error) -> Self {
+        PostClientMessageError::Internal(err)
+    }
+}
+
+type PostClientMessageResult<T> = std::result::Result<T, PostClientMessageError>;
+
 /// The edit/reaction target message id. A stock OAB gateway adapter carries it
 /// in `reply_to` (it sets `quote_message_id: None` except for explicit
 /// reply-quotes — see openab-core gateway.rs edit_message/add_reaction). Prefer
@@ -37,14 +72,27 @@ pub fn post_client_message(
     state: &Arc<AppState>,
     session_id: &str,
     content: &str,
-) -> Result<Message> {
+) -> PostClientMessageResult<Message> {
     let Some(session) = state.store.session(session_id)? else {
-        anyhow::bail!("unknown session {session_id}");
+        return Err(PostClientMessageError::UnknownSession(format!(
+            "unknown session {session_id}"
+        )));
     };
+    let cur = SessionState::from_db_str(&session.state);
+    if matches!(cur, SessionState::Closed | SessionState::Aborted) {
+        let reopen = dispatch_coordinator(state, &session)?
+            .map(|coord| coord.reopen_on_client_message())
+            .unwrap_or(false);
+        if !reopen {
+            return Err(PostClientMessageError::ReopenRefused(format!(
+                "session {} is closed; mode '{}' does not reopen on client messages - open a fresh session",
+                session.id, session.mode
+            )));
+        }
+    }
     let msg = state
         .store
         .add_message(session_id, None, "client", None, None, content, None)?;
-    let cur = SessionState::from_db_str(&session.state);
     match cur {
         SessionState::Open => {
             state.store.advance_state(
@@ -54,7 +102,6 @@ pub fn post_client_message(
             )?;
         }
         SessionState::Closed | SessionState::Aborted => {
-            // Staff follow-up on a finished solo/chat turn — reopen for the next bot pass.
             state
                 .store
                 .advance_state(session_id, cur, SessionState::Deliberating)?;
@@ -3099,6 +3146,45 @@ mod tests {
             .active_sessions_before(crate::store::now_ms() + 1)
             .unwrap()
             .contains(&session.id));
+    }
+
+    #[test]
+    fn watchdog_still_sees_reopened_solo_session_by_original_created_at() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let bot = store.register_bot("allen", "allen", "h1", "t1").unwrap();
+        let session = store
+            .create_session(
+                "forum-support",
+                Some("forum:ticket:SUP-2"),
+                0,
+                Some(&bot.id),
+                std::slice::from_ref(&bot.id),
+                "solo",
+            )
+            .unwrap();
+        store.set_state(&session.id, SessionState::Closed).unwrap();
+
+        post_client_message(&state, &session.id, "please continue").unwrap();
+
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Deliberating,
+        );
+        // FIXME: fix belongs to the chat-mode coordinator arm; trigger = forum
+        // dogfood showing session-per-turn churn cost (plan section 7).
+        assert!(store
+            .active_sessions_before(crate::store::now_ms() + 1)
+            .unwrap()
+            .contains(&session.id));
+        assert!(
+            force_close_timeout(&state, &session.id).unwrap(),
+            "reopened session is still closed by the stale watchdog anchor"
+        );
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Closed,
+        );
     }
 
     #[test]

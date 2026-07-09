@@ -99,6 +99,11 @@ pub trait Coordinator: Send + Sync {
     fn structured_verdict(&self, _cx: &dyn Ctx, _verdict_text: &str) -> Option<StructuredVerdict> {
         None
     }
+    /// May a client message reopen a terminal session? Default false; Solo
+    /// opts in for the ADR 011 follow-up pattern.
+    fn reopen_on_client_message(&self) -> bool {
+        false
+    }
 }
 
 /// Shared quorum policy: once `quorum_n` reviewers signalled done, enter Quorum
@@ -223,6 +228,10 @@ pub struct Solo;
 impl Coordinator for Solo {
     fn kind(&self) -> &'static str {
         "solo"
+    }
+
+    fn reopen_on_client_message(&self) -> bool {
+        true
     }
 
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {

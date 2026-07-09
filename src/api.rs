@@ -523,6 +523,9 @@ async fn open_session(
         Err(ControllerError::Invalid(message)) => {
             Err((StatusCode::BAD_REQUEST, Json(json!({ "error": message }))))
         }
+        Err(ControllerError::Gone(message)) => {
+            Err((StatusCode::GONE, Json(json!({ "error": message }))))
+        }
         Err(ControllerError::Internal(_)) => Err(error_status(StatusCode::INTERNAL_SERVER_ERROR)),
     }
 }
@@ -752,8 +755,8 @@ async fn post_message(
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<PostMessage>,
-) -> Result<impl IntoResponse, StatusCode> {
-    check_auth(&state, &headers)?;
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    check_auth(&state, &headers).map_err(error_status)?;
     let action = PostMessageAction {
         session_id: id,
         content: req.content,
@@ -762,9 +765,12 @@ async fn post_message(
         Ok(ControllerActionResult::MessagePosted { message_id }) => {
             Ok(Json(json!({ "message_id": message_id })))
         }
-        Ok(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-        Err(ControllerError::Invalid(_)) => Err(StatusCode::NOT_FOUND),
-        Err(ControllerError::Internal(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Ok(_) => Err(error_status(StatusCode::INTERNAL_SERVER_ERROR)),
+        Err(ControllerError::Invalid(_)) => Err(error_status(StatusCode::NOT_FOUND)),
+        Err(ControllerError::Gone(message)) => {
+            Err((StatusCode::GONE, Json(json!({ "error": message }))))
+        }
+        Err(ControllerError::Internal(_)) => Err(error_status(StatusCode::INTERNAL_SERVER_ERROR)),
     }
 }
 
@@ -1532,6 +1538,46 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].author_kind, "client");
         assert_eq!(messages[0].content, "please review this");
+    }
+
+    #[tokio::test]
+    async fn post_message_on_closed_non_reopening_mode_returns_gone_json() {
+        let state = state_with_review_bots();
+        let session = state
+            .store
+            .create_session(
+                "closed",
+                None,
+                1,
+                Some("chair"),
+                &["chair".into(), "rev1".into()],
+                "council",
+            )
+            .unwrap();
+        state
+            .store
+            .set_state(&session.id, SessionState::Closed)
+            .unwrap();
+
+        let response = super::post_message(
+            State(state.clone()),
+            HeaderMap::new(),
+            Path(session.id.clone()),
+            Json(super::PostMessage {
+                content: "follow-up".into(),
+            }),
+        )
+        .await;
+
+        let Err((status, Json(body))) = response else {
+            panic!("closed non-reopening mode should return 410");
+        };
+        assert_eq!(status, StatusCode::GONE);
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("does not reopen on client messages"));
+        assert!(state.store.messages(&session.id).unwrap().is_empty());
     }
 
     #[tokio::test]
