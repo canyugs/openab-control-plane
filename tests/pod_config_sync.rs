@@ -83,6 +83,13 @@ fn both_configs_fetch_gh_token_from_the_plane() {
             cfg.contains("/v1/bots/github-token"),
             "{name} hook must fetch its GitHub token from the plane, not mint on-pod"
         );
+        // The route is POST-only; a GET returns 405, `curl -f` then fails, the token
+        // is empty and `on_failure=warn` swallows it — the mechanism silently boots
+        // without auth. Pin the method so that class of bug fails CI, not boot.
+        assert!(
+            cfg.contains("-X POST"),
+            "{name} hook must POST to the token route (bare curl GET -> 405 -> silent auth failure)"
+        );
         assert!(
             !cfg.contains("get-gh-app-token.sh") && !cfg.contains(".github-app.pem"),
             "{name} hook must NOT reference the on-pod App key/minter — D1 removed it"

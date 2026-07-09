@@ -1457,7 +1457,14 @@ async fn bot_github_token(
     headers: HeaderMap,
 ) -> Result<axum::response::Response, StatusCode> {
     let presented = bearer(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    let bot = identity::verify(state.store.as_ref(), presented).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    // Split store failure (500) from an unknown token (401) — mirrors the
+    // session-scoped `github_token` handler, so an unreachable token store surfaces
+    // as 500 instead of masquerading as a bad credential.
+    let bot = state
+        .store
+        .bot_by_token_hash(&identity::hash_token(presented))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
     let Some(app) = state.github_app.as_ref() else {
         // PAT mode — no App provisioned. The pod keeps using its shared GH_TOKEN.
         return Err(StatusCode::NOT_IMPLEMENTED);

@@ -233,7 +233,7 @@ spec:
               #!/bin/sh
               PLANE_TOKEN_URL="http://control-plane.zeabur.internal:8090/v1/bots/github-token"
               auth() {
-                tok=$(curl -fsS -H "Authorization: Bearer ${OABCP_BOT_TOKEN}" "$PLANE_TOKEN_URL" 2>/dev/null | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+                tok=$(curl -fsS -X POST -H "Authorization: Bearer ${OABCP_BOT_TOKEN}" "$PLANE_TOKEN_URL" 2>/dev/null | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
                 if [ -z "$tok" ]; then echo "no github token from plane (PAT mode or plane error); skipping gh auth"; return 1; fi
                 printf '%s' "$tok" | gh auth login --with-token
               }
@@ -672,8 +672,6 @@ spec:
               # server-side from the bot record, never asked for. The App private key never
               # touches this pod, so an agent that ingests untrusted PR content can at worst
               # steal one <=1h role-scoped token, not the key to mint installation-wide tokens.
-              # For reviewers the read token's contents:read is exactly what `gh pr checkout`
-              # needs on a PRIVATE repo the App is installed on (public repos work either way).
               # Warn-and-continue if the plane is in PAT mode (no App) or unreachable.
               on_failure = "warn"
               timeout_seconds = 60
@@ -681,7 +679,7 @@ spec:
               #!/bin/sh
               PLANE_TOKEN_URL="http://control-plane.zeabur.internal:8090/v1/bots/github-token"
               auth() {
-                tok=$(curl -fsS -H "Authorization: Bearer ${OABCP_BOT_TOKEN}" "$PLANE_TOKEN_URL" 2>/dev/null | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+                tok=$(curl -fsS -X POST -H "Authorization: Bearer ${OABCP_BOT_TOKEN}" "$PLANE_TOKEN_URL" 2>/dev/null | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
                 if [ -z "$tok" ]; then echo "no github token from plane (PAT mode or plane error); skipping gh auth"; return 1; fi
                 printf '%s' "$tok" | gh auth login --with-token
               }
