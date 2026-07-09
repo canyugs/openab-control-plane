@@ -10,6 +10,7 @@ pub mod github_webhook;
 pub mod identity;
 pub mod ops;
 pub mod orchestrator;
+pub mod plugins;
 pub mod protocol;
 pub mod routing;
 pub mod session;

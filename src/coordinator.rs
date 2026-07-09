@@ -81,7 +81,7 @@ pub trait Coordinator: Send + Sync {
         true
     }
     /// Does a done-signal found in message *text* from `bot` count, given the
-    /// full text? Default: yes. TriageCouncil requires the chair's [done] to
+    /// full text? Default: yes. Triage mode requires the chair's [done] to
     /// ride the TRIAGE report itself.
     fn accepts_text_done(&self, _cx: &dyn Ctx, _bot: &str, _text: &str) -> bool {
         true
@@ -106,7 +106,7 @@ pub trait Coordinator: Send + Sync {
 /// liveness roster trim (a shrunk quorum can make the recorded count sufficient).
 /// `prompt` is per-coordinator — a review chair completes GitHub side effects,
 /// a triage chair must post the report and nothing else.
-fn quorum_actions(cx: &dyn Ctx, prompt: &str) -> Vec<Action> {
+pub(crate) fn quorum_actions(cx: &dyn Ctx, prompt: &str) -> Vec<Action> {
     let mut actions = vec![];
     let chair = cx.chair();
     if quorum_reached(cx.roster(), chair, &cx.done_voters(), cx.quorum_n()) {
@@ -125,10 +125,6 @@ fn quorum_actions(cx: &dyn Ctx, prompt: &str) -> Vec<Action> {
 }
 
 const COUNCIL_QUORUM_PROMPT: &str = "Quorum reached. Chair, synthesize the final verdict, complete any side effect required by the opening trigger, and only then end your final message with [done]. Do not send [done] before the required side effect succeeds.";
-
-/// Review-flavored wording confuses triage chairs into hunting for a PR
-/// (dogfood round 6) — tell them exactly and only what to do.
-const TRIAGE_QUORUM_PROMPT: &str = "Quorum reached. Chair: post the complete triage report NOW as ONE message — it must start with the word TRIAGE, contain the Likely Cause / Evidence / Suggested Next Actions / Confidence & Gaps sections, and end with [done] on its own final line. Do not run gh or any PR commands; there is no PR and no external side effect. The report itself is your done-signal.";
 
 /// v1 lifecycle: reviewers (roster minus chair) signal done; once `quorum_n` of
 /// them have, the chair synthesizes and the chair's own done closes the session.
@@ -161,7 +157,7 @@ impl Coordinator for QuorumCouncil {
 }
 
 fn parse_structured_verdict(cx: &dyn Ctx, verdict_text: &str) -> Option<StructuredVerdict> {
-    match crate::orchestrator::parse_verdict_trailer(verdict_text) {
+    match crate::plugins::pr_review::verdict::trailer(verdict_text) {
         Some(t) => Some(StructuredVerdict {
             decision: t.decision,
             red: t.red,
@@ -180,7 +176,7 @@ fn parse_structured_verdict(cx: &dyn Ctx, verdict_text: &str) -> Option<Structur
 
 /// Shared quorum-council done-handling; `prompt` is the per-coordinator chair
 /// synthesis instruction.
-fn council_on_done(cx: &dyn Ctx, bot: &str, prompt: &str) -> Vec<Action> {
+pub(crate) fn council_on_done(cx: &dyn Ctx, bot: &str, prompt: &str) -> Vec<Action> {
     let mut actions = vec![];
     let chair = cx.chair();
 
@@ -217,81 +213,6 @@ fn council_on_done(cx: &dyn Ctx, bot: &str, prompt: &str) -> Vec<Action> {
     }
 
     actions
-}
-
-/// ADR 014 triage council: QuorumCouncil lifecycle with a triage-specific chair
-/// prompt (no GitHub side effects — the report is the deliverable). The chair's
-/// text-done additionally requires the TRIAGE report prefix (orchestrator gate).
-pub struct TriageCouncil;
-
-impl Coordinator for TriageCouncil {
-    fn kind(&self) -> &'static str {
-        "triage_council"
-    }
-
-    fn starters(&self, roster: &[String], chair: Option<&str>) -> Vec<String> {
-        QuorumCouncil.starters(roster, chair)
-    }
-
-    fn reaction_counts_as_done(&self, cx: &dyn Ctx, bot: &str) -> bool {
-        // Prompt-driven chairs often acknowledge the system quorum prompt with
-        // an automatic 🆗 reaction. That must not close the session before the
-        // chair posts the synthesized final; chair completion is explicit text.
-        cx.chair() != Some(bot)
-    }
-
-    fn accepts_text_done(&self, cx: &dyn Ctx, bot: &str, text: &str) -> bool {
-        // Triage chairs habitually append [done] to acknowledgments. In
-        // triage_council the report is the chair's done-signal, so the chair's
-        // [done] only counts when attached to the mandated report prefix.
-        cx.chair() != Some(bot) || text.trim_start().starts_with("TRIAGE")
-    }
-
-    fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
-        council_on_done(cx, bot, TRIAGE_QUORUM_PROMPT)
-    }
-
-    fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<Action> {
-        quorum_actions(cx, TRIAGE_QUORUM_PROMPT)
-    }
-}
-
-/// PR-review council lifecycle: same quorum/close policy as `QuorumCouncil`, but
-/// the chair is also prompted on the opening trigger so it can create the
-/// in-progress PR comment before reviewers finish.
-pub struct ReviewCouncil;
-
-impl Coordinator for ReviewCouncil {
-    fn kind(&self) -> &'static str {
-        "review_council"
-    }
-
-    fn starters(&self, roster: &[String], _chair: Option<&str>) -> Vec<String> {
-        roster.to_vec()
-    }
-
-    fn recipient_trigger_text(&self, cx: &dyn Ctx, recipient: &str, text: &str) -> String {
-        crate::orchestrator::review_recipient_trigger_text(cx.chair(), recipient, text)
-    }
-
-    fn reaction_counts_as_done(&self, cx: &dyn Ctx, bot: &str) -> bool {
-        // Prompt-driven chairs often acknowledge the system quorum prompt with
-        // an automatic 🆗 reaction. Review chair completion is the explicit text
-        // [done] after the synthesized PR verdict and side effects.
-        cx.chair() != Some(bot)
-    }
-
-    fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
-        QuorumCouncil.on_done(cx, bot)
-    }
-
-    fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<Action> {
-        QuorumCouncil.on_roster_change(cx)
-    }
-
-    fn structured_verdict(&self, cx: &dyn Ctx, verdict_text: &str) -> Option<StructuredVerdict> {
-        QuorumCouncil.structured_verdict(cx, verdict_text)
-    }
 }
 
 /// Single-bot lifecycle: the lone bot's own done closes the session directly.
@@ -356,8 +277,8 @@ impl Coordinator for Pipeline {
 pub fn lookup(mode: &str) -> Option<Box<dyn Coordinator>> {
     match mode {
         "council" => Some(Box::new(QuorumCouncil)),
-        "review_council" => Some(Box::new(ReviewCouncil)),
-        "triage_council" => Some(Box::new(TriageCouncil)),
+        "review_council" => Some(Box::new(crate::plugins::pr_review::ReviewCouncil)),
+        "triage_council" => Some(Box::new(crate::plugins::triage::TriageCouncil)),
         "solo" => Some(Box::new(Solo)),
         "pipeline" => Some(Box::new(Pipeline)),
         _ => None,
@@ -428,8 +349,6 @@ mod tests {
         let cx = ctx(&["chair", "rev"], None);
         let cases: Vec<(&str, Box<dyn Coordinator>, bool, bool)> = vec![
             ("quorum_council", Box::new(QuorumCouncil), true, true),
-            ("triage_council", Box::new(TriageCouncil), false, true),
-            ("review_council", Box::new(ReviewCouncil), false, true),
             ("solo", Box::new(Solo), true, true),
             ("pipeline", Box::new(Pipeline), true, true),
         ];
@@ -451,25 +370,10 @@ mod tests {
     #[test]
     fn text_done_policy_covers_all_coordinators() {
         let cx = ctx(&["chair", "rev"], None);
-        let report = "  TRIAGE high — final report\n[done]";
         let ack = "ok then [done]";
-
-        assert!(
-            TriageCouncil.accepts_text_done(&cx, "chair", report),
-            "triage chair report text counts"
-        );
-        assert!(
-            !TriageCouncil.accepts_text_done(&cx, "chair", ack),
-            "triage chair bare ack text does not count"
-        );
-        assert!(
-            TriageCouncil.accepts_text_done(&cx, "rev", ack),
-            "triage reviewer text keeps default done semantics"
-        );
 
         let default_cases: Vec<(&str, Box<dyn Coordinator>)> = vec![
             ("quorum_council", Box::new(QuorumCouncil)),
-            ("review_council", Box::new(ReviewCouncil)),
             ("solo", Box::new(Solo)),
             ("pipeline", Box::new(Pipeline)),
         ];
@@ -490,40 +394,28 @@ mod tests {
         let cx = ctx(&["chair", "rev"], None);
         let text = "final\n[[verdict:request_changes r=1 y=2 g=3]] [done]";
 
-        for (name, coord) in [
-            (
-                "quorum_council",
-                Box::new(QuorumCouncil) as Box<dyn Coordinator>,
-            ),
-            ("review_council", Box::new(ReviewCouncil)),
-        ] {
-            let verdict = coord
-                .structured_verdict(&cx, text)
-                .unwrap_or_else(|| panic!("{name} should parse trailer"));
-            assert_eq!(
-                verdict,
-                StructuredVerdict {
-                    decision: "request_changes".into(),
-                    red: Some(1),
-                    yellow: Some(2),
-                    green: Some(3),
-                },
-                "{name} maps trailer fields"
-            );
-            assert!(
-                coord
-                    .structured_verdict(&cx, "plain final [done]")
-                    .is_none(),
-                "{name} returns None without a trailer"
-            );
-        }
+        let verdict = QuorumCouncil
+            .structured_verdict(&cx, text)
+            .expect("quorum_council should parse trailer");
+        assert_eq!(
+            verdict,
+            StructuredVerdict {
+                decision: "request_changes".into(),
+                red: Some(1),
+                yellow: Some(2),
+                green: Some(3),
+            },
+            "quorum_council maps trailer fields"
+        );
+        assert!(
+            QuorumCouncil
+                .structured_verdict(&cx, "plain final [done]")
+                .is_none(),
+            "quorum_council returns None without a trailer"
+        );
 
         for (name, coord) in [
-            (
-                "triage_council",
-                Box::new(TriageCouncil) as Box<dyn Coordinator>,
-            ),
-            ("solo", Box::new(Solo)),
+            ("solo", Box::new(Solo) as Box<dyn Coordinator>),
             ("pipeline", Box::new(Pipeline)),
         ] {
             assert!(
@@ -539,7 +431,6 @@ mod tests {
         let trigger = "PR Review Council — canyugs/openab-control-plane #17 \"\"\n\nReview focus assignment:\n- rev → security";
         let cases: Vec<(&str, Box<dyn Coordinator>)> = vec![
             ("quorum_council", Box::new(QuorumCouncil)),
-            ("triage_council", Box::new(TriageCouncil)),
             ("solo", Box::new(Solo)),
             ("pipeline", Box::new(Pipeline)),
         ];
@@ -551,26 +442,6 @@ mod tests {
                 "{name} must deliver triggers verbatim"
             );
         }
-    }
-
-    #[test]
-    fn review_council_recipient_trigger_text_rewrites_only_review_triggers() {
-        let cx = ctx(&["chair", "rev"], None);
-        let trigger = "PR Review Council — canyugs/openab-control-plane #17 \"\"\n\nReview focus assignment:\n- rev → security";
-
-        let chair_text = ReviewCouncil.recipient_trigger_text(&cx, "chair", trigger);
-        assert!(chair_text.contains("Task: manage the GitHub PR status comment"));
-        assert!(chair_text.contains("gh pr comment 17 --repo canyugs/openab-control-plane"));
-
-        let reviewer_text = ReviewCouncil.recipient_trigger_text(&cx, "rev", trigger);
-        assert!(reviewer_text.contains("Task: review GitHub PR canyugs/openab-control-plane #17"));
-        assert!(reviewer_text.contains("focus: security"));
-
-        let non_review = "plain forum trigger";
-        assert_eq!(
-            ReviewCouncil.recipient_trigger_text(&cx, "chair", non_review),
-            non_review
-        );
     }
 
     #[test]
@@ -649,12 +520,6 @@ mod tests {
             QuorumCouncil.starters(&roster, Some("chair")),
             vec!["rev0".to_string(), "rev1".to_string()]
         );
-    }
-
-    #[test]
-    fn review_council_starters_include_chair_for_status_comment() {
-        let roster = vec!["chair".into(), "rev0".into(), "rev1".into()];
-        assert_eq!(ReviewCouncil.starters(&roster, Some("chair")), roster);
     }
 
     #[test]
