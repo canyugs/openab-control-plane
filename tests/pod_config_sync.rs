@@ -68,26 +68,30 @@ fn pod_config_is_anchored_once_and_reviewer_aliased() {
 /// Chair is reviewer plus the GitHub-App pre_boot hook — nothing else may
 /// diverge, so a shared edit cannot land in one file and miss the other.
 #[test]
-fn chair_config_extends_reviewer_config() {
-    assert!(
-        CHAIR.starts_with(REVIEWER),
-        "pod-config-chair.toml must be pod-config-reviewer.toml plus a hooks \
-         suffix — shared sections drifted"
-    );
-    let suffix = &CHAIR[REVIEWER.len()..];
-    assert!(
-        suffix.contains("[hooks.pre_boot]"),
-        "chair suffix lost the pre_boot hook"
-    );
-    assert!(
-        suffix.contains("\"$HOME/bin/get-gh-app-token.sh\""),
-        "chair hook must resolve the App-token minter via the pod's own $HOME"
-    );
-    assert!(
-        !suffix.contains("export HOME="),
-        "chair hook must inherit HOME from the image, never bake a path \
-         (one script serves every image variant)"
-    );
+fn both_configs_fetch_gh_token_from_the_plane() {
+    // ADR 019 D1: the App private key no longer sits on any bot pod. Both chair
+    // and reviewer fetch a role-scoped token from the plane's `/v1/bots/github-token`
+    // (role derived server-side from the bot record), so this invariant is pinned
+    // on BOTH roles — a reviewer that regains gh auth via the on-pod minter would
+    // reintroduce the C3 exposure.
+    for (name, cfg) in [("chair", CHAIR), ("reviewer", REVIEWER)] {
+        assert!(
+            cfg.contains("[hooks.pre_boot]"),
+            "{name} config lost the pre_boot gh-auth hook"
+        );
+        assert!(
+            cfg.contains("/v1/bots/github-token"),
+            "{name} hook must fetch its GitHub token from the plane, not mint on-pod"
+        );
+        assert!(
+            !cfg.contains("get-gh-app-token.sh") && !cfg.contains(".github-app.pem"),
+            "{name} hook must NOT reference the on-pod App key/minter — D1 removed it"
+        );
+        assert!(
+            !cfg.contains("export HOME="),
+            "{name} hook must inherit HOME from the image, never bake a path"
+        );
+    }
 }
 
 /// The two design invariants: no secret material, and no agent identity —
