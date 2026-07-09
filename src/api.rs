@@ -194,7 +194,7 @@ async fn list_bots(
     Query(params): Query<ListBots>,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
-    let (standing_roster, source) = crate::council::runtime_council_roster(&state)
+    let (standing_roster, source) = crate::plugins::pr_review::council::runtime_council_roster(&state)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let standing: BTreeSet<_> = standing_roster.iter().cloned().collect();
     let standing_chair = standing_roster.first().cloned();
@@ -400,7 +400,7 @@ async fn patch_bot(
         .bot_inventory(&id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    let (standing_roster, _) = crate::council::runtime_council_roster(&state)
+    let (standing_roster, _) = crate::plugins::pr_review::council::runtime_council_roster(&state)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let standing: BTreeSet<_> = standing_roster.iter().cloned().collect();
     let standing_chair = standing_roster.first().cloned();
@@ -422,7 +422,7 @@ async fn delete_bot(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let (standing_roster, _) = crate::council::runtime_council_roster(&state)
+    let (standing_roster, _) = crate::plugins::pr_review::council::runtime_council_roster(&state)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if standing_roster.iter().any(|bot| bot == &id) {
         return Ok((
@@ -837,7 +837,7 @@ async fn get_council_roster(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
-    let (roster, source) = crate::council::runtime_council_roster(&state)
+    let (roster, source) = crate::plugins::pr_review::council::runtime_council_roster(&state)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(json!({ "roster": roster, "source": source })))
 }
@@ -864,14 +864,14 @@ async fn replace_council_roster(
 ) -> Result<axum::response::Response, StatusCode> {
     check_auth(&state, &headers)?;
     if req.old_bot_id == req.new_bot_id {
-        let (roster, source) = crate::council::runtime_council_roster(&state)
+        let (roster, source) = crate::plugins::pr_review::council::runtime_council_roster(&state)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         return Ok(Json(
             json!({ "replaced": false, "noop": true, "roster": roster, "source": source }),
         )
         .into_response());
     }
-    let (mut roster, _) = crate::council::runtime_council_roster(&state)
+    let (mut roster, _) = crate::plugins::pr_review::council::runtime_council_roster(&state)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some(idx) = roster.iter().position(|bot| bot == &req.old_bot_id) else {
         return Ok((
@@ -1357,18 +1357,18 @@ async fn review_pr(
     Json(req): Json<ReviewReq>,
 ) -> Result<axum::response::Response, StatusCode> {
     check_auth(&state, &headers)?;
-    let trigger_ref = crate::council::pr_trigger_ref(&req.repo, req.pr);
-    match crate::council::check_review_admission(&state, &trigger_ref, false)
+    let trigger_ref = crate::plugins::pr_review::council::pr_trigger_ref(&req.repo, req.pr);
+    match crate::plugins::pr_review::council::check_review_admission(&state, &trigger_ref, false)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
-        crate::council::ReviewAdmission::Allow => {}
-        crate::council::ReviewAdmission::Deduped { session_id, reason } => {
+        crate::plugins::pr_review::council::ReviewAdmission::Allow => {}
+        crate::plugins::pr_review::council::ReviewAdmission::Deduped { session_id, reason } => {
             return Ok(Json(
                 json!({ "session_id": session_id, "deduped": true, "reason": reason }),
             )
             .into_response());
         }
-        crate::council::ReviewAdmission::Refused { session_id, reason } => {
+        crate::plugins::pr_review::council::ReviewAdmission::Refused { session_id, reason } => {
             return Ok(Json(json!({
                 "session_id": session_id,
                 "triggered": false,
@@ -1379,7 +1379,7 @@ async fn review_pr(
         }
     }
 
-    let result = crate::council::convene_for_pr(&state, &req.repo, req.pr, req.preset, None, None)
+    let result = crate::plugins::pr_review::council::convene_for_pr(&state, &req.repo, req.pr, req.preset, None, None)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     match result {
@@ -1593,7 +1593,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn review_endpoint_always_supersedes() {
-        let _guard = crate::council::review_policy_env_lock().lock().await;
+        let _guard = crate::plugins::pr_review::council::review_policy_env_lock().lock().await;
         std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
         std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
         let state = state_with_review_bots();

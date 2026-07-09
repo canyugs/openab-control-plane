@@ -1,3 +1,4 @@
+pub mod council;
 pub mod tasks;
 pub mod verdict;
 

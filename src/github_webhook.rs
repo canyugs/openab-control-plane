@@ -389,7 +389,7 @@ pub async fn handle_webhook(
     //    the question. Idempotency keys on the comment id (a re-delivered issue_comment
     //    must not double-answer) — distinct from the PR-level review dedup below.
     if trigger.reason == "ask" {
-        let ask_ref = crate::council::pr_ask_trigger_ref(
+        let ask_ref = crate::plugins::pr_review::council::pr_ask_trigger_ref(
             &trigger.repo,
             trigger.pr_number,
             trigger.comment_id,
@@ -405,7 +405,7 @@ pub async fn handle_webhook(
             .into_response());
         }
         let question = trigger.question.clone().unwrap_or_default();
-        return match crate::council::convene_ask(
+        return match crate::plugins::pr_review::council::convene_ask(
             &state,
             &trigger.repo,
             trigger.pr_number,
@@ -440,12 +440,12 @@ pub async fn handle_webhook(
     }
 
     // 6. Review path: convene a council for this PR (pointer trigger; bots self-fetch).
-    let trigger_ref = crate::council::pr_trigger_ref(&trigger.repo, trigger.pr_number);
-    match crate::council::check_review_admission(&state, &trigger_ref, trigger.is_synchronize)
+    let trigger_ref = crate::plugins::pr_review::council::pr_trigger_ref(&trigger.repo, trigger.pr_number);
+    match crate::plugins::pr_review::council::check_review_admission(&state, &trigger_ref, trigger.is_synchronize)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
-        crate::council::ReviewAdmission::Allow => {}
-        crate::council::ReviewAdmission::Deduped { session_id, reason } => {
+        crate::plugins::pr_review::council::ReviewAdmission::Allow => {}
+        crate::plugins::pr_review::council::ReviewAdmission::Deduped { session_id, reason } => {
             return Ok(Json(json!({
                 "ok": true,
                 "triggered": true,
@@ -455,7 +455,7 @@ pub async fn handle_webhook(
             }))
             .into_response());
         }
-        crate::council::ReviewAdmission::Refused { session_id, reason } => {
+        crate::plugins::pr_review::council::ReviewAdmission::Refused { session_id, reason } => {
             return Ok(Json(json!({
                 "ok": true,
                 "triggered": false,
@@ -472,7 +472,7 @@ pub async fn handle_webhook(
     // round; the next trigger re-supersedes, and the reviewed-head label makes the
     // stale verdict visible until a payload-only recency rule exists.
     let rereview_context = if trigger.review_notes.is_some() || trigger.review_from_scratch {
-        Some(crate::council::ReviewRereviewContext {
+        Some(crate::plugins::pr_review::council::ReviewRereviewContext {
             base_sha: None,
             author_notes: trigger.review_notes.clone(),
             from_scratch: trigger.review_from_scratch,
@@ -480,7 +480,7 @@ pub async fn handle_webhook(
     } else {
         None
     };
-    match crate::council::convene_for_pr(
+    match crate::plugins::pr_review::council::convene_for_pr(
         &state,
         &trigger.repo,
         trigger.pr_number,
@@ -1084,7 +1084,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn mention_review_delivers_prior_sha_delta_context_to_reviewer() {
-        let _policy_guard = crate::council::review_policy_env_lock().lock().await;
+        let _policy_guard = crate::plugins::pr_review::council::review_policy_env_lock().lock().await;
         let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
         let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
         std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
@@ -1092,7 +1092,7 @@ mod tests {
 
         let state = state_with_review_bots();
         let first =
-            crate::council::convene_for_pr(&state, "o/r", 7, None, Some("sha:abc123".into()), None)
+            crate::plugins::pr_review::council::convene_for_pr(&state, "o/r", 7, None, Some("sha:abc123".into()), None)
                 .await
                 .unwrap();
         let crate::controller::ControllerActionResult::SessionOpened {
@@ -1103,13 +1103,13 @@ mod tests {
             panic!("first review should open");
         };
 
-        let second = crate::council::convene_for_pr(
+        let second = crate::plugins::pr_review::council::convene_for_pr(
             &state,
             "o/r",
             7,
             None,
             Some("cmd:9003".into()),
-            Some(crate::council::ReviewRereviewContext {
+            Some(crate::plugins::pr_review::council::ReviewRereviewContext {
                 base_sha: None,
                 author_notes: Some(
                     "Fixed F1 by guarding the empty diff.\n\nAdded coverage.".into(),
@@ -1152,7 +1152,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn synchronize_supersedes_active_review_session() {
-        let _guard = crate::council::review_policy_env_lock().lock().await;
+        let _guard = crate::plugins::pr_review::council::review_policy_env_lock().lock().await;
         let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
         let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
         std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
@@ -1196,7 +1196,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn redelivered_same_head_sha_dedupes() {
-        let _guard = crate::council::review_policy_env_lock().lock().await;
+        let _guard = crate::plugins::pr_review::council::review_policy_env_lock().lock().await;
         let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
         let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
         std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
@@ -1218,7 +1218,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn hourly_cap_dedupes_synchronize_but_explicit_review_bypasses() {
-        let _guard = crate::council::review_policy_env_lock().lock().await;
+        let _guard = crate::plugins::pr_review::council::review_policy_env_lock().lock().await;
         let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
         let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
         std::env::set_var("OABCP_REVIEW_HOURLY_CAP", "1");
@@ -1253,7 +1253,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn round_budget_refuses_all_paths_leaving_live_round_active() {
-        let _guard = crate::council::review_policy_env_lock().lock().await;
+        let _guard = crate::plugins::pr_review::council::review_policy_env_lock().lock().await;
         let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
         let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
         std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");

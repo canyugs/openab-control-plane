@@ -16,10 +16,10 @@ use std::sync::Arc;
 
 /// Pointer trigger — shared with `scripts/open-council.sh --self-fetch` via
 /// `include_str!` so the CI/manual path and the webhook path post identical prompts.
-const TRIGGER_TMPL: &str = include_str!("../scripts/pr-review-trigger-pointer.tmpl");
+const TRIGGER_TMPL: &str = include_str!("../../../scripts/pr-review-trigger-pointer.tmpl");
 
-pub(crate) const REREVIEW_CONTEXT_START: &str = "===== RE-REVIEW CONTEXT =====";
-pub(crate) const REREVIEW_CONTEXT_END: &str = "===== END RE-REVIEW CONTEXT =====";
+pub(super) const REREVIEW_CONTEXT_START: &str = "===== RE-REVIEW CONTEXT =====";
+pub(super) const REREVIEW_CONTEXT_END: &str = "===== END RE-REVIEW CONTEXT =====";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewRereviewContext {
@@ -435,7 +435,7 @@ fn review_open_session_action_with_roster_and_fingerprint(
 
 /// Ask pointer trigger — shared shape with the review trigger, but for a single bot
 /// answering a question and posting a NEW comment (not the edit-last verdict).
-const ASK_TRIGGER_TMPL: &str = include_str!("../scripts/pr-ask-trigger-pointer.tmpl");
+const ASK_TRIGGER_TMPL: &str = include_str!("../../../scripts/pr-ask-trigger-pointer.tmpl");
 
 /// Session `trigger_ref` for a follow-up ask — comment-scoped so a re-delivered
 /// `issue_comment` webhook dedups. Distinct namespace from the PR-level review ref
@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn trigger_templates_carry_no_role_protocol() {
         let pointer = render_trigger("canyugs/ocp", 7, "");
-        let inline = include_str!("../scripts/pr-review-trigger.tmpl")
+        let inline = include_str!("../../../scripts/pr-review-trigger.tmpl")
             .replace("{{REPO}}", "canyugs/ocp")
             .replace("{{NUM}}", "7")
             .replace("{{TITLE}}", "")
