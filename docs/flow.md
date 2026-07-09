@@ -7,14 +7,23 @@ file describes the runtime flow.
 ## Topology
 
 ```text
-GitHub webhook / north API
-        |
-        v
-control-plane ── gateway /ws ── chair  (stock OpenAB pod, PR write credential when enabled)
-      |                       ├─ rev1   (stock OpenAB pod)
-      |                       └─ rev2   (stock OpenAB pod)
-      v
-SQLite: bots, sessions, roster, messages, reactions, outbox
+                         GitHub
+          pull_request / issue_comment webhooks
+                           |
+                           v
+North API / SSE  <->  control-plane  <->  SQLite
+(CLI, operators)      webhook + review plugin   bots, sessions, roster
+                       coordinator policy       messages, reactions
+                       fanout + outbox          outbox, scoped tokens
+                       watchdog
+                           |
+             gateway /ws (per-bot OCP tokens)
+                           |
+                           v
+        stock OpenAB pods (mounted config + steering)
+          chair  -- gh write --> PR comment / review / status
+          rev1   -- gh read  --> PR diff / files
+          rev2   -- gh read  --> PR diff / files
 ```
 
 - Pods are stock OpenAB pods. They dial out to the plane over `/ws`.
