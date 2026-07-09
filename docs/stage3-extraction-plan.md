@@ -1,6 +1,6 @@
 # Stage 3 — PR-review extraction plan
 
-Status: **proposed** · 2026-07-08 · executes the boundary-review-2026-07 Stage 3
+Status: **executed** · proposed 2026-07-08, S1–S17 merged 2026-07-09 (exit at v0.1.19, publish point 4) · executes the boundary-review-2026-07 Stage 3
 item ([ADR 007](adr/007-control-plugins-and-oab-father.md) bundled plugins,
 [ADR 008](adr/008-external-controller-protocol.md) controller vocabulary) and
 finishes [ADR 016](adr/016-gateway-token-externalization.md) (D1) and the
