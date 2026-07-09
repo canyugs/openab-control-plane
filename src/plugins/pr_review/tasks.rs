@@ -41,8 +41,8 @@ pub(crate) struct RereviewTriggerContext<'a> {
 }
 
 pub(crate) fn rereview_context(text: &str) -> Option<RereviewTriggerContext<'_>> {
-    let (_, rest) = text.split_once(crate::council::REREVIEW_CONTEXT_START)?;
-    let (block, _) = rest.split_once(crate::council::REREVIEW_CONTEXT_END)?;
+    let (_, rest) = text.split_once(crate::plugins::pr_review::council::REREVIEW_CONTEXT_START)?;
+    let (block, _) = rest.split_once(crate::plugins::pr_review::council::REREVIEW_CONTEXT_END)?;
     let from_scratch = block
         .lines()
         .any(|line| line.trim() == "Mode: full review from scratch");
@@ -205,11 +205,11 @@ mod tests {
     #[test]
     fn recipient_texts_carry_delta_header_and_notes() {
         let session = test_session(Some("chair"), "review_council");
-        let trigger = crate::council::render_trigger_with_context(
+        let trigger = crate::plugins::pr_review::council::render_trigger_with_context(
             "canyugs/openab-control-plane",
             53,
             "Review focus assignment:\n- rev1 → security",
-            Some(&crate::council::ReviewRereviewContext {
+            Some(&crate::plugins::pr_review::council::ReviewRereviewContext {
                 base_sha: Some("abc123".into()),
                 author_notes: Some(
                     "Fixed F1 by guarding the empty diff.\n\nAdded coverage.".into(),
@@ -233,11 +233,11 @@ mod tests {
     #[test]
     fn full_review_recipient_texts_omit_delta_header() {
         let session = test_session(Some("chair"), "review_council");
-        let trigger = crate::council::render_trigger_with_context(
+        let trigger = crate::plugins::pr_review::council::render_trigger_with_context(
             "canyugs/openab-control-plane",
             53,
             "Review focus assignment:\n- rev1 → security",
-            Some(&crate::council::ReviewRereviewContext {
+            Some(&crate::plugins::pr_review::council::ReviewRereviewContext {
                 base_sha: Some("abc123".into()),
                 author_notes: Some("Start over after the rebase.".into()),
                 from_scratch: true,
