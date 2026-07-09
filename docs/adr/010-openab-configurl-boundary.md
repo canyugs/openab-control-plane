@@ -73,6 +73,27 @@ S14/S15 still govern the `/v1/bots` registration path. `/bot-config/:id`
 remains the local-dogfood bootstrap (migration step 1) until the S17
 evidence-gated removal.
 
+### Amendment 2026-07-09 (S17): demotion runbook — deprecation telemetry + removal trigger
+
+`/bot-config` is now a **demoted compatibility endpoint**. The gating work is
+done: ADR 016 blockers 1–3 closed (S14 externalization-safe registration, S15
+default flip with the boot-time legacy-DB guard) and both templates live on
+pod-owned config (amendment above). What remains is removal, and removal is
+**evidence-gated, not scheduled**:
+
+- Every serve now logs
+  `deprecated /bot-config served; migrate this pod to pod-owned config.toml`
+  (`api.rs bot_config`, warn level, tagged with the bot id). No endpoint
+  behavior change; the S2 golden freeze stays byte-identical.
+- **Removal trigger:** no lane logs that warn line for a **full plane release
+  cycle**. Lane logs are the counter — grep them across one whole release
+  before acting. The k8s dev scripts (migration step 1 consumers) must move
+  off the endpoint before the trigger can be considered fired.
+- What removal will mean when it fires: delete the route + renderer + the S2
+  freeze test in one release-noted PR. `bot_token_plain` and legacy plaintext
+  mode follow ADR 016 blocker 4's own schedule (one release after the S15
+  default-on warning ships), not this runbook.
+
 ## Scope Rules
 
 OCP may keep doing these things:
