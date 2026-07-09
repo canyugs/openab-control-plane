@@ -146,6 +146,17 @@ If on-pod minting must remain for any reason, run the minter as a separate uid
 the agent cannot read, behind a broker the agent calls without file access to
 the key — but D1's preferred form is no key on the pod at all.
 
+> **Mechanism landed (2026-07-09):** `POST /v1/bots/github-token` mints a
+> role-scoped token authed by the pod's own `OABCP_BOT_TOKEN` (role from the bot
+> record, never the caller — so a reviewer pod cannot obtain a write token). Both
+> chair and reviewer pod-configs fetch via this route in their `pre_boot` hook; the
+> reviewer's read token carries `contents:read`, which lets `gh pr checkout` work
+> on private repos without a shared PAT. **Not yet a closure of C3:** it closes
+> only after the cutover relocates the App key from the chair `.pem` to the plane
+> service env (`GITHUB_APP_*`) and the `.pem` is removed from the pods — until then
+> `github_app` is None on the lanes and the route returns 501. A read-scoped
+> reviewer token readable by an untrusted-fork agent remains D3/D5 residue.
+
 ### D2 — Gate `pull_request` auto-triggers on author trust (closes C1)
 
 Apply the write-ish standard already enforced on comments to the auto path:

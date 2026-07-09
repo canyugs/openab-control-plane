@@ -220,21 +220,28 @@ spec:
               remove_after_reply = false
 
               [hooks.pre_boot]
-              # GitHub App auth for the chair (ADR 004: the App key lives on the pod volume,
-              # never in env). Safe no-op until $HOME/bin/get-gh-app-token.sh is provisioned.
-              # Uses the image's own $HOME (claude=/home/node, kiro=/home/agent) — the hook
-              # inherits HOME from the pod, so one script serves every image variant.
+              # GitHub auth via the plane (ADR 019 D1). The plane mints this pod's GitHub token
+              # — chair -> pull_requests:write, reviewer -> read-only — from the App key it
+              # holds, authenticated by the pod's own ${OABCP_BOT_TOKEN}. The role is derived
+              # server-side from the bot record, never asked for. The App private key never
+              # touches this pod, so an agent that ingests untrusted PR content can at worst
+              # steal one <=1h role-scoped token, not the key to mint installation-wide tokens.
+              # Warn-and-continue if the plane is in PAT mode (no App) or unreachable.
               on_failure = "warn"
               timeout_seconds = 60
               inline = '''
               #!/bin/sh
-              set -e
-              if [ ! -x "$HOME/bin/get-gh-app-token.sh" ]; then echo "github app auth not provisioned (no get-gh-app-token.sh); skipping"; exit 0; fi
-              auth() { "$HOME/bin/get-gh-app-token.sh" | gh auth login --with-token; }
-              auth
-              git config --global credential.helper '!gh auth git-credential' || true
-              # refresh before the 1h installation-token expiry
-              ( while sleep 3000; do auth || true; done ) &
+              PLANE_TOKEN_URL="http://control-plane.zeabur.internal:8090/v1/bots/github-token"
+              auth() {
+                tok=$(curl -fsS -X POST -H "Authorization: Bearer ${OABCP_BOT_TOKEN}" "$PLANE_TOKEN_URL" 2>/dev/null | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+                if [ -z "$tok" ]; then echo "no github token from plane (PAT mode or plane error); skipping gh auth"; return 1; fi
+                printf '%s' "$tok" | gh auth login --with-token
+              }
+              if auth; then
+                git config --global credential.helper '!gh auth git-credential' || true
+                # refresh before the <=1h installation-token expiry
+                ( while sleep 3000; do auth || true; done ) &
+              fi
               '''
           # Deployment-owned steering channel (design.md: agent steering is the
           # bot deployer's job; the plane must not serve it from /bot-config).
@@ -658,6 +665,31 @@ spec:
               [reactions]
               # A6: a cosmetic OAB flag must not be able to erase quorum votes.
               remove_after_reply = false
+
+              [hooks.pre_boot]
+              # GitHub auth via the plane (ADR 019 D1). The plane mints this pod's GitHub token
+              # — chair -> pull_requests:write, reviewer -> read-only — from the App key it
+              # holds, authenticated by the pod's own ${OABCP_BOT_TOKEN}. The role is derived
+              # server-side from the bot record, never asked for. The App private key never
+              # touches this pod, so an agent that ingests untrusted PR content can at worst
+              # steal one <=1h role-scoped token, not the key to mint installation-wide tokens.
+              # Warn-and-continue if the plane is in PAT mode (no App) or unreachable.
+              on_failure = "warn"
+              timeout_seconds = 60
+              inline = '''
+              #!/bin/sh
+              PLANE_TOKEN_URL="http://control-plane.zeabur.internal:8090/v1/bots/github-token"
+              auth() {
+                tok=$(curl -fsS -X POST -H "Authorization: Bearer ${OABCP_BOT_TOKEN}" "$PLANE_TOKEN_URL" 2>/dev/null | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+                if [ -z "$tok" ]; then echo "no github token from plane (PAT mode or plane error); skipping gh auth"; return 1; fi
+                printf '%s' "$tok" | gh auth login --with-token
+              }
+              if auth; then
+                git config --global credential.helper '!gh auth git-credential' || true
+                # refresh before the <=1h installation-token expiry
+                ( while sleep 3000; do auth || true; done ) &
+              fi
+              '''
           - path: /home/node/AGENTS.md
             template: *steering_doc
         env:

@@ -33,6 +33,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/v1/stats", get(stats))
         .route("/v1/bots", get(list_bots).post(register_bot))
         .route("/v1/bots/discover", post(discover_bot))
+        .route("/v1/bots/github-token", post(bot_github_token))
         .route("/v1/bots/:id", patch(patch_bot).delete(delete_bot))
         .route("/v1/sessions", get(list_sessions).post(open_session))
         .route("/v1/session-log", get(session_log_by_query))
@@ -1435,6 +1436,53 @@ async fn github_token(
     Ok(Json(json!({ "token": token, "role": role.as_str() })).into_response())
 }
 
+/// Pod-level scoped GitHub token — the ADR 019 D1 path. A bot pod (chair or
+/// reviewer) authenticates with its **own WS token** (`OABCP_BOT_TOKEN`, already on
+/// the pod) and gets a role-scoped installation token: chair → `pull_requests:write`,
+/// reviewer → read-only. This replaces the on-pod App private key + local minter so
+/// the `.pem` never sits next to an agent that ingests untrusted PR content.
+///
+/// Why a separate route from `github_token`: that one is session-scoped and
+/// plane-API-key authed — putting the plane key on an untrusted pod would be a
+/// *bigger* crown jewel than the `.pem`. Here the credential is the bot's own token
+/// and the role is derived from the bot record (never caller-supplied), so a
+/// reviewer pod physically cannot obtain a write token.
+///
+/// 501 in PAT mode (no App). 401 for a missing/invalid bot token. The token is
+/// cached under a `bot:<id>` key (not a real session), so it lives out its ≤1h TTL
+/// and the pod's refresh loop re-mints — there is no session-close revoke, which is
+/// the intended pod-level posture (matches the pre-D1 long-lived refreshed token).
+async fn bot_github_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<axum::response::Response, StatusCode> {
+    let presented = bearer(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    // Split store failure (500) from an unknown token (401) — mirrors the
+    // session-scoped `github_token` handler, so an unreachable token store surfaces
+    // as 500 instead of masquerading as a bad credential.
+    let bot = state
+        .store
+        .bot_by_token_hash(&identity::hash_token(presented))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let Some(app) = state.github_app.as_ref() else {
+        // PAT mode — no App provisioned. The pod keeps using its shared GH_TOKEN.
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    };
+    // Role is authoritative from the bot record — the request carries no role.
+    let role = crate::github_app::Role::from_bot_role(&bot.role);
+    let token = identity::github_token_for(
+        state.store.as_ref(),
+        app,
+        &state.github_mint_lock,
+        &format!("bot:{}", bot.id),
+        role,
+    )
+    .await
+    .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    Ok(Json(json!({ "token": token, "role": role.as_str() })).into_response())
+}
+
 async fn stream_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1830,6 +1878,59 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(err, StatusCode::GONE);
+    }
+
+    #[tokio::test]
+    async fn bot_github_token_rejects_missing_and_bad_tokens() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new_with_options(
+            store,
+            None,
+            None,
+            None,
+            None,
+            "http://control-plane.test".into(),
+            None,
+        );
+
+        // No Authorization header at all.
+        let err = super::bot_github_token(State(state.clone()), HeaderMap::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err, StatusCode::UNAUTHORIZED);
+
+        // Bearer with a token that maps to no bot.
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer oabct_nope".parse().unwrap());
+        let err = super::bot_github_token(State(state), headers)
+            .await
+            .unwrap_err();
+        assert_eq!(err, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn bot_github_token_authed_bot_in_pat_mode_is_not_implemented() {
+        // A valid bot token passes auth; with no App configured (PAT mode) the
+        // mint is correctly gated at 501 — proving auth is by the bot's OWN token,
+        // not the plane API key, and that the role-derivation path is reached.
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let (_bot, token) = identity::issue(store.as_ref(), "chair", "chair", None).unwrap();
+        let state = AppState::new_with_options(
+            store,
+            None,
+            None,
+            None,
+            None,
+            "http://control-plane.test".into(),
+            None,
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        let err = super::bot_github_token(State(state), headers)
+            .await
+            .unwrap_err();
+        assert_eq!(err, StatusCode::NOT_IMPLEMENTED);
     }
 
     #[tokio::test]
