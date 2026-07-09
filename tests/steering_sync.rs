@@ -10,6 +10,8 @@
 const DOC: &str = include_str!("../docs/steering/pr-review.md");
 const APP_TEMPLATE: &str = include_str!("../zeabur-template-app-1E1Y97.yaml");
 const PAT_TEMPLATE: &str = include_str!("../zeabur-template-pat-Z7TQIR.yaml");
+const CHAIR_TASK: &str = include_str!("../scripts/pr-review-chair-task.tmpl");
+const REVIEWER_TASK: &str = include_str!("../scripts/pr-review-reviewer-task.tmpl");
 
 /// The doc as it appears inside the templates' `template: |` block scalar
 /// (14-space indent, blank lines stay empty).
@@ -83,5 +85,34 @@ fn templates_pin_current_cargo_version() {
     assert!(
         PAT_TEMPLATE.contains(&want),
         "zeabur-template-pat pins a different control-plane tag than Cargo.toml ({want})"
+    );
+}
+
+#[test]
+fn task_prefixes_stay_in_sync_with_role_resolution() {
+    let chair_prefix = "Task: manage the GitHub PR status comment";
+    let reviewer_prefix = "Task: review GitHub PR";
+
+    assert!(
+        CHAIR_TASK
+            .lines()
+            .next()
+            .is_some_and(|line| line.starts_with(chair_prefix)),
+        "chair task first line must keep the role-resolution prefix"
+    );
+    assert!(
+        REVIEWER_TASK
+            .lines()
+            .next()
+            .is_some_and(|line| line.starts_with(reviewer_prefix)),
+        "reviewer task first line must keep the role-resolution prefix"
+    );
+    assert!(
+        DOC.contains(chair_prefix),
+        "steering doc must mention the chair task prefix"
+    );
+    assert!(
+        DOC.contains(reviewer_prefix),
+        "steering doc must mention the reviewer task prefix"
     );
 }
