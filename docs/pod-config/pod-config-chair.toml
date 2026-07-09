@@ -59,7 +59,7 @@ inline = '''
 #!/bin/sh
 PLANE_TOKEN_URL="http://control-plane.zeabur.internal:8090/v1/bots/github-token"
 auth() {
-  tok=$(curl -fsS -X POST -H "Authorization: Bearer ${OABCP_BOT_TOKEN}" "$PLANE_TOKEN_URL" 2>/dev/null | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+  tok=$(curl -fsS -X POST -H "Authorization: Bearer ${OABCP_BOT_TOKEN}" -H "Accept: text/plain" "$PLANE_TOKEN_URL" 2>/dev/null)
   if [ -z "$tok" ]; then echo "no github token from plane (PAT mode or plane error); skipping gh auth"; return 1; fi
   printf '%s' "$tok" | gh auth login --with-token
 }

@@ -19,7 +19,7 @@
 //! the whole point here.
 
 use anyhow::{anyhow, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -79,7 +79,7 @@ pub struct MintedToken {
     pub role: Role,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Claims {
     iat: u64,
     exp: u64,
@@ -346,17 +346,44 @@ KTCx5xnRe2f/cvb9JfSntCRc9JhltGy+zX6x0Ww6ktM5noKFs3AZupXp4MqQaVwF\n\
 +MXJ9jccJUY05qbYgulOYg==\n\
 -----END PRIVATE KEY-----\n";
 
+    /// Public half of `TEST_RSA_PEM`, for verifying the signature the sign path emits.
+    const TEST_RSA_PUBLIC_PEM: &str = "-----BEGIN PUBLIC KEY-----\n\
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwH0MgxvTrQ3c3VzY+KGR\n\
+4NexmelYFHiGtE1qrCAtSDqk5g3IzUr2KQHP+ZeQyKpLAyOtl6DxlDWJmN7KGDRZ\n\
+f/ECrce0QXXoYSqYXEnkkFnMIIaLHXgTZqU0padFUeMoURv1P3dtM0Lsc6bOVi7p\n\
+/ZfwQzapFnuxwNyvtfBCIuL5geTtQDhMNyWokQgB9LyzVPFltjdT5DYVFSS3WwEL\n\
+RgFAld3sa5y12wlF9kVGrKJ0n2Dt4RQvPTJuUYVLSZXSUfgFwiV7wiYQE3T1NSjD\n\
+w4Unf23VqjW0sW0X6Wfm1+daXObU/8UGF1yCRqqjrj/ddt4iK2TpIH/TEiL1Mequ\n\
+CQIDAQAB\n\
+-----END PUBLIC KEY-----\n";
+
     /// Regression guard for the jsonwebtoken CryptoProvider panic: `app_jwt` must
-    /// actually sign (RS256) and return a well-formed 3-part JWT. Before enabling
-    /// the `rust_crypto` backend, signing panicked with "Could not automatically
-    /// determine the process-level CryptoProvider" — the mint path (never exercised
-    /// by unit tests, only the ignored L3) 502'd every request. This test signs with
-    /// a throwaway key so the failure is caught in CI, not in a live deploy.
+    /// actually sign (RS256) and produce a JWT that VERIFIES against the public key.
+    /// Before enabling the `rust_crypto` backend, signing panicked with "Could not
+    /// automatically determine the process-level CryptoProvider" — the mint path
+    /// (never exercised by unit tests, only the ignored L3) 502'd every request.
+    /// Verifying the signature (not just the 3-part shape) also catches a
+    /// silently-wrong signature.
     #[test]
-    fn app_jwt_signs_and_returns_three_part_token() {
+    fn app_jwt_signs_and_verifies_against_public_key() {
+        use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
         let app = GitHubApp::from_parts("123456", TEST_RSA_PEM, 42, "https://api.github.com");
         let jwt = app.app_jwt().expect("app_jwt must sign, not panic");
         assert_eq!(jwt.split('.').count(), 3, "a JWT is header.payload.signature");
-        assert!(jwt.split('.').all(|p| !p.is_empty()), "no empty JWT segment");
+
+        let key = DecodingKey::from_rsa_pem(TEST_RSA_PUBLIC_PEM.as_bytes()).unwrap();
+        let mut v = Validation::new(Algorithm::RS256);
+        v.set_issuer(&["123456"]);
+        let decoded = decode::<Claims>(&jwt, &key, &v).expect("JWT signature must verify");
+        assert_eq!(decoded.claims.iss, "123456");
+        assert!(decoded.claims.exp > decoded.claims.iat, "exp after iat");
+    }
+
+    /// A malformed key must surface as a graceful `Err`, never a thread panic — the
+    /// mint handler maps this to 502, but the process must stay up.
+    #[test]
+    fn app_jwt_bad_key_errors_not_panics() {
+        let app = GitHubApp::from_parts("1", "-----BEGIN RSA PRIVATE KEY-----\nnope\n-----END RSA PRIVATE KEY-----", 1, "https://api.github.com");
+        assert!(app.app_jwt().is_err(), "bad PEM must Err, not panic");
     }
 }

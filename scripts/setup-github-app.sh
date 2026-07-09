@@ -17,6 +17,10 @@ CHAIR_USER="${CHAIR_USER:-}"
 DELIVERY="${DELIVERY:-auto}"
 
 CHAIR_SERVICE_ID="${CHAIR_SERVICE_ID:-}"
+# Optional space-separated reviewer service IDs to restart so they re-run the
+# plane-fetch pre_boot hook too (they gain read-scoped gh auth). Chair is restarted
+# regardless via CHAIR_SERVICE_ID.
+BOT_SERVICE_IDS="${BOT_SERVICE_IDS:-}"
 PLANE_SERVICE_ID="${PLANE_SERVICE_ID:-}"
 SERVER_ID="${SERVER_ID:-}"
 KUBE_NAMESPACE="${KUBE_NAMESPACE:-oabcp-local}"
@@ -44,25 +48,20 @@ Required:
 
 Optional:
   --bot-handle <slug>        OABCP_BOT_HANDLE (default: App slug from GitHub API)
-  --chair-home <path>        Chair pod home (default: /home/agent for Kiro, /home/node for Claude)
-  --chair-user <user>        Chair pod user (default: basename of chair-home)
-  --delivery <mode>          auto | zeabur-ssh | zeabur-exec | k8s | files-only
 
-Zeabur delivery (zeabur-ssh or zeabur-exec):
-  --chair-service-id <id>
-  --plane-service-id <id>    Needed to set OABCP_BOT_HANDLE and webhook secret
-  --server-id <id>           Dedicated server ID for zeabur-ssh (recommended; avoids exec 524)
+Plane provisioning (ADR 019 D1 — the App key goes on the PLANE, not a pod):
+  --plane-service-id <id>    REQUIRED. Sets GITHUB_APP_ID / _INSTALLATION_ID /
+                             _PRIVATE_KEY (PKCS#8, base64) + OABCP_BOT_HANDLE +
+                             webhook secret on the control-plane service, restarts it.
+  --chair-service-id <id>    Restarted so it re-runs its plane-fetch pre_boot hook.
+  BOT_SERVICE_IDS=<ids>      (env) space-separated reviewer service IDs to also restart.
 
-Kubernetes delivery (k8s):
-  --namespace <name>         Default: oabcp-local
-  --secret-name <name>       Default: github-app-chair
-  Then redeploy chair with: scripts/dev-deploy-bots.sh --chair-github-app-secret <name>
-
-files-only:
-  Patches the App webhook and writes a local chair bundle under ./chair-github-app-bundle/
+No per-pod key delivery: bot pods fetch a short-lived, role-scoped token from the
+plane at boot. The old --delivery/--server-id/--namespace flags are accepted but
+ignored for backward compatibility.
 
 Environment fallbacks: GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, GITHUB_APP_PRIVATE_KEY_PATH,
-GITHUB_WEBHOOK_SECRET, PLANE_URL, OABCP_BOT_HANDLE, CHAIR_SERVICE_ID, PLANE_SERVICE_ID, SERVER_ID
+GITHUB_WEBHOOK_SECRET, PLANE_URL, OABCP_BOT_HANDLE, CHAIR_SERVICE_ID, PLANE_SERVICE_ID
 USAGE
 }
 
@@ -110,28 +109,12 @@ if [[ -z "$CHAIR_USER" ]]; then
   CHAIR_USER=$(basename "$CHAIR_HOME")
 fi
 
-if [[ "$DELIVERY" == "auto" ]]; then
-  if [[ -n "$SERVER_ID" && -n "$CHAIR_SERVICE_ID" ]]; then
-    DELIVERY=zeabur-ssh
-  elif [[ -n "$CHAIR_SERVICE_ID" ]]; then
-    DELIVERY=zeabur-exec
-  elif command -v kubectl >/dev/null 2>&1; then
-    DELIVERY=k8s
-  else
-    DELIVERY=files-only
-  fi
-  echo "delivery: $DELIVERY"
-fi
-
+# The .pem is copied to a temp file solely so the webhook-patch helper can sign the
+# App JWT locally; it is never delivered to a pod (D1). The temp dir is wiped on exit.
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT TERM
 cp "$KEY_PATH" "$TMP/.github-app.pem"
-sed \
-  -e "s/^APP_ID=.*/APP_ID=$APP_ID/" \
-  -e "s/^INSTALLATION_ID=.*/INSTALLATION_ID=$INSTALLATION_ID/" \
-  "$SCRIPT_DIR/get-gh-app-token.sh" >"$TMP/get-gh-app-token.sh"
 chmod 600 "$TMP/.github-app.pem"
-chmod 755 "$TMP/get-gh-app-token.sh"
 
 echo "patching GitHub App webhook -> ${PLANE_URL}/api/v1/github_webhooks"
 gh_app_patch_webhook "$APP_ID" "$TMP/.github-app.pem" "$WEBHOOK_SECRET" "$PLANE_URL" >/dev/null
@@ -152,111 +135,28 @@ sync_plane_vars() {
     -k "OABCP_BOT_HANDLE=$BOT_HANDLE" -y -i=false >/dev/null 2>&1 || \
   npx zeabur@latest variable create --id "$PLANE_SERVICE_ID" \
     -k "OABCP_BOT_HANDLE=$BOT_HANDLE" -y -i=false >/dev/null
+  # ADR 019 D1: the App private key lives on the PLANE, never on a bot pod. Store
+  # the PKCS#8 PEM base64-encoded — a single CLI-safe line the plane's normalize_pem
+  # decodes back to a PEM (jsonwebtoken's rust_crypto backend needs valid RSA DER).
+  local key_b64
+  key_b64=$(openssl pkcs8 -topk8 -nocrypt -in "$KEY_PATH" 2>/dev/null | base64 | tr -d '\n')
+  for kv in "GITHUB_APP_ID=$APP_ID" \
+            "GITHUB_APP_INSTALLATION_ID=$INSTALLATION_ID" \
+            "GITHUB_APP_PRIVATE_KEY=$key_b64"; do
+    npx zeabur@latest variable update --id "$PLANE_SERVICE_ID" -k "$kv" -y -i=false >/dev/null 2>&1 || \
+    npx zeabur@latest variable create --id "$PLANE_SERVICE_ID" -k "$kv" -y -i=false >/dev/null
+  done
   npx zeabur@latest service restart --id "$PLANE_SERVICE_ID" -y -i=false >/dev/null
 }
 
-upload_chair_zeabur_ssh() {
-  [[ -n "$SERVER_ID" && -n "$CHAIR_SERVICE_ID" ]] || die "zeabur-ssh needs --server-id and --chair-service-id"
-  command -v sshpass >/dev/null 2>&1 || die "sshpass required for zeabur-ssh delivery"
-  local ssh_info
-  ssh_info=$(npx zeabur@latest server ssh-info --id "$SERVER_ID" -i=false --json)
-  export TMP CHAIR_SERVICE_ID CHAIR_HOME CHAIR_USER ssh_info
-  python3 <<'PY'
-import base64, json, os, pathlib, subprocess
-tmp = pathlib.Path(os.environ["TMP"])
-chair = os.environ["CHAIR_SERVICE_ID"]
-home = os.environ["CHAIR_HOME"]
-user = os.environ["CHAIR_USER"]
-info = json.loads(os.environ["ssh_info"])
-pem_b64 = base64.b64encode((tmp / ".github-app.pem").read_bytes()).decode()
-script_b64 = base64.b64encode((tmp / "get-gh-app-token.sh").read_bytes()).decode()
-cmd = f'''
-NS=$(sudo kubectl get pods -A | awk '/service-{chair}/ && /Running/ {{print $1; exit}}')
-POD=$(sudo kubectl get pods -A | awk '/service-{chair}/ && /Running/ {{print $2; exit}}')
-sudo kubectl exec -n "$NS" "$POD" -- sh -c 'mkdir -p {home}/bin'
-echo '{pem_b64}' | base64 -d | sudo kubectl exec -i -n "$NS" "$POD" -- sh -c 'cat > {home}/.github-app.pem'
-echo '{script_b64}' | base64 -d | sudo kubectl exec -i -n "$NS" "$POD" -- sh -c 'cat > {home}/bin/get-gh-app-token.sh'
-sudo kubectl exec -n "$NS" "$POD" -- sh -c 'chmod 600 {home}/.github-app.pem; chmod +x {home}/bin/get-gh-app-token.sh; chown -R {user}:{user} {home}/.github-app.pem {home}/bin/get-gh-app-token.sh'
-sudo kubectl exec -n "$NS" "$POD" -- sh -lc 'HOME={home} gh auth logout -h github.com -u zeabur-council[bot] 2>/dev/null || true'
-sudo kubectl exec -n "$NS" "$POD" -- sh -lc 'HOME={home} {home}/bin/get-gh-app-token.sh | HOME={home} gh auth login --with-token'
-sudo kubectl exec -n "$NS" "$POD" -- sh -lc 'HOME={home} gh auth status'
-'''
-subprocess.run(
-    ["sshpass", "-p", info["password"], "ssh", "-o", "StrictHostKeyChecking=no",
-     "-p", str(info["port"]), f'{info["username"]}@{info["ip"]}', cmd],
-    check=True,
-)
-PY
-}
+# ADR 019 D1: the App key goes to the PLANE, not a pod. There is no per-pod key
+# delivery any more — bot pods fetch a short-lived, role-scoped token from the plane
+# (`POST /v1/bots/github-token`) via their pre_boot hook. Restarting the bots makes
+# them re-run that hook against the freshly-provisioned plane.
+[[ -n "$PLANE_SERVICE_ID" ]] || die "D1 needs --plane-service-id: the App key is provisioned onto the plane, not a pod"
+sync_plane_vars
+for svc in "$CHAIR_SERVICE_ID" $BOT_SERVICE_IDS; do
+  [[ -n "$svc" ]] && npx zeabur@latest service restart --id "$svc" -y -i=false >/dev/null
+done
 
-upload_chair_zeabur_exec() {
-  [[ -n "$CHAIR_SERVICE_ID" ]] || die "zeabur-exec needs --chair-service-id"
-  local chair="$CHAIR_SERVICE_ID"
-  echo "uploading via zeabur service exec (large keys may timeout on shared clusters)..."
-  npx zeabur@latest service exec --id "$chair" -- \
-    sh -c "mkdir -p ${CHAIR_HOME}/bin && cat > ${CHAIR_HOME}/.github-app.pem" \
-    <"$TMP/.github-app.pem"
-  npx zeabur@latest service exec --id "$chair" -- \
-    sh -c "cat > ${CHAIR_HOME}/bin/get-gh-app-token.sh" \
-    <"$TMP/get-gh-app-token.sh"
-  npx zeabur@latest service exec --id "$chair" -- sh -c \
-    "chmod 600 ${CHAIR_HOME}/.github-app.pem; chmod +x ${CHAIR_HOME}/bin/get-gh-app-token.sh"
-  npx zeabur@latest service exec --id "$chair" -- sh -lc \
-    "HOME=${CHAIR_HOME} gh auth logout -h github.com -u zeabur-council[bot] 2>/dev/null || true; \
-     HOME=${CHAIR_HOME} ${CHAIR_HOME}/bin/get-gh-app-token.sh | HOME=${CHAIR_HOME} gh auth login --with-token; \
-     HOME=${CHAIR_HOME} gh auth status"
-}
-
-upload_chair_k8s() {
-  "$SCRIPT_DIR/dev-sync-gh-app-secret.sh" \
-    --app-id "$APP_ID" \
-    --installation-id "$INSTALLATION_ID" \
-    --key-path "$TMP/.github-app.pem" \
-    --namespace "$KUBE_NAMESPACE" \
-    --secret-name "$KUBE_SECRET_NAME" \
-    --any-context
-  echo "mount ${KUBE_NAMESPACE}/${KUBE_SECRET_NAME} into chair via dev-deploy-bots.sh and restart chair"
-}
-
-upload_chair_files_only() {
-  local out="./chair-github-app-bundle"
-  mkdir -p "$out/bin"
-  cp "$TMP/.github-app.pem" "$out/.github-app.pem"
-  cp "$TMP/get-gh-app-token.sh" "$out/bin/get-gh-app-token.sh"
-  chmod 600 "$out/.github-app.pem"
-  chmod 755 "$out/bin/get-gh-app-token.sh"
-  cat <<EOF
-
-Wrote chair bundle to $out/
-Upload to the chair pod:
-  ${CHAIR_HOME}/.github-app.pem
-  ${CHAIR_HOME}/bin/get-gh-app-token.sh
-Then run:
-  chmod 600 ${CHAIR_HOME}/.github-app.pem
-  chmod +x ${CHAIR_HOME}/bin/get-gh-app-token.sh
-  HOME=${CHAIR_HOME} ${CHAIR_HOME}/bin/get-gh-app-token.sh | HOME=${CHAIR_HOME} gh auth login --with-token
-  HOME=${CHAIR_HOME} gh auth status
-EOF
-}
-
-case "$DELIVERY" in
-  zeabur-ssh)
-    upload_chair_zeabur_ssh
-    sync_plane_vars
-    [[ -n "$CHAIR_SERVICE_ID" ]] && npx zeabur@latest service restart --id "$CHAIR_SERVICE_ID" -y -i=false >/dev/null
-    ;;
-  zeabur-exec)
-    upload_chair_zeabur_exec
-    sync_plane_vars
-    npx zeabur@latest service restart --id "$CHAIR_SERVICE_ID" -y -i=false >/dev/null
-    ;;
-  k8s)
-    upload_chair_k8s
-    ;;
-  files-only)
-    upload_chair_files_only
-    ;;
-  *) die "unknown delivery: $DELIVERY" ;;
-esac
-
-echo "done: GitHub App $APP_ID wired to $PLANE_URL (bot: ${BOT_HANDLE}[bot])"
+echo "done: GitHub App $APP_ID wired to $PLANE_URL (bot: ${BOT_HANDLE}[bot]); key on plane, not on any pod"
