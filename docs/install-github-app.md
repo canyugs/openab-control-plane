@@ -256,6 +256,15 @@ Run exactly one delivery mode from §7.
 
 ## 7. Wiring delivery modes
 
+> **ADR 019 D1 (2026-07):** the App private key now lives on the **plane**, never on
+> a bot pod. `setup-github-app.sh` provisions `GITHUB_APP_ID` / `_INSTALLATION_ID` /
+> `_PRIVATE_KEY` (PKCS#8, base64) onto the control-plane service (`--plane-service-id`
+> is now required) and bot pods fetch a short-lived, role-scoped token from
+> `POST /v1/bots/github-token` in their pre_boot hook. The per-pod delivery flags
+> below (`--delivery`, `--server-id`, `--namespace`, files-only) are **accepted but
+> ignored** for backward compatibility — no `.pem` is copied to any pod. The plane
+> must run **≥ 0.1.22** (the mint endpoint + the jsonwebtoken `rust_crypto` fix).
+
 ### 7.1 Zeabur dedicated server (`zeabur-ssh`) — recommended
 
 Avoids `zeabur service exec` 524 timeouts on PEM upload.

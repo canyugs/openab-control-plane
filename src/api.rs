@@ -1480,7 +1480,26 @@ async fn bot_github_token(
     )
     .await
     .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    // A pod's `pre_boot` hook pipes the token straight into `gh auth login`, so it
+    // asks for `Accept: text/plain` and gets the bare token — no shell JSON parsing
+    // (a brittle `sed` that silently disables auth on any response-format drift).
+    // Anything else (default) gets the JSON object for programmatic callers.
+    if wants_plain_text(&headers) {
+        return Ok((
+            [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            token,
+        )
+            .into_response());
+    }
     Ok(Json(json!({ "token": token, "role": role.as_str() })).into_response())
+}
+
+/// True when the request's `Accept` header prefers `text/plain` (the pod hook).
+fn wants_plain_text(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|a| a.contains("text/plain"))
 }
 
 async fn stream_session(
@@ -1931,6 +1950,60 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn bot_github_token_happy_path_returns_token_and_role() {
+        // App configured + a fresh cached token for `bot:<id>` → the handler returns
+        // 200 without a GitHub round-trip. Covers the success path the 401/501 gates
+        // don't, and pins both response encodings.
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let (bot, token) = identity::issue(store.as_ref(), "chair", "chair", None).unwrap();
+        store
+            .cache_installation_token(
+                &format!("bot:{}", bot.id),
+                "chair",
+                "ghs_cached_token",
+                crate::store::now_ms() + 3_600_000,
+            )
+            .unwrap();
+        let app = crate::github_app::GitHubApp::from_parts("1", "dummy", 1, "https://api.github.com");
+        let state = AppState::new_with_options(
+            store,
+            None,
+            Some(app),
+            None,
+            None,
+            "http://control-plane.test".into(),
+            None,
+        );
+
+        // Default: JSON body with token + role.
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        let resp = super::bot_github_token(State(state.clone()), headers)
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["token"], "ghs_cached_token");
+        assert_eq!(json["role"], "chair");
+
+        // Accept: text/plain → the bare token (what the pod hook consumes).
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        headers.insert("accept", "text/plain".parse().unwrap());
+        let resp = super::bot_github_token(State(state), headers).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/plain; charset=utf-8")
+        );
+        let body = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        assert_eq!(&body[..], b"ghs_cached_token");
     }
 
     #[tokio::test]
