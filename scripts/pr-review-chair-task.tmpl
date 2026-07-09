@@ -8,27 +8,30 @@ Every council-owned PR comment body MUST start with this exact first line:
 
 Write the comment body to a FILE first, then post with --body-file - do NOT pass multi-line markdown via --body "..." (the shell mangles backticks, $(...), and newlines into garbage).
 
-Before ANY --edit-last, list your own PR comments on this PR and verify that the most recent one starts with <!-- openab-council -->. If the most recent own comment is missing, is not visible, or does not start with the marker (for example, a /ask answer was posted after the verdict), do not use --edit-last; post a NEW comment with the marker instead:
+Each review ROUND owns exactly one comment: the opening turn posts a NEW marked comment for this round, and the quorum turn edits that same comment into the round's verdict. Prior rounds' verdict comments are history — never edit or overwrite them; the PR timeline must show when each round happened and what it said.
+
+--edit-last is only for turning THIS round's in-progress comment into its verdict. Before ANY --edit-last, list your own PR comments on this PR and verify that the most recent one starts with <!-- openab-council --> AND is the in-progress comment you posted this round (not a prior round's verdict). If the most recent own comment is missing, is not visible, does not start with the marker, or is a prior round's verdict (for example, a /ask answer was posted after it, or this round's opening comment failed to post), do not use --edit-last; post a NEW comment with the marker instead:
   gh pr comment {{NUM}} --repo {{REPO}} --body-file /tmp/verdict.md
 
-If the most recent own comment does start with the marker, update it with:
+If the most recent own comment is this round's in-progress comment, update it with:
   gh pr comment {{NUM}} --repo {{REPO}} --edit-last --create-if-none --body-file /tmp/verdict.md
---edit-last --create-if-none creates the comment the first time and edits the SAME council comment on later runs only when the marker check proves it is safe.
 
 Opening turn:
   1. Read the PR diff and CI status. Establish a concise baseline before delegating: change scope, current CI/checks state, and important PR/body cross-references.
-  2. Write this in-progress status to /tmp/verdict.md with a 2-4 line baseline block:
+  2. Determine the round number N: count your own existing comments on this PR starting with the marker line, N = that count + 1.
+  3. Write this in-progress status to /tmp/verdict.md with a 2-4 line baseline block:
      <!-- openab-council -->
-     OpenAB Council review started.
+     OpenAB Council review started (round N).
 
      Baseline:
      - Scope: ...
      - CI/checks: ...
      - Cross-refs: ...
 
-     The council is reviewing this PR. This comment will be updated with the final verdict.
-  3. Re-review case: If a council verdict comment already exists on the PR (detect by the marker line), fetch its current body, prepend the in-progress status above the retained prior verdict, and write that combined body to /tmp/verdict.md. This lets round-N reviewers self-fetch the round-N-1 ledger; never overwrite the prior verdict.
-  4. Run the safe comment procedure above: marker-check before --edit-last, otherwise post a NEW marked comment.
+     The council is reviewing this PR. This comment will be updated with this round's verdict.
+  4. Post it as a NEW comment (never --edit-last on the opening turn — prior rounds' verdicts stay untouched in the timeline):
+       gh pr comment {{NUM}} --repo {{REPO}} --body-file /tmp/verdict.md
+     Re-review case: the prior round's verdict comment remains on the PR as-is; round-N reviewers self-fetch the round-N-1 ledger from it. Never overwrite a prior verdict.
   5. Reply here with a short status message only. Do not do a full review on this opening turn, and do not end with [done] yet.
 
 Quorum turn:
@@ -37,8 +40,8 @@ Quorum turn:
      The final verdict body must start with:
        <!-- openab-council -->
        LGTM ✅ / CHANGES REQUESTED ⚠️ — one sentence summary.
-       Reviewed at <sha>
-     Replace <sha> with $SHA. If the head has advanced since the reviews in this round were written, also add this line immediately after Reviewed at:
+       Reviewed at <sha> (round N)
+     Replace <sha> with $SHA and N with this round's number from the opening turn. If the head has advanced since the reviews in this round were written, also add this line immediately after Reviewed at:
        Head has advanced since this review — push or comment /review to re-run.
      Label-and-post even when the head moved; do not abort solely because the head advanced.
   1. After OCP later says reviewer quorum was reached, synthesize the findings already in this thread.
