@@ -4,20 +4,23 @@ OpenAB Control Plane is a gateway-native runtime for coordinating multiple stock
 OpenAB pods. PR review is the first product profile on top of it.
 
 ```text
-GitHub webhook / north API
-        |
-        v
-OpenAB Control Plane
-  - sessions, roster, fanout
-  - coordinator policy
-  - durable messages/reactions
-  - liveness watchdog
-        |
-        v
-OpenAB pods
-  - chair
-  - reviewers
-  - pod-local tools and credentials
+                         GitHub
+          pull_request / issue_comment webhooks
+                           |
+                           v
+North API / SSE  <->  OpenAB Control Plane  <->  SQLite
+(CLI, operators)      - PR-review webhook shim   bots / sessions
+                       - Coordinator policy      messages / reactions
+                       - roster + fanout         outbox / scoped tokens
+                       - durable delivery
+                       - liveness watchdog
+                           |
+             gateway /ws (per-bot OCP tokens)
+                           |
+                           v
+        stock OpenAB pods (mounted config + steering)
+          chair  -- gh write --> PR comment / review / status
+          rev*   -- gh read  --> PR diff / files
 ```
 
 The plane does not run an LLM and does not post PR comments itself. Bots do that
@@ -61,8 +64,10 @@ repositories the webhook will serve.
 
 ## Deploy
 
-The templates deploy one control plane plus three stock OpenAB Claude pods: one
-chair and two reviewers. Pick one install track per repository:
+The templates deploy one control plane plus three stock OpenAB pods: one chair
+and two reviewers. The pod image/config chooses the agent CLI; the control plane
+only owns gateway identity, routing, and coordination. Pick one install track per
+repository:
 
 | Track | Template | Best for |
 |---|---|---|
@@ -93,12 +98,10 @@ npx zeabur@latest template deploy -c 1E1Y97 \
 When developing unpublished template changes from this repository, use
 `-f zeabur-template-pat-Z7TQIR.yaml` or `-f zeabur-template-app-1E1Y97.yaml` instead of `-c`.
 
-Claude is only the template default. Today's bootstrap templates use OCP's legacy
-`/bot-config/<bot>?agent=<profile>` path; switching or mixing CLIs means updating
-the agent profile (`OABCP_AGENT_PROFILES` for command/args/permissions), the bot
-image, and the pod Secret carrying that CLI's credential. The longer-term
-production direction is OpenAB `configUrl` / `configFile`, where each bot points
-directly at its final `config.toml`; see [ADR 010](docs/adr/010-openab-configurl-boundary.md).
+Switching or mixing CLIs means changing the bot image/config and the pod Secret
+carrying that CLI's credential. Current templates mount pod-owned OpenAB config
+and steering files directly into the pods; `/bot-config/<id>` remains a legacy
+compatibility path. See [ADR 010](docs/adr/010-openab-configurl-boundary.md).
 
 Full install docs:
 
@@ -235,3 +238,7 @@ credentials.
 For fast webhook development without deploying to Zeabur, run OCP on Docker
 Desktop Kubernetes and expose it through a temporary Cloudflare Tunnel. See
 [docs/local-development.md](docs/local-development.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
