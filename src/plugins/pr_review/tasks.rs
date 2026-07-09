@@ -144,9 +144,17 @@ pub(crate) fn render_rereview_task_context(ctx: &RereviewTriggerContext<'_>) -> 
 }
 
 pub(crate) fn render_review_chair_task(repo: &str, pr: &str) -> String {
+    let bot_mention = crate::plugins::pr_review::configured_bot_handle()
+        .map(|handle| format!("@{handle}"))
+        .unwrap_or_else(|| "@<bot-handle>".to_string());
+    render_review_chair_task_with_mention(repo, pr, &bot_mention)
+}
+
+fn render_review_chair_task_with_mention(repo: &str, pr: &str, bot_mention: &str) -> String {
     REVIEW_CHAIR_TASK_TMPL
         .replace("{{REPO}}", repo)
         .replace("{{NUM}}", pr)
+        .replace("{{BOT_MENTION}}", bot_mention)
 }
 
 pub(crate) fn render_review_reviewer_task(
@@ -177,8 +185,31 @@ mod tests {
         }
     }
 
+    fn restore_env(key: &str, old: Option<String>) {
+        match old {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    fn with_bot_handle<T>(handle: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _guard = crate::plugins::pr_review::bot_handle_env_lock()
+            .lock()
+            .unwrap();
+        let old = std::env::var("OABCP_BOT_HANDLE").ok();
+        match handle {
+            Some(handle) => std::env::set_var("OABCP_BOT_HANDLE", handle),
+            None => std::env::remove_var("OABCP_BOT_HANDLE"),
+        }
+        let result = f();
+        restore_env("OABCP_BOT_HANDLE", old);
+        result
+    }
+
     fn review_recipient_text(session: &TestSession, target_id: &str, text: &str) -> String {
-        review_recipient_trigger_text(session.chair_bot.as_deref(), target_id, text)
+        with_bot_handle(None, || {
+            review_recipient_trigger_text(session.chair_bot.as_deref(), target_id, text)
+        })
     }
 
     #[test]
@@ -262,7 +293,7 @@ mod tests {
 
         let chair_text = review_recipient_text(&session, "chair", trigger);
 
-        assert!(chair_text.contains("💬 Comment `@handle <question>` for a follow-up"));
+        assert!(chair_text.contains("💬 Comment `@<bot-handle> <question>` for a follow-up"));
         assert!(chair_text.contains("gh pr review 53 --repo canyugs/openab-control-plane"));
         assert!(chair_text.contains("gh api repos/canyugs/openab-control-plane/statuses/$SHA"));
         assert!(chair_text.contains("[[verdict:request_changes r=1 y=3 g=5]] [done]"));
@@ -275,8 +306,21 @@ mod tests {
 
         let chair_text = review_recipient_text(&session, "chair", trigger);
 
-        assert!(chair_text.contains("Comment `@handle <question>` for a follow-up"));
-        assert!(chair_text.contains("Push new commits or comment `@handle review <fix notes>`"));
+        assert!(chair_text.contains("Comment `@<bot-handle> <question>` for a follow-up"));
+        assert!(
+            chair_text.contains("Push new commits or comment `@<bot-handle> review <fix notes>`")
+        );
+    }
+
+    #[test]
+    fn chair_footer_uses_configured_bot_handle() {
+        let text = with_bot_handle(Some("@opencodezebra"), || {
+            render_review_chair_task("zeabur/openab-control-plane", "149")
+        });
+
+        assert!(text.contains("Comment `@opencodezebra <question>` for a follow-up"));
+        assert!(text.contains("comment `@opencodezebra review <fix notes>`"));
+        assert!(!text.contains("@handle"));
     }
 
     #[test]

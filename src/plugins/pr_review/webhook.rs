@@ -87,10 +87,7 @@ fn repo_allowed(repo: &str, allowlist: Option<&str>) -> bool {
 /// The bot's GitHub handle for `@mention` parsing (env `OABCP_BOT_HANDLE`, e.g.
 /// `zeabur-council`). Unset → only the explicit `/ask` command works, not `@mention`.
 fn mention_handle() -> Option<String> {
-    std::env::var("OABCP_BOT_HANDLE")
-        .ok()
-        .map(|s| s.trim().trim_start_matches('@').to_string())
-        .filter(|s| !s.is_empty())
+    crate::plugins::pr_review::configured_bot_handle()
 }
 
 /// Extract a follow-up question from a PR comment (ADR 011). A comment is an "ask" if
@@ -651,13 +648,10 @@ mod tests {
         }
     }
 
-    fn webhook_env_lock() -> &'static std::sync::Mutex<()> {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| std::sync::Mutex::new(()))
-    }
-
     fn with_bot_handle<T>(handle: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let _guard = webhook_env_lock().lock().unwrap();
+        let _guard = crate::plugins::pr_review::bot_handle_env_lock()
+            .lock()
+            .unwrap();
         let old = std::env::var("OABCP_BOT_HANDLE").ok();
         match handle {
             Some(handle) => std::env::set_var("OABCP_BOT_HANDLE", handle),

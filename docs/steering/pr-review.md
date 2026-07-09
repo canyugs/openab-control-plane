@@ -334,7 +334,7 @@ Merged explanation from reviewers. Preserve disagreement when it matters.
 </details>
 
 ---
-🔴×1 🟡×3 🟢×5 · 💬 Comment `@handle <question>` for a follow-up · 🔁 Push new commits or comment `@handle review <fix notes>` to re-run the council
+🔴×1 🟡×3 🟢×5 · 💬 Comment `<bot handle shown in the task> <question>` for a follow-up · 🔁 Push new commits or comment `<bot handle shown in the task> review <fix notes>` to re-run the council
 ```
 
 Use `LGTM ✅` when there are no critical findings. Use
