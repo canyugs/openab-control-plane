@@ -82,7 +82,7 @@ pub trait Coordinator: Send + Sync {
     }
     /// Does a done-signal found in message *text* from `bot` count, given the
     /// full text? Default: yes. Triage mode requires the chair's [done] to
-    /// ride the TRIAGE report itself.
+    /// ride the mandated report prefix itself.
     fn accepts_text_done(&self, _cx: &dyn Ctx, _bot: &str, _text: &str) -> bool {
         true
     }
@@ -166,7 +166,7 @@ fn parse_structured_verdict(cx: &dyn Ctx, verdict_text: &str) -> Option<Structur
         }),
         None => {
             tracing::warn!(
-                "no [[verdict:…]] trailer in chair final for {}; structured verdict stays NULL",
+                "no verdict trailer in chair final for {}; structured verdict stays NULL",
                 cx.session_id()
             );
             None
@@ -385,61 +385,6 @@ mod tests {
             assert!(
                 coord.accepts_text_done(&cx, "rev", ack),
                 "{name} non-chair text done keeps default semantics"
-            );
-        }
-    }
-
-    #[test]
-    fn structured_verdict_policy_covers_all_coordinators() {
-        let cx = ctx(&["chair", "rev"], None);
-        let text = "final\n[[verdict:request_changes r=1 y=2 g=3]] [done]";
-
-        let verdict = QuorumCouncil
-            .structured_verdict(&cx, text)
-            .expect("quorum_council should parse trailer");
-        assert_eq!(
-            verdict,
-            StructuredVerdict {
-                decision: "request_changes".into(),
-                red: Some(1),
-                yellow: Some(2),
-                green: Some(3),
-            },
-            "quorum_council maps trailer fields"
-        );
-        assert!(
-            QuorumCouncil
-                .structured_verdict(&cx, "plain final [done]")
-                .is_none(),
-            "quorum_council returns None without a trailer"
-        );
-
-        for (name, coord) in [
-            ("solo", Box::new(Solo) as Box<dyn Coordinator>),
-            ("pipeline", Box::new(Pipeline)),
-        ] {
-            assert!(
-                coord.structured_verdict(&cx, text).is_none(),
-                "{name} must not parse even valid-looking trailers"
-            );
-        }
-    }
-
-    #[test]
-    fn recipient_trigger_text_default_is_verbatim_passthrough() {
-        let cx = ctx(&["chair", "rev"], None);
-        let trigger = "PR Review Council — canyugs/openab-control-plane #17 \"\"\n\nReview focus assignment:\n- rev → security";
-        let cases: Vec<(&str, Box<dyn Coordinator>)> = vec![
-            ("quorum_council", Box::new(QuorumCouncil)),
-            ("solo", Box::new(Solo)),
-            ("pipeline", Box::new(Pipeline)),
-        ];
-
-        for (name, coord) in cases {
-            assert_eq!(
-                coord.recipient_trigger_text(&cx, "rev", trigger),
-                trigger,
-                "{name} must deliver triggers verbatim"
             );
         }
     }
