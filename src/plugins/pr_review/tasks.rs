@@ -347,7 +347,7 @@ mod tests {
             "Every council-owned PR comment body MUST start with this exact first line:\n  <!-- openab-council -->"
         ));
         assert!(chair_text
-            .contains("<!-- openab-council -->\n     OpenAB Council review started (round N)."));
+            .contains("<!-- openab-council -->\n     Review Council started (round N)."));
         assert!(chair_text.contains("<!-- openab-council -->\n       LGTM"));
     }
 
@@ -458,7 +458,7 @@ mod tests {
 
         let reviewer_text = review_recipient_text(&session, "rev1", trigger);
 
-        assert!(reviewer_text.contains("If an OpenAB Council verdict comment exists"));
+        assert!(reviewer_text.contains("If a Review Council verdict comment exists"));
         assert!(reviewer_text.contains("read it and any author fix-note comments"));
         assert!(reviewer_text
             .contains("verify each open finding against the current head keeping its F-number"));

@@ -527,7 +527,7 @@ mod tests {
         assert!(t.contains("recipient-specific task"));
         assert!(!t.contains("Role gate"));
         assert!(!t.contains("If your bot name"));
-        assert!(!t.contains("OpenAB Council review started"));
+        assert!(!t.contains("Review Council started"));
         assert!(!t.contains("===== DIFF ====="));
         assert!(!t.contains("{{"));
     }
