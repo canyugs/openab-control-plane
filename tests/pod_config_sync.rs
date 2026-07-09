@@ -12,8 +12,7 @@ const REVIEWER: &str = include_str!("../docs/pod-config/pod-config-reviewer.toml
 const CHAIR: &str = include_str!("../docs/pod-config/pod-config-chair.toml");
 const APP_TEMPLATE: &str = include_str!("../zeabur-template-app-1E1Y97.yaml");
 const PAT_TEMPLATE: &str = include_str!("../zeabur-template-pat-Z7TQIR.yaml");
-const BOT_CONFIG_GOLDEN: &str =
-    include_str!("golden/bot_config/chair-claude-externalized.toml");
+const BOT_CONFIG_GOLDEN: &str = include_str!("golden/bot_config/chair-claude-externalized.toml");
 
 /// The doc as it appears inside the templates' `template: |` block scalar
 /// (14-space indent, blank lines stay empty). Same convention as

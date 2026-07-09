@@ -5,6 +5,27 @@ pub mod webhook;
 
 use crate::coordinator::{Coordinator, Ctx, QuorumCouncil, StructuredVerdict};
 
+pub(crate) fn configured_bot_handle() -> Option<String> {
+    std::env::var("OABCP_BOT_HANDLE")
+        .ok()
+        .and_then(|raw| normalize_bot_handle(&raw))
+}
+
+fn normalize_bot_handle(raw: &str) -> Option<String> {
+    let handle = raw.trim().trim_start_matches('@').trim();
+    if handle.is_empty() {
+        None
+    } else {
+        Some(handle.to_string())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn bot_handle_env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 /// PR-review council lifecycle: same quorum/close policy as `QuorumCouncil`, but
 /// the chair is also prompted on the opening trigger so it can create the
 /// in-progress PR comment before reviewers finish.
