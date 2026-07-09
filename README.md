@@ -238,3 +238,7 @@ credentials.
 For fast webhook development without deploying to Zeabur, run OCP on Docker
 Desktop Kubernetes and expose it through a temporary Cloudflare Tunnel. See
 [docs/local-development.md](docs/local-development.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
