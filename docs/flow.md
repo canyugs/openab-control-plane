@@ -50,7 +50,7 @@ North API / SSE  <->  control-plane  <->  SQLite
    assigned review angles.
 4. **Fanout / starters** — every roster member receives the trigger for history.
    For `review_council`, the chair and reviewers are @mentioned on the opening
-   trigger. The chair's opening turn posts/updates a short "OpenAB Council review
+   trigger. The chair's opening turn posts/updates a short "Review Council
    started" PR status comment and does not send `[done]`; reviewers start
    fetching the diff.
 5. **Review** — reviewers post findings and signal done with `[done]` or the

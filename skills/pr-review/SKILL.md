@@ -111,7 +111,7 @@ Opening turn:
    docs/steering/pr-review.md and issue #159) with:
 
    ```markdown
-   OpenAB Council review started.
+   Review Council started.
 
    The council is reviewing this PR. This comment will be updated with the final verdict.
    ```
@@ -138,10 +138,10 @@ Quorum turn:
 
    ```sh
    gh pr review N --repo owner/repo --approve \
-     --body "OpenAB Council: approved — see the review comment for details."
+     --body "Review Council: approved — see the review comment for details."
    # or, when there are 🔴 findings:
    gh pr review N --repo owner/repo --request-changes \
-     --body "OpenAB Council: changes requested — see the review comment for details."
+     --body "Review Council: changes requested — see the review comment for details."
    ```
 
    If the review submission fails (e.g. GitHub refuses a self-review), say so

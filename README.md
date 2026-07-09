@@ -37,7 +37,7 @@ The dogfood path is GitHub webhook driven:
 2. OCP opens a `review_council` session with `chair`, `rev1`, `rev2`.
 3. The trigger is a PR pointer, not an inlined diff. Bots self-fetch the PR.
 4. The chair and reviewers are mentioned. The chair posts/updates a short
-   "OpenAB Council review started" PR status comment from its pod; reviewers
+   "Review Council started" PR status comment from its pod; reviewers
    produce findings.
 5. Reviewer `[done]` / `🆗` counts toward quorum.
 6. After reviewer quorum, OCP prompts the chair.

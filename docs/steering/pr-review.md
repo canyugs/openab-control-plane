@@ -98,7 +98,7 @@ Post exactly one reviewer verdict. After a message ending in `[done]`, do not
 send follow-up findings, clarifications, or duplicate verdicts unless OCP opens a
 new session.
 
-Re-review protocol: if an OpenAB Council verdict comment exists on the PR (a
+Re-review protocol: if a Review Council verdict comment exists on the PR (a
 comment whose body starts with `<!-- openab-council -->`), read it and any
 author fix-note comments before reviewing. Parse its `Reviewed at <sha>` line
 and open F-numbered findings. After checkout, run
@@ -167,7 +167,7 @@ Opening turn:
 
    ```markdown
    <!-- openab-council -->
-   OpenAB Council review started (round R).
+   Review Council started (round R).
 
    Baseline:
    - Scope: ...
@@ -223,10 +223,10 @@ Quorum turn:
 
    ```sh
    gh pr review N --repo owner/repo --approve \
-     --body "OpenAB Council: approved — see the review comment."
+     --body "Review Council: approved — see the review comment."
    # or, when there are 🔴 findings:
    gh pr review N --repo owner/repo --request-changes \
-     --body "OpenAB Council: changes requested — see the review comment."
+     --body "Review Council: changes requested — see the review comment."
    ```
 
    If the review submission is refused (e.g. a self-review), note it in your
