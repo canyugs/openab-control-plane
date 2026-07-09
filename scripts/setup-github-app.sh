@@ -125,6 +125,21 @@ sync_plane_vars() {
     echo "warn: npx not found; skip plane variable sync" >&2
     return 0
   }
+  # ADR 019 D1: the App private key lives on the PLANE, never on a bot pod. Store
+  # the PKCS#8 PEM base64-encoded — a single line the plane's normalize_pem decodes
+  # back to a PEM (jsonwebtoken's rust_crypto backend needs valid RSA DER). Convert
+  # + validate FIRST, before pushing anything, so an openssl failure can't leave the
+  # plane half-provisioned (new handle/secret but a stale or missing key).
+  #
+  # NOTE (trust boundary): the Zeabur CLI takes values as argv (`-k "K=V"`), so every
+  # secret set below — the webhook secret AND this key — is briefly visible in
+  # /proc/<pid>/cmdline while the command runs. Run setup on a single-user, trusted
+  # machine; the `.pem` is already local to that machine, so this adds no new at-rest
+  # exposure, only a short argv window.
+  local key_b64
+  key_b64=$(openssl pkcs8 -topk8 -nocrypt -in "$KEY_PATH" 2>/dev/null | base64 | tr -d '\n')
+  [[ -n "$key_b64" ]] || die "PKCS#8 conversion of $KEY_PATH failed (is openssl installed?)"
+
   if [[ "$SYNC_PLANE_WEBHOOK_SECRET" == "1" ]]; then
     npx zeabur@latest variable update --id "$PLANE_SERVICE_ID" \
       -k "GITHUB_WEBHOOK_SECRET=$WEBHOOK_SECRET" -y -i=false >/dev/null 2>&1 || \
@@ -135,11 +150,6 @@ sync_plane_vars() {
     -k "OABCP_BOT_HANDLE=$BOT_HANDLE" -y -i=false >/dev/null 2>&1 || \
   npx zeabur@latest variable create --id "$PLANE_SERVICE_ID" \
     -k "OABCP_BOT_HANDLE=$BOT_HANDLE" -y -i=false >/dev/null
-  # ADR 019 D1: the App private key lives on the PLANE, never on a bot pod. Store
-  # the PKCS#8 PEM base64-encoded — a single CLI-safe line the plane's normalize_pem
-  # decodes back to a PEM (jsonwebtoken's rust_crypto backend needs valid RSA DER).
-  local key_b64
-  key_b64=$(openssl pkcs8 -topk8 -nocrypt -in "$KEY_PATH" 2>/dev/null | base64 | tr -d '\n')
   for kv in "GITHUB_APP_ID=$APP_ID" \
             "GITHUB_APP_INSTALLATION_ID=$INSTALLATION_ID" \
             "GITHUB_APP_PRIVATE_KEY=$key_b64"; do
