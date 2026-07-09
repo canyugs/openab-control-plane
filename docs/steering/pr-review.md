@@ -135,57 +135,58 @@ security, data loss, or broken workflow blockers; `🟡` for non-blocking issues
 
 ## Chair
 
-The chair is the only GitHub writer. Maintain the council PR comment.
+The chair is the only GitHub writer. Each review round owns exactly one
+comment: the opening turn posts a new marked comment for the round, and the
+quorum turn edits that same comment into the round's verdict. Prior rounds'
+verdict comments are history — never edit or overwrite them; the PR timeline
+must show when each round happened and what it said.
 Every council-owned PR comment body must start with this exact first line:
 
 ```markdown
 <!-- openab-council -->
 ```
 
-Before any `--edit-last`, list your own PR comments and verify that the most
-recent one starts with `<!-- openab-council -->`. If the most recent own comment
-is missing, is not visible, or does not start with the marker (for example, a
-`/ask` answer was posted after the verdict), do not use `--edit-last`; post a
-new marked comment instead.
+`--edit-last` is only for turning this round's in-progress comment into its
+verdict. Before any `--edit-last`, list your own PR comments and verify that
+the most recent one starts with `<!-- openab-council -->` and is the
+in-progress comment posted this round (not a prior round's verdict). If it is
+missing, not visible, unmarked, or a prior round's verdict (for example, a
+`/ask` answer was posted after it), do not use `--edit-last`; post a new
+marked comment instead.
 
 Opening turn:
 
 1. Read the PR diff and CI status. Establish a concise baseline before
    delegating: change scope, current CI/checks state, and important PR/body
    cross-references.
-2. Write `/tmp/verdict-N.md` (N = the PR number: concurrent councils share
+2. Determine the round number R: count your own existing marked comments on
+   the PR, R = that count + 1.
+3. Write `/tmp/verdict-N.md` (N = the PR number: concurrent councils share
    the pod's `/tmp`, so a fixed filename races across sessions — issue #159)
    with this body and fill the `Baseline` block with 2-4 short lines:
 
    ```markdown
    <!-- openab-council -->
-   OpenAB Council review started.
+   OpenAB Council review started (round R).
 
    Baseline:
    - Scope: ...
    - CI/checks: ...
    - Cross-refs: ...
 
-   The council is reviewing this PR. This comment will be updated with the final verdict.
+   The council is reviewing this PR. This comment will be updated with this round's verdict.
    ```
 
-3. Re-review case: if a council verdict comment already exists on the PR (detect
-   by the marker line), fetch its current body, prepend the in-progress status
-   above the retained prior verdict, and write that combined body to
-   `/tmp/verdict-N.md`. This lets round-N reviewers self-fetch the round-N-1
-   ledger; never overwrite the prior verdict.
-4. If the latest own comment starts with the marker, run:
-
-   ```sh
-   gh pr comment N --repo owner/repo --edit-last --create-if-none --body-file /tmp/verdict-N.md
-   ```
-
-   Otherwise post a new marked comment:
+4. Post it as a new comment — never `--edit-last` on the opening turn; prior
+   rounds' verdicts stay untouched in the timeline:
 
    ```sh
    gh pr comment N --repo owner/repo --body-file /tmp/verdict-N.md
    ```
 
+   Re-review case: the prior round's verdict comment remains on the PR as-is;
+   round-R reviewers self-fetch the round-R-1 ledger from it. Never overwrite
+   a prior verdict.
 5. Reply in the OpenAB thread with a short status only. Do not do a full review
    and do not end with `[done]` yet.
 
@@ -197,7 +198,7 @@ Quorum turn:
    SHA=$(gh pr view N --repo owner/repo --json headRefOid -q .headRefOid)
    ```
 
-   Put `Reviewed at <sha>` directly under the verdict headline. If the head has
+   Put `Reviewed at <sha> (round R)` directly under the verdict headline. If the head has
    advanced since the reviews in this round were written, also add
    `Head has advanced since this review — push or comment /review to re-run.`
    immediately after the `Reviewed at` line. Label-and-post even when the head

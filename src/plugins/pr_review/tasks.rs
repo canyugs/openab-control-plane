@@ -346,23 +346,23 @@ mod tests {
         assert!(chair_text.contains(
             "Every council-owned PR comment body MUST start with this exact first line:\n  <!-- openab-council -->"
         ));
-        assert!(chair_text.contains("<!-- openab-council -->\n     OpenAB Council review started."));
+        assert!(chair_text
+            .contains("<!-- openab-council -->\n     OpenAB Council review started (round N)."));
         assert!(chair_text.contains("<!-- openab-council -->\n       LGTM"));
     }
 
     #[test]
-    fn chair_task_preserves_ledger_on_rereview() {
+    fn chair_task_posts_new_comment_per_round() {
         let session = test_session(Some("chair"), "review_council");
         let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"";
 
         let chair_text = review_recipient_text(&session, "chair", trigger);
 
-        assert!(chair_text.contains("If a council verdict comment already exists"));
-        assert!(chair_text.contains("fetch its current body"));
-        assert!(
-            chair_text.contains("prepend the in-progress status above the retained prior verdict")
-        );
-        assert!(chair_text.contains("never overwrite the prior verdict"));
+        assert!(chair_text.contains("Each review ROUND owns exactly one comment"));
+        assert!(chair_text.contains("never edit or overwrite them"));
+        assert!(chair_text.contains("Determine the round number N"));
+        assert!(chair_text.contains("round-N reviewers self-fetch the round-N-1 ledger"));
+        assert!(chair_text.contains("Never overwrite a prior verdict"));
     }
 
     #[test]
