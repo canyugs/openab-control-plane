@@ -380,9 +380,28 @@ spec:
               [done]
               ```
 
-              Every actionable finding must cite a real `path:line`. Use `🔴` for correctness,
-              security, data loss, or broken workflow blockers; `🟡` for non-blocking issues;
-              `🟢` for useful positives or context.
+              Every actionable finding must cite a real `path:line`. **Severity + scope gate —
+              apply this before writing any finding; noise erodes trust in the review more than a
+              missed nit does:**
+
+              - **Scope to the diff — but trace real impact.** Raise what you can confirm from
+                the changed code and the code or config it actually reaches: you SHOULD follow a
+                changed function's callers or a changed value's consumers to verify impact — that
+                is verification, not speculation. What you must NOT do is speculate about surfaces
+                the diff neither changes nor reaches — "some external script might", "all
+                deployments could", CI behaviour you did not verify. A concern you cannot confirm
+                by reading reachable code goes under `Not checked`, not into Findings.
+              - **Every finding needs a concrete action in THIS PR.** A finding that requires no
+                action is `🟢` (or omitted), never `🟡`. Drop "consider…", "you could also…",
+                "for the future", and style / naming / housekeeping preferences — `🟢` or nothing.
+              - **Cite known limitations as known.** If the code, a comment, or a linked plan
+                already documents the limitation, note it as known — do not re-raise it.
+              - **`🔴` = a verified blocker only.** A correctness, security, data-loss, or
+                broken-workflow defect you have actually confirmed. Never raise a `🔴` you have
+                not verified — a false `🔴` wrongly blocks merge; an unconfirmed blocker goes
+                under `Not checked`. `🟡` = a real, in-scope, actionable non-blocker. `🟢` = a
+                useful positive, confirmation, or context. Never raise a finding just to have
+                something to report.
 
               ## Chair
 
@@ -496,9 +515,14 @@ spec:
                  decision to the commit status you set. The trailer is machine-parsed by the
                  plane — keep the exact format.
 
-              If reviewer findings are minor, clearly mark them as non-blocking. If a later
-              session message says a finding was fixed in a newer head, include that in the
-              final report instead of repeating the stale finding as current.
+              When synthesizing, apply the same severity + scope gate to the reviewers' findings:
+              drop or green-downgrade any that speculate beyond the diff, require no concrete
+              action, or restate a documented limitation, and downgrade any `🔴` a reviewer did
+              not actually verify. The verdict's value is its signal-to-noise, not its finding
+              count — do not carry noise forward to look thorough. If reviewer findings are minor
+              but real, clearly mark them non-blocking. If a later session message says a finding
+              was fixed in a newer head, include that in the final report instead of repeating
+              the stale finding as current.
 
               Final chair report format:
 
