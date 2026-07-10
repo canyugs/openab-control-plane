@@ -165,6 +165,15 @@ author's `author_association` is `OWNER | MEMBER | COLLABORATOR`, or a maintaine
 has applied an explicit opt-in label. Fork PRs from unassociated authors do not
 auto-convene; a maintainer opts them in per PR.
 
+> **Landed (2026-07-10):** `webhook.rs::parse_trigger` now gates the `pull_request`
+> arm on `auto_review_allowed = can_command(author_association) ||
+> has_review_opt_in_label`. The opt-in label is **`oab-review`** (a plain label,
+> distinct from the `review:<preset>` namespace; only write users can apply labels,
+> so its presence is the maintainer trust signal). **Behavior change (release-note
+> like S8/S13):** an external fork PR from a non-member author no longer gets an
+> automatic review — a maintainer adds the `oab-review` label (or comments `/review`,
+> already author-gated) to opt it in. Internal / member PRs are unaffected.
+
 ### D3 — Fork PRs are read-only (defense in depth for C2)
 
 When `head.repo` differs from `base.repo`, the session gets **no write-scoped
