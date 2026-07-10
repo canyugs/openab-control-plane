@@ -133,11 +133,13 @@ Every actionable finding must cite a real `path:line`. **Severity + scope gate �
 apply this before writing any finding; noise erodes trust in the review more than a
 missed nit does:**
 
-- **Scope to the diff.** Only raise what you can verify from the changed code and
-  the files it touches. Do NOT speculate about what this PR does not change —
-  downstream consumers, other deployments, CI, external scripts, "all users". A
-  concern you cannot confirm from the code in front of you goes under `Not
-  checked`, not into Findings.
+- **Scope to the diff — but trace real impact.** Raise what you can confirm from
+  the changed code and the code or config it actually reaches: you SHOULD follow a
+  changed function's callers or a changed value's consumers to verify impact — that
+  is verification, not speculation. What you must NOT do is speculate about surfaces
+  the diff neither changes nor reaches — "some external script might", "all
+  deployments could", CI behaviour you did not verify. A concern you cannot confirm
+  by reading reachable code goes under `Not checked`, not into Findings.
 - **Every finding needs a concrete action in THIS PR.** A finding that requires no
   action is `🟢` (or omitted), never `🟡`. Drop "consider…", "you could also…",
   "for the future", and style / naming / housekeeping preferences — `🟢` or nothing.
