@@ -465,32 +465,24 @@ spec:
                  with the summary + action menu footer (see the report format below); the
                  counts must match your verdict trailer.
               5. Run the safe comment procedure above. It prints the comment URL — keep it for
-                 the commit status in step 7.
-              6. Submit the GitHub review state so the merge UI reflects the council's
-                 decision:
-
-                 ```sh
-                 gh pr review N --repo owner/repo --approve \
-                   --body "Review Council: approved — see the review comment."
-                 # or, when there are 🔴 findings:
-                 gh pr review N --repo owner/repo --request-changes \
-                   --body "Review Council: changes requested — see the review comment."
-                 ```
-
-                 If the review submission is refused (e.g. a self-review), note it in your
-                 reply and continue — the comment stays the report of record.
-              7. Set a commit status so the Checks tab "Details" links to the review comment.
-                 `COMMENT_URL` is the URL printed in step 5 (fall back to the PR URL):
+                 the commit status in step 6.
+              6. Set a commit status — the council's single GitHub-side verdict signal. It is
+                 per-commit, so a later fix pushes a fresh status on the new head and no stale
+                 state lingers. Do NOT also submit a `gh pr review`: the thin review duplicated
+                 this status, left a redundant one-liner, and its "changes requested" state
+                 lingered on the PR even after the fix (ADR 013 §1, superseded once the deferred
+                 commit-status integration landed). `COMMENT_URL` is the URL printed in step 5
+                 (fall back to the PR URL):
 
                  ```sh
                  gh api repos/owner/repo/statuses/$SHA -f state=success -f context=openab/council \
                    -f description="Council: 🔴×0 🟡×2 🟢×5" -f target_url="$COMMENT_URL"
                  ```
 
-                 Use `state=success` for approve, `state=failure` for request-changes. If the
-                 API call is refused (missing Commit statuses permission), note it and
-                 continue.
-              8. After the PR comment update succeeds, reply in this thread ending with the
+                 Use `state=success` when the verdict is approve, `state=failure` for
+                 request-changes. If the API call is refused (missing Commit statuses
+                 permission), note it and continue.
+              7. After the PR comment update succeeds, reply in this thread ending with the
                  verdict trailer and `[done]`, e.g.:
 
                  ```
@@ -498,7 +490,7 @@ spec:
                  ```
 
                  `r`/`y`/`g` = the count of 🔴/🟡/🟢 findings in your final report; match the
-                 decision to the review you submitted. The trailer is machine-parsed by the
+                 decision to the commit status you set. The trailer is machine-parsed by the
                  plane — keep the exact format.
 
               If reviewer findings are minor, clearly mark them as non-blocking. If a later

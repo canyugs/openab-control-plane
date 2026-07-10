@@ -294,7 +294,12 @@ mod tests {
         let chair_text = review_recipient_text(&session, "chair", trigger);
 
         assert!(chair_text.contains("💬 Comment `@<bot-handle> <question>` for a follow-up"));
-        assert!(chair_text.contains("gh pr review 53 --repo canyugs/openab-control-plane"));
+        // The commit status is the single GitHub-side verdict signal; the chair must
+        // NOT also submit a thin review (ADR 013 §1, superseded — it duplicated the
+        // status and left a stale "changes requested" review after fixes). Guard the
+        // actual submission flags, not prose that may name the command.
+        assert!(!chair_text.contains("--approve"));
+        assert!(!chair_text.contains("--request-changes"));
         assert!(chair_text.contains("gh api repos/canyugs/openab-control-plane/statuses/$SHA"));
         assert!(chair_text.contains("[[verdict:request_changes r=1 y=3 g=5]] [done]"));
     }
