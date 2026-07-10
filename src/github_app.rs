@@ -60,10 +60,16 @@ impl Role {
 
     /// GitHub installation-token permission scope for this role. The point of
     /// per-role scoping: a leaked reviewer token physically cannot write to a PR.
-    /// Matches the App perms in ROADMAP: `pull_requests:write`, `contents:read`.
+    /// Chair gets `pull_requests:write` (comments/labels), `contents:read`
+    /// (checkout), and `statuses:write`. The chair sets the `openab/council` commit
+    /// status, which is the single GitHub-side verdict signal (ADR 013 §1 as
+    /// amended); without `statuses:write` that `POST /statuses/{sha}` returns 403
+    /// "Resource not accessible by integration" and the verdict has no check signal.
     pub fn permissions(&self) -> Value {
         match self {
-            Role::Chair => json!({ "pull_requests": "write", "contents": "read" }),
+            Role::Chair => {
+                json!({ "pull_requests": "write", "contents": "read", "statuses": "write" })
+            }
             Role::Reviewer => json!({ "pull_requests": "read", "contents": "read" }),
         }
     }
@@ -299,6 +305,10 @@ mod tests {
         // neither role gets contents:write — we never push code.
         assert_eq!(Role::Chair.permissions()["contents"], "read");
         assert_eq!(Role::Reviewer.permissions()["contents"], "read");
+        // The chair sets the openab/council commit status (the single verdict
+        // signal); without statuses:write that POST 403s. Reviewers never do.
+        assert_eq!(Role::Chair.permissions()["statuses"], "write");
+        assert_eq!(Role::Reviewer.permissions()["statuses"], serde_json::Value::Null);
     }
 
     #[test]
