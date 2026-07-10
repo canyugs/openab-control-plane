@@ -1,6 +1,24 @@
 # ADR 013 — Decision→review-state: structured verdict + GitHub review as source of truth
 
-Status: **accepted** · 2026-07-02
+Status: **accepted** · 2026-07-02 · **§1 amended 2026-07-09** (thin GitHub review
+dropped — see Amendment below)
+
+> **Amendment (2026-07-09) — §1 thin GitHub review removed; commit status is the
+> single GitHub-side verdict signal.** §1 introduced a thin `gh pr review
+> --approve|--request-changes` *because at the time there was no other merge-UI
+> signal* — this ADR explicitly **Deferred** "Commit status / Checks integration".
+> That deferred item has since landed (the chair sets `openab/council` commit
+> status with a `target_url` to the report comment). Running both left two defects:
+> the review carried a redundant `"… — see the review comment"` one-liner, and a
+> `request-changes` review **lingers per-PR** (GitHub keeps it in the timeline until
+> superseded/dismissed) so a fixed PR still showed a stale "changes requested"
+> state. The commit status is the better primitive: it is **per-commit**, so a fix
+> pushes a fresh `success` on the new head and nothing stale remains. The chair now
+> sets only the commit status and no longer submits a `gh pr review`. §2 (the
+> machine-readable `[[verdict:…]]` trailer — the *plane's* record) and §3–§5 are
+> unchanged. Repos that gated merges on the council's *review* should require the
+> `openab/council` *status check* instead (the per-commit primitive). Steering:
+> `scripts/pr-review-chair-task.tmpl` + `docs/steering/pr-review.md`.
 
 ## Context
 
