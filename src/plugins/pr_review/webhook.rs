@@ -75,6 +75,28 @@ fn can_command(author_association: &str) -> bool {
     matches!(author_association, "OWNER" | "MEMBER" | "COLLABORATOR")
 }
 
+/// A maintainer-applied label that opts an untrusted-author PR into auto-review
+/// (ADR 019 D2). Labels can only be set by users with write access, so the label's
+/// presence IS the trust signal — a maintainer has explicitly greenlit this PR.
+const REVIEW_OPT_IN_LABEL: &str = "oab-review";
+
+/// True if the PR's `labels` array carries the maintainer opt-in label. Distinct
+/// namespace from the `review:<preset>` labels so it never collides with a preset.
+fn has_review_opt_in_label(labels: &Value) -> bool {
+    labels
+        .as_array()
+        .is_some_and(|arr| arr.iter().any(|l| l["name"].as_str() == Some(REVIEW_OPT_IN_LABEL)))
+}
+
+/// ADR 019 D2 — gate `pull_request` auto-triggers on author trust. Unlike comment
+/// commands (`can_command`), the auto path had NO author gate: any external fork PR
+/// auto-convened the write-token council (C1). Now an auto-review runs only for a
+/// write-ish author OR a PR a maintainer opted in via the label. Fork PRs from
+/// unassociated authors no longer auto-convene.
+fn auto_review_allowed(author_association: &str, labels: &Value) -> bool {
+    can_command(author_association) || has_review_opt_in_label(labels)
+}
+
 /// Per-repo allowlist gate. `allowlist` = the `OABCP_ALLOWED_REPOS` value (comma-sep
 /// `owner/repo`). Unset/empty → allow all (opt-in, no regression). Pure for testing.
 fn repo_allowed(repo: &str, allowlist: Option<&str>) -> bool {
@@ -230,6 +252,13 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
             }
             let pr = &body["pull_request"];
             if action != "ready_for_review" && pr["draft"].as_bool() == Some(true) {
+                return None;
+            }
+            // ADR 019 D2: only auto-convene for a trusted author, or a PR a maintainer
+            // opted in via the label. An untrusted fork-PR author no longer gets a
+            // write-token council for free (C1).
+            let assoc = pr["author_association"].as_str().unwrap_or("");
+            if !auto_review_allowed(assoc, &pr["labels"]) {
                 return None;
             }
             Some(WebhookTrigger {
@@ -690,7 +719,7 @@ mod tests {
             "installation": { "id": 99 },
             "repository": { "full_name": "o/r" },
             "pull_request": {
-                "number": 7,
+                "author_association": "MEMBER", "number": 7,
                 "url": "https://api.github.com/repos/o/r/pulls/7",
                 "draft": false,
                 "head": { "sha": sha },
@@ -776,7 +805,7 @@ mod tests {
             "action": "opened",
             "installation": { "id": 99 },
             "repository": { "full_name": "canyugs/ocp" },
-            "pull_request": { "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7" }
+            "pull_request": { "author_association": "MEMBER", "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7" }
         });
         let t = parse_trigger("pull_request", &body).expect("should trigger");
         assert_eq!(t.repo, "canyugs/ocp");
@@ -787,13 +816,88 @@ mod tests {
         assert_eq!(t.preset, None); // no review:<preset> label
     }
 
+    // ADR 019 D2 — the pull_request auto path is author-gated.
+    fn opened_pr_payload(author_association: &str, labels: Value) -> Value {
+        json!({
+            "action": "opened",
+            "installation": { "id": 99 },
+            "repository": { "full_name": "canyugs/ocp" },
+            "pull_request": {
+                "author_association": author_association,
+                "number": 7,
+                "url": "https://api.github.com/repos/canyugs/ocp/pulls/7",
+                "labels": labels
+            }
+        })
+    }
+
+    #[test]
+    fn trusted_author_pr_auto_convenes() {
+        for a in ["OWNER", "MEMBER", "COLLABORATOR"] {
+            assert!(
+                parse_trigger("pull_request", &opened_pr_payload(a, json!([]))).is_some(),
+                "{a} PR should auto-convene"
+            );
+        }
+    }
+
+    #[test]
+    fn untrusted_author_pr_does_not_auto_convene() {
+        // C1 closed: a fork PR from an unassociated author no longer gets a free
+        // write-token council.
+        for a in ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", "MANNEQUIN", ""] {
+            assert!(
+                parse_trigger("pull_request", &opened_pr_payload(a, json!([]))).is_none(),
+                "{a} PR must NOT auto-convene without opt-in"
+            );
+        }
+    }
+
+    #[test]
+    fn untrusted_author_pr_with_opt_in_label_convenes() {
+        // A maintainer applied the label (only write users can label) → explicit opt-in.
+        let t = parse_trigger(
+            "pull_request",
+            &opened_pr_payload("NONE", json!([{ "name": "oab-review" }])),
+        )
+        .expect("opt-in label should let an untrusted-author PR convene");
+        assert_eq!(t.reason, "auto");
+        // an unrelated label does NOT opt in
+        assert!(parse_trigger(
+            "pull_request",
+            &opened_pr_payload("NONE", json!([{ "name": "enhancement" }]))
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn untrusted_author_synchronize_is_gated_too() {
+        let sync = |assoc: &str, labels: Value| {
+            json!({
+                "action": "synchronize",
+                "installation": { "id": 99 },
+                "repository": { "full_name": "canyugs/ocp" },
+                "pull_request": {
+                    "author_association": assoc,
+                    "number": 7,
+                    "url": "https://api.github.com/repos/canyugs/ocp/pulls/7",
+                    "draft": false,
+                    "labels": labels
+                }
+            })
+        };
+        assert!(parse_trigger("pull_request", &sync("NONE", json!([]))).is_none());
+        assert!(parse_trigger("pull_request", &sync("NONE", json!([{ "name": "oab-review" }]))).is_some());
+        assert!(parse_trigger("pull_request", &sync("MEMBER", json!([]))).is_some());
+    }
+
     #[test]
     fn pull_request_synchronize_triggers_auto_review() {
         let body = json!({
             "action": "synchronize",
             "installation": { "id": 99 },
             "repository": { "full_name": "canyugs/ocp" },
-            "pull_request": { "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7" }
+            "pull_request": { "author_association": "MEMBER", "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7" }
         });
         let t = parse_trigger("pull_request", &body).expect("should trigger");
         assert_eq!(t.repo, "canyugs/ocp");
@@ -808,7 +912,7 @@ mod tests {
             "action": "synchronize",
             "installation": { "id": 99 },
             "repository": { "full_name": "canyugs/ocp" },
-            "pull_request": { "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7", "draft": true }
+            "pull_request": { "author_association": "MEMBER", "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7", "draft": true }
         });
         assert!(parse_trigger("pull_request", &draft_sync).is_none());
 
@@ -816,7 +920,7 @@ mod tests {
             "action": "opened",
             "installation": { "id": 99 },
             "repository": { "full_name": "canyugs/ocp" },
-            "pull_request": { "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7", "draft": true }
+            "pull_request": { "author_association": "MEMBER", "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7", "draft": true }
         });
         assert!(parse_trigger("pull_request", &draft_opened).is_none());
 
@@ -824,7 +928,7 @@ mod tests {
             "action": "ready_for_review",
             "installation": { "id": 99 },
             "repository": { "full_name": "canyugs/ocp" },
-            "pull_request": { "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7", "draft": false }
+            "pull_request": { "author_association": "MEMBER", "number": 7, "url": "https://api.github.com/repos/canyugs/ocp/pulls/7", "draft": false }
         });
         assert_eq!(
             parse_trigger("pull_request", &ready)
@@ -840,7 +944,7 @@ mod tests {
         let pr = json!({
             "action": "opened",
             "repository": { "full_name": "o/r" },
-            "pull_request": { "number": 1, "url": "u", "labels": [{"name":"bug"},{"name":"review:full"}] }
+            "pull_request": { "author_association": "MEMBER", "number": 1, "url": "u", "labels": [{"name":"bug"},{"name":"review:full"}] }
         });
         assert_eq!(
             parse_trigger("pull_request", &pr)
@@ -867,7 +971,7 @@ mod tests {
         let none = json!({
             "action": "opened",
             "repository": { "full_name": "o/r" },
-            "pull_request": { "number": 1, "url": "u", "labels": [{"name":"enhancement"}] }
+            "pull_request": { "author_association": "MEMBER", "number": 1, "url": "u", "labels": [{"name":"enhancement"}] }
         });
         assert_eq!(parse_trigger("pull_request", &none).unwrap().preset, None);
     }
@@ -877,7 +981,7 @@ mod tests {
         let body = json!({
             "action": "closed",
             "repository": { "full_name": "canyugs/ocp" },
-            "pull_request": { "number": 7, "url": "u" }
+            "pull_request": { "author_association": "MEMBER", "number": 7, "url": "u" }
         });
         assert!(parse_trigger("pull_request", &body).is_none());
     }
