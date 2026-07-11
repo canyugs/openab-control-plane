@@ -87,6 +87,7 @@ then the features that need controller state, with eval keeping score.
    all merged).
 2. **Structured delta review (M4)** — findings table, machine findings block
    (Q3), `status` / `resolve Fn` / `help`, comment-by-ID lifecycle closing M3
+   ([ADR 020](adr/020-review-audit-effectiveness-ledger.md))
    structurally. This is the "更扎實" core: never-re-raise becomes a diff
    against ground truth instead of reviewer memory (Gen-1: 69% multi-round,
    findings re-discovered across 5 rounds).
