@@ -196,6 +196,27 @@ Re-seeding is idempotent (`INSERT OR IGNORE`): restarts and already-present bots
 are skipped, so tokens stay stable across reboots as long as the DB volume
 persists.
 
+## Applying changes: what's live vs needs a restart
+
+The plane is orchestrator-agnostic — it takes config from env vars, mounted files,
+its OCI image, and its own SQLite DB + HTTP API. Nothing here is tied to a specific
+platform; the properties below hold on k8s, compose, or a bare process.
+
+| Change | Applies | How |
+|---|---|---|
+| **Roster** (`/v1/council/roster` PUT/replace) | **live, no restart** | plane's own API; DB overrides `OABCP_COUNCIL_ROSTER`; in-flight sessions unaffected |
+| **Env var** (`OABCP_COUNCIL_PRESET`, `OABCP_*`) | needs a plane restart | the process environment is frozen at exec — the running plane won't see the new value until it re-execs |
+| **Plane image** (tag) | needs a plane restart | new binary only runs on a fresh process |
+| **Per-PR `review:<preset>` label** | live, no restart | read from the webhook payload at convene; no storage |
+
+"Restart needed for env changes" is inherent to config-via-env-var on **any**
+platform, not a plane limitation. A restart severs every bot websocket; bots
+reconnect in ~30–40s (they do **not** restart — only the plane process cycles) and
+any open session is dropped, so confirm no session is mid-flight before restarting.
+
+Platform-specific commands (Zeabur GraphQL ↔ `kubectl` equivalents for each axis)
+live in the ops repo's `docs/platform-ops.md`.
+
 ## Add / remove / replace a bot (change the standing council)
 
 Three things carry a bot's name and **must stay aligned**: `OABCP_BOTS` (seeds the
