@@ -143,6 +143,62 @@ pub(crate) fn render_rereview_task_context(ctx: &RereviewTriggerContext<'_>) -> 
     out
 }
 
+/// How the chair turns a verdict into a GitHub PR review (ADR 013 §1, revised).
+/// Env `OABCP_COUNCIL_REVIEW_MODE`, default `approve`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReviewMode {
+    /// Comment + commit status only; no formal `gh pr review` (the pre-#210+ behavior).
+    Status,
+    /// Approve → formal APPROVE review (counts toward required approvals); a
+    /// request_changes verdict stays comment + failure status (no hard merge block).
+    Approve,
+    /// Symmetric: approve → APPROVE, request_changes → REQUEST_CHANGES (blocks merge).
+    Enforce,
+}
+
+impl ReviewMode {
+    fn parse(s: &str) -> Option<ReviewMode> {
+        match s.trim() {
+            "status" => Some(ReviewMode::Status),
+            "approve" => Some(ReviewMode::Approve),
+            "enforce" => Some(ReviewMode::Enforce),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve the chair verdict-review mode from env. Unknown value → warn + default.
+fn review_mode() -> ReviewMode {
+    match std::env::var("OABCP_COUNCIL_REVIEW_MODE") {
+        Ok(v) if !v.trim().is_empty() => ReviewMode::parse(&v).unwrap_or_else(|| {
+            tracing::warn!(mode = %v,
+                "unknown OABCP_COUNCIL_REVIEW_MODE (want status|approve|enforce); using approve");
+            ReviewMode::Approve
+        }),
+        _ => ReviewMode::Approve,
+    }
+}
+
+/// The step-5b block substituted for `{{VERDICT_REVIEW}}` in the chair task.
+fn verdict_review_block(mode: ReviewMode, repo: &str, pr: &str) -> String {
+    let approve = format!(
+        "gh pr review {pr} --repo {repo} --approve --body \"Council verdict: LGTM ✅ — see the council comment above.\""
+    );
+    let request = format!(
+        "gh pr review {pr} --repo {repo} --request-changes --body \"Council verdict: CHANGES REQUESTED ⚠️ — see the council comment above.\""
+    );
+    match mode {
+        ReviewMode::Status =>
+            "  5b. Do NOT submit a `gh pr review` — the commit status above is the council's\n     sole GitHub-side verdict signal (a thin review duplicated it and left a stale\n     \"changes requested\" entry after fixes — see ADR 013).".to_string(),
+        ReviewMode::Approve => format!(
+            "  5b. On an APPROVE verdict, ALSO submit a formal approving review so it counts\n     toward branch-protection required approvals (like a human reviewer):\n       {approve}\n     On a request_changes verdict, do NOT submit a formal review — leave the council\n     comment + failure status only (no hard merge block)."
+        ),
+        ReviewMode::Enforce => format!(
+            "  5b. Submit a formal review matching the verdict:\n       approve         → {approve}\n       request_changes → {request}\n     A request_changes review blocks merge until a maintainer dismisses it."
+        ),
+    }
+}
+
 pub(crate) fn render_review_chair_task(repo: &str, pr: &str) -> String {
     let bot_mention = crate::plugins::pr_review::configured_bot_handle()
         .map(|handle| format!("@{handle}"))
@@ -155,6 +211,7 @@ fn render_review_chair_task_with_mention(repo: &str, pr: &str, bot_mention: &str
         .replace("{{REPO}}", repo)
         .replace("{{NUM}}", pr)
         .replace("{{BOT_MENTION}}", bot_mention)
+        .replace("{{VERDICT_REVIEW}}", &verdict_review_block(review_mode(), repo, pr))
 }
 
 pub(crate) fn render_review_reviewer_task(
@@ -286,22 +343,69 @@ mod tests {
         }
     }
 
+    /// Render the chair task under an explicit `OABCP_COUNCIL_REVIEW_MODE` (None =
+    /// unset → default). Holds the env lock; does not nest `with_bot_handle`.
+    fn render_chair_task(mode: Option<&str>) -> String {
+        let _guard = crate::plugins::pr_review::bot_handle_env_lock()
+            .lock()
+            .unwrap();
+        let old_handle = std::env::var("OABCP_BOT_HANDLE").ok();
+        let old_mode = std::env::var("OABCP_COUNCIL_REVIEW_MODE").ok();
+        std::env::remove_var("OABCP_BOT_HANDLE");
+        match mode {
+            Some(m) => std::env::set_var("OABCP_COUNCIL_REVIEW_MODE", m),
+            None => std::env::remove_var("OABCP_COUNCIL_REVIEW_MODE"),
+        }
+        let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"\n\nReview focus assignment:\n- rev1 → correctness";
+        let text = review_recipient_trigger_text(Some("chair"), "chair", trigger);
+        restore_env("OABCP_BOT_HANDLE", old_handle);
+        restore_env("OABCP_COUNCIL_REVIEW_MODE", old_mode);
+        text
+    }
+
     #[test]
     fn chair_task_carries_full_quorum_protocol() {
-        let session = test_session(Some("chair"), "review_council");
-        let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"\n\nReview focus assignment:\n- rev1 → correctness";
-
-        let chair_text = review_recipient_text(&session, "chair", trigger);
-
+        let chair_text = render_chair_task(None);
         assert!(chair_text.contains("💬 Comment `@<bot-handle> <question>` for a follow-up"));
-        // The commit status is the single GitHub-side verdict signal; the chair must
-        // NOT also submit a thin review (ADR 013 §1, superseded — it duplicated the
-        // status and left a stale "changes requested" review after fixes). Guard the
-        // actual submission flags, not prose that may name the command.
-        assert!(!chair_text.contains("--approve"));
-        assert!(!chair_text.contains("--request-changes"));
         assert!(chair_text.contains("gh api repos/canyugs/openab-control-plane/statuses/$SHA"));
         assert!(chair_text.contains("[[verdict:request_changes r=1 y=3 g=5]] [done]"));
+        assert!(!chair_text.contains("{{VERDICT_REVIEW}}"), "placeholder must be filled");
+    }
+
+    #[test]
+    fn chair_review_mode_default_is_approve_asymmetric() {
+        // Default (unset) → approve mode: formal APPROVE, but NO request-changes block.
+        let chair_text = render_chair_task(None);
+        assert!(chair_text.contains(
+            "gh pr review 53 --repo canyugs/openab-control-plane --approve"
+        ));
+        assert!(!chair_text.contains("--request-changes"));
+    }
+
+    #[test]
+    fn chair_review_mode_status_submits_no_review() {
+        let chair_text = render_chair_task(Some("status"));
+        assert!(!chair_text.contains("--approve"));
+        assert!(!chair_text.contains("--request-changes"));
+        assert!(chair_text.contains("Do NOT submit a `gh pr review`"));
+    }
+
+    #[test]
+    fn chair_review_mode_enforce_is_symmetric() {
+        let chair_text = render_chair_task(Some("enforce"));
+        assert!(chair_text.contains(
+            "gh pr review 53 --repo canyugs/openab-control-plane --approve"
+        ));
+        assert!(chair_text.contains(
+            "gh pr review 53 --repo canyugs/openab-control-plane --request-changes"
+        ));
+    }
+
+    #[test]
+    fn chair_review_mode_unknown_falls_back_to_approve() {
+        let chair_text = render_chair_task(Some("bogus"));
+        assert!(chair_text.contains("--approve"));
+        assert!(!chair_text.contains("--request-changes"));
     }
 
     #[test]
