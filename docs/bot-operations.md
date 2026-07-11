@@ -55,7 +55,9 @@ still decides admission.
 Current state:
 
 - The static path is first-boot `OABCP_BOTS` + `/bot-config/<name>`.
-- `POST /v1/bots` can register a bot identity and returns its gateway token.
+- `POST /v1/bots` can register a bot identity and returns its gateway token
+  (once — hash-only at rest). The id is a generated `bot_<uuid>`; `name` is
+  display-only. For a chosen id, register via discovery.
 - `GET /v1/bots` lists inventory metadata and standing-roster membership.
 - `POST /v1/bots/discover` can bootstrap or refresh a bot when
   `OABCP_BOT_DISCOVERY_TOKEN` is set.
@@ -271,17 +273,50 @@ Example: add `rev3`.
      -H "Authorization: Bearer $KEY" \
      -H "Content-Type: application/json" \
      -d '{"name":"rev3","role":"reviewer"}'
+   # → {"bot_id":"bot_<uuid>","token":"oabct_…","role":"reviewer"}
    ```
 
-   Or use discovery when you need a stable chosen id such as `rev3` for
-   `/bot-config/rev3`:
+   Two things this response means:
+
+   - **The gateway token appears exactly once, here.** The plane stores only its
+     hash — copy it into the pod's `OABCP_BOT_TOKEN` env now; there is no API to
+     read it back later. (You may also supply your own with `"token":"…"`,
+     ≥16 chars of `[A-Za-z0-9._-]`.)
+   - **`bot_id` is generated; `name` is only the display name.** The generated
+     `bot_<uuid>` is what rosters, session logs, and stream labels use. If you
+     want the id itself to be a chosen name like `rev3`, register via discovery
+     instead.
+
+   Use discovery when you need a stable chosen id such as `rev3`:
 
    ```sh
    curl -X POST "$PLANE/v1/bots/discover" \
      -H "Authorization: Bearer $OABCP_BOT_DISCOVERY_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"id":"rev3","role":"reviewer","provider":"codex","capabilities":["review"]}'
+   # → {"bot_id":"rev3","created":true,"config_url":"…/bot-config/rev3?agent=codex"}
    ```
+
+   Discovery needs `OABCP_BOT_DISCOVERY_TOKEN` set on the plane (env → plane
+   restart if it wasn't; unset → `403`). **The response does not include the
+   gateway token** — discovery is built for pods announcing themselves, which
+   then fetch `/bot-config/<id>` (legacy mode renders the token inline). When an
+   *operator* registers via discovery under externalized tokens
+   (`OABCP_EXTERNALIZE_TOKENS=1`, where `/bot-config` renders only
+   `${OABCP_BOT_TOKEN}`), the generated token is retrievable once from the plane
+   DB on the plane pod:
+
+   ```sh
+   # capture → set env in one pipeline; never print the token to the terminal
+   TOKEN=$(sqlite3 /data/plane.db "SELECT token_plain FROM bots WHERE id='rev3'")
+   # hand $TOKEN to your platform's env/secret setter (API call, not argv):
+   # e.g. Zeabur GraphQL createEnvironmentVariable(key: "OABCP_BOT_TOKEN", value: $TOKEN)
+   unset TOKEN
+   ```
+
+   A naked `SELECT` prints a live gateway token into terminal scrollback and
+   session logs — capture it into a variable and pass it through an API request
+   body (not a command-line argument), then drop it.
 
 2. Add the new id to the runtime standing roster:
 
@@ -426,10 +461,57 @@ Rollback:
    - Path A: stop the `-c <plane>/bot-config/<id>` run; point it back at its own config.
    - Path B: remove the `[gateway]` block from your config and restart it.
 
+## Replace Reviewers Blue-Green (zero downtime)
+
+Use this when replacing one or more reviewer providers on a live council and the
+current reviewers must keep serving reviews until the replacements are proven.
+The key property: **a bot that is registered and connected but not in the
+standing roster idles without joining any council**, so the new set can be
+built, authed, and smoke-tested invisibly, and the cutover is a single roster
+API call — no plane restart, no env change, in-flight sessions unaffected
+(the standing roster only shapes councils opened after the change).
+
+1. **Create the new reviewer services** (new bot ids, e.g. `rev-claude`), each
+   with its HOME volume and provider credentials from day one. Register each
+   identity on the plane (`POST /v1/bots`, reviewer role). Do **not** touch the
+   standing roster yet.
+2. **Verify they connect and idle**: `GET /v1/bots` shows them
+   `connected: true, rostered: false`. Live reviews keep running on the old set.
+3. **Prove the new set in isolation** with a per-session roster (does not change
+   the standing roster): `ROSTER='["chair","rev-claude",…]' open-council.sh
+   "<free-text task>"` — confirm every new bot responds and quorum closes.
+4. **Cut over** — either atomically:
+
+   ```sh
+   curl -X PUT "$PLANE/v1/council/roster" \
+     -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+     -d '{"roster":["chair","rev-claude","rev-codex"]}'
+   ```
+
+   or one bot at a time (observe a real review between steps):
+
+   ```sh
+   curl -X POST "$PLANE/v1/council/roster/replace" \
+     -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+     -d '{"old_bot_id":"rev1","new_bot_id":"rev-claude"}'
+   ```
+
+   Both validate before applying — empty roster or duplicate/empty ids → `400`,
+   unknown bot → `404`, misplaced chair → `409` (PUT); replace adds `409` for
+   "old bot not in roster" / "replacement already in roster" — take effect
+   immediately, and set `source: "override"` —
+   from then on the roster lives in the plane DB and `OABCP_BOTS` is fallback
+   only.
+5. **Rollback** is the same call with the old names — seconds, no rebuild.
+6. **Decommission** the old reviewer services only after the new set has passed
+   at least one real review.
+
 ## Replace A Reviewer Provider
 
 Use this when a model quota is exhausted or when you want to test another CLI
-without changing the council identity.
+without changing the council identity. This is an **in-place** swap — the bot is
+offline during the switch; prefer the blue-green flow above when the council
+must stay live.
 
 Example: replace `rev1` from Claude to Codex.
 
