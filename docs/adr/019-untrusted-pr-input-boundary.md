@@ -186,6 +186,16 @@ auto-convene; a maintainer opts them in per PR.
 > write-ish only — only the evidence source got authoritative. Also: applying the
 > `oab-review` label now convenes immediately (`labeled` action accepted for that
 > label only); before, the opt-in silently waited for the next push.
+>
+> **Amended (2026-07-11b) — same fallback for comment commands.** The identical
+> private-member/`CONTRIBUTOR` false-negative also hit the comment paths
+> (`/review`, `@mention` review, `/ask`), which gate on `can_command` alone: a
+> private member's `/review` was silently dropped. Those arms now defer the same
+> way — an untrusted-*looking* commenter (with a login) is carried as
+> `unverified_author` (the commenter's login, not the PR author's) into the same
+> `handle_webhook` live permission check. No login → nothing to verify → dropped
+> (fail-closed). The `/ask` token-spend gate is unchanged in effect — it now
+> lives in `handle_webhook` rather than `parse_trigger`.
 
 ### D3 — Fork PRs are read-only (defense in depth for C2)
 

@@ -73,10 +73,12 @@ struct MentionReviewCommand {
     from_scratch: bool,
 }
 
-/// Users allowed to command the bot via a comment (`/review`, `/ask`, `@mention`).
-/// Read from the webhook payload's `author_association` — no GitHub call. Write-ish
-/// roles only: anyone else's command is ignored (matters most for `/ask`, which spends
-/// tokens on demand — ADR 011).
+/// Users trusted to command the bot via a comment (`/review`, `/ask`, `@mention`)
+/// by the webhook payload's `author_association` alone — no GitHub call. Write-ish
+/// roles only. A commenter this rejects is NOT dropped outright: because a private-org
+/// member renders as CONTRIBUTOR here (ADR 019 D2), an untrusted-looking commenter is
+/// deferred to a live permission check in `handle_webhook` (via `unverified_author`).
+/// Matters most for `/ask`, which spends tokens on demand — ADR 011.
 fn can_command(author_association: &str) -> bool {
     matches!(author_association, "OWNER" | "MEMBER" | "COLLABORATOR")
 }
@@ -319,9 +321,15 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
             let cmd = comment.trim();
             if starts_with_slash_command(cmd, "/review") {
                 let assoc = body["comment"]["author_association"].as_str().unwrap_or("");
-                if !can_command(assoc) {
-                    return None;
-                }
+                // ADR 019 D2: a private-org member renders as CONTRIBUTOR here too, so
+                // an untrusted-looking commenter is deferred to the live permission
+                // check in `handle_webhook` instead of dropped. No login → nothing to
+                // verify → not a trigger (fail-closed).
+                let unverified_author = if can_command(assoc) {
+                    None
+                } else {
+                    Some(body["comment"]["user"]["login"].as_str()?.to_string())
+                };
                 return Some(WebhookTrigger {
                     repo,
                     pr_number,
@@ -339,15 +347,21 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                     comment_id: body["comment"]["id"].as_u64(),
                     review_notes: None,
                     review_from_scratch: false,
-                    unverified_author: None,
+                    unverified_author,
                 });
             }
             if let Some(review) = parse_mention_review_comment(comment, mention_handle().as_deref())
             {
                 let assoc = body["comment"]["author_association"].as_str().unwrap_or("");
-                if !can_command(assoc) {
-                    return None;
-                }
+                // ADR 019 D2: a private-org member renders as CONTRIBUTOR here too, so
+                // an untrusted-looking commenter is deferred to the live permission
+                // check in `handle_webhook` instead of dropped. No login → nothing to
+                // verify → not a trigger (fail-closed).
+                let unverified_author = if can_command(assoc) {
+                    None
+                } else {
+                    Some(body["comment"]["user"]["login"].as_str()?.to_string())
+                };
                 return Some(WebhookTrigger {
                     repo,
                     pr_number,
@@ -363,7 +377,7 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                     comment_id: body["comment"]["id"].as_u64(),
                     review_notes: Some(review.notes),
                     review_from_scratch: review.from_scratch,
-                    unverified_author: None,
+                    unverified_author,
                 });
             }
             // Conversational follow-up (ADR 011): `/ask` or an `@mention` of the bot,
@@ -371,9 +385,15 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
             // only a write-ish commenter may ask; everyone else is ignored.
             if let Some(question) = parse_ask_comment(comment, mention_handle().as_deref()) {
                 let assoc = body["comment"]["author_association"].as_str().unwrap_or("");
-                if !can_command(assoc) {
-                    return None;
-                }
+                // ADR 019 D2: a private-org member renders as CONTRIBUTOR here too, so
+                // an untrusted-looking commenter is deferred to the live permission
+                // check in `handle_webhook` instead of dropped. No login → nothing to
+                // verify → not a trigger (fail-closed).
+                let unverified_author = if can_command(assoc) {
+                    None
+                } else {
+                    Some(body["comment"]["user"]["login"].as_str()?.to_string())
+                };
                 return Some(WebhookTrigger {
                     repo,
                     pr_number,
@@ -389,7 +409,7 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                     comment_id: body["comment"]["id"].as_u64(),
                     review_notes: None,
                     review_from_scratch: false,
-                    unverified_author: None,
+                    unverified_author,
                 });
             }
             None
@@ -477,7 +497,7 @@ pub async fn handle_webhook(
         };
         if !verified {
             tracing::info!(repo = %trigger.repo, pr = trigger.pr_number, author = login,
-                "auto-review denied: author not write-ish (payload + live check)");
+                "review denied: author not write-ish (payload + live check)");
             return Ok(Json(
                 json!({ "ok": true, "triggered": false, "reason": "author_not_trusted" }),
             )
@@ -1146,27 +1166,34 @@ mod tests {
     }
 
     #[test]
-    fn review_command_is_gated_to_write_user() {
-        let body = |assoc: &str| {
+    fn review_command_defers_untrusted_commenter_to_live_check() {
+        let body = |assoc: &str, login: Option<&str>| {
+            let mut comment = json!({ "body": "/review please", "author_association": assoc });
+            if let Some(l) = login {
+                comment["user"] = json!({ "login": l });
+            }
             json!({
                 "action": "created",
                 "repository": { "full_name": "canyugs/ocp" },
                 "issue": { "number": 12, "pull_request": { "url": "u" } },
-                "comment": { "body": "/review please", "author_association": assoc }
+                "comment": comment
             })
         };
-        assert!(parse_trigger("issue_comment", &body("COLLABORATOR")).is_some());
-        assert!(parse_trigger("issue_comment", &body("OWNER")).is_some());
-        assert!(parse_trigger("issue_comment", &body("CONTRIBUTOR")).is_none());
-        assert!(parse_trigger("issue_comment", &body("NONE")).is_none());
-
-        let missing_assoc = json!({
-            "action": "created",
-            "repository": { "full_name": "canyugs/ocp" },
-            "issue": { "number": 12, "pull_request": { "url": "u" } },
-            "comment": { "body": "/review please" }
-        });
-        assert!(parse_trigger("issue_comment", &missing_assoc).is_none());
+        // Trusted association → convene, no live check needed.
+        for a in ["COLLABORATOR", "OWNER"] {
+            let t = parse_trigger("issue_comment", &body(a, None))
+                .unwrap_or_else(|| panic!("{a} /review should convene"));
+            assert_eq!(t.unverified_author, None, "{a} needs no live check");
+        }
+        // Untrusted-looking WITH a login → defer to the live permission check (ADR 019
+        // D2: a private-org member renders as CONTRIBUTOR here too, must not be dropped).
+        for a in ["CONTRIBUTOR", "NONE", ""] {
+            let t = parse_trigger("issue_comment", &body(a, Some("some-commenter")))
+                .unwrap_or_else(|| panic!("{a} /review should defer, not drop"));
+            assert_eq!(t.unverified_author.as_deref(), Some("some-commenter"));
+        }
+        // Untrusted-looking with NO login → nothing to verify → dropped (fail-closed).
+        assert!(parse_trigger("issue_comment", &body("NONE", None)).is_none());
 
         let different_command = json!({
             "action": "created",
@@ -1258,22 +1285,33 @@ mod tests {
 
     #[test]
     fn ask_command_triggers_for_write_user_and_is_gated() {
-        let body = |assoc: &str| {
+        let body = |assoc: &str, login: Option<&str>| {
+            let mut comment = json!({ "id": 555, "body": "/ask why P1?", "author_association": assoc });
+            if let Some(l) = login {
+                comment["user"] = json!({ "login": l });
+            }
             json!({
                 "action": "created",
                 "repository": { "full_name": "canyugs/ocp" },
                 "issue": { "number": 12, "pull_request": { "url": "u" } },
-                "comment": { "id": 555, "body": "/ask why P1?", "author_association": assoc }
+                "comment": comment
             })
         };
         // a collaborator's /ask → an ask trigger carrying the question + comment id
-        let t = parse_trigger("issue_comment", &body("COLLABORATOR")).expect("write user asks");
+        let t = parse_trigger("issue_comment", &body("COLLABORATOR", None)).expect("write user asks");
         assert_eq!(t.reason, "ask");
         assert_eq!(t.question.as_deref(), Some("why P1?"));
         assert_eq!(t.comment_id, Some(555));
         assert_eq!(t.pr_number, 12);
-        // a non-write commenter's /ask is ignored (token-spend gate)
-        assert!(parse_trigger("issue_comment", &body("NONE")).is_none());
+        assert_eq!(t.unverified_author, None, "trusted asker needs no live check");
+        // an untrusted-looking /ask WITH a login → deferred to the live check; the
+        // token-spend gate now lives in handle_webhook, not parse (private members).
+        let t = parse_trigger("issue_comment", &body("NONE", Some("asker")))
+            .expect("untrusted-looking /ask defers");
+        assert_eq!(t.reason, "ask");
+        assert_eq!(t.unverified_author.as_deref(), Some("asker"));
+        // no login → nothing to verify → dropped (fail-closed).
+        assert!(parse_trigger("issue_comment", &body("NONE", None)).is_none());
     }
 
     #[test]
