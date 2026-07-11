@@ -51,15 +51,15 @@ Quorum turn:
        🔴×1 🟡×3 🟢×5 · 💬 Comment `{{BOT_MENTION}} <question>` for a follow-up · 🔁 Push new commits or comment `{{BOT_MENTION}} review <fix notes>` to re-run the council
   4. Re-run the safe comment procedure above to update the in-progress comment when the marker check passes, or post a NEW marked comment when it does not.
      It prints the comment URL - keep it for the commit status in step 5.
-  5. Set a commit status — this is the council's single GitHub-side verdict signal.
+  5. Set a commit status — a per-commit council verdict signal.
      It is per-commit, so a later fix pushes a fresh status on the new head (no stale
-     state lingers); do NOT also submit a `gh pr review` (the thin review duplicated
-     this and left a stale "changes requested" entry after fixes — see ADR 013).
+     state lingers).
      COMMENT_URL is the URL printed in step 4 (fall back to https://github.com/{{REPO}}/pull/{{NUM}}):
        gh api repos/{{REPO}}/statuses/$SHA -f state=success -f context=openab/council \
          -f description="Council: 🔴×0 🟡×2 🟢×5" -f target_url="$COMMENT_URL"
      Use state=success when the verdict is approve, state=failure for request_changes.
      If the API call is refused (missing Commit statuses permission), note it and continue.
+{{VERDICT_REVIEW}}
   6. Only after the PR comment update succeeds, end your final message with the verdict trailer then [done], e.g.:
        [[verdict:request_changes r=1 y=3 g=5]] [done]
      r/y/g = the count of red/yellow/green findings in your final report; use approve or request_changes to match the commit status you set. The trailer is machine-parsed - keep the exact format.

@@ -19,6 +19,19 @@ dropped — see Amendment below)
 > unchanged. Repos that gated merges on the council's *review* should require the
 > `openab/council` *status check* instead (the per-commit primitive). Steering:
 > `scripts/pr-review-chair-task.tmpl` + `docs/steering/pr-review.md`.
+>
+> **Amendment (2026-07-11) — the review is back, but configurable.** The 2026-07-09
+> removal made the commit status the *only* signal, which cannot satisfy branch
+> protection "Require approvals" (a status check ≠ an approving review). To support
+> CodeRabbit-style approval, the chair review is reintroduced behind
+> `OABCP_COUNCIL_REVIEW_MODE` (default `approve`): `status` = the 2026-07-09
+> behavior (no `gh pr review`); `approve` = submit a formal **APPROVE** on approve
+> verdicts only (the request-changes-lingers defect above is avoided by *not*
+> submitting REQUEST_CHANGES); `enforce` = symmetric, submit REQUEST_CHANGES too
+> (accepts the lingering-review tradeoff in exchange for a hard merge block). The
+> commit status is still set in every mode. Chair token already has
+> `pull_requests:write`; the repo must enable "Require approvals" for an APPROVE to
+> count.
 
 ## Context
 
