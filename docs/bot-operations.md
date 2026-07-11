@@ -55,7 +55,9 @@ still decides admission.
 Current state:
 
 - The static path is first-boot `OABCP_BOTS` + `/bot-config/<name>`.
-- `POST /v1/bots` can register a bot identity and returns its gateway token.
+- `POST /v1/bots` can register a bot identity and returns its gateway token
+  (once — hash-only at rest). The id is a generated `bot_<uuid>`; `name` is
+  display-only. For a chosen id, register via discovery.
 - `GET /v1/bots` lists inventory metadata and standing-roster membership.
 - `POST /v1/bots/discover` can bootstrap or refresh a bot when
   `OABCP_BOT_DISCOVERY_TOKEN` is set.
@@ -271,17 +273,45 @@ Example: add `rev3`.
      -H "Authorization: Bearer $KEY" \
      -H "Content-Type: application/json" \
      -d '{"name":"rev3","role":"reviewer"}'
+   # → {"bot_id":"bot_<uuid>","token":"oabct_…","role":"reviewer"}
    ```
 
-   Or use discovery when you need a stable chosen id such as `rev3` for
-   `/bot-config/rev3`:
+   Two things this response means:
+
+   - **The gateway token appears exactly once, here.** The plane stores only its
+     hash — copy it into the pod's `OABCP_BOT_TOKEN` env now; there is no API to
+     read it back later. (You may also supply your own with `"token":"…"`,
+     ≥16 chars of `[A-Za-z0-9._-]`.)
+   - **`bot_id` is generated; `name` is only the display name.** The generated
+     `bot_<uuid>` is what rosters, session logs, and stream labels use. If you
+     want the id itself to be a chosen name like `rev3`, register via discovery
+     instead.
+
+   Use discovery when you need a stable chosen id such as `rev3`:
 
    ```sh
    curl -X POST "$PLANE/v1/bots/discover" \
      -H "Authorization: Bearer $OABCP_BOT_DISCOVERY_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"id":"rev3","role":"reviewer","provider":"codex","capabilities":["review"]}'
+   # → {"bot_id":"rev3","created":true,"config_url":"…/bot-config/rev3?agent=codex"}
    ```
+
+   Discovery needs `OABCP_BOT_DISCOVERY_TOKEN` set on the plane (env → plane
+   restart if it wasn't; unset → `403`). **The response does not include the
+   gateway token** — discovery is built for pods announcing themselves, which
+   then fetch `/bot-config/<id>` (legacy mode renders the token inline). When an
+   *operator* registers via discovery under externalized tokens
+   (`OABCP_EXTERNALIZE_TOKENS=1`, where `/bot-config` renders only
+   `${OABCP_BOT_TOKEN}`), the generated token is retrievable once from the plane
+   DB on the plane pod:
+
+   ```sh
+   sqlite3 /data/plane.db "SELECT token_plain FROM bots WHERE id='rev3'"
+   ```
+
+   Set it as the pod's `OABCP_BOT_TOKEN` env. Keep it off command lines and out
+   of files; move it pipeline-to-env directly.
 
 2. Add the new id to the runtime standing roster:
 
