@@ -426,10 +426,55 @@ Rollback:
    - Path A: stop the `-c <plane>/bot-config/<id>` run; point it back at its own config.
    - Path B: remove the `[gateway]` block from your config and restart it.
 
+## Replace Reviewers Blue-Green (zero downtime)
+
+Use this when replacing one or more reviewer providers on a live council and the
+current reviewers must keep serving reviews until the replacements are proven.
+The key property: **a bot that is registered and connected but not in the
+standing roster idles without joining any council**, so the new set can be
+built, authed, and smoke-tested invisibly, and the cutover is a single roster
+API call — no plane restart, no env change, in-flight sessions unaffected
+(the standing roster only shapes councils opened after the change).
+
+1. **Create the new reviewer services** (new bot ids, e.g. `rev-claude`), each
+   with its HOME volume and provider credentials from day one. Register each
+   identity on the plane (`POST /v1/bots`, reviewer role). Do **not** touch the
+   standing roster yet.
+2. **Verify they connect and idle**: `GET /v1/bots` shows them
+   `connected: true, rostered: false`. Live reviews keep running on the old set.
+3. **Prove the new set in isolation** with a per-session roster (does not change
+   the standing roster): `ROSTER='["chair","rev-claude",…]' open-council.sh
+   "<free-text task>"` — confirm every new bot responds and quorum closes.
+4. **Cut over** — either atomically:
+
+   ```sh
+   curl -X PUT "$PLANE/v1/council/roster" \
+     -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+     -d '{"roster":["chair","rev-claude","rev-codex"]}'
+   ```
+
+   or one bot at a time (observe a real review between steps):
+
+   ```sh
+   curl -X POST "$PLANE/v1/council/roster/replace" \
+     -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+     -d '{"old_bot_id":"rev1","new_bot_id":"rev-claude"}'
+   ```
+
+   Both validate before applying (unknown bot → 404, duplicate/misplaced chair →
+   409, empty → 400), take effect immediately, and set `source: "override"` —
+   from then on the roster lives in the plane DB and `OABCP_BOTS` is fallback
+   only.
+5. **Rollback** is the same call with the old names — seconds, no rebuild.
+6. **Decommission** the old reviewer services only after the new set has passed
+   at least one real review.
+
 ## Replace A Reviewer Provider
 
 Use this when a model quota is exhausted or when you want to test another CLI
-without changing the council identity.
+without changing the council identity. This is an **in-place** swap — the bot is
+offline during the switch; prefer the blue-green flow above when the council
+must stay live.
 
 Example: replace `rev1` from Claude to Codex.
 
