@@ -59,6 +59,12 @@ pub struct WebhookTrigger {
     /// True for `@handle full review`, which asks the successor round to omit the
     /// delta header and review from scratch.
     pub review_from_scratch: bool,
+    /// Set when the payload's `author_association` did NOT establish trust (ADR 019
+    /// D2) — the association is unreliable: a private-org member renders as
+    /// `CONTRIBUTOR` in webhook payloads. Carries the PR author's login so
+    /// `handle_webhook` can run a live collaborator-permission check before denying.
+    /// `None` = payload already trusted (or non-auto path); no GitHub call needed.
+    pub unverified_author: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +101,13 @@ fn has_review_opt_in_label(labels: &Value) -> bool {
 /// unassociated authors no longer auto-convene.
 fn auto_review_allowed(author_association: &str, labels: &Value) -> bool {
     can_command(author_association) || has_review_opt_in_label(labels)
+}
+
+/// The live-check equivalent of `can_command`: which collaborator permissions count
+/// as write-ish. GitHub's permission endpoint answers admin/write/read/none (plus
+/// maintain/triage roles collapse into these four for this endpoint).
+fn permission_is_write_ish(permission: &str) -> bool {
+    matches!(permission, "admin" | "write")
 }
 
 /// Per-repo allowlist gate. `allowlist` = the `OABCP_ALLOWED_REPOS` value (comma-sep
@@ -246,21 +259,34 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
             let action = body["action"].as_str()?;
             if !matches!(
                 action,
-                "opened" | "reopened" | "ready_for_review" | "synchronize"
+                "opened" | "reopened" | "ready_for_review" | "synchronize" | "labeled"
             ) {
+                return None;
+            }
+            // `labeled` exists solely so a maintainer applying the opt-in label
+            // convenes immediately (before, the opt-in only took effect on the next
+            // push). Any other label application is ignored.
+            if action == "labeled" && body["label"]["name"].as_str() != Some(REVIEW_OPT_IN_LABEL)
+            {
                 return None;
             }
             let pr = &body["pull_request"];
             if action != "ready_for_review" && pr["draft"].as_bool() == Some(true) {
                 return None;
             }
-            // ADR 019 D2: only auto-convene for a trusted author, or a PR a maintainer
-            // opted in via the label. An untrusted fork-PR author no longer gets a
-            // write-token council for free (C1).
+            // ADR 019 D2: auto-convene for a trusted author or a maintainer-labeled PR.
+            // An untrusted fork-PR author no longer gets a write-token council for
+            // free (C1). BUT the payload association alone must not deny: a private-org
+            // member renders as CONTRIBUTOR here, so an untrusted-looking author is
+            // deferred to a live collaborator-permission check in `handle_webhook`
+            // (`unverified_author`) instead of being dropped outright.
             let assoc = pr["author_association"].as_str().unwrap_or("");
-            if !auto_review_allowed(assoc, &pr["labels"]) {
-                return None;
-            }
+            let unverified_author = if auto_review_allowed(assoc, &pr["labels"]) {
+                None
+            } else {
+                // No login → nothing to verify → not a trigger (fail-closed).
+                Some(pr["user"]["login"].as_str()?.to_string())
+            };
             Some(WebhookTrigger {
                 repo: body["repository"]["full_name"].as_str()?.to_string(),
                 pr_number: pr["number"].as_u64()?,
@@ -274,6 +300,7 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                 comment_id: None,
                 review_notes: None,
                 review_from_scratch: false,
+                unverified_author,
             })
         }
         "issue_comment" => {
@@ -312,6 +339,7 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                     comment_id: body["comment"]["id"].as_u64(),
                     review_notes: None,
                     review_from_scratch: false,
+                    unverified_author: None,
                 });
             }
             if let Some(review) = parse_mention_review_comment(comment, mention_handle().as_deref())
@@ -335,6 +363,7 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                     comment_id: body["comment"]["id"].as_u64(),
                     review_notes: Some(review.notes),
                     review_from_scratch: review.from_scratch,
+                    unverified_author: None,
                 });
             }
             // Conversational follow-up (ADR 011): `/ask` or an `@mention` of the bot,
@@ -360,6 +389,7 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                     comment_id: body["comment"]["id"].as_u64(),
                     review_notes: None,
                     review_from_scratch: false,
+                    unverified_author: None,
                 });
             }
             None
@@ -411,6 +441,50 @@ pub async fn handle_webhook(
             Json(json!({ "ok": true, "triggered": false, "reason": "repo_not_allowed" }))
                 .into_response(),
         );
+    }
+
+    // 4.5. Deferred author trust (ADR 019 D2): the payload association looked
+    //      untrusted, but that field hides private-org members (they render as
+    //      CONTRIBUTOR). Ask GitHub for the author's real repo permission before
+    //      denying. Fail-closed on every branch: PAT mode (no App), lookup error,
+    //      or a sub-write permission all keep the original D2 denial.
+    if let Some(login) = trigger.unverified_author.as_deref() {
+        let verified = match state.github_app.as_ref() {
+            // Cached read-only token (`identity::github_token_for`): a fork-PR flood
+            // must not be able to spam token mints — one cached token serves all checks.
+            Some(app) => {
+                let check = async {
+                    let token = crate::identity::github_token_for(
+                        state.store.as_ref(),
+                        app,
+                        &state.github_mint_lock,
+                        "webhook:author-check",
+                        crate::github_app::Role::Reviewer,
+                    )
+                    .await?;
+                    app.user_repo_permission(&token, &trigger.repo, login).await
+                };
+                match check.await {
+                    Ok(p) => permission_is_write_ish(&p),
+                    Err(e) => {
+                        tracing::warn!(repo = %trigger.repo, author = login,
+                            "author permission lookup failed — keeping D2 denial: {e:#}");
+                        false
+                    }
+                }
+            }
+            None => false,
+        };
+        if !verified {
+            tracing::info!(repo = %trigger.repo, pr = trigger.pr_number, author = login,
+                "auto-review denied: author not write-ish (payload + live check)");
+            return Ok(Json(
+                json!({ "ok": true, "triggered": false, "reason": "author_not_trusted" }),
+            )
+            .into_response());
+        }
+        tracing::info!(repo = %trigger.repo, pr = trigger.pr_number, author = login,
+            "author verified write-ish via live permission check (payload said untrusted)");
     }
 
     // 5. Conversational follow-up (ADR 011) takes the ask path: a solo session answers
@@ -826,6 +900,7 @@ mod tests {
                 "author_association": author_association,
                 "number": 7,
                 "url": "https://api.github.com/repos/canyugs/ocp/pulls/7",
+                "user": { "login": "some-author" },
                 "labels": labels
             }
         })
@@ -834,23 +909,70 @@ mod tests {
     #[test]
     fn trusted_author_pr_auto_convenes() {
         for a in ["OWNER", "MEMBER", "COLLABORATOR"] {
-            assert!(
-                parse_trigger("pull_request", &opened_pr_payload(a, json!([]))).is_some(),
-                "{a} PR should auto-convene"
+            let t = parse_trigger("pull_request", &opened_pr_payload(a, json!([])))
+                .unwrap_or_else(|| panic!("{a} PR should auto-convene"));
+            assert_eq!(t.unverified_author, None, "{a} needs no live check");
+        }
+    }
+
+    #[test]
+    fn untrusted_author_pr_defers_to_live_permission_check() {
+        // C1 stays closed: an untrusted-looking author does NOT convene from the
+        // payload alone — but the payload association hides private-org members
+        // (they render as CONTRIBUTOR), so instead of dropping the event, the
+        // trigger carries the login for handle_webhook's live permission check.
+        for a in ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", "MANNEQUIN", ""] {
+            let t = parse_trigger("pull_request", &opened_pr_payload(a, json!([])))
+                .unwrap_or_else(|| panic!("{a} PR should defer, not drop"));
+            assert_eq!(
+                t.unverified_author.as_deref(),
+                Some("some-author"),
+                "{a} PR must carry the author for the live check"
             );
         }
     }
 
     #[test]
-    fn untrusted_author_pr_does_not_auto_convene() {
-        // C1 closed: a fork PR from an unassociated author no longer gets a free
-        // write-token council.
-        for a in ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", "MANNEQUIN", ""] {
-            assert!(
-                parse_trigger("pull_request", &opened_pr_payload(a, json!([]))).is_none(),
-                "{a} PR must NOT auto-convene without opt-in"
-            );
-        }
+    fn untrusted_author_without_login_is_dropped() {
+        // Nothing to verify → fail-closed.
+        let mut body = opened_pr_payload("NONE", json!([]));
+        body["pull_request"]["user"] = json!({});
+        assert!(parse_trigger("pull_request", &body).is_none());
+    }
+
+    #[test]
+    fn permission_is_write_ish_matches_can_command_semantics() {
+        assert!(permission_is_write_ish("admin"));
+        assert!(permission_is_write_ish("write"));
+        assert!(!permission_is_write_ish("read"));
+        assert!(!permission_is_write_ish("none"));
+        assert!(!permission_is_write_ish(""));
+    }
+
+    #[test]
+    fn applying_opt_in_label_convenes_immediately() {
+        // A maintainer applying `oab-review` used to only take effect on the next
+        // push (labeled wasn't a trigger action). Now it convenes right away.
+        let body = json!({
+            "action": "labeled",
+            "installation": { "id": 99 },
+            "label": { "name": "oab-review" },
+            "repository": { "full_name": "canyugs/ocp" },
+            "pull_request": {
+                "author_association": "NONE",
+                "number": 7,
+                "url": "https://api.github.com/repos/canyugs/ocp/pulls/7",
+                "user": { "login": "some-author" },
+                "labels": [{ "name": "oab-review" }]
+            }
+        });
+        let t = parse_trigger("pull_request", &body).expect("opt-in label application convenes");
+        assert_eq!(t.reason, "auto");
+        assert_eq!(t.unverified_author, None, "label IS the trust signal");
+        // any other label application stays ignored
+        let mut other = body.clone();
+        other["label"] = json!({ "name": "enhancement" });
+        assert!(parse_trigger("pull_request", &other).is_none());
     }
 
     #[test]
@@ -862,12 +984,14 @@ mod tests {
         )
         .expect("opt-in label should let an untrusted-author PR convene");
         assert_eq!(t.reason, "auto");
-        // an unrelated label does NOT opt in
-        assert!(parse_trigger(
+        assert_eq!(t.unverified_author, None, "label IS the trust signal");
+        // an unrelated label does NOT opt in — that PR still defers to the live check
+        let t = parse_trigger(
             "pull_request",
-            &opened_pr_payload("NONE", json!([{ "name": "enhancement" }]))
+            &opened_pr_payload("NONE", json!([{ "name": "enhancement" }])),
         )
-        .is_none());
+        .unwrap();
+        assert!(t.unverified_author.is_some());
     }
 
     #[test]
@@ -881,14 +1005,21 @@ mod tests {
                     "author_association": assoc,
                     "number": 7,
                     "url": "https://api.github.com/repos/canyugs/ocp/pulls/7",
+                    "user": { "login": "some-author" },
                     "draft": false,
                     "labels": labels
                 }
             })
         };
-        assert!(parse_trigger("pull_request", &sync("NONE", json!([]))).is_none());
-        assert!(parse_trigger("pull_request", &sync("NONE", json!([{ "name": "oab-review" }]))).is_some());
-        assert!(parse_trigger("pull_request", &sync("MEMBER", json!([]))).is_some());
+        // untrusted payload → deferred to the live permission check, not convened as-is
+        let t = parse_trigger("pull_request", &sync("NONE", json!([]))).unwrap();
+        assert!(t.unverified_author.is_some());
+        // opt-in label / trusted association → no live check needed
+        let t = parse_trigger("pull_request", &sync("NONE", json!([{ "name": "oab-review" }])))
+            .unwrap();
+        assert_eq!(t.unverified_author, None);
+        let t = parse_trigger("pull_request", &sync("MEMBER", json!([]))).unwrap();
+        assert_eq!(t.unverified_author, None);
     }
 
     #[test]

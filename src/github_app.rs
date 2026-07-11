@@ -230,6 +230,57 @@ impl GitHubApp {
         })
     }
 
+    /// Live repo-permission lookup for one user:
+    /// `GET /repos/{repo}/collaborators/{username}/permission` → "admin" | "write" |
+    /// "read" | "none". Used by the webhook auto-review gate (ADR 019 D2) when the
+    /// payload `author_association` looks untrusted — that field renders a
+    /// private-org member as `CONTRIBUTOR`, so it cannot be the final word. Takes a
+    /// caller-supplied installation token (use the cached read-only one via
+    /// `identity::github_token_for` — minting per check would let a fork-PR flood
+    /// spam token mints); the endpoint only needs metadata read, which every
+    /// installation token carries.
+    pub async fn user_repo_permission(
+        &self,
+        token: &str,
+        repo: &str,
+        username: &str,
+    ) -> Result<String> {
+        let url = format!(
+            "{}/repos/{}/collaborators/{}/permission",
+            self.api_base.trim_end_matches('/'),
+            repo,
+            username
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "openab-control-plane")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .context("collaborator permission request failed")?;
+        let status = resp.status();
+        // 404 = not a collaborator at all — a definitive "none", not an error.
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok("none".into());
+        }
+        let raw = resp
+            .text()
+            .await
+            .context("read collaborator permission response body")?;
+        if !status.is_success() {
+            return Err(anyhow!("GitHub collaborator permission returned {status}: {raw}"));
+        }
+        let body: Value =
+            serde_json::from_str(&raw).context("parse collaborator permission response")?;
+        body["permission"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("permission response had no `permission`: {body}"))
+    }
+
     /// Server-side revoke: `DELETE /installation/token`, authenticated by the token
     /// *itself* (not the App JWT). Kills a token GitHub-side the moment a session
     /// closes, instead of leaving it live until its ≤1h TTL. Best-effort: on failure

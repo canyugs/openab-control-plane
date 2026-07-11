@@ -174,6 +174,19 @@ auto-convene; a maintainer opts them in per PR.
 > automatic review — a maintainer adds the `oab-review` label (or comments `/review`,
 > already author-gated) to opt it in. Internal / member PRs are unaffected.
 
+> **Amended (2026-07-11) — live permission fallback.** The payload
+> `author_association` proved unreliable in production: GitHub reports a
+> **private-org member as `CONTRIBUTOR`** in webhook payloads (zeabur/dashboard#1712
+> was silently denied for a real MEMBER). D2 now defers instead of denying: an
+> untrusted-*looking* author is carried as `WebhookTrigger::unverified_author` and
+> `handle_webhook` asks `GET /repos/{repo}/collaborators/{user}/permission`
+> (cached read-only installation token — a fork-PR flood cannot spam mints);
+> `admin|write` → convene, anything else / lookup error / PAT mode → the original
+> denial (fail-closed on every branch). The trust *standard* is unchanged —
+> write-ish only — only the evidence source got authoritative. Also: applying the
+> `oab-review` label now convenes immediately (`labeled` action accepted for that
+> label only); before, the opt-in silently waited for the next push.
+
 ### D3 — Fork PRs are read-only (defense in depth for C2)
 
 When `head.repo` differs from `base.repo`, the session gets **no write-scoped
