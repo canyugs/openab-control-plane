@@ -307,11 +307,16 @@ Example: add `rev3`.
    DB on the plane pod:
 
    ```sh
-   sqlite3 /data/plane.db "SELECT token_plain FROM bots WHERE id='rev3'"
+   # capture → set env in one pipeline; never print the token to the terminal
+   TOKEN=$(sqlite3 /data/plane.db "SELECT token_plain FROM bots WHERE id='rev3'")
+   # hand $TOKEN to your platform's env/secret setter (API call, not argv):
+   # e.g. Zeabur GraphQL createEnvironmentVariable(key: "OABCP_BOT_TOKEN", value: $TOKEN)
+   unset TOKEN
    ```
 
-   Set it as the pod's `OABCP_BOT_TOKEN` env. Keep it off command lines and out
-   of files; move it pipeline-to-env directly.
+   A naked `SELECT` prints a live gateway token into terminal scrollback and
+   session logs — capture it into a variable and pass it through an API request
+   body (not a command-line argument), then drop it.
 
 2. Add the new id to the runtime standing roster:
 
@@ -491,8 +496,10 @@ API call — no plane restart, no env change, in-flight sessions unaffected
      -d '{"old_bot_id":"rev1","new_bot_id":"rev-claude"}'
    ```
 
-   Both validate before applying (unknown bot → 404, duplicate/misplaced chair →
-   409, empty → 400), take effect immediately, and set `source: "override"` —
+   Both validate before applying — empty roster or duplicate/empty ids → `400`,
+   unknown bot → `404`, misplaced chair → `409` (PUT); replace adds `409` for
+   "old bot not in roster" / "replacement already in roster" — take effect
+   immediately, and set `source: "override"` —
    from then on the roster lives in the plane DB and `OABCP_BOTS` is fallback
    only.
 5. **Rollback** is the same call with the old names — seconds, no rebuild.
