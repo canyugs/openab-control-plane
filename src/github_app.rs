@@ -307,6 +307,42 @@ impl GitHubApp {
         let raw = resp.text().await.unwrap_or_default();
         Err(anyhow!("GitHub token revoke returned {status}: {raw}"))
     }
+
+    /// Post a comment on a PR/issue: `POST /repos/{repo}/issues/{num}/comments`
+    /// (PRs are issues for the comment API). Used only for the plane's canned
+    /// operational status notice (ADR 025) — never review content. `repo` is
+    /// `owner/name`; `token` must carry `pull_requests:write` (chair scope).
+    pub async fn post_pr_comment(
+        &self,
+        repo: &str,
+        pr: &str,
+        token: &str,
+        body: &str,
+    ) -> Result<()> {
+        let url = format!(
+            "{}/repos/{}/issues/{}/comments",
+            self.api_base.trim_end_matches('/'),
+            repo,
+            pr
+        );
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "openab-control-plane")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .json(&json!({ "body": body }))
+            .send()
+            .await
+            .context("PR comment request failed")?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let raw = resp.text().await.unwrap_or_default();
+        Err(anyhow!("GitHub PR comment returned {status}: {raw}"))
+    }
 }
 
 /// Accept a PEM with real newlines, a `\n`-escaped single line, or a base64-wrapped
