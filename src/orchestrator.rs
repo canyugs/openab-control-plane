@@ -7,7 +7,7 @@ use crate::protocol::{Content, GatewayReply, GatewayResponse, SenderInfo, RESPON
 use crate::routing;
 use crate::session::DONE_EMOJI;
 use crate::state::AppState;
-use crate::store::{Message, Session, SessionState};
+use crate::store::{BotHealthTransition, Message, Session, SessionState};
 use anyhow::Result;
 use serde_json::json;
 use std::sync::Arc;
@@ -1068,6 +1068,225 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
     Ok(())
 }
 
+/// Consecutive error frames before a bot flips to `degraded` (ADR 023 Phase 1).
+/// Env-overridable so an operator can tighten/loosen without a rebuild; the ADR
+/// default is 3.
+fn health_error_threshold() -> i64 {
+    std::env::var("OABCP_HEALTH_ERROR_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(3)
+}
+
+/// Recognize a bot turn that carried an agent error instead of model output
+/// (ADR 023 Phase 1). The bot gateway wraps a JSON-RPC failure (kiro-cli / codex
+/// ACP) into the message frame verbatim, so the plane — blind to it until now —
+/// matches the signature in the content. The `-32603` internal-error code is the
+/// unambiguous signal: it surfaced for BOTH failure modes in the 2026-07-13
+/// incident (kiro quota, codex token revoke) and is vanishingly unlikely in real
+/// model prose. ponytail: text-matching until a frame-level `is_error` flag is
+/// added at the gateway (ADR 023 build-order §6).
+pub fn is_agent_error_frame(content: &str) -> bool {
+    let c = content.trim();
+    if c.is_empty() {
+        return false;
+    }
+    let lc = c.to_ascii_lowercase();
+    // The frame must LOOK like an error object, not merely mention one: a real
+    // gateway-wrapped JSON-RPC failure is either short or carries the structure
+    // (`jsonrpc` / `"code"`). Council F2: an unbounded `-32603` substring match
+    // false-degraded a reviewer that discussed the code in long prose — and with
+    // Phase 4 failover that would swap the standing roster on a false positive.
+    // Bound BOTH signals by this "error-shaped" gate.
+    let error_shaped = c.len() <= 200 || lc.contains("jsonrpc") || lc.contains("\"code\"");
+    if !error_shaped {
+        return false;
+    }
+    c.contains("-32603") || lc.contains("internal error")
+}
+
+/// A streaming stub — the empty / "…" placeholder a bot sends first, filled in
+/// later via `edit_message`. Not a settled turn, so it is not health-accounted
+/// (the final content lands through `on_edit`).
+fn is_streaming_stub(text: &str) -> bool {
+    let t = text.trim();
+    t.is_empty() || t == "…" || t == "..."
+}
+
+/// Passive agent-liveness accounting for a settled bot turn (ADR 023 Phase 1):
+/// classify the frame, drive `bots.health`, and WARN exactly once on crossing.
+/// Called from BOTH `on_send` (complete frames) and `on_edit` (the settled
+/// content of a streamed turn) — council F1: streamed bots (kiro/codex) deliver
+/// their final content via edit, so an on_send-only hook meant a streamed bot
+/// could never recover from `degraded` and streamed error frames never counted.
+/// The stub-skip keeps partial edits from being accounted; the content reset is
+/// idempotent, so re-accounting a settled edit is safe.
+fn account_bot_health(state: &Arc<AppState>, session_id: &str, bot_id: &str, text: &str) {
+    if is_streaming_stub(text) {
+        return; // partial stub — wait for the settled content
+    }
+    let threshold = health_error_threshold();
+    let is_error = is_agent_error_frame(text);
+    match state.store.record_bot_frame(bot_id, is_error, threshold) {
+        Ok(BotHealthTransition::Degraded) => {
+            let bot_name = state.store.bot(bot_id).ok().flatten().map(|b| b.name);
+            // The one alert path (ADR 023 Decision 2): existing log-based alerting
+            // is the delivery — no new notification system. connected != healthy.
+            tracing::warn!(
+                bot = bot_id,
+                bot_name,
+                session = session_id,
+                "bot degraded: {threshold} consecutive agent error frames \
+                 (connected but not producing output)"
+            );
+            // Phase 4: route around the degraded bot by promoting a healthy
+            // standby of the same role (Decision 5). Bounded + alert-on-none.
+            attempt_failover(state, bot_id);
+        }
+        Ok(BotHealthTransition::Recovered) => {
+            tracing::info!(bot = bot_id, "bot recovered: agent producing output again");
+        }
+        Ok(BotHealthTransition::None) => {}
+        Err(e) => tracing::warn!(bot = bot_id, "health accounting failed: {e}"),
+    }
+}
+
+/// Whether a `degraded` bot is *automatically* routed around (ADR 023 Phase 4).
+/// Default off: the WARN alert still fires, but the roster swap is opt-in per lane
+/// (`OABCP_AUTO_FAILOVER=1`). This honors Decision 5's "first cut may surface as a
+/// one-click alert before going fully automatic" and the dev-before-prod deploy
+/// gate — enable in dev, prove no thrash, then prod.
+fn auto_failover_enabled() -> bool {
+    matches!(
+        std::env::var("OABCP_AUTO_FAILOVER").ok().as_deref(),
+        Some("1") | Some("true")
+    )
+}
+
+/// Pick a promotable standby for a degraded rostered bot (ADR 023 Decision 5):
+/// a **same-role** bot that is enabled, `connected`, `health == ok`, and not
+/// already in `roster`. A quota/token outage is provider-specific, so a standby
+/// on a *different* provider is preferred; a same-provider healthy standby is a
+/// last resort (returned only if no cross-provider one exists). Same-role keeps
+/// the roster valid by construction — a chair's standby is itself `role=chair`,
+/// so it lands at slot 0 as a chair; a reviewer's standby stays a reviewer.
+fn pick_healthy_standby(
+    state: &Arc<AppState>,
+    role: &str,
+    degraded_provider: Option<&str>,
+    roster: &[String],
+) -> Option<String> {
+    let bots = state.store.list_bots().ok()?;
+    let mut same_provider_fallback: Option<String> = None;
+    for b in bots {
+        let promotable = b.role == role
+            && b.enabled
+            && b.health == "ok"
+            && !roster.contains(&b.id)
+            && state.is_connected(&b.id);
+        if !promotable {
+            continue;
+        }
+        // Prefer a different provider; stash a same-provider candidate as a last
+        // resort (better than leaving the council without this role).
+        if b.provider.as_deref() != degraded_provider || degraded_provider.is_none() {
+            return Some(b.id);
+        }
+        same_provider_fallback.get_or_insert(b.id);
+    }
+    same_provider_fallback
+}
+
+/// Route around a bot that just crossed to `degraded` (ADR 023 Phase 4) by
+/// swapping it out of the **standing** roster for a healthy same-role standby, so
+/// the next convene uses the good bot. This restores council *capacity*; it does
+/// not rescue the in-flight session (the watchdog closes that, and the WARN has
+/// already alerted a human). Bounded: it swaps in one currently-healthy standby;
+/// the just-degraded bot stays `health=degraded` so it can't be re-selected, and
+/// with no standby it is alert-only — no thrash.
+fn attempt_failover(state: &Arc<AppState>, degraded_bot_id: &str) {
+    // Serialize the whole read-modify-write (council F7): two bots degrading on
+    // concurrent reply tasks would otherwise each read the same roster snapshot
+    // and the later `set_standing_roster` would clobber the earlier swap. The
+    // roster is (re-)read below *inside* this lock, so each swap sees the prior
+    // one. Cheap — failover is rare — and the path is fully synchronous.
+    let _swap = state.failover_lock.lock().unwrap();
+    let Ok((roster, _)) = crate::plugins::pr_review::council::runtime_council_roster(state) else {
+        return;
+    };
+    // Only route around a bot that is actually in the standing roster — an
+    // off-roster bot (e.g. a solo-session participant) has nothing to swap.
+    if !roster.contains(&degraded_bot_id.to_string()) {
+        return;
+    }
+    let provider = state
+        .store
+        .bot_inventory(degraded_bot_id)
+        .ok()
+        .flatten()
+        .and_then(|b| b.provider);
+    let role = if roster.first().map(String::as_str) == Some(degraded_bot_id) {
+        "chair"
+    } else {
+        "reviewer"
+    };
+
+    let Some(standby) = pick_healthy_standby(state, role, provider.as_deref(), &roster) else {
+        tracing::warn!(
+            bot = degraded_bot_id,
+            role,
+            "no healthy {role} standby to fail over to — alert only (provision a \
+             blue-green standby: #227 for the chair)"
+        );
+        return;
+    };
+
+    if !auto_failover_enabled() {
+        // Surface the actionable one-click (Decision 5) without mutating prod.
+        tracing::warn!(
+            bot = degraded_bot_id,
+            standby,
+            role,
+            "healthy {role} standby available — auto-failover disabled; promote \
+             manually via PUT /v1/council/roster or set OABCP_AUTO_FAILOVER=1"
+        );
+        return;
+    }
+
+    let new_roster: Vec<String> = roster
+        .iter()
+        .map(|b| {
+            if b == degraded_bot_id {
+                standby.clone()
+            } else {
+                b.clone()
+            }
+        })
+        .collect();
+    match state.store.set_standing_roster(&new_roster) {
+        Ok(()) => {
+            tracing::warn!(
+                degraded = degraded_bot_id,
+                promoted = standby,
+                role,
+                "auto-failover: promoted healthy {role} standby into the standing roster"
+            );
+            state.emit_north(
+                "failover",
+                "-",
+                json!({
+                    "degraded": degraded_bot_id,
+                    "promoted": standby,
+                    "role": role,
+                    "roster": new_roster,
+                }),
+            );
+        }
+        Err(e) => tracing::warn!(bot = degraded_bot_id, "auto-failover roster swap failed: {e}"),
+    }
+}
+
 fn on_send(
     state: &Arc<AppState>,
     session: &Session,
@@ -1089,6 +1308,10 @@ fn on_send(
         &reply.content.text,
         reply.quote_message_id.as_deref(),
     )?;
+    // Passive health accounting (ADR 023 Phase 1): a `-32603` error frame arrives
+    // here as a complete (non-streamed) send, so this is where the broken-agent
+    // signal — invisible to the plane until now — is finally read.
+    account_bot_health(state, &session.id, bot_id, &reply.content.text);
     state.emit_north(
         "message",
         &session.id,
@@ -1504,6 +1727,10 @@ fn on_edit(
             json!({ "message_id": target, "content": reply.content.text }),
         );
         ack(state, bot_id, reply, None, Some(target));
+        // Health-account the settled edit content (council F1): a streamed bot's
+        // final turn lands here, so this is where a streamed error is counted and,
+        // crucially, where a streamed content frame lets a degraded bot recover.
+        account_bot_health(state, &session.id, bot_id, &reply.content.text);
         // A streamed recruit directive lands via edit_message when the final
         // content replaces the stub. The per-session seen set absorbs repeats.
         maybe_recruit(state, session, bot_id, &reply.content.text)?;
@@ -1683,6 +1910,67 @@ mod tests {
         assert!(body.starts_with(STATUS_NOTICE_MARKER));
         assert_ne!(STATUS_NOTICE_MARKER, "<!-- openab-council -->");
         assert!(body.contains("could not complete"));
+    }
+
+    #[test]
+    fn agent_error_frame_recognized_but_prose_is_not() {
+        // The unambiguous JSON-RPC signal — both incident failure modes surfaced it.
+        assert!(is_agent_error_frame(
+            r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal Error"}}"#
+        ));
+        assert!(is_agent_error_frame("Internal error"));
+        assert!(is_agent_error_frame("  -32603  "));
+        // Not errors: real review prose (even mentioning the phrase in passing),
+        // empty/stub frames.
+        assert!(!is_agent_error_frame(""));
+        assert!(!is_agent_error_frame("…"));
+        assert!(!is_agent_error_frame(
+            "LGTM. One nit: guard the internal error path so a downstream 500 \
+             doesn't leak a stack trace to the client — otherwise this looks solid \
+             and I'm approving once that's addressed. Nice test coverage overall."
+        ));
+        // Council F2: long review prose that DISCUSSES -32603 is not an error frame
+        // — the code must be error-shaped (short, or carrying jsonrpc/`"code"`),
+        // not merely present in a paragraph. Otherwise a reviewer false-degrades
+        // and (with Phase 4) triggers a roster swap.
+        assert!(!is_agent_error_frame(
+            "On the reconnect path the agent can surface a JSON-RPC -32603 to the \
+             gateway; we should classify that as an error frame rather than storing \
+             it as review content, because right now it counts toward the reviewer \
+             quorum and silently degrades the verdict to noise. Worth a follow-up."
+        ));
+        // ...but a genuine JSON-RPC error object still trips even if longer, via the
+        // structural signal.
+        assert!(is_agent_error_frame(
+            "gateway wrapped agent failure: \
+             {\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32603,\"message\":\
+             \"Internal Error: upstream provider returned quota_exceeded for the \
+             configured API key; the agent could not produce any model output\"}}"
+        ));
+    }
+
+    #[test]
+    fn streaming_stub_is_not_health_accounted() {
+        assert!(is_streaming_stub(""));
+        assert!(is_streaming_stub("  "));
+        assert!(is_streaming_stub("…"));
+        assert!(is_streaming_stub("..."));
+        assert!(!is_streaming_stub("real content"));
+    }
+
+    #[test]
+    fn health_threshold_env_override() {
+        let _guard = BACKFILL_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("OABCP_HEALTH_ERROR_THRESHOLD");
+        assert_eq!(health_error_threshold(), 3);
+        std::env::set_var("OABCP_HEALTH_ERROR_THRESHOLD", "5");
+        assert_eq!(health_error_threshold(), 5);
+        // Junk / sub-1 values fall back to the default rather than disabling it.
+        std::env::set_var("OABCP_HEALTH_ERROR_THRESHOLD", "0");
+        assert_eq!(health_error_threshold(), 3);
+        std::env::set_var("OABCP_HEALTH_ERROR_THRESHOLD", "nope");
+        assert_eq!(health_error_threshold(), 3);
+        std::env::remove_var("OABCP_HEALTH_ERROR_THRESHOLD");
     }
 
     #[test]
@@ -1948,6 +2236,219 @@ mod tests {
             .filter_map(|(_, frame)| serde_json::from_str::<serde_json::Value>(&frame).ok())
             .filter(|v| v["content"]["text"].as_str() == Some(text))
             .collect()
+    }
+
+    #[test]
+    fn error_frames_through_handle_reply_degrade_then_recover_the_bot() {
+        // End-to-end wiring (ADR 023 Phase 1): a bot posting `-32603` error frames
+        // via the real reply path crosses to `degraded`, and a later content frame
+        // recovers it — proving `on_send` actually drives health, not just the store.
+        let (state, store, session, chair, _rev1, _rev2, _conns) = liveness_setup();
+        let health = |s: &SqliteStore| s.bot_inventory(&chair).unwrap().unwrap().health;
+        let err = r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal Error"}}"#;
+
+        handle_reply(&state, &chair, msg_reply(&session.id, err)).unwrap();
+        handle_reply(&state, &chair, msg_reply(&session.id, err)).unwrap();
+        assert_eq!(health(&store), "ok"); // 2 < threshold 3
+        handle_reply(&state, &chair, msg_reply(&session.id, err)).unwrap();
+        assert_eq!(health(&store), "degraded"); // 3rd crosses
+
+        // A real content frame is observed recovery.
+        handle_reply(
+            &state,
+            &chair,
+            msg_reply(&session.id, "Looks correct; approving."),
+        )
+        .unwrap();
+        assert_eq!(health(&store), "ok");
+    }
+
+    #[test]
+    fn streamed_content_via_on_edit_recovers_a_degraded_bot() {
+        // Council F1: streamed bots (kiro/codex) deliver their final content via
+        // `edit_message`, not `on_send`. Before the fix a degraded streamed bot
+        // could never recover because `on_edit` didn't health-account. This proves
+        // the settled edit content now drives recovery.
+        let (state, store, session, chair, _rev1, _rev2, _conns) = liveness_setup();
+        let health = |s: &SqliteStore| s.bot_inventory(&chair).unwrap().unwrap().health;
+        let err = r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal Error"}}"#;
+
+        for _ in 0..3 {
+            handle_reply(&state, &chair, msg_reply(&session.id, err)).unwrap();
+        }
+        assert_eq!(health(&store), "degraded");
+
+        // The bot streams its next turn: a "…" stub (skipped), then the settled
+        // content lands via edit_message.
+        handle_reply(&state, &chair, msg_reply(&session.id, "…")).unwrap();
+        assert_eq!(health(&store), "degraded", "the stub must not recover");
+        let stub = store
+            .messages(&session.id)
+            .unwrap()
+            .into_iter()
+            .rfind(|m| m.author_id.as_deref() == Some(chair.as_str()))
+            .unwrap();
+        handle_reply(
+            &state,
+            &chair,
+            edit_reply(&session.id, &stub.id, "Reviewed the diff — looks correct."),
+        )
+        .unwrap();
+        assert_eq!(health(&store), "ok", "settled edit content recovers the bot");
+    }
+
+    fn set_provider(store: &SqliteStore, id: &str, provider: &str) {
+        store
+            .update_bot_metadata(
+                id,
+                &crate::store::BotMetadataPatch {
+                    provider: Some(Some(provider.to_string())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn chair_degraded_auto_failover_promotes_standby() {
+        // Phase 4 end-to-end: the chair crossing to `degraded` promotes a healthy,
+        // connected, off-roster standby chair into the standing roster's slot 0.
+        let _g = BACKFILL_ENV_LOCK.lock().unwrap();
+        std::env::set_var("OABCP_AUTO_FAILOVER", "1");
+        let (state, store, session, chair, rev1, rev2, mut conns) = liveness_setup();
+        store
+            .set_standing_roster(&[chair.clone(), rev1.clone(), rev2.clone()])
+            .unwrap();
+        let standby = store.register_bot("chair2", "chair", "h9", "t9").unwrap();
+        connect_bot(&state, &mut conns, &standby.id);
+
+        let err = r#"{"code":-32603,"message":"Internal Error"}"#;
+        for _ in 0..3 {
+            handle_reply(&state, &chair, msg_reply(&session.id, err)).unwrap();
+        }
+
+        let (roster, source) =
+            crate::plugins::pr_review::council::runtime_council_roster(&state).unwrap();
+        assert_eq!(source, "override");
+        assert_eq!(
+            roster.first().unwrap(),
+            &standby.id,
+            "healthy standby promoted into the chair slot"
+        );
+        assert!(!roster.contains(&chair), "degraded chair routed out");
+        std::env::remove_var("OABCP_AUTO_FAILOVER");
+    }
+
+    #[test]
+    fn sequential_failovers_compose_without_clobbering() {
+        // Council F7: each swap must build on the previous roster, not a stale
+        // snapshot. Degrade two different reviewers in turn; the second swap must
+        // see the first's result, so the final roster carries BOTH standbys and
+        // neither degraded bot. (The failover_lock makes this hold under
+        // concurrency too; here we prove the re-read-and-compose behavior.)
+        let _g = BACKFILL_ENV_LOCK.lock().unwrap();
+        std::env::set_var("OABCP_AUTO_FAILOVER", "1");
+        let (state, store, session, chair, rev1, rev2, mut conns) = liveness_setup();
+        store
+            .set_standing_roster(&[chair.clone(), rev1.clone(), rev2.clone()])
+            .unwrap();
+        let sb1 = store.register_bot("rev1b", "reviewer", "h8", "t8").unwrap();
+        let sb2 = store.register_bot("rev2b", "reviewer", "h9", "t9").unwrap();
+        connect_bot(&state, &mut conns, &sb1.id);
+        connect_bot(&state, &mut conns, &sb2.id);
+
+        let err = "-32603";
+        for _ in 0..3 {
+            handle_reply(&state, &rev1, msg_reply(&session.id, err)).unwrap();
+        }
+        for _ in 0..3 {
+            handle_reply(&state, &rev2, msg_reply(&session.id, err)).unwrap();
+        }
+
+        let (roster, _) =
+            crate::plugins::pr_review::council::runtime_council_roster(&state).unwrap();
+        assert_eq!(roster.first().unwrap(), &chair, "chair untouched");
+        assert!(roster.contains(&sb1.id) && roster.contains(&sb2.id), "both swaps kept");
+        assert!(
+            !roster.contains(&rev1) && !roster.contains(&rev2),
+            "neither degraded reviewer left in-roster"
+        );
+        std::env::remove_var("OABCP_AUTO_FAILOVER");
+    }
+
+    #[test]
+    fn chair_degraded_with_no_standby_is_alert_only() {
+        let _g = BACKFILL_ENV_LOCK.lock().unwrap();
+        std::env::set_var("OABCP_AUTO_FAILOVER", "1");
+        let (state, store, session, chair, rev1, rev2, _conns) = liveness_setup();
+        store
+            .set_standing_roster(&[chair.clone(), rev1.clone(), rev2.clone()])
+            .unwrap();
+
+        for _ in 0..3 {
+            handle_reply(&state, &chair, msg_reply(&session.id, "-32603")).unwrap();
+        }
+
+        let (roster, _) =
+            crate::plugins::pr_review::council::runtime_council_roster(&state).unwrap();
+        assert_eq!(roster.first().unwrap(), &chair, "no standby → chair stays");
+        assert_eq!(
+            store.bot_inventory(&chair).unwrap().unwrap().health,
+            "degraded"
+        );
+        std::env::remove_var("OABCP_AUTO_FAILOVER");
+    }
+
+    #[test]
+    fn auto_failover_disabled_keeps_roster_even_with_standby() {
+        let _g = BACKFILL_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("OABCP_AUTO_FAILOVER"); // default off
+        let (state, store, session, chair, rev1, rev2, mut conns) = liveness_setup();
+        store
+            .set_standing_roster(&[chair.clone(), rev1.clone(), rev2.clone()])
+            .unwrap();
+        let standby = store.register_bot("chair2", "chair", "h9", "t9").unwrap();
+        connect_bot(&state, &mut conns, &standby.id);
+
+        for _ in 0..3 {
+            handle_reply(&state, &chair, msg_reply(&session.id, "-32603")).unwrap();
+        }
+
+        let (roster, _) =
+            crate::plugins::pr_review::council::runtime_council_roster(&state).unwrap();
+        assert_eq!(roster.first().unwrap(), &chair, "disabled → no auto-swap");
+        assert!(!roster.contains(&standby.id));
+    }
+
+    #[test]
+    fn standby_selection_prefers_different_provider_then_falls_back() {
+        let (state, store, _session, chair, rev1, rev2, mut conns) = liveness_setup();
+        let roster = vec![chair, rev1, rev2];
+        let same = store.register_bot("chair-kiro2", "chair", "h8", "t8").unwrap();
+        let diff = store.register_bot("chair-claude", "chair", "h9", "t9").unwrap();
+        connect_bot(&state, &mut conns, &same.id);
+        connect_bot(&state, &mut conns, &diff.id);
+        set_provider(&store, &same.id, "kiro");
+        set_provider(&store, &diff.id, "claude");
+
+        // Degraded provider is kiro → the cross-provider (claude) standby wins.
+        assert_eq!(
+            pick_healthy_standby(&state, "chair", Some("kiro"), &roster).as_deref(),
+            Some(diff.id.as_str())
+        );
+        // Degrade the cross-provider standby → fall back to the same-provider one
+        // rather than leaving the role empty.
+        store.record_bot_frame(&diff.id, true, 1).unwrap();
+        assert_eq!(
+            pick_healthy_standby(&state, "chair", Some("kiro"), &roster).as_deref(),
+            Some(same.id.as_str())
+        );
+        // Degrade that too → no promotable standby remains.
+        store.record_bot_frame(&same.id, true, 1).unwrap();
+        assert_eq!(
+            pick_healthy_standby(&state, "chair", Some("kiro"), &roster),
+            None
+        );
     }
 
     #[test]

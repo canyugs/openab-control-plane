@@ -46,6 +46,20 @@ pub struct BotInventory {
     pub source: String,
 }
 
+/// Result of one passive agent-liveness accounting step (ADR 023 Phase 1). Lets
+/// the ingest caller WARN exactly once per health crossing instead of on every
+/// error frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BotHealthTransition {
+    /// No health change this frame (still `ok`, or still `degraded`).
+    None,
+    /// The consecutive-error count just crossed the threshold: `ok -> degraded`.
+    Degraded,
+    /// A content frame cleared a prior `degraded`: `degraded -> ok` (observed
+    /// recovery — the agent is producing output again).
+    Recovered,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct BotMetadata {
     pub provider: Option<String>,
@@ -190,6 +204,21 @@ pub trait Store: Send + Sync {
     ) -> Result<(Bot, bool)>;
     fn update_bot_metadata(&self, id: &str, patch: &BotMetadataPatch) -> Result<bool>;
     fn delete_bot(&self, bot_id: &str) -> Result<DeleteBotOutcome>;
+
+    /// Passive agent-liveness accounting for one bot turn (ADR 023 Phase 1).
+    /// `is_error` is true when the turn produced an error frame (e.g. JSON-RPC
+    /// `-32603`) instead of model output. An error increments the per-bot
+    /// consecutive-error counter and stamps `last_error_at`; crossing `threshold`
+    /// flips `health` to `degraded`. A content frame resets the counter and clears
+    /// a prior `degraded` back to `ok` (observed recovery — not auto-remediation).
+    /// Returns the health transition so the caller WARNs once per crossing.
+    /// A no-op (returns `None`) for an unknown bot id.
+    fn record_bot_frame(
+        &self,
+        bot_id: &str,
+        is_error: bool,
+        threshold: i64,
+    ) -> Result<BotHealthTransition>;
 
     #[allow(clippy::too_many_arguments)]
     fn create_session(
@@ -376,6 +405,7 @@ CREATE TABLE IF NOT EXISTS bots (
     provider TEXT, capabilities TEXT NOT NULL DEFAULT '[]',
     enabled INTEGER NOT NULL DEFAULT 1,
     health TEXT NOT NULL DEFAULT 'ok',
+    consecutive_errors INTEGER NOT NULL DEFAULT 0, last_error_at INTEGER,
     note TEXT, version TEXT, runtime TEXT,
     source TEXT NOT NULL DEFAULT 'registered'
 );
@@ -481,6 +511,12 @@ fn migrate(conn: &Connection) -> Result<()> {
         "ALTER TABLE bots ADD COLUMN health TEXT NOT NULL DEFAULT 'ok'",
         [],
     );
+    // ADR 023 Phase 1 — passive agent-liveness accounting.
+    let _ = conn.execute(
+        "ALTER TABLE bots ADD COLUMN consecutive_errors INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE bots ADD COLUMN last_error_at INTEGER", []);
     let _ = conn.execute("ALTER TABLE bots ADD COLUMN note TEXT", []);
     let _ = conn.execute("ALTER TABLE bots ADD COLUMN version TEXT", []);
     let _ = conn.execute("ALTER TABLE bots ADD COLUMN runtime TEXT", []);
@@ -945,6 +981,59 @@ impl Store for SqliteStore {
             Ok(DeleteBotOutcome::NotFound)
         } else {
             Ok(DeleteBotOutcome::Deleted)
+        }
+    }
+
+    fn record_bot_frame(
+        &self,
+        bot_id: &str,
+        is_error: bool,
+        threshold: i64,
+    ) -> Result<BotHealthTransition> {
+        let c = self.conn.lock().unwrap();
+        let Some((errors, health)) = c
+            .query_row(
+                "SELECT consecutive_errors, health FROM bots WHERE id = ?1",
+                params![bot_id],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?
+        else {
+            return Ok(BotHealthTransition::None); // unknown bot — nothing to record
+        };
+
+        if is_error {
+            let next = errors + 1;
+            // Cross into `degraded` exactly once — only when a prior-ok bot reaches
+            // the threshold. Already-degraded bots keep counting but don't re-fire.
+            if next >= threshold && health != "degraded" {
+                c.execute(
+                    "UPDATE bots SET consecutive_errors = ?2, last_error_at = ?3, health = 'degraded' WHERE id = ?1",
+                    params![bot_id, next, now_ms()],
+                )?;
+                Ok(BotHealthTransition::Degraded)
+            } else {
+                c.execute(
+                    "UPDATE bots SET consecutive_errors = ?2, last_error_at = ?3 WHERE id = ?1",
+                    params![bot_id, next, now_ms()],
+                )?;
+                Ok(BotHealthTransition::None)
+            }
+        } else if health == "degraded" {
+            // A content frame after `degraded` is evidence the agent recovered.
+            c.execute(
+                "UPDATE bots SET consecutive_errors = 0, health = 'ok' WHERE id = ?1",
+                params![bot_id],
+            )?;
+            Ok(BotHealthTransition::Recovered)
+        } else if errors != 0 {
+            c.execute(
+                "UPDATE bots SET consecutive_errors = 0 WHERE id = ?1",
+                params![bot_id],
+            )?;
+            Ok(BotHealthTransition::None)
+        } else {
+            Ok(BotHealthTransition::None)
         }
     }
 
@@ -1957,6 +2046,67 @@ mod tests {
         drop(c);
         drop(store);
         remove_db_files(&PathBuf::from(path));
+    }
+
+    #[test]
+    fn record_bot_frame_drives_degraded_and_recovery() {
+        let store = SqliteStore::memory().unwrap();
+        store.seed_bot("kiro", "kiro", "chair", "h", "t").unwrap();
+        let health = |s: &SqliteStore| -> String {
+            s.conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT health FROM bots WHERE id = 'kiro'", [], |r| r.get(0))
+                .unwrap()
+        };
+
+        // Below threshold: counts but stays ok.
+        assert_eq!(
+            store.record_bot_frame("kiro", true, 3).unwrap(),
+            BotHealthTransition::None
+        );
+        assert_eq!(
+            store.record_bot_frame("kiro", true, 3).unwrap(),
+            BotHealthTransition::None
+        );
+        assert_eq!(health(&store), "ok");
+        // Third consecutive error crosses — fires exactly once, stamps last_error_at.
+        assert_eq!(
+            store.record_bot_frame("kiro", true, 3).unwrap(),
+            BotHealthTransition::Degraded
+        );
+        assert_eq!(health(&store), "degraded");
+        // A further error while already degraded does not re-fire.
+        assert_eq!(
+            store.record_bot_frame("kiro", true, 3).unwrap(),
+            BotHealthTransition::None
+        );
+        // A content frame is observed recovery: clears the counter and health.
+        assert_eq!(
+            store.record_bot_frame("kiro", false, 3).unwrap(),
+            BotHealthTransition::Recovered
+        );
+        assert_eq!(health(&store), "ok");
+        // Counter reset — one error no longer sits near the threshold.
+        assert_eq!(
+            store.record_bot_frame("kiro", true, 3).unwrap(),
+            BotHealthTransition::None
+        );
+        let last_error_at: Option<i64> = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT last_error_at FROM bots WHERE id = 'kiro'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(last_error_at.is_some(), "error frames stamp last_error_at");
+
+        // Unknown bot is a silent no-op, never an error.
+        assert_eq!(
+            store.record_bot_frame("ghost", true, 3).unwrap(),
+            BotHealthTransition::None
+        );
     }
 
     #[test]
