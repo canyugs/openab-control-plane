@@ -59,11 +59,26 @@ the whole bug.
    would burn the very budget it guards. `ponytail:` fixed interval first;
    only probe-after-N-idle-minutes if the flat cost proves to matter.
 
-4. **Detect and surface; never auto-remediate.** The plane does not restart
-   pods, rotate keys, or re-auth agents from a health signal. Health degrades →
-   `/v1/bots` shows it + a WARN fires → a human acts (raise quota, re-login),
-   dev-first per the deploy gate. This matches the human-gated stance of
-   [[review-effectiveness-feedback-loop]] (ADR 021): OCP reports, humans decide.
+4. **Auto-heal the transient class; human-gate the external class.** The three
+   failures seen — kiro quota exhausted, codex token revoked, a wedged/crashed
+   ACP subprocess — all surface as the same opaque `-32603`, but only the last
+   is safely self-healable. Split them by a **bounded retry, which is itself the
+   classifier**:
+   - **Transient (wedged/crashed agent): bounded, bot-side self-heal.** On a
+     `-32603` the agent gateway restarts its *own* local agent subprocess once
+     and retries, before the failure ever counts against health. Recovers → it
+     was a wedge, self-healed, no human needed. This needs no plane capability
+     and no orchestrator credentials.
+   - **External (quota / revoked token): human-gated, never automated.** Still
+     failing after the one bounded retry → the plane marks `degraded` + WARN → a
+     human acts (raise quota, re-login), dev-first per the deploy gate. The
+     plane never auto-raises quota, rotates keys, or re-auths: those spend money
+     or need an interactive login, and automating them is the "suicide pact"
+     [[review-effectiveness-feedback-loop]] (ADR 021) guards against.
+   - **No plane-driven pod restarts, no unbounded retry.** A plane→orchestrator
+     restart needs Zeabur/k8s credentials the plane must not hold and severs
+     in-flight sessions (the restart blast radius); keep self-heal bot-local and
+     capped so a quota outage can't become a restart loop.
 
 ## Non-goals
 
@@ -73,7 +88,9 @@ the whole bug.
 - **No per-request health SLA / no dashboard / no metrics store.** A `health`
   field on `/v1/bots` + a WARN log is the whole surface. A rollup can come later
   if asked, same as ADR 021's read-only-endpoint deferral.
-- **No auto-remediation** (restart, key rotation, re-auth) — see Decision 4.
+- **No auto-remediation of the external class** (raising quota, key rotation,
+  re-auth) — only the transient wedge class self-heals, and only via a bounded
+  bot-local retry (Decision 4). No plane-driven pod restarts.
 - **Health does not gate convening (yet).** This ADR makes breakage *visible*.
   Whether a `degraded` bot is trimmed from a convene (like an idle reviewer) or
   still counted is a follow-up — today an error frame already counts toward
@@ -87,10 +104,15 @@ the whole bug.
    `health` on `GET /v1/bots`; WARN on threshold crossing. No protocol change.
 2. **Phase 2 (active probe):** plane background task, sparse internal PONG per
    connected bot → same health counter. Closes the idle gap.
-3. Retire the manual `bot-health.py` smoke once Phase 1 lands (keep only as an
+3. **Phase 3 (bot-side self-heal):** the agent gateway restarts its local agent
+   subprocess once on `-32603` and retries. Independent of Phases 1–2 (lives in
+   the bot image, not the plane) and can land in either order; it reduces the
+   passive counter's noise by absorbing transient wedges before they register.
+4. Retire the manual `bot-health.py` smoke once Phase 1 lands (keep only as an
    ad-hoc debugging aid).
-4. If wrapper-text matching proves fragile, add a frame-level `is_error` flag at
-   the bot gateway and switch Phase 1 onto it.
+5. If wrapper-text matching proves fragile, add a frame-level `is_error` flag at
+   the bot gateway and switch Phase 1 onto it (also lets self-heal in Phase 3
+   trigger on the flag instead of text).
 
 ## References
 
