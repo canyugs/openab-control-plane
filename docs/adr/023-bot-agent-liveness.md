@@ -80,6 +80,30 @@ the whole bug.
      in-flight sessions (the restart blast radius); keep self-heal bot-local and
      capped so a quota outage can't become a restart loop.
 
+5. **For the external class, prefer routing around over fixing in place — where
+   a healthy standby exists.** A degraded bot need not be repaired to restore the
+   council: swap in a connected, healthy standby of a *different* provider via
+   the existing `PUT /v1/council/roster` (the same lever an operator used to drop
+   a bot during this incident). This is the automatable answer to a quota/token
+   outage that cannot itself be auto-fixed.
+   - **Reviewers: already possible.** Standby reviewers of other providers sit
+     connected-but-off-roster (the blue-green fleet). Plane sees a rostered
+     reviewer `degraded` + a healthy off-roster standby → swap. Bounded: swap
+     once to a known-healthy standby; if it too is degraded, stop and alert (no
+     thrash).
+   - **Chair: the gap that bit prod.** The chair is a *single* pod that posts as
+     the GitHub App — there is no standby chair to fail over to, so a
+     chair-provider outage (this incident) has no automatic route-around and is
+     alert-only. The reviewers are already multi-provider; the chair is the last
+     monoculture. **The durable fix is a pre-provisioned alternate-provider chair
+     (blue-green for the chair) — the highest-value follow-up, not a config
+     flip.**
+   - **Failover is routing, not tuning.** Swapping to a known-healthy standby
+     restores capacity without redefining what a good review is, so it stays
+     clear of the ADR 021 self-editing hazard — but it is still a roster
+     mutation, so the first cut may surface it as a one-click "promote standby?"
+     alert before going fully automatic.
+
 ## Non-goals
 
 - **No external polling script as the system of record.** The manual
@@ -108,9 +132,14 @@ the whole bug.
    subprocess once on `-32603` and retries. Independent of Phases 1–2 (lives in
    the bot image, not the plane) and can land in either order; it reduces the
    passive counter's noise by absorbing transient wedges before they register.
-4. Retire the manual `bot-health.py` smoke once Phase 1 lands (keep only as an
+4. **Phase 4 (failover):** on `degraded`, swap a rostered reviewer for a
+   healthy off-roster standby via the roster API (Decision 5), bounded + alert
+   on no-standby. Chair failover is blocked on provisioning an alternate-provider
+   standby chair (blue-green for the chair) — carry that as its own follow-up,
+   since it removes the single-provider-chair SPOF this incident exposed.
+5. Retire the manual `bot-health.py` smoke once Phase 1 lands (keep only as an
    ad-hoc debugging aid).
-5. If wrapper-text matching proves fragile, add a frame-level `is_error` flag at
+6. If wrapper-text matching proves fragile, add a frame-level `is_error` flag at
    the bot gateway and switch Phase 1 onto it (also lets self-heal in Phase 3
    trigger on the flag instead of text).
 
