@@ -1,0 +1,153 @@
+# ADR 023 — Bot health: agent-level liveness (connected ≠ healthy)
+
+Status: proposed · 2026-07-13
+
+## Context
+
+A shared `KIRO_API_KEY` hit its usage quota. Both lanes' kiro chair started
+returning JSON-RPC `-32603 Internal Error` on every request — while their
+websockets stayed **connected**. Separately, two codex reviewers' device-login
+tokens were revoked, same symptom. Prod's official council was silently unable
+to produce a verdict for ~a day; nothing surfaced it. It was found only because
+an operator manually opened throwaway free-text "reply PONG" sessions against
+each bot and read the logs.
+
+The gap is not missing data — it is that the plane never looks. What the plane
+already has (verified against current code):
+
+- **`bots.health TEXT NOT NULL DEFAULT 'ok'`** — a health column exists in the
+  schema (`src/store.rs`) and is currently never driven by agent behavior.
+- **Transport liveness** — `bots.connected` (reset to 0 on boot) + `last_seen`
+  track the websocket, extended by the C7 reconnect-zombie work
+  ([[dogfood-reconnect-zombie]]). This answers "is the socket up," NOT "can the
+  agent behind it produce output."
+- **The failure signal already flows through the plane.** The `-32603` text is
+  NOT generated in the plane's Rust — the agent (kiro-cli/codex ACP) raises the
+  JSON-RPC error and the bot-side gateway wraps it into a message frame. The
+  plane stores that frame verbatim as opaque content, unaware it is an error.
+
+So `connected == true` is treated as healthy while the agent is dead. That is
+the whole bug.
+
+## Decision
+
+1. **Introduce agent-level health, distinct from transport `connected`, and
+   drive the existing `bots.health` column with it.** A bot is `connected`
+   (socket up) yet `health != ok` (agent failing). The two are orthogonal and
+   both matter; do not collapse them.
+
+2. **Passive detection is the MVP — it is free, and the signal is already in
+   hand.** When a bot's turn in a session yields an error frame instead of
+   content, increment a per-bot consecutive-error count; a successful content
+   frame resets it to 0. Cross a threshold (default 3 consecutive) → set
+   `bots.health = 'degraded'`, stamp `last_error_at`, and emit one structured
+   `WARN` log (existing log-based alerting is the delivery path — no new
+   notification system). This fires the instant a real session touches a broken
+   bot.
+   - Error-frame recognition: match the known error signature in frame content
+     (`code: -32603` / "Internal Error" with no model output). `ponytail:`
+     brittle-but-zero-protocol-change; upgrade to a frame-level `is_error` flag
+     set by the bot gateway if the wrapper text drifts.
+
+3. **A sparse active probe closes the idle-arming gap — phase 2, not the MVP.**
+   Passive detection cannot see a bot that broke while no PRs are flowing (the
+   exact prod case: armed-and-silent for a day). A plane background task opens
+   an internal solo "reply PONG" session per connected bot on a long interval
+   and feeds the result into the same health counter. **Cadence is bounded by
+   quota, not latency** — the thing that broke was a usage limit, so probe
+   sparsely (default every 30–60 min, 1-token prompt); an over-eager probe
+   would burn the very budget it guards. `ponytail:` fixed interval first;
+   only probe-after-N-idle-minutes if the flat cost proves to matter.
+
+4. **Auto-heal the transient class; human-gate the external class.** The three
+   failures seen — kiro quota exhausted, codex token revoked, a wedged/crashed
+   ACP subprocess — all surface as the same opaque `-32603`, but only the last
+   is safely self-healable. Split them by a **bounded retry, which is itself the
+   classifier**:
+   - **Transient (wedged/crashed agent): bounded, bot-side self-heal.** On a
+     `-32603` the agent gateway restarts its *own* local agent subprocess once
+     and retries, before the failure ever counts against health. Recovers → it
+     was a wedge, self-healed, no human needed. This needs no plane capability
+     and no orchestrator credentials.
+   - **External (quota / revoked token): human-gated, never automated.** Still
+     failing after the one bounded retry → the plane marks `degraded` + WARN → a
+     human acts (raise quota, re-login), dev-first per the deploy gate. The
+     plane never auto-raises quota, rotates keys, or re-auths: those spend money
+     or need an interactive login, and automating them is the "suicide pact"
+     [[review-effectiveness-feedback-loop]] (ADR 021) guards against.
+   - **No plane-driven pod restarts, no unbounded retry.** A plane→orchestrator
+     restart needs Zeabur/k8s credentials the plane must not hold and severs
+     in-flight sessions (the restart blast radius); keep self-heal bot-local and
+     capped so a quota outage can't become a restart loop.
+
+5. **For the external class, prefer routing around over fixing in place — where
+   a healthy standby exists.** A degraded bot need not be repaired to restore the
+   council: swap in a connected, healthy standby of a *different* provider via
+   the existing `PUT /v1/council/roster` (the same lever an operator used to drop
+   a bot during this incident). This is the automatable answer to a quota/token
+   outage that cannot itself be auto-fixed.
+   - **Reviewers: already possible.** Standby reviewers of other providers sit
+     connected-but-off-roster (the blue-green fleet). Plane sees a rostered
+     reviewer `degraded` + a healthy off-roster standby → swap. Bounded: swap
+     once to a known-healthy standby; if it too is degraded, stop and alert (no
+     thrash).
+   - **Chair: the gap that bit prod.** The chair is a *single* pod that posts as
+     the GitHub App — there is no standby chair to fail over to, so a
+     chair-provider outage (this incident) has no automatic route-around and is
+     alert-only. The reviewers are already multi-provider; the chair is the last
+     monoculture. **The durable fix is a pre-provisioned alternate-provider chair
+     (blue-green for the chair) — the highest-value follow-up, not a config
+     flip.**
+   - **Failover is routing, not tuning.** Swapping to a known-healthy standby
+     restores capacity without redefining what a good review is, so it stays
+     clear of the ADR 021 self-editing hazard — but it is still a roster
+     mutation, so the first cut may surface it as a one-click "promote standby?"
+     alert before going fully automatic.
+
+## Non-goals
+
+- **No external polling script as the system of record.** The manual
+  `bot-health.py` smoke used to find this incident is a throwaway operator tool;
+  detection belongs in the plane, not a bolted-on cron.
+- **No per-request health SLA / no dashboard / no metrics store.** A `health`
+  field on `/v1/bots` + a WARN log is the whole surface. A rollup can come later
+  if asked, same as ADR 021's read-only-endpoint deferral.
+- **No auto-remediation of the external class** (raising quota, key rotation,
+  re-auth) — only the transient wedge class self-heals, and only via a bounded
+  bot-local retry (Decision 4). No plane-driven pod restarts.
+- **Health does not gate convening (yet).** This ADR makes breakage *visible*.
+  Whether a `degraded` bot is trimmed from a convene (like an idle reviewer) or
+  still counted is a follow-up — today an error frame already counts toward
+  `reviewers_done`, so a broken reviewer degrades a review to noise rather than
+  hanging it. Changing that is a separate decision.
+
+## Migration / build order
+
+1. **Phase 1 (passive, MVP):** recognize error frames in the session-ingest
+   path → drive `bots.health` + `consecutive_errors`/`last_error_at`; expose
+   `health` on `GET /v1/bots`; WARN on threshold crossing. No protocol change.
+2. **Phase 2 (active probe):** plane background task, sparse internal PONG per
+   connected bot → same health counter. Closes the idle gap.
+3. **Phase 3 (bot-side self-heal):** the agent gateway restarts its local agent
+   subprocess once on `-32603` and retries. Independent of Phases 1–2 (lives in
+   the bot image, not the plane) and can land in either order; it reduces the
+   passive counter's noise by absorbing transient wedges before they register.
+4. **Phase 4 (failover):** on `degraded`, swap a rostered reviewer for a
+   healthy off-roster standby via the roster API (Decision 5), bounded + alert
+   on no-standby. Chair failover is blocked on provisioning an alternate-provider
+   standby chair (blue-green for the chair) — carry that as its own follow-up,
+   since it removes the single-provider-chair SPOF this incident exposed.
+5. Retire the manual `bot-health.py` smoke once Phase 1 lands (keep only as an
+   ad-hoc debugging aid).
+6. If wrapper-text matching proves fragile, add a frame-level `is_error` flag at
+   the bot gateway and switch Phase 1 onto it (also lets self-heal in Phase 3
+   trigger on the flag instead of text).
+
+## References
+
+- [[dogfood-reconnect-zombie]] — the C7 transport-liveness work this extends
+  from socket to agent.
+- ADR 021 (review-effectiveness-feedback-loop) — the report-not-remediate,
+  human-gated stance this inherits.
+- `openab-control-plane-ops/docs/deploy-gate.md` — dev-before-prod, the path a
+  human takes once a bot shows `degraded`.
