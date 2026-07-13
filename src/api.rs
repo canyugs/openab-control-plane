@@ -1452,6 +1452,22 @@ async fn github_token(
 /// cached under a `bot:<id>` key (not a real session), so it lives out its ≤1h TTL
 /// and the pod's refresh loop re-mints — there is no session-close revoke, which is
 /// the intended pod-level posture (matches the pre-D1 long-lived refreshed token).
+/// Chair write scope follows the active chair *slot*, not the `role` label
+/// (ADR 024 Decision 1). A bot gets `Role::Chair` (→ `pull_requests:write`) only
+/// while it is `roster[0]` of the standing roster; every other bot — including a
+/// connected-but-off-roster standby chair — is `Role::Reviewer` (read-only).
+/// `validate_standing_roster` guarantees `roster[0]` is a `role == "chair"` bot,
+/// so slot membership is sufficient. Fails safe to read-only if the roster can't
+/// be resolved — least privilege on error, never an accidental write grant.
+fn active_chair_role(state: &Arc<AppState>, bot_id: &str) -> crate::github_app::Role {
+    match crate::plugins::pr_review::council::runtime_council_roster(state) {
+        Ok((roster, _)) if roster.first().map(String::as_str) == Some(bot_id) => {
+            crate::github_app::Role::Chair
+        }
+        _ => crate::github_app::Role::Reviewer,
+    }
+}
+
 async fn bot_github_token(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1469,8 +1485,13 @@ async fn bot_github_token(
         // PAT mode — no App provisioned. The pod keeps using its shared GH_TOKEN.
         return Err(StatusCode::NOT_IMPLEMENTED);
     };
-    // Role is authoritative from the bot record — the request carries no role.
-    let role = crate::github_app::Role::from_bot_role(&bot.role);
+    // Chair write scope is bound to the active chair *slot*, not the `role`
+    // label (ADR 024 Decision 1). A bot earns `pull_requests:write` only while
+    // it is `roster[0]` of the standing roster; otherwise it is read-only. So a
+    // connected-but-off-roster standby chair (blue-green, #227) holds no latent
+    // write power until a promotion `PUT` makes it the active chair — and even a
+    // single-chair deployment is tightened, since write follows the live slot.
+    let role = active_chair_role(&state, &bot.id);
     let token = identity::github_token_for(
         state.store.as_ref(),
         app,
@@ -1952,6 +1973,39 @@ mod tests {
         assert_eq!(err, StatusCode::NOT_IMPLEMENTED);
     }
 
+    #[test]
+    fn chair_write_scope_follows_active_slot_not_role_label() {
+        use crate::github_app::Role;
+        // chair(role=chair) + rev1 + rev2, plus a standby chair on another provider.
+        let state = state_with_review_bots();
+        state
+            .store
+            .seed_bot("chair2", "chair2", "chair", "h9", "t9")
+            .unwrap();
+
+        // Active roster: `chair` sits at slot 0.
+        state
+            .store
+            .set_standing_roster(&["chair".into(), "rev1".into()])
+            .unwrap();
+        // The active chair gets write scope; a reviewer does not.
+        assert_eq!(super::active_chair_role(&state, "chair"), Role::Chair);
+        assert_eq!(super::active_chair_role(&state, "rev1"), Role::Reviewer);
+        // The crux (ADR 024): a connected-but-off-roster standby chair holds NO
+        // write power despite `role == "chair"` — it isn't the active slot.
+        assert_eq!(super::active_chair_role(&state, "chair2"), Role::Reviewer);
+
+        // Promote the standby: write capability moves with the slot, atomically.
+        state
+            .store
+            .set_standing_roster(&["chair2".into(), "rev1".into()])
+            .unwrap();
+        assert_eq!(super::active_chair_role(&state, "chair2"), Role::Chair);
+        // ...and the demoted primary is now read-only even though its stored
+        // `role` is still "chair".
+        assert_eq!(super::active_chair_role(&state, "chair"), Role::Reviewer);
+    }
+
     #[tokio::test]
     async fn bot_github_token_happy_path_returns_token_and_role() {
         // App configured + a fresh cached token for `bot:<id>` → the handler returns
@@ -1959,6 +2013,9 @@ mod tests {
         // don't, and pins both response encodings.
         let store = Arc::new(SqliteStore::memory().unwrap());
         let (bot, token) = identity::issue(store.as_ref(), "chair", "chair", None).unwrap();
+        // Chair write scope is now slot-bound (ADR 024): the bot only earns
+        // `Role::Chair` while it is `roster[0]`, so make it the active chair.
+        store.set_standing_roster(&[bot.id.clone()]).unwrap();
         store
             .cache_installation_token(
                 &format!("bot:{}", bot.id),
