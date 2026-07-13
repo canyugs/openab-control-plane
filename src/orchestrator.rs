@@ -7,7 +7,7 @@ use crate::protocol::{Content, GatewayReply, GatewayResponse, SenderInfo, RESPON
 use crate::routing;
 use crate::session::DONE_EMOJI;
 use crate::state::AppState;
-use crate::store::{Message, Session, SessionState};
+use crate::store::{BotHealthTransition, Message, Session, SessionState};
 use anyhow::Result;
 use serde_json::json;
 use std::sync::Arc;
@@ -1068,6 +1068,86 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
     Ok(())
 }
 
+/// Consecutive error frames before a bot flips to `degraded` (ADR 023 Phase 1).
+/// Env-overridable so an operator can tighten/loosen without a rebuild; the ADR
+/// default is 3.
+fn health_error_threshold() -> i64 {
+    std::env::var("OABCP_HEALTH_ERROR_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(3)
+}
+
+/// Recognize a bot turn that carried an agent error instead of model output
+/// (ADR 023 Phase 1). The bot gateway wraps a JSON-RPC failure (kiro-cli / codex
+/// ACP) into the message frame verbatim, so the plane — blind to it until now —
+/// matches the signature in the content. The `-32603` internal-error code is the
+/// unambiguous signal: it surfaced for BOTH failure modes in the 2026-07-13
+/// incident (kiro quota, codex token revoke) and is vanishingly unlikely in real
+/// model prose. ponytail: text-matching until a frame-level `is_error` flag is
+/// added at the gateway (ADR 023 build-order §6).
+pub fn is_agent_error_frame(content: &str) -> bool {
+    let c = content.trim();
+    if c.is_empty() {
+        return false;
+    }
+    if c.contains("-32603") {
+        return true;
+    }
+    // A short frame that is essentially just an internal-error message with no
+    // model output. Length-bounded so a review merely *mentioning* the phrase
+    // isn't misclassified as a failure.
+    let lc = c.to_ascii_lowercase();
+    c.len() <= 200 && (lc.contains("internal error") || lc.contains("jsonrpc"))
+}
+
+/// A streaming stub — the empty / "…" placeholder a bot sends first, filled in
+/// later via `edit_message`. Not a settled turn, so it is not health-accounted
+/// (the final content lands through `on_edit`).
+fn is_streaming_stub(text: &str) -> bool {
+    let t = text.trim();
+    t.is_empty() || t == "…" || t == "..."
+}
+
+/// Passive agent-liveness accounting for a settled bot turn (ADR 023 Phase 1):
+/// classify the frame, drive `bots.health`, and WARN exactly once on crossing.
+fn account_bot_health(
+    state: &Arc<AppState>,
+    session_id: &str,
+    bot_id: &str,
+    bot_name: &str,
+    text: &str,
+) {
+    if is_streaming_stub(text) {
+        return; // partial stub — wait for the settled content via on_edit
+    }
+    let threshold = health_error_threshold();
+    let is_error = is_agent_error_frame(text);
+    match state.store.record_bot_frame(bot_id, is_error, threshold) {
+        Ok(BotHealthTransition::Degraded) => {
+            // The one alert path (ADR 023 Decision 2): existing log-based alerting
+            // is the delivery — no new notification system. connected != healthy.
+            tracing::warn!(
+                bot = bot_id,
+                bot_name,
+                session = session_id,
+                "bot degraded: {threshold} consecutive agent error frames \
+                 (connected but not producing output)"
+            );
+        }
+        Ok(BotHealthTransition::Recovered) => {
+            tracing::info!(
+                bot = bot_id,
+                bot_name,
+                "bot recovered: agent producing output again"
+            );
+        }
+        Ok(BotHealthTransition::None) => {}
+        Err(e) => tracing::warn!(bot = bot_id, "health accounting failed: {e}"),
+    }
+}
+
 fn on_send(
     state: &Arc<AppState>,
     session: &Session,
@@ -1089,6 +1169,10 @@ fn on_send(
         &reply.content.text,
         reply.quote_message_id.as_deref(),
     )?;
+    // Passive health accounting (ADR 023 Phase 1): a `-32603` error frame arrives
+    // here as a complete (non-streamed) send, so this is where the broken-agent
+    // signal — invisible to the plane until now — is finally read.
+    account_bot_health(state, &session.id, bot_id, bot_name, &reply.content.text);
     state.emit_north(
         "message",
         &session.id,
@@ -1686,6 +1770,49 @@ mod tests {
     }
 
     #[test]
+    fn agent_error_frame_recognized_but_prose_is_not() {
+        // The unambiguous JSON-RPC signal — both incident failure modes surfaced it.
+        assert!(is_agent_error_frame(
+            r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal Error"}}"#
+        ));
+        assert!(is_agent_error_frame("Internal error"));
+        assert!(is_agent_error_frame("  -32603  "));
+        // Not errors: real review prose (even mentioning the phrase in passing),
+        // empty/stub frames.
+        assert!(!is_agent_error_frame(""));
+        assert!(!is_agent_error_frame("…"));
+        assert!(!is_agent_error_frame(
+            "LGTM. One nit: guard the internal error path so a downstream 500 \
+             doesn't leak a stack trace to the client — otherwise this looks solid \
+             and I'm approving once that's addressed. Nice test coverage overall."
+        ));
+    }
+
+    #[test]
+    fn streaming_stub_is_not_health_accounted() {
+        assert!(is_streaming_stub(""));
+        assert!(is_streaming_stub("  "));
+        assert!(is_streaming_stub("…"));
+        assert!(is_streaming_stub("..."));
+        assert!(!is_streaming_stub("real content"));
+    }
+
+    #[test]
+    fn health_threshold_env_override() {
+        let _guard = BACKFILL_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("OABCP_HEALTH_ERROR_THRESHOLD");
+        assert_eq!(health_error_threshold(), 3);
+        std::env::set_var("OABCP_HEALTH_ERROR_THRESHOLD", "5");
+        assert_eq!(health_error_threshold(), 5);
+        // Junk / sub-1 values fall back to the default rather than disabling it.
+        std::env::set_var("OABCP_HEALTH_ERROR_THRESHOLD", "0");
+        assert_eq!(health_error_threshold(), 3);
+        std::env::set_var("OABCP_HEALTH_ERROR_THRESHOLD", "nope");
+        assert_eq!(health_error_threshold(), 3);
+        std::env::remove_var("OABCP_HEALTH_ERROR_THRESHOLD");
+    }
+
+    #[test]
     fn close_webhook_payload_shape() {
         let mut s = test_session(Some("chair"), "review_council");
         s.trigger_ref = Some("github:pr/o/r#1".into());
@@ -1948,6 +2075,31 @@ mod tests {
             .filter_map(|(_, frame)| serde_json::from_str::<serde_json::Value>(&frame).ok())
             .filter(|v| v["content"]["text"].as_str() == Some(text))
             .collect()
+    }
+
+    #[test]
+    fn error_frames_through_handle_reply_degrade_then_recover_the_bot() {
+        // End-to-end wiring (ADR 023 Phase 1): a bot posting `-32603` error frames
+        // via the real reply path crosses to `degraded`, and a later content frame
+        // recovers it — proving `on_send` actually drives health, not just the store.
+        let (state, store, session, chair, _rev1, _rev2, _conns) = liveness_setup();
+        let health = |s: &SqliteStore| s.bot_inventory(&chair).unwrap().unwrap().health;
+        let err = r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal Error"}}"#;
+
+        handle_reply(&state, &chair, msg_reply(&session.id, err)).unwrap();
+        handle_reply(&state, &chair, msg_reply(&session.id, err)).unwrap();
+        assert_eq!(health(&store), "ok"); // 2 < threshold 3
+        handle_reply(&state, &chair, msg_reply(&session.id, err)).unwrap();
+        assert_eq!(health(&store), "degraded"); // 3rd crosses
+
+        // A real content frame is observed recovery.
+        handle_reply(
+            &state,
+            &chair,
+            msg_reply(&session.id, "Looks correct; approving."),
+        )
+        .unwrap();
+        assert_eq!(health(&store), "ok");
     }
 
     #[test]
