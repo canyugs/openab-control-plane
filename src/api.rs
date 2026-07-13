@@ -2060,7 +2060,9 @@ mod tests {
         let (bot, token) = identity::issue(store.as_ref(), "chair", "chair", None).unwrap();
         // Chair write scope is now slot-bound (ADR 024): the bot only earns
         // `Role::Chair` while it is `roster[0]`, so make it the active chair.
-        store.set_standing_roster(&[bot.id.clone()]).unwrap();
+        store
+            .set_standing_roster(std::slice::from_ref(&bot.id))
+            .unwrap();
         store
             .cache_installation_token(
                 &format!("bot:{}", bot.id),
