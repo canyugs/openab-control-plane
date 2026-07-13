@@ -1092,14 +1092,18 @@ pub fn is_agent_error_frame(content: &str) -> bool {
     if c.is_empty() {
         return false;
     }
-    if c.contains("-32603") {
-        return true;
-    }
-    // A short frame that is essentially just an internal-error message with no
-    // model output. Length-bounded so a review merely *mentioning* the phrase
-    // isn't misclassified as a failure.
     let lc = c.to_ascii_lowercase();
-    c.len() <= 200 && (lc.contains("internal error") || lc.contains("jsonrpc"))
+    // The frame must LOOK like an error object, not merely mention one: a real
+    // gateway-wrapped JSON-RPC failure is either short or carries the structure
+    // (`jsonrpc` / `"code"`). Council F2: an unbounded `-32603` substring match
+    // false-degraded a reviewer that discussed the code in long prose — and with
+    // Phase 4 failover that would swap the standing roster on a false positive.
+    // Bound BOTH signals by this "error-shaped" gate.
+    let error_shaped = c.len() <= 200 || lc.contains("jsonrpc") || lc.contains("\"code\"");
+    if !error_shaped {
+        return false;
+    }
+    c.contains("-32603") || lc.contains("internal error")
 }
 
 /// A streaming stub — the empty / "…" placeholder a bot sends first, filled in
@@ -1112,20 +1116,21 @@ fn is_streaming_stub(text: &str) -> bool {
 
 /// Passive agent-liveness accounting for a settled bot turn (ADR 023 Phase 1):
 /// classify the frame, drive `bots.health`, and WARN exactly once on crossing.
-fn account_bot_health(
-    state: &Arc<AppState>,
-    session_id: &str,
-    bot_id: &str,
-    bot_name: &str,
-    text: &str,
-) {
+/// Called from BOTH `on_send` (complete frames) and `on_edit` (the settled
+/// content of a streamed turn) — council F1: streamed bots (kiro/codex) deliver
+/// their final content via edit, so an on_send-only hook meant a streamed bot
+/// could never recover from `degraded` and streamed error frames never counted.
+/// The stub-skip keeps partial edits from being accounted; the content reset is
+/// idempotent, so re-accounting a settled edit is safe.
+fn account_bot_health(state: &Arc<AppState>, session_id: &str, bot_id: &str, text: &str) {
     if is_streaming_stub(text) {
-        return; // partial stub — wait for the settled content via on_edit
+        return; // partial stub — wait for the settled content
     }
     let threshold = health_error_threshold();
     let is_error = is_agent_error_frame(text);
     match state.store.record_bot_frame(bot_id, is_error, threshold) {
         Ok(BotHealthTransition::Degraded) => {
+            let bot_name = state.store.bot(bot_id).ok().flatten().map(|b| b.name);
             // The one alert path (ADR 023 Decision 2): existing log-based alerting
             // is the delivery — no new notification system. connected != healthy.
             tracing::warn!(
@@ -1140,11 +1145,7 @@ fn account_bot_health(
             attempt_failover(state, bot_id);
         }
         Ok(BotHealthTransition::Recovered) => {
-            tracing::info!(
-                bot = bot_id,
-                bot_name,
-                "bot recovered: agent producing output again"
-            );
+            tracing::info!(bot = bot_id, "bot recovered: agent producing output again");
         }
         Ok(BotHealthTransition::None) => {}
         Err(e) => tracing::warn!(bot = bot_id, "health accounting failed: {e}"),
@@ -1205,6 +1206,12 @@ fn pick_healthy_standby(
 /// the just-degraded bot stays `health=degraded` so it can't be re-selected, and
 /// with no standby it is alert-only — no thrash.
 fn attempt_failover(state: &Arc<AppState>, degraded_bot_id: &str) {
+    // Serialize the whole read-modify-write (council F7): two bots degrading on
+    // concurrent reply tasks would otherwise each read the same roster snapshot
+    // and the later `set_standing_roster` would clobber the earlier swap. The
+    // roster is (re-)read below *inside* this lock, so each swap sees the prior
+    // one. Cheap — failover is rare — and the path is fully synchronous.
+    let _swap = state.failover_lock.lock().unwrap();
     let Ok((roster, _)) = crate::plugins::pr_review::council::runtime_council_roster(state) else {
         return;
     };
@@ -1304,7 +1311,7 @@ fn on_send(
     // Passive health accounting (ADR 023 Phase 1): a `-32603` error frame arrives
     // here as a complete (non-streamed) send, so this is where the broken-agent
     // signal — invisible to the plane until now — is finally read.
-    account_bot_health(state, &session.id, bot_id, bot_name, &reply.content.text);
+    account_bot_health(state, &session.id, bot_id, &reply.content.text);
     state.emit_north(
         "message",
         &session.id,
@@ -1720,6 +1727,10 @@ fn on_edit(
             json!({ "message_id": target, "content": reply.content.text }),
         );
         ack(state, bot_id, reply, None, Some(target));
+        // Health-account the settled edit content (council F1): a streamed bot's
+        // final turn lands here, so this is where a streamed error is counted and,
+        // crucially, where a streamed content frame lets a degraded bot recover.
+        account_bot_health(state, &session.id, bot_id, &reply.content.text);
         // A streamed recruit directive lands via edit_message when the final
         // content replaces the stub. The per-session seen set absorbs repeats.
         maybe_recruit(state, session, bot_id, &reply.content.text)?;
@@ -1917,6 +1928,24 @@ mod tests {
             "LGTM. One nit: guard the internal error path so a downstream 500 \
              doesn't leak a stack trace to the client — otherwise this looks solid \
              and I'm approving once that's addressed. Nice test coverage overall."
+        ));
+        // Council F2: long review prose that DISCUSSES -32603 is not an error frame
+        // — the code must be error-shaped (short, or carrying jsonrpc/`"code"`),
+        // not merely present in a paragraph. Otherwise a reviewer false-degrades
+        // and (with Phase 4) triggers a roster swap.
+        assert!(!is_agent_error_frame(
+            "On the reconnect path the agent can surface a JSON-RPC -32603 to the \
+             gateway; we should classify that as an error frame rather than storing \
+             it as review content, because right now it counts toward the reviewer \
+             quorum and silently degrades the verdict to noise. Worth a follow-up."
+        ));
+        // ...but a genuine JSON-RPC error object still trips even if longer, via the
+        // structural signal.
+        assert!(is_agent_error_frame(
+            "gateway wrapped agent failure: \
+             {\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32603,\"message\":\
+             \"Internal Error: upstream provider returned quota_exceeded for the \
+             configured API key; the agent could not produce any model output\"}}"
         ));
     }
 
@@ -2234,6 +2263,41 @@ mod tests {
         assert_eq!(health(&store), "ok");
     }
 
+    #[test]
+    fn streamed_content_via_on_edit_recovers_a_degraded_bot() {
+        // Council F1: streamed bots (kiro/codex) deliver their final content via
+        // `edit_message`, not `on_send`. Before the fix a degraded streamed bot
+        // could never recover because `on_edit` didn't health-account. This proves
+        // the settled edit content now drives recovery.
+        let (state, store, session, chair, _rev1, _rev2, _conns) = liveness_setup();
+        let health = |s: &SqliteStore| s.bot_inventory(&chair).unwrap().unwrap().health;
+        let err = r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal Error"}}"#;
+
+        for _ in 0..3 {
+            handle_reply(&state, &chair, msg_reply(&session.id, err)).unwrap();
+        }
+        assert_eq!(health(&store), "degraded");
+
+        // The bot streams its next turn: a "…" stub (skipped), then the settled
+        // content lands via edit_message.
+        handle_reply(&state, &chair, msg_reply(&session.id, "…")).unwrap();
+        assert_eq!(health(&store), "degraded", "the stub must not recover");
+        let stub = store
+            .messages(&session.id)
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.author_id.as_deref() == Some(chair.as_str()))
+            .next_back()
+            .unwrap();
+        handle_reply(
+            &state,
+            &chair,
+            edit_reply(&session.id, &stub.id, "Reviewed the diff — looks correct."),
+        )
+        .unwrap();
+        assert_eq!(health(&store), "ok", "settled edit content recovers the bot");
+    }
+
     fn set_provider(store: &SqliteStore, id: &str, provider: &str) {
         store
             .update_bot_metadata(
@@ -2273,6 +2337,43 @@ mod tests {
             "healthy standby promoted into the chair slot"
         );
         assert!(!roster.contains(&chair), "degraded chair routed out");
+        std::env::remove_var("OABCP_AUTO_FAILOVER");
+    }
+
+    #[test]
+    fn sequential_failovers_compose_without_clobbering() {
+        // Council F7: each swap must build on the previous roster, not a stale
+        // snapshot. Degrade two different reviewers in turn; the second swap must
+        // see the first's result, so the final roster carries BOTH standbys and
+        // neither degraded bot. (The failover_lock makes this hold under
+        // concurrency too; here we prove the re-read-and-compose behavior.)
+        let _g = BACKFILL_ENV_LOCK.lock().unwrap();
+        std::env::set_var("OABCP_AUTO_FAILOVER", "1");
+        let (state, store, session, chair, rev1, rev2, mut conns) = liveness_setup();
+        store
+            .set_standing_roster(&[chair.clone(), rev1.clone(), rev2.clone()])
+            .unwrap();
+        let sb1 = store.register_bot("rev1b", "reviewer", "h8", "t8").unwrap();
+        let sb2 = store.register_bot("rev2b", "reviewer", "h9", "t9").unwrap();
+        connect_bot(&state, &mut conns, &sb1.id);
+        connect_bot(&state, &mut conns, &sb2.id);
+
+        let err = "-32603";
+        for _ in 0..3 {
+            handle_reply(&state, &rev1, msg_reply(&session.id, err)).unwrap();
+        }
+        for _ in 0..3 {
+            handle_reply(&state, &rev2, msg_reply(&session.id, err)).unwrap();
+        }
+
+        let (roster, _) =
+            crate::plugins::pr_review::council::runtime_council_roster(&state).unwrap();
+        assert_eq!(roster.first().unwrap(), &chair, "chair untouched");
+        assert!(roster.contains(&sb1.id) && roster.contains(&sb2.id), "both swaps kept");
+        assert!(
+            !roster.contains(&rev1) && !roster.contains(&rev2),
+            "neither degraded reviewer left in-roster"
+        );
         std::env::remove_var("OABCP_AUTO_FAILOVER");
     }
 

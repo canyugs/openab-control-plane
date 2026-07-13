@@ -54,6 +54,12 @@ pub struct AppState {
     /// Per-session recruit directives already processed. This bounds repeated
     /// parse paths and the unknown-target provision signal surface.
     pub recruit_seen: Mutex<HashMap<String, HashSet<String>>>,
+    /// Serializes auto-failover roster swaps (ADR 023 Phase 4). Two bots degrading
+    /// concurrently would otherwise each read the same roster snapshot and the later
+    /// `set_standing_roster` would clobber the earlier swap (council F7). Holding
+    /// this across the read-modify-write makes the swap atomic. Sync mutex: the
+    /// swap path is fully synchronous (no await held).
+    pub failover_lock: std::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -123,6 +129,7 @@ impl AppState {
             close_webhook_url,
             ws_ping_secs,
             recruit_seen: Mutex::new(HashMap::new()),
+            failover_lock: std::sync::Mutex::new(()),
         })
     }
 
