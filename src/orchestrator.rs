@@ -2286,8 +2286,7 @@ mod tests {
             .messages(&session.id)
             .unwrap()
             .into_iter()
-            .filter(|m| m.author_id.as_deref() == Some(chair.as_str()))
-            .next_back()
+            .rfind(|m| m.author_id.as_deref() == Some(chair.as_str()))
             .unwrap();
         handle_reply(
             &state,
