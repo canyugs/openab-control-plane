@@ -1452,6 +1452,35 @@ async fn github_token(
 /// cached under a `bot:<id>` key (not a real session), so it lives out its ≤1h TTL
 /// and the pod's refresh loop re-mints — there is no session-close revoke, which is
 /// the intended pod-level posture (matches the pre-D1 long-lived refreshed token).
+/// Chair write scope follows the active chair *slot*, not the `role` label alone
+/// (ADR 024 Decision 1). A bot gets `Role::Chair` (→ `pull_requests:write`) only
+/// while it is BOTH `roster[0]` of the standing roster AND itself a `role="chair"`
+/// bot; every other bot — including a connected-but-off-roster standby chair — is
+/// `Role::Reviewer` (read-only).
+///
+/// The `role == "chair"` conjunct matters because `runtime_council_roster` may
+/// return the **unvalidated** `OABCP_COUNCIL_ROSTER` env fallback (the DB standing
+/// roster is validated by `validate_standing_roster`, the env one is not). Without
+/// this conjunct a misordered env roster with a reviewer at index 0 would be handed
+/// write scope — a privilege escalation this function must not introduce. Requiring
+/// both keeps the grant strictly ≤ the pre-slot-binding `from_bot_role` behavior.
+/// Fails safe to read-only if the roster can't be resolved.
+fn active_chair_role(
+    state: &Arc<AppState>,
+    bot_id: &str,
+    bot_role: &str,
+) -> crate::github_app::Role {
+    let is_active_slot = matches!(
+        crate::plugins::pr_review::council::runtime_council_roster(state),
+        Ok((roster, _)) if roster.first().map(String::as_str) == Some(bot_id)
+    );
+    if is_active_slot && bot_role == "chair" {
+        crate::github_app::Role::Chair
+    } else {
+        crate::github_app::Role::Reviewer
+    }
+}
+
 async fn bot_github_token(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1469,8 +1498,13 @@ async fn bot_github_token(
         // PAT mode — no App provisioned. The pod keeps using its shared GH_TOKEN.
         return Err(StatusCode::NOT_IMPLEMENTED);
     };
-    // Role is authoritative from the bot record — the request carries no role.
-    let role = crate::github_app::Role::from_bot_role(&bot.role);
+    // Chair write scope is bound to the active chair *slot*, not the `role`
+    // label (ADR 024 Decision 1). A bot earns `pull_requests:write` only while
+    // it is `roster[0]` of the standing roster; otherwise it is read-only. So a
+    // connected-but-off-roster standby chair (blue-green, #227) holds no latent
+    // write power until a promotion `PUT` makes it the active chair — and even a
+    // single-chair deployment is tightened, since write follows the live slot.
+    let role = active_chair_role(&state, &bot.id, &bot.role);
     let token = identity::github_token_for(
         state.store.as_ref(),
         app,
@@ -1952,6 +1986,71 @@ mod tests {
         assert_eq!(err, StatusCode::NOT_IMPLEMENTED);
     }
 
+    #[test]
+    fn chair_write_scope_follows_active_slot_not_role_label() {
+        use crate::github_app::Role;
+        // chair(role=chair) + rev1 + rev2, plus a standby chair on another provider.
+        let state = state_with_review_bots();
+        state
+            .store
+            .seed_bot("chair2", "chair2", "chair", "h9", "t9")
+            .unwrap();
+
+        // Active roster: `chair` sits at slot 0.
+        state
+            .store
+            .set_standing_roster(&["chair".into(), "rev1".into()])
+            .unwrap();
+        // The active chair gets write scope; a reviewer does not.
+        assert_eq!(super::active_chair_role(&state, "chair", "chair"), Role::Chair);
+        assert_eq!(
+            super::active_chair_role(&state, "rev1", "reviewer"),
+            Role::Reviewer
+        );
+        // The crux (ADR 024): a connected-but-off-roster standby chair holds NO
+        // write power despite `role == "chair"` — it isn't the active slot.
+        assert_eq!(
+            super::active_chair_role(&state, "chair2", "chair"),
+            Role::Reviewer
+        );
+
+        // Promote the standby: write capability moves with the slot, atomically.
+        state
+            .store
+            .set_standing_roster(&["chair2".into(), "rev1".into()])
+            .unwrap();
+        assert_eq!(
+            super::active_chair_role(&state, "chair2", "chair"),
+            Role::Chair
+        );
+        // ...and the demoted primary is now read-only even though its stored
+        // `role` is still "chair".
+        assert_eq!(
+            super::active_chair_role(&state, "chair", "chair"),
+            Role::Reviewer
+        );
+    }
+
+    #[test]
+    fn active_slot_grants_chair_only_to_a_chair_role_bot() {
+        // Council F6: `runtime_council_roster` can return the UNVALIDATED
+        // `OABCP_COUNCIL_ROSTER` env fallback. If that roster seats a reviewer-role
+        // bot at index 0, slot membership alone must NOT grant write scope — the
+        // `role == "chair"` conjunct keeps the grant ≤ the pre-slot-binding behavior.
+        use crate::github_app::Role;
+        let state = state_with_review_bots();
+        // A reviewer bot occupying slot 0 (the misordered-env-fallback scenario).
+        state
+            .store
+            .set_standing_roster(&["rev1".into(), "rev2".into()])
+            .unwrap();
+        assert_eq!(
+            super::active_chair_role(&state, "rev1", "reviewer"),
+            Role::Reviewer,
+            "a reviewer at slot 0 must never receive write scope"
+        );
+    }
+
     #[tokio::test]
     async fn bot_github_token_happy_path_returns_token_and_role() {
         // App configured + a fresh cached token for `bot:<id>` → the handler returns
@@ -1959,6 +2058,11 @@ mod tests {
         // don't, and pins both response encodings.
         let store = Arc::new(SqliteStore::memory().unwrap());
         let (bot, token) = identity::issue(store.as_ref(), "chair", "chair", None).unwrap();
+        // Chair write scope is now slot-bound (ADR 024): the bot only earns
+        // `Role::Chair` while it is `roster[0]`, so make it the active chair.
+        store
+            .set_standing_roster(std::slice::from_ref(&bot.id))
+            .unwrap();
         store
             .cache_installation_token(
                 &format!("bot:{}", bot.id),
