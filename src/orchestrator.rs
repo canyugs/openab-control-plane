@@ -227,10 +227,18 @@ pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bo
         .as_ref()
         .and_then(|s| s.chair_bot.clone())
         .and_then(|chair| chair_latest_settled(state, session_id, &chair));
+    let has_verdict = chair_final.is_some();
     let verdict = match chair_final {
         Some(v) => format!("{note}\n\n{v}"),
         None => format!("{note} (No verdict synthesized; reviews are in the thread.)"),
     };
+    // ADR 025: a verdict-less close means nobody posted to the PR — the chair that
+    // would have is the thing that died. Tell the requester (opt-in, canned).
+    maybe_post_unavailable_notice(
+        state,
+        session.as_ref().and_then(|s| s.trigger_ref.as_deref()),
+        has_verdict,
+    );
     state.emit_north(
         "timeout",
         session_id,
@@ -546,6 +554,95 @@ fn fire_close_webhook(state: &Arc<AppState>, session_id: &str, verdict: &str, re
             Err(e) => tracing::warn!("close webhook for {session_id} failed: {e}"),
             _ => {}
         }
+    });
+}
+
+/// Marker anchoring the plane's operational status notice (ADR 025). Distinct
+/// from the review comment's `<!-- openab-council -->` so a notice never clobbers
+/// a real review and a future upsert (#226) can find its own prior notice.
+const STATUS_NOTICE_MARKER: &str = "<!-- openab-council-status -->";
+
+/// Whether the plane posts a canned "review unavailable" notice to the PR when a
+/// review can't complete (ADR 025). Default OFF: enable per lane via
+/// `OABCP_PLANE_STATUS_NOTICE` after the dev-before-prod deploy gate.
+fn plane_status_notice_enabled() -> bool {
+    matches!(
+        std::env::var("OABCP_PLANE_STATUS_NOTICE").ok().as_deref(),
+        Some("1") | Some("true")
+    )
+}
+
+/// Parse a PR `trigger_ref` (`github:pr/{owner}/{name}#{num}`) back into
+/// `(owner/name, num)`. Returns None for any non-PR or malformed ref, so a
+/// non-review session simply gets no notice.
+fn parse_pr_trigger_ref(trigger_ref: &str) -> Option<(String, String)> {
+    let rest = trigger_ref.strip_prefix("github:pr/")?;
+    let (repo, num) = rest.rsplit_once('#')?;
+    if repo.is_empty() || num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((repo.to_string(), num.to_string()))
+}
+
+/// The post decision (ADR 025), factored out for testing: a notice targets a PR
+/// only when the feature is enabled, the review closed *without* a verdict, and
+/// the trigger is a well-formed PR ref. Returns `(owner/name, num)` or None.
+fn notice_target(
+    enabled: bool,
+    has_verdict: bool,
+    trigger_ref: Option<&str>,
+) -> Option<(String, String)> {
+    if !enabled || has_verdict {
+        return None;
+    }
+    trigger_ref.and_then(parse_pr_trigger_ref)
+}
+
+/// The canned notice body (ADR 025 Decision 1): fixed operational status only —
+/// no review content, nothing derived from the PR diff.
+fn unavailable_notice_body() -> String {
+    format!(
+        "{STATUS_NOTICE_MARKER}\n\n⚠️ **Code review could not complete.** The review \
+         service is temporarily unavailable — the review agent did not respond. An \
+         operator has been alerted. Once service is restored, re-request a review or \
+         push a new commit to retrigger."
+    )
+}
+
+/// When a PR-review session closes with no synthesized verdict, tell the
+/// requester on the PR (ADR 025) — the one silent-failure the operator-facing
+/// `WARN` (ADR 023) and failover (Phase 4) don't reach. Fire-and-forget on a
+/// spawned task with a freshly minted chair-scoped token (never the session
+/// tokens, which the close revokes); a failed post is a WARN, never blocks close.
+fn maybe_post_unavailable_notice(
+    state: &Arc<AppState>,
+    trigger_ref: Option<&str>,
+    has_verdict: bool,
+) {
+    let Some((repo, pr)) = notice_target(plane_status_notice_enabled(), has_verdict, trigger_ref)
+    else {
+        return; // notice disabled, verdict posted, or not a PR review
+    };
+    let Some(app) = state.github_app.clone() else {
+        return; // PAT mode — no App to post as
+    };
+    let body = unavailable_notice_body();
+    tokio::spawn(async move {
+        let token = match app
+            .mint_installation_token(crate::github_app::Role::Chair)
+            .await
+        {
+            Ok(t) => t.token,
+            Err(e) => {
+                tracing::warn!(repo, pr, "status notice: mint token failed: {e}");
+                return;
+            }
+        };
+        match app.post_pr_comment(&repo, &pr, &token, &body).await {
+            Ok(()) => tracing::info!(repo, pr, "posted review-unavailable status notice"),
+            Err(e) => tracing::warn!(repo, pr, "status notice: post failed: {e}"),
+        }
+        let _ = app.revoke_installation_token(&token).await; // one-off token, drop it
     });
 }
 
@@ -1547,6 +1644,46 @@ mod tests {
     use tokio::sync::mpsc;
 
     static BACKFILL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn pr_trigger_ref_parses_only_well_formed_pr_refs() {
+        assert_eq!(
+            parse_pr_trigger_ref("github:pr/zeabur/dashboard#1714"),
+            Some(("zeabur/dashboard".to_string(), "1714".to_string()))
+        );
+        // Not a PR ref / malformed → None (no notice).
+        assert_eq!(parse_pr_trigger_ref("terminal"), None);
+        assert_eq!(parse_pr_trigger_ref("github:issue/o/r#1"), None);
+        assert_eq!(parse_pr_trigger_ref("github:pr/o/r#"), None);
+        assert_eq!(parse_pr_trigger_ref("github:pr/o/r#notanum"), None);
+        // A comment-scoped ask ref (extra suffix past the number) isn't a plain PR.
+        assert_eq!(parse_pr_trigger_ref("github:pr/o/r#5:cmd:9"), None);
+    }
+
+    #[test]
+    fn notice_targets_only_verdictless_pr_closes_when_enabled() {
+        let pr = Some("github:pr/o/r#7");
+        // The one firing case: enabled + no verdict + a PR ref.
+        assert_eq!(
+            notice_target(true, false, pr),
+            Some(("o/r".to_string(), "7".to_string()))
+        );
+        // Suppressed: a verdict was posted, the feature is off, or non-PR trigger.
+        assert_eq!(notice_target(true, true, pr), None);
+        assert_eq!(notice_target(false, false, pr), None);
+        assert_eq!(notice_target(true, false, Some("terminal")), None);
+        assert_eq!(notice_target(true, false, None), None);
+    }
+
+    #[test]
+    fn unavailable_notice_is_canned_and_marker_anchored() {
+        let body = unavailable_notice_body();
+        // Carries its own marker (distinct from the review comment's), and is a
+        // fixed operational string — no PR-derived content (ADR 025 C3 line).
+        assert!(body.starts_with(STATUS_NOTICE_MARKER));
+        assert_ne!(STATUS_NOTICE_MARKER, "<!-- openab-council -->");
+        assert!(body.contains("could not complete"));
+    }
 
     #[test]
     fn close_webhook_payload_shape() {
