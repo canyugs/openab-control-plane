@@ -55,7 +55,7 @@ What it deliberately lacks:
 ## Prior-art findings
 
 The companion
-[prior-art study](../sdd-quality-workflow-prior-art.md) compares durable
+[prior-art study](https://github.com/canyugs/sdd-controller/blob/main/docs/sdd-quality-workflow-prior-art.md) compares durable
 workflow engines, agent orchestration frameworks, spec-driven development
 methods, and evaluator reliability research. Its conclusions constrain this
 decision:
@@ -464,7 +464,7 @@ does not close the parent workflow.
 
 ## Migration / build order
 
-Detailed slices live in `docs/sdd-quality-workflow-plan.md`; the order is:
+Detailed slices live in the `sdd-controller` repo ([docs/sdd-quality-workflow-plan.md](https://github.com/canyugs/sdd-controller/blob/main/docs/sdd-quality-workflow-plan.md)); the order is:
 
 1. **W0 — contracts and substrate selection.** Freeze schemas and fixtures,
    then run the same crash-recovery fixture against Restate and the explicit
@@ -526,7 +526,7 @@ Detailed slices live in `docs/sdd-quality-workflow-plan.md`; the order is:
 
 ## References
 
-- `docs/sdd-quality-workflow-prior-art.md` — primary-source comparison and
+- [sdd-controller docs/sdd-quality-workflow-prior-art.md](https://github.com/canyugs/sdd-controller/blob/main/docs/sdd-quality-workflow-prior-art.md) — primary-source comparison and
   derived requirements
 - ADR 007 — control plugins; rule 5 (no plugin platform before the dogfood
   path is stable)
@@ -542,5 +542,5 @@ Detailed slices live in `docs/sdd-quality-workflow-plan.md`; the order is:
 - `docs/coordinators.md` — Pipeline; `Goal` enum proposed-and-cut
 - `docs/design.md` — plane-vs-steering test; B4 (verdict content is not a
   kernel guarantee)
-- `docs/sdd-quality-workflow-plan.md` — implementation slices
+- [sdd-controller docs/sdd-quality-workflow-plan.md](https://github.com/canyugs/sdd-controller/blob/main/docs/sdd-quality-workflow-plan.md) — implementation slices
 - `tests/second_consumer.rs` — S16 north-surface consumer proof
