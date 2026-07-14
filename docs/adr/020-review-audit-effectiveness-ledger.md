@@ -262,3 +262,9 @@ The ledger supplies production evidence; it is not itself ground truth.
 - [ADR 017 — Message observability / audit layer](017-message-observability-audit-layer.md)
 - [ADR 018 — Stage 3 extraction rulings](018-stage3-extraction.md)
 - [route.md M4](../route.md)
+
+## Status note
+
+Layer 2 minimal slice implemented 2026-07-15 (#238): `pr_review_findings` +
+hidden chair block + `GET /v1/review/findings`. Rounds/events tables and
+resolve/dismiss commands remain unimplemented.
