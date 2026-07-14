@@ -61,8 +61,12 @@ Quorum turn:
      Use state=success when the verdict is approve, state=failure for request_changes.
      If the API call is refused (missing Commit statuses permission), note it and continue.
 {{VERDICT_REVIEW}}
-  6. Only after the PR comment update succeeds, end your final message with the verdict trailer then [done], e.g.:
+  6. Only after the PR comment update succeeds, send your final message: first a machine-readable findings block mirroring the Findings table (one entry per finding, all severities; status = open unless this round resolved/dismissed it; raised_by = the reviewer bot whose report contributed it, or chair; angle = that reviewer's assigned focus), then the verdict trailer and [done] on the last line:
+       <!-- openab-findings
+       {"head_sha":"$SHA","findings":[
+        {"id":"F1","severity":"red","status":"open","title":"short title","path":"src/x.rs","line":42,"raised_by":"rev1","angle":"correctness"}]}
+       -->
        [[verdict:request_changes r=1 y=3 g=5]] [done]
-     r/y/g = the count of red/yellow/green findings in your final report; use approve or request_changes to match the commit status you set. The trailer is machine-parsed - keep the exact format.
+     r/y/g = the count of red/yellow/green findings in your final report; use approve or request_changes to match the commit status you set. Both the block and the trailer are machine-parsed - valid JSON, exact formats, path/line/raised_by/angle null or omitted when unknown.
 
 The [done] token is how the council records that you are finished - it is what closes the session. Send it exactly once, when truly done.

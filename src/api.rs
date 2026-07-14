@@ -55,6 +55,9 @@ pub fn router() -> Router<Arc<AppState>> {
             "/v1/review",
             post(crate::plugins::pr_review::webhook::review_pr),
         )
+        // ADR 020 findings ledger, read-only. The offline adoption script joins
+        // against this instead of scraping PR comments.
+        .route("/v1/review/findings", get(list_review_findings))
         // Option A: the plane mints a per-role scoped GitHub installation token for a
         // pod, bound to this session. The pod calls GitHub with it instead of the
         // shared PAT. Closing the session purges it (central revoke).
@@ -584,6 +587,40 @@ async fn list_sessions(
         .list_sessions(req.trigger_ref.as_deref(), state_filter, limit)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(json!({ "sessions": sessions, "limit": limit })))
+}
+
+#[derive(Deserialize)]
+struct ReviewFindingsQuery {
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    pr: Option<i64>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    severity: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+async fn list_review_findings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(req): Query<ReviewFindingsQuery>,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_auth(&state, &headers)?;
+    let limit = req.limit.unwrap_or(100).clamp(1, 500);
+    let findings = state
+        .store
+        .review_findings(
+            req.repo.as_deref(),
+            req.pr,
+            req.status.as_deref(),
+            req.severity.as_deref(),
+            limit,
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!({ "findings": findings, "limit": limit })))
 }
 
 #[derive(Deserialize)]

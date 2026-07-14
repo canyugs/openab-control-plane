@@ -572,6 +572,44 @@ fn plane_status_notice_enabled() -> bool {
     )
 }
 
+/// ADR 020: parse the chair's hidden `<!-- openab-findings … -->` block out of
+/// the closing verdict text and append ledger rows. Best-effort — a missing or
+/// malformed block never affects the close; the ledger simply gets no rows.
+fn record_review_findings(state: &Arc<AppState>, session: &Session, verdict_text: &str) {
+    let Some(block) = crate::plugins::pr_review::findings::parse_findings_block(verdict_text)
+    else {
+        return;
+    };
+    let repo_pr = session
+        .trigger_ref
+        .as_deref()
+        .and_then(parse_pr_trigger_ref)
+        .and_then(|(repo, num)| num.parse::<i64>().ok().map(|n| (repo, n)));
+    let rows: Vec<crate::store::NewReviewFinding> = block
+        .findings
+        .iter()
+        .map(|f| crate::store::NewReviewFinding {
+            stable_id: f.id.clone(),
+            severity: f.severity.clone(),
+            status: f.status.clone(),
+            title: f.title.clone(),
+            path: f.path.clone(),
+            line: f.line,
+            raised_by: f.raised_by.clone(),
+            angle: f.angle.clone(),
+        })
+        .collect();
+    if let Err(e) = state.store.insert_review_findings(
+        &session.id,
+        repo_pr.as_ref().map(|(r, _)| r.as_str()),
+        repo_pr.as_ref().map(|(_, n)| *n),
+        block.head_sha.as_deref(),
+        &rows,
+    ) {
+        tracing::warn!("record findings for {} failed: {e}", session.id);
+    }
+}
+
 /// Parse a PR `trigger_ref` (`github:pr/{owner}/{name}#{num}`) back into
 /// `(owner/name, num)`. Returns None for any non-PR or malformed ref, so a
 /// non-review session simply gets no notice.
@@ -1624,6 +1662,12 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                         ) {
                             tracing::warn!("record verdict for {} failed: {e}", session.id);
                         }
+                    }
+                    // ADR 020: populate the findings ledger from the chair's
+                    // hidden block. Same trust policy as the trailer — only the
+                    // review-council chair's final is authoritative.
+                    if session.mode == "review_council" {
+                        record_review_findings(state, session, &verdict);
                     }
                     state.emit_north(
                         "verdict",

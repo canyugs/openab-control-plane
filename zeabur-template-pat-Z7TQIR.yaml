@@ -530,16 +530,26 @@ spec:
                  Use `state=success` when the verdict is approve, `state=failure` for
                  request-changes. If the API call is refused (missing Commit statuses
                  permission), note it and continue.
-              7. After the PR comment update succeeds, reply in this thread ending with the
-                 verdict trailer and `[done]`, e.g.:
+              7. After the PR comment update succeeds, reply in this thread with a
+                 machine-readable findings block mirroring the Findings table, then the
+                 verdict trailer and `[done]` on the last line:
 
                  ```
+                 <!-- openab-findings
+                 {"head_sha":"$SHA","findings":[
+                  {"id":"F1","severity":"red","status":"open","title":"short title",
+                   "path":"src/x.rs","line":42,"raised_by":"rev1","angle":"correctness"}]}
+                 -->
                  [[verdict:request_changes r=1 y=3 g=5]] [done]
                  ```
 
+                 One entry per finding, all severities; `status` = `open` unless this round
+                 resolved/dismissed it; `raised_by` = the reviewer bot whose report
+                 contributed the finding (or `chair`); `angle` = that reviewer's assigned
+                 focus; `path`/`line`/`raised_by`/`angle` null or omitted when unknown.
                  `r`/`y`/`g` = the count of 🔴/🟡/🟢 findings in your final report; match the
-                 decision to the commit status you set. The trailer is machine-parsed by the
-                 plane — keep the exact format.
+                 decision to the commit status you set. Both the block and the trailer are
+                 machine-parsed by the plane — valid JSON, exact formats.
 
               When synthesizing, apply the same severity + scope gate to the reviewers' findings:
               drop or green-downgrade any that speculate beyond the diff, require no concrete
