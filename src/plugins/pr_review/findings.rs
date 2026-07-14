@@ -57,8 +57,11 @@ pub fn parse_findings_block(text: &str) -> Option<FindingsBlock> {
     const OPEN: &str = "<!-- openab-findings";
     let start = text.rfind(OPEN)?;
     let rest = &text[start + OPEN.len()..];
-    let json = &rest[..rest.find("-->")?];
-    let block: FindingsBlock = serde_json::from_str(json.trim()).ok()?;
+    // A literal `-->` inside a title/path would truncate the JSON at the first
+    // occurrence — try each `-->` candidate until one yields valid JSON.
+    let block: FindingsBlock = rest
+        .match_indices("-->")
+        .find_map(|(end, _)| serde_json::from_str(rest[..end].trim()).ok())?;
     let valid = block.findings.iter().all(|f| {
         matches!(f.severity.as_str(), "red" | "yellow" | "green")
             && matches!(f.status.as_str(), "open" | "resolved" | "dismissed")
@@ -107,6 +110,15 @@ mod tests {
         );
         let b = parse_findings_block(&text).unwrap();
         assert_eq!(b.findings[0].id, "F1");
+    }
+
+    #[test]
+    fn arrow_inside_title_does_not_truncate_block() {
+        let b = parse_findings_block(
+            "<!-- openab-findings\n{\"findings\":[{\"id\":\"F1\",\"severity\":\"red\",\"title\":\"maps a --> b wrongly\"}]}\n-->\n[done]",
+        )
+        .unwrap();
+        assert_eq!(b.findings[0].title, "maps a --> b wrongly");
     }
 
     #[test]
