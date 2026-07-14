@@ -165,6 +165,43 @@ pub struct Reaction {
     pub emoji: String,
 }
 
+/// One findings-ledger row (ADR 020): a finding as reported by one review
+/// round. Written once at session close from the chair's hidden
+/// `<!-- openab-findings … -->` block; the kernel stores plain rows and knows
+/// nothing about the block format (that parse lives in the pr_review plugin).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewFinding {
+    pub id: i64,
+    pub session_id: String,
+    pub repo: Option<String>,
+    pub pr_number: Option<i64>,
+    /// PR-scoped stable id, e.g. `F1` (monotonic across rounds per steering).
+    pub stable_id: String,
+    pub severity: String, // red | yellow | green
+    pub status: String,   // open | resolved | dismissed
+    pub title: String,
+    pub path: Option<String>,
+    pub line: Option<i64>,
+    pub raised_by: Option<String>,
+    pub angle: Option<String>,
+    pub head_sha: Option<String>,
+    pub created_at: i64,
+}
+
+/// Insert shape for `insert_review_findings` — everything but the row id and
+/// the shared per-call fields (session, repo/pr, head_sha, timestamp).
+#[derive(Debug, Clone)]
+pub struct NewReviewFinding {
+    pub stable_id: String,
+    pub severity: String,
+    pub status: String,
+    pub title: String,
+    pub path: Option<String>,
+    pub line: Option<i64>,
+    pub raised_by: Option<String>,
+    pub angle: Option<String>,
+}
+
 /// Backing-service seam (design §6c). All callers depend on this, not on SQLite.
 pub trait Store: Send + Sync {
     fn register_bot(
@@ -300,6 +337,25 @@ pub trait Store: Send + Sync {
         yellow: Option<i64>,
         green: Option<i64>,
     ) -> Result<()>;
+    /// Append findings-ledger rows for a closed review round (ADR 020). Called
+    /// at most once per session (guarded by the close CAS upstream).
+    fn insert_review_findings(
+        &self,
+        session_id: &str,
+        repo: Option<&str>,
+        pr_number: Option<i64>,
+        head_sha: Option<&str>,
+        findings: &[NewReviewFinding],
+    ) -> Result<()>;
+    /// Read the findings ledger, newest rows first. All filters optional.
+    fn review_findings(
+        &self,
+        repo: Option<&str>,
+        pr_number: Option<i64>,
+        status: Option<&str>,
+        severity: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ReviewFinding>>;
     /// Non-terminal session ids created before `cutoff_ms` — watchdog candidates.
     fn active_sessions_before(&self, cutoff_ms: i64) -> Result<Vec<String>>;
     fn roster(&self, session_id: &str) -> Result<Vec<String>>;
@@ -458,6 +514,25 @@ CREATE TABLE IF NOT EXISTS installation_tokens (
     token TEXT NOT NULL, expires_at INTEGER NOT NULL,
     PRIMARY KEY (session_id, role)
 );
+-- ADR 020 findings ledger (PR-review plugin-owned). One row per finding per
+-- review round; a session IS a round, so history across rounds = rows across
+-- sessions of the same repo/pr. Append-only.
+-- ponytail: no rounds/events tables yet — sessions already carries round
+-- metadata; add pr_review_finding_events when resolve/dismiss commands land.
+CREATE TABLE IF NOT EXISTS pr_review_findings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    repo TEXT, pr_number INTEGER,
+    stable_id TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    status TEXT NOT NULL,
+    title TEXT NOT NULL,
+    path TEXT, line INTEGER,
+    raised_by TEXT, angle TEXT,
+    head_sha TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_prf_repo_pr ON pr_review_findings(repo, pr_number, id);
 "#;
 
 /// Additive migrations for DBs created before a column or index existed. Each
@@ -1428,6 +1503,77 @@ impl Store for SqliteStore {
             params![session_id, decision, red, yellow, green],
         )?;
         Ok(())
+    }
+
+    fn insert_review_findings(
+        &self,
+        session_id: &str,
+        repo: Option<&str>,
+        pr_number: Option<i64>,
+        head_sha: Option<&str>,
+        findings: &[NewReviewFinding],
+    ) -> Result<()> {
+        let mut c = self.conn.lock().unwrap();
+        let now = now_ms();
+        let tx = c.transaction()?;
+        for f in findings {
+            tx.execute(
+                "INSERT INTO pr_review_findings
+                    (session_id, repo, pr_number, stable_id, severity, status,
+                     title, path, line, raised_by, angle, head_sha, created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                params![
+                    session_id, repo, pr_number, f.stable_id, f.severity, f.status,
+                    f.title, f.path, f.line, f.raised_by, f.angle, head_sha, now
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn review_findings(
+        &self,
+        repo: Option<&str>,
+        pr_number: Option<i64>,
+        status: Option<&str>,
+        severity: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ReviewFinding>> {
+        let c = self.conn.lock().unwrap();
+        // ponytail: fixed ?-slots with "IS NULL OR" per filter beats dynamic SQL.
+        let mut stmt = c.prepare(
+            "SELECT id, session_id, repo, pr_number, stable_id, severity, status,
+                    title, path, line, raised_by, angle, head_sha, created_at
+             FROM pr_review_findings
+             WHERE (?1 IS NULL OR repo = ?1)
+               AND (?2 IS NULL OR pr_number = ?2)
+               AND (?3 IS NULL OR status = ?3)
+               AND (?4 IS NULL OR severity = ?4)
+             ORDER BY id DESC LIMIT ?5",
+        )?;
+        let rows = stmt.query_map(
+            params![repo, pr_number, status, severity, limit],
+            |r| {
+                Ok(ReviewFinding {
+                    id: r.get(0)?,
+                    session_id: r.get(1)?,
+                    repo: r.get(2)?,
+                    pr_number: r.get(3)?,
+                    stable_id: r.get(4)?,
+                    severity: r.get(5)?,
+                    status: r.get(6)?,
+                    title: r.get(7)?,
+                    path: r.get(8)?,
+                    line: r.get(9)?,
+                    raised_by: r.get(10)?,
+                    angle: r.get(11)?,
+                    head_sha: r.get(12)?,
+                    created_at: r.get(13)?,
+                })
+            },
+        )?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     fn active_sessions_before(&self, cutoff_ms: i64) -> Result<Vec<String>> {

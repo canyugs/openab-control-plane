@@ -1,4 +1,5 @@
 pub mod council;
+pub mod findings;
 pub mod tasks;
 pub mod verdict;
 pub mod webhook;
