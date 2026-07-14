@@ -475,16 +475,19 @@ mod tests {
     }
 
     #[test]
-    fn chair_task_checks_marker_before_edit_last() {
+    fn chair_task_updates_verdict_by_comment_id_not_edit_last() {
         let session = test_session(Some("chair"), "review_council");
         let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"";
 
         let chair_text = review_recipient_text(&session, "chair", trigger);
 
-        assert!(chair_text.contains("Before ANY --edit-last"));
-        assert!(chair_text.contains("list your own PR comments"));
-        assert!(chair_text.contains("most recent one starts with <!-- openab-council -->"));
-        assert!(chair_text.contains("post a NEW comment with the marker instead"));
+        assert!(chair_text.contains("NEVER use --edit-last"));
+        assert!(!chair_text.contains("--edit-last --create-if-none"));
+        assert!(chair_text.contains("CID=${URL##*-}"));
+        assert!(chair_text.contains(
+            "gh api repos/canyugs/openab-control-plane/issues/comments/$CID -X PATCH"
+        ));
+        assert!(chair_text.contains("post the verdict as a NEW comment with the marker instead"));
     }
 
     #[test]
