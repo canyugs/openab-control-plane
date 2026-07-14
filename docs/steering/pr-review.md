@@ -94,6 +94,19 @@ Open the report with the expanded checklist you used for the assigned focus. Kee
 it short; it should explain what `correctness`, `security`, `tests`, or another
 bare angle means for this PR, not restate generic review categories.
 
+When the diff touches shared state (DB writes, caches, queues, tokens), a
+`correctness` expansion must probe three state hazards — these are the verified
+class of misses (nuphos#441: three real defects, all in this class, zero caught):
+- **Write-order windows:** any status/flag set *before* the row/doc it promises
+  exists — what does a concurrent reader or retry see in the gap?
+- **Idempotency-key coverage:** does the dedup key cover the *payload*, or only
+  identity? A retry with corrected content that silently returns the stale
+  result is a defect.
+- **Hostile-input boundaries:** client-supplied cursors, timestamps, and ids —
+  what reaches the datastore when they are garbage (`Invalid Date`, NaN)?
+These probes stay inside the changed surface; they are not a license to audit
+unrelated code.
+
 Post exactly one reviewer verdict. After a message ending in `[done]`, do not
 send follow-up findings, clarifications, or duplicate verdicts unless OCP opens a
 new session.
