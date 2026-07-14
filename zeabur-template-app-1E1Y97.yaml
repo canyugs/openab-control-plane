@@ -426,13 +426,22 @@ spec:
               <!-- openab-council -->
               ```
 
-              `--edit-last` is only for turning this round's in-progress comment into its
-              verdict. Before any `--edit-last`, list your own PR comments and verify that
-              the most recent one starts with `<!-- openab-council -->` and is the
-              in-progress comment posted this round (not a prior round's verdict). If it is
-              missing, not visible, unmarked, or a prior round's verdict (for example, a
-              `/ask` answer was posted after it), do not use `--edit-last`; post a new
-              marked comment instead.
+              The verdict update edits this round's opening comment **by id** — never by
+              position. Never use `--edit-last`: "most recent own comment" is not a stable
+              anchor (an `/ask` answer posted after the opening comment, or a lost opening
+              post, makes it point at the wrong comment — this produced duplicate council
+              comments). The opening turn saves the comment id (`CID`); the quorum turn
+              updates that exact comment:
+
+              ```sh
+              COMMENT_URL=$(gh api repos/owner/repo/issues/comments/$CID -X PATCH \
+                -F body=@/tmp/verdict-N.md -q .html_url)
+              ```
+
+              If `$CID` was lost, recover it: list your own comments on the PR and take the
+              one whose body starts with the marker and says `Review Council started
+              (round R)` for this round. If the PATCH fails or this round's opening comment
+              does not exist, post the verdict as a new marked comment instead.
 
               Opening turn:
 
@@ -457,12 +466,16 @@ spec:
                  The council is reviewing this PR. This comment will be updated with this round's verdict.
                  ```
 
-              4. Post it as a new comment — never `--edit-last` on the opening turn; prior
-                 rounds' verdicts stay untouched in the timeline:
+              4. Post it as a new comment — prior rounds' verdicts stay untouched in the
+                 timeline — and save this round's comment id for the quorum turn:
 
                  ```sh
-                 gh pr comment N --repo owner/repo --body-file /tmp/verdict-N.md
+                 URL=$(gh pr comment N --repo owner/repo --body-file /tmp/verdict-N.md)
+                 CID=${URL##*-}
                  ```
+
+                 Include `$URL` in your step-5 status reply so the id survives into the
+                 quorum turn.
 
                  Re-review case: the prior round's verdict comment remains on the PR as-is;
                  round-R reviewers self-fetch the round-R-1 ledger from it. Never overwrite
@@ -496,14 +509,14 @@ spec:
               4. Synthesize one final OpenAB-style report in `/tmp/verdict-N.md`. End the body
                  with the summary + action menu footer (see the report format below); the
                  counts must match your verdict trailer.
-              5. Run the safe comment procedure above. It prints the comment URL — keep it for
-                 the commit status in step 6.
+              5. Update this round's opening comment by id (procedure above). It sets
+                 `COMMENT_URL` — keep it for the commit status in step 6.
               6. Set a commit status — the council's single GitHub-side verdict signal. It is
                  per-commit, so a later fix pushes a fresh status on the new head and no stale
                  state lingers. Do NOT also submit a `gh pr review`: the thin review duplicated
                  this status, left a redundant one-liner, and its "changes requested" state
                  lingered on the PR even after the fix (ADR 013 §1, superseded once the deferred
-                 commit-status integration landed). `COMMENT_URL` is the URL printed in step 5
+                 commit-status integration landed). `COMMENT_URL` was set in step 5
                  (fall back to the PR URL):
 
                  ```sh
@@ -617,6 +630,7 @@ spec:
 
               Use `LGTM ✅` when there are no critical findings. Use
               `CHANGES REQUESTED ⚠️` when any `🔴` finding remains.
+
         env:
           CLAUDE_CODE_OAUTH_TOKEN:
             default: ${CLAUDE_CODE_OAUTH_TOKEN}
