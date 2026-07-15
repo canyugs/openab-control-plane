@@ -102,9 +102,10 @@ pub fn post_client_message(
             )?;
         }
         SessionState::Closed | SessionState::Aborted => {
-            state
-                .store
-                .advance_state(session_id, cur, SessionState::Deliberating)?;
+            // ADR 028: reopening starts a new turn — the previous close's
+            // result identity is cleared in the same guarded UPDATE; the next
+            // close records its own turn's span.
+            state.store.reopen_session(session_id, cur)?;
         }
         SessionState::Deliberating | SessionState::Quorum => {}
     }
@@ -164,6 +165,16 @@ pub fn post_client_message(
     Ok(msg)
 }
 
+/// A *settled* bot turn: non-empty and not the "…" streaming placeholder. The
+/// single predicate shared by `latest_settled` (verdict selection) and
+/// `settled_result_span` (ADR 028 result identity) — the recorded result must
+/// never disagree with the verdict about which message settled. ASCII "..."
+/// counts as settled content, matching `latest_settled` since v1.
+fn is_settled_content(text: &str) -> bool {
+    let t = text.trim();
+    !t.is_empty() && t != "…"
+}
+
 /// A bot's last *settled* (non-stub) message content. Standalone twin of
 /// `OrchCtx::latest_settled` for the watchdog, which builds no `OrchCtx`.
 fn chair_latest_settled(state: &Arc<AppState>, session_id: &str, bot: &str) -> Option<String> {
@@ -172,13 +183,7 @@ fn chair_latest_settled(state: &Arc<AppState>, session_id: &str, bot: &str) -> O
         .messages(session_id)
         .ok()?
         .into_iter()
-        .rfind(|m| {
-            if m.author_id.as_deref() != Some(bot) {
-                return false;
-            }
-            let t = m.content.trim();
-            !t.is_empty() && t != "…"
-        })
+        .rfind(|m| m.author_id.as_deref() == Some(bot) && is_settled_content(&m.content))
         .map(|m| m.content)
 }
 
@@ -1084,10 +1089,14 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
     let bot = state.store.bot(bot_id)?;
     let bot_name = bot.as_ref().map(|b| b.name.clone()).unwrap_or_default();
 
-    // Once closed, drop new sends/topics — a bot whose turn was already in
-    // flight at close time would otherwise append a post-verdict message (often
-    // a "…" stub). Edits still apply (the verdict can finish filling) and
-    // reactions are harmless (delivery is already gated in deliver_event).
+    // Once closed, the transcript is frozen: drop new sends/topics (a bot
+    // whose turn was already in flight at close time would otherwise append a
+    // post-verdict message, often a "…" stub) and reject edits/deletes — the
+    // recorded result span is on disk (ADR 028) and its text must stay
+    // immutable. A streaming bot's legit stub fill-in lands BEFORE close (that
+    // edit itself carries the done-signal that closes), so this does not break
+    // streaming. Reactions stay harmless (delivery is already gated in
+    // deliver_event).
     let closed = matches!(
         SessionState::from_db_str(&session.state),
         SessionState::Closed | SessionState::Aborted
@@ -1095,6 +1104,12 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
     match reply.command.as_deref() {
         None if closed => {}
         Some("create_topic") if closed => {}
+        Some("edit_message") if closed => {
+            tracing::warn!("edit_message from {bot_id} on closed session {session_id} rejected");
+        }
+        Some("delete_message") if closed => {
+            tracing::warn!("delete_message from {bot_id} on closed session {session_id} rejected");
+        }
         None => on_send(state, &session, bot_id, &bot_name, &reply)?,
         Some("create_topic") => on_create_topic(state, &session, bot_id, &reply)?,
         Some("add_reaction") => on_reaction(state, &session, bot_id, &reply, true)?,
@@ -1582,18 +1597,48 @@ impl Ctx for OrchCtx<'_> {
             .messages(&self.session.id)
             .ok()?
             .into_iter()
-            .rfind(|m| {
-                if m.author_id.as_deref() != Some(bot) {
-                    return false;
-                }
-                let t = m.content.trim();
-                !t.is_empty() && t != "…"
-            })
+            .rfind(|m| m.author_id.as_deref() == Some(bot) && is_settled_content(&m.content))
             .map(|m| m.content)
     }
     fn state(&self) -> SessionState {
         SessionState::from_db_str(&self.session.state)
     }
+}
+
+/// The settled result span of `author` (ADR 028): walk back from the author's
+/// last settled message (`is_settled_content`, the same predicate as
+/// `latest_settled`), collecting contiguous settled messages by the same
+/// author. `system` rows are transparent (a coordination prompt between
+/// chunks must not truncate an artifact). A `client` row BREAKS the run — a
+/// client message starts a new turn, so a reopened session's later close
+/// records only the later answer, never both. So does any row from a
+/// DIFFERENT bot: that is the rule's accepted ceiling under interleaved
+/// multi-bot chatter, fixed only by bot-declared spans (ADR 028 Decision 4).
+/// Returns message ids oldest→newest; empty when the author has no settled
+/// message. `messages` must be in store order (created_at ASC), as
+/// `Store::messages` returns them.
+fn settled_result_span(messages: &[Message], author: &str) -> Vec<String> {
+    let is_author = |m: &Message| m.author_kind == "bot" && m.author_id.as_deref() == Some(author);
+    let Some(last) = messages
+        .iter()
+        .rposition(|m| is_author(m) && is_settled_content(&m.content))
+    else {
+        return vec![];
+    };
+    let mut ids = vec![messages[last].id.clone()];
+    for m in messages[..last].iter().rev() {
+        if m.author_kind == "system" {
+            continue;
+        }
+        if !is_author(m) {
+            break;
+        }
+        if is_settled_content(&m.content) {
+            ids.push(m.id.clone());
+        }
+    }
+    ids.reverse();
+    ids
 }
 
 /// Execute the coordinator's actions. `Transition`/`Close` are CAS-guarded (fire
@@ -1624,12 +1669,55 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     state.emit_north("state", &session.id, json!({ "state": to_str }));
                 }
             }
-            Action::Close { from, verdict } => {
+            Action::Close {
+                from,
+                author,
+                verdict,
+            } => {
                 transition_failed = false;
-                if state
-                    .store
-                    .advance_state(&session.id, from, SessionState::Closed)?
-                {
+                // ADR 013: the chair's structured verdict, parsed from the
+                // closing text. Computed BEFORE the close CAS so it lands in
+                // the same transaction (the close webhook re-reads the row).
+                let structured_verdict = if let Some(coord) = coordinator::lookup(&session.mode) {
+                    let cx = OrchCtx {
+                        state,
+                        session,
+                        roster: state.store.roster(&session.id)?,
+                    };
+                    coord.structured_verdict(&cx, &verdict)
+                } else {
+                    None
+                };
+                // ADR 028: the settled result span that produced `verdict`,
+                // also computed up front for the same atomic landing. Normal
+                // close only; the timeout path never guesses a result.
+                let span = settled_result_span(&state.store.messages(&session.id)?, &author);
+                let ids_json = (!span.is_empty())
+                    .then(|| serde_json::to_string(&span).expect("Vec<String> serializes to JSON"));
+                // One transaction: close CAS + verdict columns + result
+                // identity. On error nothing landed — the session stays open
+                // and the watchdog timeout path remains the termination
+                // backstop; a normal close is never visible without its result.
+                let closed = match state.store.close_session_with_result(
+                    &session.id,
+                    from,
+                    structured_verdict.as_ref().map(|t| t.decision.as_str()),
+                    structured_verdict.as_ref().and_then(|t| t.red),
+                    structured_verdict.as_ref().and_then(|t| t.yellow),
+                    structured_verdict.as_ref().and_then(|t| t.green),
+                    ids_json.as_ref().map(|_| author.as_str()),
+                    ids_json.as_deref(),
+                ) {
+                    Ok(won) => won,
+                    Err(e) => {
+                        tracing::warn!(
+                            "atomic close for {} failed; session stays open for the watchdog: {e}",
+                            session.id
+                        );
+                        return Err(e);
+                    }
+                };
+                if closed {
                     purge_session_outbox_after_close(state, &session.id);
                     // Central revoke: scoped GitHub tokens die with the session.
                     if let Err(e) = crate::identity::revoke_session_github_tokens(
@@ -1638,30 +1726,6 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                         &session.id,
                     ) {
                         tracing::warn!("revoke github tokens for {} failed: {e}", session.id);
-                    }
-                    // ADR 013: record the chair's structured verdict before the
-                    // webhook fires (it re-reads the session from the store).
-                    let structured_verdict = if let Some(coord) = coordinator::lookup(&session.mode)
-                    {
-                        let cx = OrchCtx {
-                            state,
-                            session,
-                            roster: state.store.roster(&session.id)?,
-                        };
-                        coord.structured_verdict(&cx, &verdict)
-                    } else {
-                        None
-                    };
-                    if let Some(t) = &structured_verdict {
-                        if let Err(e) = state.store.set_session_verdict(
-                            &session.id,
-                            &t.decision,
-                            t.red,
-                            t.yellow,
-                            t.green,
-                        ) {
-                            tracing::warn!("record verdict for {} failed: {e}", session.id);
-                        }
                     }
                     // ADR 020: populate the findings ledger from the chair's
                     // hidden block. Same trust policy as the trailer — only the
@@ -1694,13 +1758,10 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
 /// message (streaming stubs were already filtered out by `latest_settled`).
 fn relay_settled(state: &Arc<AppState>, session: &Session, from: &str, to: &str) -> Result<()> {
     let msgs = state.store.messages(&session.id)?;
-    let Some(msg) = msgs.into_iter().rfind(|m| {
-        if m.author_id.as_deref() != Some(from) {
-            return false;
-        }
-        let t = m.content.trim();
-        !t.is_empty() && t != "…"
-    }) else {
+    let Some(msg) = msgs
+        .into_iter()
+        .rfind(|m| m.author_id.as_deref() == Some(from) && is_settled_content(&m.content))
+    else {
         return Ok(());
     };
     let bname = state.store.bot(from)?.map(|b| b.name).unwrap_or_default();
@@ -2002,6 +2063,124 @@ mod tests {
         assert!(!is_streaming_stub("real content"));
     }
 
+    /// Store-ordered message row for span tests (only the fields the rule reads).
+    fn span_msg(id: &str, author_kind: &str, author_id: Option<&str>, content: &str) -> Message {
+        Message {
+            id: id.into(),
+            session_id: "ses_1".into(),
+            thread_id: None,
+            author_kind: author_kind.into(),
+            author_id: author_id.map(str::to_string),
+            audience: None,
+            content: content.into(),
+            reply_to: None,
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn span_single_message_degrades_to_latest_settled() {
+        let msgs = vec![
+            span_msg("m1", "client", None, "question"),
+            span_msg("m2", "bot", Some("a"), "answer"),
+        ];
+        assert_eq!(settled_result_span(&msgs, "a"), vec!["m2"]);
+    }
+
+    #[test]
+    fn span_collects_a_chunked_run_oldest_to_newest() {
+        let msgs = vec![
+            span_msg("m1", "client", None, "question"),
+            span_msg("m2", "bot", Some("a"), "chunk 1"),
+            span_msg("m3", "bot", Some("a"), "chunk 2"),
+            span_msg("m4", "bot", Some("a"), "chunk 3"),
+        ];
+        assert_eq!(settled_result_span(&msgs, "a"), vec!["m2", "m3", "m4"]);
+    }
+
+    #[test]
+    fn span_breaks_at_an_intervening_foreign_bot_row() {
+        let msgs = vec![
+            span_msg("m1", "bot", Some("a"), "earlier turn"),
+            span_msg("m2", "bot", Some("b"), "other bot"),
+            span_msg("m3", "bot", Some("a"), "chunk 1"),
+            span_msg("m4", "bot", Some("a"), "chunk 2"),
+        ];
+        assert_eq!(settled_result_span(&msgs, "a"), vec!["m3", "m4"]);
+    }
+
+    #[test]
+    fn span_skips_stubs_without_breaking_the_run() {
+        let msgs = vec![
+            span_msg("m1", "bot", Some("a"), "chunk 1"),
+            span_msg("m2", "bot", Some("a"), "…"),
+            span_msg("m3", "bot", Some("a"), "chunk 2"),
+            // trailing stub: the walk starts from the last SETTLED message
+            span_msg("m4", "bot", Some("a"), ""),
+        ];
+        assert_eq!(settled_result_span(&msgs, "a"), vec!["m1", "m3"]);
+    }
+
+    /// ASCII "..." is settled content — the span uses the SAME predicate as
+    /// `latest_settled`, so the recorded result can never disagree with the
+    /// verdict about which message settled.
+    #[test]
+    fn span_treats_ascii_ellipsis_as_settled_like_latest_settled() {
+        let msgs = vec![
+            span_msg("m1", "bot", Some("a"), "..."),
+            span_msg("m2", "bot", Some("a"), "final"),
+        ];
+        assert_eq!(settled_result_span(&msgs, "a"), vec!["m1", "m2"]);
+        assert!(is_settled_content("..."));
+        assert!(!is_settled_content("…"));
+    }
+
+    #[test]
+    fn span_tolerates_system_interleave() {
+        let msgs = vec![
+            span_msg("m1", "bot", Some("a"), "chunk 1"),
+            span_msg("m2", "system", None, "coordination prompt"),
+            span_msg("m3", "bot", Some("a"), "chunk 2"),
+        ];
+        assert_eq!(settled_result_span(&msgs, "a"), vec!["m1", "m3"]);
+    }
+
+    /// A client row BREAKS the run: it starts a new turn. The forum-reopen
+    /// shape (Q1, A1, follow-up, A2) must record only the second answer —
+    /// never [A1, A2].
+    #[test]
+    fn span_breaks_at_a_client_row_forum_reopen_shape() {
+        let msgs = vec![
+            span_msg("m1", "client", None, "first question"),
+            span_msg("m2", "bot", Some("a"), "first answer"),
+            span_msg("m3", "client", None, "follow-up question"),
+            span_msg("m4", "bot", Some("a"), "second answer"),
+        ];
+        assert_eq!(settled_result_span(&msgs, "a"), vec!["m4"]);
+    }
+
+    /// The walk-back ANCHOR is the author's LAST settled message: a foreign
+    /// bot row trailing after it must not shift or empty the span.
+    #[test]
+    fn span_anchor_survives_a_trailing_foreign_bot_row() {
+        let msgs = vec![
+            span_msg("m1", "bot", Some("a"), "chunk 1"),
+            span_msg("m2", "bot", Some("a"), "chunk 2"),
+            span_msg("m3", "bot", Some("b"), "late reviewer note"),
+        ];
+        assert_eq!(settled_result_span(&msgs, "a"), vec!["m1", "m2"]);
+    }
+
+    #[test]
+    fn span_is_empty_without_a_settled_message() {
+        assert!(settled_result_span(&[], "a").is_empty());
+        let only_stubs = vec![
+            span_msg("m1", "client", None, "question"),
+            span_msg("m2", "bot", Some("a"), "…"),
+        ];
+        assert!(settled_result_span(&only_stubs, "a").is_empty());
+    }
+
     #[test]
     fn health_threshold_env_override() {
         let _guard = BACKFILL_ENV_LOCK.lock().unwrap();
@@ -2157,6 +2336,8 @@ mod tests {
             findings_red: None,
             findings_yellow: None,
             findings_green: None,
+            result_author_id: None,
+            result_message_ids: None,
         }
     }
 
@@ -3892,5 +4073,54 @@ mod tests {
             SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
             SessionState::Deliberating,
         );
+    }
+
+    /// ADR 028: a reopen (follow-up turn) clears the recorded result identity,
+    /// and a subsequent timeout-style close records nothing — the previous
+    /// turn's span never survives as the reopened session's result.
+    #[test]
+    fn reopen_clears_recorded_result_and_timeout_close_keeps_it_null() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let bot = store.register_bot("allen", "allen", "h1", "t1").unwrap();
+        let session = store
+            .create_session(
+                "forum-support",
+                Some("forum:ticket:SUP-3"),
+                0,
+                Some(&bot.id),
+                std::slice::from_ref(&bot.id),
+                "solo",
+            )
+            .unwrap();
+        post_client_message(&state, &session.id, "first question").unwrap();
+        handle_reply(
+            &state,
+            &bot.id,
+            msg_reply(&session.id, "first answer [done]"),
+        )
+        .unwrap();
+
+        let row = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(row.state, "closed");
+        assert_eq!(row.result_author_id.as_deref(), Some(bot.id.as_str()));
+        assert!(row.result_message_ids.is_some());
+
+        // The follow-up reopens the session AND clears the stale result.
+        post_client_message(&state, &session.id, "follow-up question").unwrap();
+        let row = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(row.state, "deliberating");
+        assert!(
+            row.result_author_id.is_none(),
+            "reopen must clear the result"
+        );
+        assert!(row.result_message_ids.is_none());
+
+        // A timeout close never guesses a result — it stays null.
+        assert!(force_close_timeout(&state, &session.id).unwrap());
+        let row = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(row.state, "closed");
+        assert!(row.result_author_id.is_none());
+        assert!(row.result_message_ids.is_none());
     }
 }

@@ -38,6 +38,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/v1/sessions", get(list_sessions).post(open_session))
         .route("/v1/session-log", get(session_log_by_query))
         .route("/v1/sessions/:id", get(get_session))
+        // ADR 028 settled-result identity: the server-side join of the result
+        // span recorded at close — retires every client's re-implemented join.
+        .route("/v1/sessions/:id/result", get(get_session_result))
         .route("/v1/sessions/:id/log", get(session_log_by_id))
         .route("/v1/sessions/:id/messages", post(post_message))
         .route("/v1/sessions/:id/roster", post(add_roster))
@@ -1012,9 +1015,73 @@ async fn get_session(
     let messages = state.store.messages(&id).unwrap_or_default();
     let roster = state.store.roster(&id).unwrap_or_default();
     let reactions = state.store.reactions(&id).unwrap_or_default();
+    let result = result_identity(&session);
     Ok(Json(
-        json!({ "session": session, "messages": messages, "roster": roster, "reactions": reactions }),
+        json!({ "session": session, "messages": messages, "roster": roster, "reactions": reactions, "result": result }),
     ))
+}
+
+/// A session's recorded result identity (ADR 028): `(author_id, message_ids)`
+/// when present and well-formed, `None` otherwise. The ONE parse both read
+/// surfaces share: corrupt/non-array `result_message_ids` JSON (impossible via
+/// the write path) is treated as absent on both, with a warn — the two routes
+/// must never disagree about whether a result exists.
+fn session_result_ids(session: &crate::store::Session) -> Option<(&str, Vec<String>)> {
+    let author_id = session.result_author_id.as_deref()?;
+    let ids_json = session.result_message_ids.as_deref()?;
+    match serde_json::from_str::<Vec<String>>(ids_json) {
+        Ok(ids) => Some((author_id, ids)),
+        Err(e) => {
+            tracing::warn!("corrupt result_message_ids for session {}: {e}", session.id);
+            None
+        }
+    }
+}
+
+/// The detail response's `result` value (ADR 028): the identity object —
+/// `{"author_id","message_ids"}` — or null until the session closed with one
+/// (legacy rows stay null — history is never re-guessed).
+fn result_identity(session: &crate::store::Session) -> Value {
+    match session_result_ids(session) {
+        Some((author_id, ids)) => json!({ "author_id": author_id, "message_ids": ids }),
+        None => Value::Null,
+    }
+}
+
+/// GET /v1/sessions/:id/result — the joined settled-result text (ADR 028).
+/// One envelope, one discriminator: `{"result": {"author_id","message_ids",
+/// "text"}}` when present (text = the span's contents joined oldest→newest
+/// with `\n`), `{"result": null}` when absent.
+async fn get_session_result(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_auth(&state, &headers)?;
+    let session = state
+        .store
+        .session(&id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let Some((author_id, ids)) = session_result_ids(&session) else {
+        return Ok(Json(json!({ "result": null })));
+    };
+    let messages = state
+        .store
+        .messages(&id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let by_id: HashMap<&str, &str> = messages
+        .iter()
+        .map(|m| (m.id.as_str(), m.content.as_str()))
+        .collect();
+    let text = ids
+        .iter()
+        .filter_map(|id| by_id.get(id.as_str()).copied())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(Json(json!({
+        "result": { "author_id": author_id, "message_ids": ids, "text": text }
+    })))
 }
 
 #[derive(Deserialize)]
