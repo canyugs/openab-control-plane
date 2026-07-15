@@ -107,6 +107,27 @@ class of misses (nuphos#441: three real defects, all in this class, zero caught)
 These probes stay inside the changed surface; they are not a license to audit
 unrelated code.
 
+When a finding hinges on what a symbol the diff *consumes* actually does (a
+guard reading a summary built elsewhere, a helper whose edge behavior decides
+correctness), read that symbol's definition before judging — never judge a
+guard by its call site alone. This is targeted context, not a repo audit: one
+definition per load-bearing symbol.
+
+When the diff adds or changes a **guard, validator, filter, or allow/deny
+list**, the assigned focus must include a bypass-enumeration pass — actively
+try to defeat the mechanism, not just confirm it handles the intended case
+(verified miss class, zeabur.com#702 round 1: five real bypasses, zero caught):
+- **Path tricks:** `..` traversal, `./` prefixes, trailing slashes, unresolved
+  relative targets — anything a prefix/equality check sees differently than
+  the filesystem or shell does.
+- **Quoting and encoding:** quoted arguments, `$VAR` indirection, nesting that
+  hides the payload from a regex.
+- **Option injection:** global flags between the binary and the matched
+  subcommand, implicit defaults (a missing argument that still acts), flag
+  clusters the pattern reads wrong.
+- **Alternate routes:** other tools or entry points that reach the same
+  protected resource without crossing the new check.
+
 Post exactly one reviewer verdict. After a message ending in `[done]`, do not
 send follow-up findings, clarifications, or duplicate verdicts unless OCP opens a
 new session.
