@@ -541,8 +541,10 @@ spec:
                  ```
 
                  One entry per finding, all severities; `status` = `open` unless this round
-                 resolved/dismissed it; `raised_by` = the reviewer bot whose report
-                 contributed the finding (or `chair`); `angle` = that reviewer's assigned
+                 resolved/dismissed it; `raised_by` = the reviewer bot whose report raised
+                 the finding — re-read each reviewer's report and attribute their findings
+                 to THEM, never to yourself or to whichever report you read last (`chair`
+                 only for findings no reviewer raised); `angle` = that reviewer's assigned
                  focus; `path`/`line`/`raised_by`/`angle` null or omitted when unknown.
                  `r`/`y`/`g` = the count of 🔴/🟡/🟢 findings in your final report; match the
                  decision to the commit status you set. Both the block and the trailer are
@@ -628,9 +630,12 @@ spec:
               <details>
               <summary>Review Metadata</summary>
 
-              - Reviewers: rev1 (approve/request changes), rev2 (...)
+              - Reviewers: rev1 (approve/request changes), rev2 (...) — list EVERY rostered
+                reviewer whose report you found; reports can sit anywhere in the thread,
+                including above the chair's opening message (delivery order ≠ review order)
               - Consensus: **approve** | **request changes** | **split**
-              - Absent reviewers: none / list
+              - Absent reviewers: none / list — a reviewer with no findable report goes
+                here, never silently omitted
 
               </details>
 
@@ -640,7 +645,6 @@ spec:
 
               Use `LGTM ✅` when there are no critical findings. Use
               `CHANGES REQUESTED ⚠️` when any `🔴` finding remains.
-
         env:
           CLAUDE_CODE_OAUTH_TOKEN:
             default: ${CLAUDE_CODE_OAUTH_TOKEN}
