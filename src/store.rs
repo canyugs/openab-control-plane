@@ -1812,8 +1812,10 @@ impl Store for SqliteStore {
     fn messages(&self, session_id: &str) -> Result<Vec<Message>> {
         let c = self.conn.lock().unwrap();
         let mut stmt = c.prepare(
+            // rowid tiebreak: equal-timestamp chunks must keep insertion order
+            // regardless of query plan (ADR 028 span integrity, council #241 F1)
             "SELECT id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at
-             FROM messages WHERE session_id = ?1 ORDER BY created_at ASC",
+             FROM messages WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(params![session_id], |r| {
             Ok(Message {
@@ -2141,7 +2143,7 @@ mod tests {
             .prepare(
                 "EXPLAIN QUERY PLAN
                  SELECT id, session_id, thread_id, author_kind, author_id, content, reply_to, created_at
-                 FROM messages WHERE session_id = ?1 ORDER BY created_at ASC",
+                 FROM messages WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
             )
             .unwrap();
         let rows = stmt
