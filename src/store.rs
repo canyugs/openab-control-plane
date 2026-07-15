@@ -135,6 +135,15 @@ pub struct Session {
     pub findings_red: Option<i64>,
     pub findings_yellow: Option<i64>,
     pub findings_green: Option<i64>,
+    /// Settled result identity (ADR 028), recorded at normal close: the author
+    /// whose settlement closed the session and the ordered JSON array of its
+    /// message ids. NULL on timeout close and for legacy rows. Skipped from the
+    /// flat serialization — the read surface exposes them as the `result`
+    /// object on the session-detail response (the LIST wire shape is frozen).
+    #[serde(skip)]
+    pub result_author_id: Option<String>,
+    #[serde(skip)]
+    pub result_message_ids: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,6 +346,30 @@ pub trait Store: Send + Sync {
         yellow: Option<i64>,
         green: Option<i64>,
     ) -> Result<()>;
+    /// Atomic normal close (ADR 028): one guarded UPDATE (one implicit SQLite
+    /// transaction) that performs the close CAS (`from`→closed, same guard as
+    /// `advance_state`) AND records the structured verdict (ADR 013) AND the
+    /// settled-result identity. Either everything lands or nothing does: a
+    /// failure leaves the session in `from` (the watchdog timeout path remains
+    /// the termination backstop) — a normal close can never be observed
+    /// closed-without-result. Returns true iff this call performed the close.
+    #[allow(clippy::too_many_arguments)]
+    fn close_session_with_result(
+        &self,
+        session_id: &str,
+        from: SessionState,
+        decision: Option<&str>,
+        red: Option<i64>,
+        yellow: Option<i64>,
+        green: Option<i64>,
+        result_author_id: Option<&str>,
+        result_message_ids_json: Option<&str>,
+    ) -> Result<bool>;
+    /// Reopen a terminal session for a follow-up turn (ADR 011 solo pattern),
+    /// clearing the recorded result identity in the same guarded UPDATE — the
+    /// previous turn's span must not survive as the reopened session's result
+    /// (ADR 028). Returns true iff the CAS won.
+    fn reopen_session(&self, session_id: &str, from: SessionState) -> Result<bool>;
     /// Append findings-ledger rows for a closed review round (ADR 020). Called
     /// at most once per session (guarded by the close CAS upstream).
     fn insert_review_findings(
@@ -470,7 +503,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     trigger_ref TEXT, trigger_fingerprint TEXT, quorum_n INTEGER NOT NULL, chair_bot TEXT,
     created_at INTEGER NOT NULL, closed_at INTEGER,
     mode TEXT NOT NULL DEFAULT 'council',
-    decision TEXT, findings_red INTEGER, findings_yellow INTEGER, findings_green INTEGER
+    decision TEXT, findings_red INTEGER, findings_yellow INTEGER, findings_green INTEGER,
+    result_author_id TEXT, result_message_ids TEXT
 );
 CREATE TABLE IF NOT EXISTS session_bots (
     session_id TEXT NOT NULL, bot_id TEXT NOT NULL,
@@ -552,6 +586,11 @@ fn migrate(conn: &Connection) -> Result<()> {
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN findings_green INTEGER", []);
     let _ = conn.execute(
         "ALTER TABLE sessions ADD COLUMN trigger_fingerprint TEXT",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN result_author_id TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE sessions ADD COLUMN result_message_ids TEXT",
         [],
     );
     let _ = conn.execute("ALTER TABLE messages ADD COLUMN audience TEXT", []);
@@ -741,7 +780,8 @@ impl SqliteStore {
     ) -> Result<Option<Session>> {
         Ok(c.query_row(
             "SELECT id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode,
-                            decision, findings_red, findings_yellow, findings_green
+                            decision, findings_red, findings_yellow, findings_green,
+                            result_author_id, result_message_ids
              FROM sessions
              WHERE trigger_ref = ?1 AND state NOT IN ('closed', 'aborted')
              ORDER BY created_at DESC, id DESC
@@ -763,6 +803,8 @@ impl SqliteStore {
                     findings_red: r.get(11)?,
                     findings_yellow: r.get(12)?,
                     findings_green: r.get(13)?,
+                    result_author_id: r.get(14)?,
+                    result_message_ids: r.get(15)?,
                 })
             },
         )
@@ -1152,6 +1194,8 @@ impl Store for SqliteStore {
             findings_red: None,
             findings_yellow: None,
             findings_green: None,
+            result_author_id: None,
+            result_message_ids: None,
         })
     }
 
@@ -1265,6 +1309,8 @@ impl Store for SqliteStore {
             findings_red: None,
             findings_yellow: None,
             findings_green: None,
+            result_author_id: None,
+            result_message_ids: None,
         };
         Ok((session, outcome))
     }
@@ -1274,7 +1320,8 @@ impl Store for SqliteStore {
         let s = c
             .query_row(
                 "SELECT id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode,
-                            decision, findings_red, findings_yellow, findings_green
+                            decision, findings_red, findings_yellow, findings_green,
+                            result_author_id, result_message_ids
                  FROM sessions WHERE id = ?1",
                 params![id],
                 |r| {
@@ -1293,6 +1340,8 @@ impl Store for SqliteStore {
                         findings_red: r.get(11)?,
                         findings_yellow: r.get(12)?,
                         findings_green: r.get(13)?,
+                        result_author_id: r.get(14)?,
+                        result_message_ids: r.get(15)?,
                     })
                 },
             )
@@ -1322,6 +1371,8 @@ impl Store for SqliteStore {
                 findings_red: r.get(11)?,
                 findings_yellow: r.get(12)?,
                 findings_green: r.get(13)?,
+                result_author_id: r.get(14)?,
+                result_message_ids: r.get(15)?,
             })
         }
 
@@ -1331,7 +1382,8 @@ impl Store for SqliteStore {
             (Some(trigger_ref), Some(state)) => {
                 let mut stmt = c.prepare(
                     "SELECT id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode,
-                            decision, findings_red, findings_yellow, findings_green
+                            decision, findings_red, findings_yellow, findings_green,
+                            result_author_id, result_message_ids
                      FROM sessions
                      WHERE trigger_ref = ?1 AND state = ?2
                      ORDER BY created_at DESC, rowid DESC
@@ -1346,7 +1398,8 @@ impl Store for SqliteStore {
             (Some(trigger_ref), None) => {
                 let mut stmt = c.prepare(
                     "SELECT id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode,
-                            decision, findings_red, findings_yellow, findings_green
+                            decision, findings_red, findings_yellow, findings_green,
+                            result_author_id, result_message_ids
                      FROM sessions
                      WHERE trigger_ref = ?1
                      ORDER BY created_at DESC, rowid DESC
@@ -1361,7 +1414,8 @@ impl Store for SqliteStore {
             (None, Some(state)) => {
                 let mut stmt = c.prepare(
                     "SELECT id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode,
-                            decision, findings_red, findings_yellow, findings_green
+                            decision, findings_red, findings_yellow, findings_green,
+                            result_author_id, result_message_ids
                      FROM sessions
                      WHERE state = ?1
                      ORDER BY created_at DESC, rowid DESC
@@ -1376,7 +1430,8 @@ impl Store for SqliteStore {
             (None, None) => {
                 let mut stmt = c.prepare(
                     "SELECT id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode,
-                            decision, findings_red, findings_yellow, findings_green
+                            decision, findings_red, findings_yellow, findings_green,
+                            result_author_id, result_message_ids
                      FROM sessions
                      ORDER BY created_at DESC, rowid DESC
                      LIMIT ?1",
@@ -1503,6 +1558,49 @@ impl Store for SqliteStore {
             params![session_id, decision, red, yellow, green],
         )?;
         Ok(())
+    }
+
+    fn close_session_with_result(
+        &self,
+        session_id: &str,
+        from: SessionState,
+        decision: Option<&str>,
+        red: Option<i64>,
+        yellow: Option<i64>,
+        green: Option<i64>,
+        result_author_id: Option<&str>,
+        result_message_ids_json: Option<&str>,
+    ) -> Result<bool> {
+        let c = self.conn.lock().unwrap();
+        let n = c.execute(
+            "UPDATE sessions SET state = 'closed', closed_at = ?3,
+                    decision = ?4, findings_red = ?5, findings_yellow = ?6, findings_green = ?7,
+                    result_author_id = ?8, result_message_ids = ?9
+             WHERE id = ?1 AND state = ?2",
+            params![
+                session_id,
+                from.as_str(),
+                now_ms(),
+                decision,
+                red,
+                yellow,
+                green,
+                result_author_id,
+                result_message_ids_json
+            ],
+        )?;
+        Ok(n == 1)
+    }
+
+    fn reopen_session(&self, session_id: &str, from: SessionState) -> Result<bool> {
+        let c = self.conn.lock().unwrap();
+        let n = c.execute(
+            "UPDATE sessions SET state = 'deliberating',
+                    result_author_id = NULL, result_message_ids = NULL
+             WHERE id = ?1 AND state = ?2",
+            params![session_id, from.as_str()],
+        )?;
+        Ok(n == 1)
     }
 
     fn insert_review_findings(
@@ -2293,6 +2391,67 @@ mod tests {
             assert_eq!(has_column, 1);
         }
         remove_db_files(&PathBuf::from(path));
+    }
+
+    /// ADR 028: the normal close lands state, verdict columns, and result
+    /// identity in one guarded UPDATE — no closed-without-result window — and a
+    /// reopen clears the result identity in its own guarded UPDATE.
+    #[test]
+    fn atomic_close_records_result_and_reopen_clears_it() {
+        let store = SqliteStore::memory().unwrap();
+        let s = store
+            .create_session("t", None, 0, None, &[], "solo")
+            .unwrap();
+        store.set_state(&s.id, SessionState::Deliberating).unwrap();
+
+        // Wrong `from` → CAS refused, nothing recorded.
+        assert!(!store
+            .close_session_with_result(
+                &s.id,
+                SessionState::Quorum,
+                None,
+                None,
+                None,
+                None,
+                Some("bot-a"),
+                Some(r#"["msg_1"]"#),
+            )
+            .unwrap());
+        let row = store.session(&s.id).unwrap().unwrap();
+        assert_eq!(row.state, "deliberating");
+        assert!(row.result_author_id.is_none());
+
+        // Right `from` → close + verdict + result land together.
+        assert!(store
+            .close_session_with_result(
+                &s.id,
+                SessionState::Deliberating,
+                Some("approve"),
+                Some(0),
+                Some(1),
+                Some(2),
+                Some("bot-a"),
+                Some(r#"["msg_1","msg_2"]"#),
+            )
+            .unwrap());
+        let row = store.session(&s.id).unwrap().unwrap();
+        assert_eq!(row.state, "closed");
+        assert!(row.closed_at.is_some());
+        assert_eq!(row.decision.as_deref(), Some("approve"));
+        assert_eq!(row.result_author_id.as_deref(), Some("bot-a"));
+        assert_eq!(
+            row.result_message_ids.as_deref(),
+            Some(r#"["msg_1","msg_2"]"#)
+        );
+
+        // Reopen (follow-up turn) clears the result identity in the same breath.
+        assert!(store.reopen_session(&s.id, SessionState::Closed).unwrap());
+        let row = store.session(&s.id).unwrap().unwrap();
+        assert_eq!(row.state, "deliberating");
+        assert!(row.result_author_id.is_none());
+        assert!(row.result_message_ids.is_none());
+        // Reopen CAS is once-only too.
+        assert!(!store.reopen_session(&s.id, SessionState::Closed).unwrap());
     }
 
     #[test]

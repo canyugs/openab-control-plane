@@ -40,7 +40,13 @@ pub enum Action {
         to: SessionState,
     },
     /// CAS `from`→Closed; emits `verdict` + `state:closed` on success.
-    Close { from: SessionState, verdict: String },
+    /// `author` = the settling bot whose `latest_settled` produced `verdict`;
+    /// the Close arm records its result span durably (ADR 028).
+    Close {
+        from: SessionState,
+        author: String,
+        verdict: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +213,7 @@ pub(crate) fn council_on_done(cx: &dyn Ctx, bot: &str, prompt: &str) -> Vec<Acti
     if Some(bot) == chair && cx.state() == SessionState::Quorum {
         actions.push(Action::Close {
             from: SessionState::Quorum,
+            author: bot.to_string(),
             verdict: cx.latest_settled(bot).unwrap_or_default(),
         });
     } else if Some(bot) == chair {
@@ -237,6 +244,7 @@ impl Coordinator for Solo {
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
         vec![Action::Close {
             from: SessionState::Deliberating,
+            author: bot.to_string(),
             verdict: cx.latest_settled(bot).unwrap_or_default(),
         }]
     }
@@ -275,6 +283,7 @@ impl Coordinator for Pipeline {
             // last stage's done closes the session with its final
             None => vec![Action::Close {
                 from: SessionState::Deliberating,
+                author: bot.to_string(),
                 verdict: cx.latest_settled(bot).unwrap_or_default(),
             }],
         }
@@ -408,8 +417,13 @@ mod tests {
             "solo emits exactly one Close, no quorum gate"
         );
         match &actions[0] {
-            Action::Close { from, verdict } => {
+            Action::Close {
+                from,
+                author,
+                verdict,
+            } => {
                 assert_eq!(*from, SessionState::Deliberating);
+                assert_eq!(author, "solo");
                 assert_eq!(verdict, "verdict");
             }
             _ => panic!("expected Close"),
@@ -491,8 +505,8 @@ mod tests {
         let last = Pipeline.on_done(&cx, "c");
         assert!(
             matches!(last.as_slice(),
-                [Action::Close { from: SessionState::Deliberating, verdict }]
-                if verdict == "c's report"),
+                [Action::Close { from: SessionState::Deliberating, author, verdict }]
+                if author == "c" && verdict == "c's report"),
             "last stage should close with its report",
         );
     }
