@@ -196,6 +196,53 @@ mod tests {
     }
 
     #[test]
+    fn block_split_across_two_chair_messages_still_lands_in_ledger() {
+        // Live failure (zeabur.com#702 round 4): the transport's message-length
+        // split put the block opener in one chair message and the JSON tail +
+        // verdict in the next. The close must parse the joined settled span.
+        let store = std::sync::Arc::new(crate::store::SqliteStore::memory().unwrap());
+        let state = crate::state::AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let session = store
+            .create_session(
+                "review",
+                Some("github:pr/o/r#8"),
+                0,
+                Some(&chair.id),
+                std::slice::from_ref(&chair.id),
+                "review_council",
+            )
+            .unwrap();
+        store
+            .advance_state(
+                &session.id,
+                crate::store::SessionState::Open,
+                crate::store::SessionState::Quorum,
+            )
+            .unwrap();
+
+        let (part1, part2) = BLOCK.split_at(BLOCK.find("\"findings\":[").unwrap() + 12);
+        crate::orchestrator::handle_reply(
+            &state,
+            &chair.id,
+            crate::orchestrator::test_support::msg_reply(&session.id, part1),
+        )
+        .unwrap();
+        crate::orchestrator::handle_reply(
+            &state,
+            &chair.id,
+            crate::orchestrator::test_support::msg_reply(&session.id, part2),
+        )
+        .unwrap();
+
+        let rows = store
+            .review_findings(Some("o/r"), Some(8), None, None, 10)
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.iter().filter(|r| r.stable_id == "F1").count(), 1);
+    }
+
+    #[test]
     fn solo_close_writes_no_ledger_rows_even_with_block() {
         let store = std::sync::Arc::new(crate::store::SqliteStore::memory().unwrap());
         let state = crate::state::AppState::new(store.clone());

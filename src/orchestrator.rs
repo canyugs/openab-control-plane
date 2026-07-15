@@ -583,6 +583,16 @@ fn plane_status_notice_enabled() -> bool {
 fn record_review_findings(state: &Arc<AppState>, session: &Session, verdict_text: &str) {
     let Some(block) = crate::plugins::pr_review::findings::parse_findings_block(verdict_text)
     else {
+        // Distinguish the two ledger-gap causes in the log (SEI-807): the
+        // close itself is never affected, but a silent gap is unauditable.
+        if verdict_text.contains("<!-- openab-findings") {
+            tracing::warn!(
+                "findings block present but unparseable at close of {}; ledger row dropped",
+                session.id
+            );
+        } else {
+            tracing::warn!("no findings block at close of {}; ledger gap", session.id);
+        }
         return;
     };
     let repo_pr = session
@@ -1691,7 +1701,8 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                 // ADR 028: the settled result span that produced `verdict`,
                 // also computed up front for the same atomic landing. Normal
                 // close only; the timeout path never guesses a result.
-                let span = settled_result_span(&state.store.messages(&session.id)?, &author);
+                let messages = state.store.messages(&session.id)?;
+                let span = settled_result_span(&messages, &author);
                 let ids_json = (!span.is_empty())
                     .then(|| serde_json::to_string(&span).expect("Vec<String> serializes to JSON"));
                 // One transaction: close CAS + verdict columns + result
@@ -1729,9 +1740,19 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     }
                     // ADR 020: populate the findings ledger from the chair's
                     // hidden block. Same trust policy as the trailer — only the
-                    // review-council chair's final is authoritative.
+                    // review-council chair's final is authoritative. Parse the
+                    // joined settled span, not just the closing message: the
+                    // block can straddle a message-length split (live case:
+                    // zeabur.com#702 round 4 lost its whole round to this).
                     if session.mode == "review_council" {
-                        record_review_findings(state, session, &verdict);
+                        let joined = messages
+                            .iter()
+                            .filter(|m| span.contains(&m.id))
+                            .map(|m| m.content.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let text = if joined.is_empty() { &verdict } else { &joined };
+                        record_review_findings(state, session, text);
                     }
                     state.emit_north(
                         "verdict",
