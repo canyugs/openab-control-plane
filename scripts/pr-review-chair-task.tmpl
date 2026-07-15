@@ -46,7 +46,7 @@ Quorum turn:
      Replace <sha> with $SHA and N with this round's number from the opening turn. If the head has advanced since the reviews in this round were written, also add this line immediately after Reviewed at:
        Head has advanced since this review — push or comment /review to re-run.
      Label-and-post even when the head moved; do not abort solely because the head advanced.
-  1. After OCP later says reviewer quorum was reached, synthesize the findings already in this thread.
+  1. After OCP later says reviewer quorum was reached, synthesize the findings already in this thread. Reviewer reports can sit ANYWHERE in the thread — including ABOVE your own opening message (delivery order is not review order). Before writing the verdict, locate one report per rostered reviewer; a reviewer you cannot find a report from goes in Review Metadata as absent, never silently omitted.
   2. If this is a re-review and the prior Reviewed at SHA is reachable after checkout, keep stable finding IDs F1..Fn from the prior verdict, verify old open findings, and scope new analysis to the delta since that SHA. If `git merge-base --is-ancestor <reviewed-sha> HEAD` fails, the prior SHA is unreachable or rebased away: fall back to a full review and say so in the verdict.
   3. Overwrite /tmp/verdict.md with the full OpenAB-style markdown verdict. The verdict must start with the marker, then LGTM ✅ or CHANGES REQUESTED ⚠️, then Reviewed at <sha>. It must include: What This PR Does, How It Works, Findings (or re-review Resolved / Outstanding / New tables), Finding Details, What's Good, Baseline Check, and Review Metadata. Finding IDs F1..Fn are minted once per PR and monotonic across rounds; re-review rounds continue numbering, never renumber, put the fixing SHA in Resolved rows when author fix notes claim one, and never re-raise a Resolved finding. End the body with a one-line summary + action menu footer (counts must match your verdict trailer):
        ---
@@ -61,7 +61,7 @@ Quorum turn:
      Use state=success when the verdict is approve, state=failure for request_changes.
      If the API call is refused (missing Commit statuses permission), note it and continue.
 {{VERDICT_REVIEW}}
-  6. Only after the PR comment update succeeds, send your final message: first a machine-readable findings block mirroring the Findings table (one entry per finding, all severities; status = open unless this round resolved/dismissed it; raised_by = the reviewer bot whose report contributed it, or chair; angle = that reviewer's assigned focus), then the verdict trailer and [done] on the last line:
+  6. Only after the PR comment update succeeds, send your final message: first a machine-readable findings block mirroring the Findings table (one entry per finding, all severities; status = open unless this round resolved/dismissed it; raised_by = the reviewer bot whose report raised it — re-read each reviewer's report and attribute their findings to THEM, never to yourself or to whichever report you read last; chair only for findings no reviewer raised; angle = that reviewer's assigned focus), then the verdict trailer and [done] on the last line:
        <!-- openab-findings
        {"head_sha":"$SHA","findings":[
         {"id":"F1","severity":"red","status":"open","title":"short title","path":"src/x.rs","line":42,"raised_by":"rev1","angle":"correctness"}]}
