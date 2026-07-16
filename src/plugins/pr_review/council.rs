@@ -83,6 +83,12 @@ fn emit_review_refusal(
     );
 }
 
+/// The per-PR round-budget ceiling (`OABCP_REVIEW_ROUND_BUDGET`, default 10).
+/// Public so the SEI-820 refusal notice can name the number it enforces.
+pub fn review_round_budget() -> usize {
+    env_usize("OABCP_REVIEW_ROUND_BUDGET", 10)
+}
+
 /// Review cost valves. Checked before the supersede txn so a refusal never closes
 /// the active round. Hourly caps only auto `synchronize`; explicit commands bypass
 /// that cap but all review paths obey the per-PR round budget.
@@ -92,7 +98,7 @@ pub fn check_review_admission(
     is_synchronize: bool,
 ) -> Result<ReviewAdmission> {
     let hourly_cap = env_usize("OABCP_REVIEW_HOURLY_CAP", 3);
-    let round_budget = env_usize("OABCP_REVIEW_ROUND_BUDGET", 10);
+    let round_budget = review_round_budget();
     let limit = hourly_cap.max(round_budget).max(1);
     let sessions = state.store.list_sessions(Some(trigger_ref), None, limit)?;
     let active = state.store.active_session_for_trigger(trigger_ref)?;

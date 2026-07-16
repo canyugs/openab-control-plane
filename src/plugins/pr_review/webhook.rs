@@ -611,6 +611,15 @@ pub async fn handle_webhook(
         }
         crate::plugins::pr_review::council::ReviewAdmission::Refused { session_id, reason } => {
             record_pending_review(&state, &trigger, &trigger_ref, &reason);
+            // SEI-820: an explicit /review refused on budget was invisible to
+            // the author — post the canned notice (flag-gated, once per PR).
+            if reason == "round_budget" && !trigger.is_synchronize {
+                crate::orchestrator::maybe_post_budget_notice(
+                    &state,
+                    &trigger_ref,
+                    crate::plugins::pr_review::council::review_round_budget(),
+                );
+            }
             return Ok(Json(json!({
                 "ok": true,
                 "triggered": false,
@@ -1770,6 +1779,81 @@ mod tests {
 
         restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
         restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn budget_refused_review_command_marks_notice_once() {
+        let _policy_guard = crate::plugins::pr_review::council::review_policy_env_lock()
+            .lock()
+            .await;
+        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
+        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
+        let old_notice = std::env::var("OABCP_PLANE_STATUS_NOTICE").ok();
+        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
+        std::env::set_var("OABCP_REVIEW_ROUND_BUDGET", "0");
+        std::env::set_var("OABCP_PLANE_STATUS_NOTICE", "1");
+
+        let state = state_with_review_bots();
+        let json = post_webhook(
+            state.clone(),
+            "issue_comment",
+            issue_comment_payload(9101, "/review"),
+        )
+        .await;
+        assert_eq!(json["refused"], json!(true));
+        assert_eq!(json["reason"], json!("round_budget"));
+        // The notice path consumed the once-marker (PAT-mode test state has no
+        // App, so no HTTP post — the durable dedup is the observable).
+        assert!(
+            !state
+                .store
+                .mark_once("budget_notice:github:pr/o/r#7")
+                .unwrap(),
+            "notice marker must be consumed on the first refused /review"
+        );
+
+        // A synchronize refusal stays silent for OTHER PRs — flag off entirely.
+        std::env::remove_var("OABCP_PLANE_STATUS_NOTICE");
+        assert!(
+            state
+                .store
+                .mark_once("budget_notice:github:pr/o/r#8")
+                .unwrap(),
+            "no marker for a PR that never got a notice"
+        );
+
+        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
+        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
+        restore_env("OABCP_PLANE_STATUS_NOTICE", old_notice);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn budget_refusal_with_notice_flag_off_consumes_no_marker() {
+        let _policy_guard = crate::plugins::pr_review::council::review_policy_env_lock()
+            .lock()
+            .await;
+        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
+        let old_notice = std::env::var("OABCP_PLANE_STATUS_NOTICE").ok();
+        std::env::set_var("OABCP_REVIEW_ROUND_BUDGET", "0");
+        std::env::remove_var("OABCP_PLANE_STATUS_NOTICE");
+
+        let state = state_with_review_bots();
+        let json = post_webhook(
+            state.clone(),
+            "issue_comment",
+            issue_comment_payload(9102, "/review"),
+        )
+        .await;
+        assert_eq!(json["reason"], json!("round_budget"));
+        // Flag off → marker untouched, so enabling the flag later still tells
+        // this PR exactly once.
+        assert!(state
+            .store
+            .mark_once("budget_notice:github:pr/o/r#7")
+            .unwrap());
+
+        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
+        restore_env("OABCP_PLANE_STATUS_NOTICE", old_notice);
     }
 
     #[tokio::test(flavor = "current_thread")]
