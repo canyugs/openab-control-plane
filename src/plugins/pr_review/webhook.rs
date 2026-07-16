@@ -1812,6 +1812,17 @@ mod tests {
             "notice marker must be consumed on the first refused /review"
         );
 
+        // Second refused /review on the same PR exercises the dedup branch
+        // (mark_once ⇒ Ok(false) ⇒ return): still refused, no double-notice
+        // (council #252 F1).
+        let second = post_webhook(
+            state.clone(),
+            "issue_comment",
+            issue_comment_payload(9103, "/review"),
+        )
+        .await;
+        assert_eq!(second["reason"], json!("round_budget"));
+
         // A synchronize refusal stays silent for OTHER PRs — flag off entirely.
         std::env::remove_var("OABCP_PLANE_STATUS_NOTICE");
         assert!(
