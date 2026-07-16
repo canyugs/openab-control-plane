@@ -164,6 +164,7 @@ PATCH /v1/bots/:id
 POST /v1/sessions
 GET  /v1/sessions?trigger_ref=...&state=...&limit=20
 GET  /v1/sessions/:id
+GET  /v1/sessions/:id/result
 GET  /v1/sessions/:id/log
 GET  /v1/session-log?trigger_ref=...
 GET  /v1/sessions/:id/stream
@@ -174,7 +175,13 @@ GET  /v1/council/roster
 PUT  /v1/council/roster
 POST /v1/council/roster/replace
 POST /v1/review
+GET  /v1/review/findings?repo=...&pr=...&status=...&severity=...&limit=50
 ```
+
+`/v1/review/findings` is the ADR 020 findings ledger: one row per finding per
+review round (stable id, severity, status, path/line, raising reviewer and
+angle) — the audit substrate for adoption-rate and per-angle signal/noise
+measurement.
 
 ## Core Concepts
 

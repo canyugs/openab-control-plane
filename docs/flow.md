@@ -39,7 +39,11 @@ North API / SSE  <->  control-plane  <->  SQLite
 
 1. **Trigger** — a PR `opened` / `reopened` / `ready_for_review` webhook, a
    write-ish commenter's `/review`, or `POST /v1/review {repo, pr, preset?}` asks
-   the plane to review a PR.
+   the plane to review a PR. Push-triggered (`synchronize`) rounds are rate-
+   limited per PR (`OABCP_REVIEW_HOURLY_CAP`, default 3/h); a capped push is
+   queued and the catch-up sweep convenes the newest dropped head once the
+   window clears. `/review` bypasses the hourly cap; nothing bypasses the
+   per-PR round budget (`OABCP_REVIEW_ROUND_BUDGET`, default 10).
 2. **Open** — the controller creates a session with
    `trigger_ref="github:pr/owner/repo#N"`, `mode="review_council"`,
    `chair_bot=chair`, and `quorum_n` equal to the assigned reviewers.
