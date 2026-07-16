@@ -371,6 +371,15 @@ Finding IDs `F1..Fn` are minted once per PR and monotonic across rounds. Round 2
 continues numbering; never renumber prior findings and never re-raise a Resolved
 finding.
 
+Re-review rounds with a reachable prior SHA: do NOT rewrite
+`What This PR Does` / `How It Works` — replace both with one
+`Delta since <prior-sha>` section (what this round's commits actually change,
+≤5 bullets; the prior round's comment above carries the full context). Spend
+the effort saved on verification instead: re-check every Outstanding finding
+against HEAD in the code yourself before writing Resolved/Outstanding rows —
+never take a reviewer's or the author's word that something is fixed. Cap
+`What's Good` at 5 bullets; fold the rest into one line.
+
 First round:
 
 | ID | Severity | Finding | Location |
