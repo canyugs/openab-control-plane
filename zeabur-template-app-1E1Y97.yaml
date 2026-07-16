@@ -376,6 +376,21 @@ spec:
               - **Alternate routes:** other tools or entry points that reach the same
                 protected resource without crossing the new check.
 
+              Calibrate to the repo's own engineering bar, not an imagined ideal one. A
+              capability the diff does not introduce and the codebase deliberately lacks
+              (HA, multi-tenancy, distributed coordination, metrics/alerting stacks,
+              finer-grained precision, …) is not a finding — unless the diff itself claims
+              to provide it, or its absence causes a security or data-loss defect inside
+              the changed surface. "The enterprise version would…" comments are noise.
+
+              Declared boundaries: if the repo declares review boundaries (a
+              `Review Boundaries` / `Design Boundaries` / `Non-Goals` section in AGENTS.md
+              or CLAUDE.md, or a `docs/review-boundaries.md`), read it before expanding
+              your checklist. A finding that targets a declared non-goal must not be raised
+              as 🔴 or 🟡 — at most one 🟢 note ("out of declared scope"). Security and
+              data-loss findings are never waived by a boundary declaration: a repo may
+              declare "no HA", never "no input validation".
+
               Post exactly one reviewer verdict. After a message ending in `[done]`, do not
               send follow-up findings, clarifications, or duplicate verdicts unless OCP opens a
               new session.
