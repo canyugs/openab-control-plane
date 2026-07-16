@@ -29,8 +29,9 @@ created by ADR 027's external quota watcher:
    that silence whenever the single edge is missed — log rotation, a
    pager gap, or an operator who wasn't looking at that minute.
 3. **Health writes are last-writer-wins with no freshness guard.**
-   `PATCH /v1/bots/:id` accepts an arbitrary `health` string straight
-   through `update_bot_metadata`. Nothing distinguishes a fresh
+   `PATCH /v1/bots/:id` accepts any `is_safe_token`-shaped `health`
+   string (format-checked, never semantics- or freshness-checked)
+   straight through `update_bot_metadata`. Nothing distinguishes a fresh
    plane-observed degrade from a stale external report arriving late; the
    write path cannot drop a duplicate or out-of-order report. The moment
    ADR 027's quota watcher starts reporting (its Decision 2 points it at
@@ -114,7 +115,11 @@ degrade — with exactly two cross-lane effects:
 
 - **Operator override (the escape hatch, made explicit):** an accepted
   `operator` report with `status=ok` **retires every source's non-ok
-  rows** in the same write. The operator is the top authority; today's
+  rows except `transport`** in the same write — transport reflects
+  live socket state the hub can verify directly; an operator cannot
+  declare a disconnected bot reachable, and for an idle bot nothing
+  would re-assert the retired row until the next active-roster sweep.
+  (Reconnect clears the transport lane naturally.) The operator is the top authority; today's
   unpin (`PATCH health=ok`) keeps working and is now replay-safe.
   An operator non-ok pins the bot until the next operator report —
   stickier than today's one-frame clear, which is the point; noted here
@@ -193,8 +198,10 @@ the silence it exists to kill.
 string maps to `source=operator` with the server-side seq of §1 (and
 the override semantics of §2). Structured reports use the same route
 with `{source, seq, status, reason, ttl_ms}`; validation: source
-permission per credential (§1), mandatory TTL for `external:*`, seq
-monotonicity. The quota watcher (ADR 027) thus gets an idempotent,
+permission per credential (§1), mandatory TTL for `external:*` bounded
+to [30 s, 24 h], `reason` capped (1 KB, control characters stripped),
+`source` an `is_safe_token`-shaped name ≤ 64 chars, `status` strictly
+the three-value enum, seq monotonicity. The quota watcher (ADR 027) thus gets an idempotent,
 replay-tolerant, least-privilege write path — buildable without
 touching the plane again.
 
