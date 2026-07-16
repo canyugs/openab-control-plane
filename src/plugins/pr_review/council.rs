@@ -155,6 +155,78 @@ pub fn check_review_admission(
     Ok(ReviewAdmission::Allow)
 }
 
+/// SEI-819 catch-up: convene reviews the hourly cap dropped, once the window
+/// clears. One pass per call (main.rs ticks it). A pending row is stale — and
+/// deleted without convening — when any session for the trigger was created
+/// after the drop (a manual /review or newer push already covered that head).
+/// Catch-up convenes still pass admission, so the cap is honored, not bypassed.
+pub async fn sweep_pending_reviews(state: &Arc<AppState>) -> Result<()> {
+    for pending in state.store.pending_reviews()? {
+        if let Some(created) = state.store.latest_session_created_at(&pending.trigger_ref)? {
+            // >= : a covering session in the same ms as the drop still counts
+            // (council #247 F1 — strict > left a duplicate-round edge).
+            if created >= pending.requested_at {
+                state.store.delete_pending_review(&pending.trigger_ref)?;
+                continue;
+            }
+        }
+        match check_review_admission(state, &pending.trigger_ref, true)? {
+            ReviewAdmission::Allow => {}
+            ReviewAdmission::Deduped { .. } => continue, // still capped — retry next tick
+            ReviewAdmission::Refused { .. } => continue,
+        }
+        match convene_for_pr(
+            state,
+            &pending.repo,
+            pending.pr_number as u64,
+            pending.preset.clone(),
+            pending.fingerprint.clone(),
+            None,
+        )
+        .await
+        {
+            Ok(result) => {
+                state.store.delete_pending_review(&pending.trigger_ref)?;
+                // A fingerprint-deduped open means that head was already
+                // reviewed — cleared, but nothing to announce.
+                let session_id = match result {
+                    crate::controller::ControllerActionResult::SessionOpened {
+                        session_id,
+                        deduped: false,
+                    } => Some(session_id),
+                    crate::controller::ControllerActionResult::Superseded {
+                        session_id, ..
+                    } => Some(session_id),
+                    _ => None,
+                };
+                if let Some(session_id) = session_id {
+                    state.emit_north(
+                        "github_review_catchup",
+                        &session_id,
+                        serde_json::json!({
+                            "trigger_ref": pending.trigger_ref,
+                            "fingerprint": pending.fingerprint,
+                            "dropped_at": pending.requested_at,
+                        }),
+                    );
+                    tracing::info!(
+                        trigger_ref = %pending.trigger_ref,
+                        session = %session_id,
+                        "cap catch-up convened deferred review"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    trigger_ref = %pending.trigger_ref,
+                    "cap catch-up convene failed (kept for retry): {e:#}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Env/default standing council roster (`OABCP_COUNCIL_ROSTER`, comma-separated;
 /// default matches the seeded `OABCP_BOTS`). `roster[0]` is the chair; the rest
 /// review. A runtime DB override may replace this via `runtime_council_roster`.

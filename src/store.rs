@@ -197,6 +197,17 @@ pub struct ReviewFinding {
     pub created_at: i64,
 }
 
+/// A review the hourly cap dropped, awaiting catch-up (SEI-819).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingReview {
+    pub trigger_ref: String,
+    pub repo: String,
+    pub pr_number: i64,
+    pub fingerprint: Option<String>,
+    pub preset: Option<String>,
+    pub requested_at: i64,
+}
+
 /// Insert shape for `insert_review_findings` — everything but the row id and
 /// the shared per-call fields (session, repo/pr, head_sha, timestamp).
 #[derive(Debug, Clone)]
@@ -389,6 +400,20 @@ pub trait Store: Send + Sync {
         severity: Option<&str>,
         limit: i64,
     ) -> Result<Vec<ReviewFinding>>;
+    /// Record a synchronize the hourly cap dropped (SEI-819); newest drop wins.
+    fn upsert_pending_review(
+        &self,
+        trigger_ref: &str,
+        repo: &str,
+        pr_number: i64,
+        fingerprint: Option<&str>,
+        preset: Option<&str>,
+    ) -> Result<()>;
+    /// All cap-dropped reviews awaiting catch-up.
+    fn pending_reviews(&self) -> Result<Vec<PendingReview>>;
+    fn delete_pending_review(&self, trigger_ref: &str) -> Result<()>;
+    /// Newest session created_at for this trigger_ref (any state), if any.
+    fn latest_session_created_at(&self, trigger_ref: &str) -> Result<Option<i64>>;
     /// Non-terminal session ids created before `cutoff_ms` — watchdog candidates.
     fn active_sessions_before(&self, cutoff_ms: i64) -> Result<Vec<String>>;
     fn roster(&self, session_id: &str) -> Result<Vec<String>>;
@@ -567,6 +592,15 @@ CREATE TABLE IF NOT EXISTS pr_review_findings (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_prf_repo_pr ON pr_review_findings(repo, pr_number, id);
+-- Reviews the hourly cap dropped (SEI-819). One row per trigger_ref; a later
+-- drop overwrites so the newest dropped head wins. The catch-up sweep convenes
+-- and deletes once the cap window clears.
+CREATE TABLE IF NOT EXISTS pending_reviews (
+    trigger_ref TEXT PRIMARY KEY,
+    repo TEXT NOT NULL, pr_number INTEGER NOT NULL,
+    fingerprint TEXT, preset TEXT,
+    requested_at INTEGER NOT NULL
+);
 "#;
 
 /// Additive migrations for DBs created before a column or index existed. Each
@@ -1628,6 +1662,65 @@ impl Store for SqliteStore {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    fn upsert_pending_review(
+        &self,
+        trigger_ref: &str,
+        repo: &str,
+        pr_number: i64,
+        fingerprint: Option<&str>,
+        preset: Option<&str>,
+    ) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO pending_reviews
+                (trigger_ref, repo, pr_number, fingerprint, preset, requested_at)
+             VALUES (?1,?2,?3,?4,?5,?6)
+             ON CONFLICT(trigger_ref) DO UPDATE SET
+                fingerprint = excluded.fingerprint,
+                preset = excluded.preset,
+                requested_at = excluded.requested_at",
+            params![trigger_ref, repo, pr_number, fingerprint, preset, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    fn pending_reviews(&self) -> Result<Vec<PendingReview>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt = c.prepare(
+            "SELECT trigger_ref, repo, pr_number, fingerprint, preset, requested_at
+             FROM pending_reviews ORDER BY requested_at",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(PendingReview {
+                trigger_ref: r.get(0)?,
+                repo: r.get(1)?,
+                pr_number: r.get(2)?,
+                fingerprint: r.get(3)?,
+                preset: r.get(4)?,
+                requested_at: r.get(5)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    fn delete_pending_review(&self, trigger_ref: &str) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "DELETE FROM pending_reviews WHERE trigger_ref = ?1",
+            params![trigger_ref],
+        )?;
+        Ok(())
+    }
+
+    fn latest_session_created_at(&self, trigger_ref: &str) -> Result<Option<i64>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt =
+            c.prepare("SELECT MAX(created_at) FROM sessions WHERE trigger_ref = ?1")?;
+        let v: Option<i64> = stmt.query_row(params![trigger_ref], |r| r.get(0))?;
+        Ok(v)
     }
 
     fn review_findings(

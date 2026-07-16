@@ -26,6 +26,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState::new(store);
     spawn_watchdog(state.clone());
     spawn_liveness(state.clone());
+    spawn_review_catchup(state.clone());
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -62,6 +63,32 @@ fn spawn_watchdog(state: Arc<AppState>) {
                     }
                 }
                 Err(e) => tracing::error!("watchdog scan failed: {e}"),
+            }
+        }
+    });
+}
+
+/// SEI-819 cap catch-up: convene reviews the hourly cap dropped once the
+/// window clears. 60s tick — the wait is up to an hour, sub-minute precision
+/// buys nothing. `OABCP_REVIEW_CATCHUP_SECS=0` disables.
+fn spawn_review_catchup(state: Arc<AppState>) {
+    let tick_secs: u64 = std::env::var("OABCP_REVIEW_CATCHUP_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60);
+    if tick_secs == 0 {
+        tracing::info!("review cap catch-up disabled (OABCP_REVIEW_CATCHUP_SECS=0)");
+        return;
+    }
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(tick_secs));
+        loop {
+            tick.tick().await;
+            if let Err(e) =
+                openab_control_plane::plugins::pr_review::council::sweep_pending_reviews(&state)
+                    .await
+            {
+                tracing::error!("review catch-up sweep failed: {e}");
             }
         }
     });

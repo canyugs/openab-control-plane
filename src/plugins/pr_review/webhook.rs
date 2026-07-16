@@ -79,6 +79,32 @@ struct MentionReviewCommand {
 /// member renders as CONTRIBUTOR here (ADR 019 D2), an untrusted-looking commenter is
 /// deferred to a live permission check in `handle_webhook` (via `unverified_author`).
 /// Matters most for `/ask`, which spends tokens on demand — ADR 011.
+/// SEI-819: a synchronize the hourly cap dropped gets queued for the catch-up
+/// sweep instead of vanishing. Best-effort — a failed insert only costs the
+/// catch-up, never the webhook response. Round-budget refusals stay dropped:
+/// the budget is a hard ceiling, catching up would just burn it elsewhere.
+fn record_pending_review(
+    state: &Arc<AppState>,
+    trigger: &WebhookTrigger,
+    trigger_ref: &str,
+    reason: &str,
+) {
+    if reason != "hourly_cap" || !trigger.is_synchronize {
+        return;
+    }
+    if let Err(e) = state.store.upsert_pending_review(
+        trigger_ref,
+        &trigger.repo,
+        trigger.pr_number as i64,
+        trigger.trigger_fingerprint.as_deref(),
+        trigger.preset.as_deref(),
+    ) {
+        tracing::warn!(trigger_ref, "queue pending review failed: {e}");
+    } else {
+        tracing::info!(trigger_ref, "hourly cap: queued for catch-up sweep");
+    }
+}
+
 fn can_command(author_association: &str) -> bool {
     matches!(author_association, "OWNER" | "MEMBER" | "COLLABORATOR")
 }
@@ -573,6 +599,7 @@ pub async fn handle_webhook(
     {
         crate::plugins::pr_review::council::ReviewAdmission::Allow => {}
         crate::plugins::pr_review::council::ReviewAdmission::Deduped { session_id, reason } => {
+            record_pending_review(&state, &trigger, &trigger_ref, &reason);
             return Ok(Json(json!({
                 "ok": true,
                 "triggered": true,
@@ -583,6 +610,7 @@ pub async fn handle_webhook(
             .into_response());
         }
         crate::plugins::pr_review::council::ReviewAdmission::Refused { session_id, reason } => {
+            record_pending_review(&state, &trigger, &trigger_ref, &reason);
             return Ok(Json(json!({
                 "ok": true,
                 "triggered": false,
@@ -1739,6 +1767,89 @@ mod tests {
             "both ingresses must surface the same valve reason"
         );
         assert_eq!(rest_json["reason"], json!("round_budget"));
+
+        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
+        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn capped_synchronize_queues_pending_and_sweep_catches_up() {
+        let _policy_guard = crate::plugins::pr_review::council::review_policy_env_lock()
+            .lock()
+            .await;
+        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
+        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
+        std::env::set_var("OABCP_REVIEW_HOURLY_CAP", "1");
+        std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
+
+        let state = state_with_review_bots();
+        // Round 1 fills the hourly window.
+        post_webhook(state.clone(), "pull_request", synchronize_payload("abc")).await;
+        // Real deliveries never share a ms with the round they got capped
+        // behind; keep the test off that boundary too (staleness guard is >=).
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        // Round 2's push gets capped — and must land in pending_reviews.
+        let capped =
+            post_webhook(state.clone(), "pull_request", synchronize_payload("def")).await;
+        assert_eq!(capped["reason"], json!("hourly_cap"));
+        let pending = state.store.pending_reviews().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].fingerprint.as_deref(), Some("sha:def"));
+
+        // Sweep while still capped: row survives, nothing convenes.
+        crate::plugins::pr_review::council::sweep_pending_reviews(&state)
+            .await
+            .unwrap();
+        assert_eq!(state.store.pending_reviews().unwrap().len(), 1);
+
+        // Window clears (cap raised stands in for the hour passing) → sweep
+        // convenes the dropped head and clears the queue.
+        std::env::set_var("OABCP_REVIEW_HOURLY_CAP", "10");
+        crate::plugins::pr_review::council::sweep_pending_reviews(&state)
+            .await
+            .unwrap();
+        assert!(state.store.pending_reviews().unwrap().is_empty());
+        let sessions = state
+            .store
+            .list_sessions(Some("github:pr/o/r#7"), None, 10)
+            .unwrap();
+        assert_eq!(sessions.len(), 2, "catch-up must open the deferred round");
+
+        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
+        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sweep_drops_stale_pending_when_a_newer_session_already_reviewed() {
+        let _policy_guard = crate::plugins::pr_review::council::review_policy_env_lock()
+            .lock()
+            .await;
+        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
+        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
+        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
+        std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
+
+        let state = state_with_review_bots();
+        state
+            .store
+            .upsert_pending_review("github:pr/o/r#7", "o/r", 7, Some("sha:old"), None)
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        // A manual /review (or newer push) reviews the PR after the drop.
+        post_webhook(state.clone(), "pull_request", synchronize_payload("new")).await;
+
+        crate::plugins::pr_review::council::sweep_pending_reviews(&state)
+            .await
+            .unwrap();
+        assert!(
+            state.store.pending_reviews().unwrap().is_empty(),
+            "stale pending must be dropped without convening"
+        );
+        let sessions = state
+            .store
+            .list_sessions(Some("github:pr/o/r#7"), None, 10)
+            .unwrap();
+        assert_eq!(sessions.len(), 1, "sweep must not re-review the old head");
 
         restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
         restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
