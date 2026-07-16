@@ -400,6 +400,9 @@ pub trait Store: Send + Sync {
         severity: Option<&str>,
         limit: i64,
     ) -> Result<Vec<ReviewFinding>>;
+    /// Atomic once-marker on the settings table: true exactly once per key
+    /// (INSERT OR IGNORE). Used for once-per-PR notices (SEI-820).
+    fn mark_once(&self, key: &str) -> Result<bool>;
     /// Record a synchronize the hourly cap dropped (SEI-819); newest drop wins.
     fn upsert_pending_review(
         &self,
@@ -1662,6 +1665,15 @@ impl Store for SqliteStore {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    fn mark_once(&self, key: &str) -> Result<bool> {
+        let c = self.conn.lock().unwrap();
+        let n = c.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, '1')",
+            params![key],
+        )?;
+        Ok(n == 1)
     }
 
     fn upsert_pending_review(

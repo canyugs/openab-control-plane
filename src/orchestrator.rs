@@ -662,6 +662,63 @@ fn unavailable_notice_body() -> String {
     )
 }
 
+/// The canned round-budget notice (SEI-820): a `/review` refused because the
+/// per-PR round budget is exhausted was previously silent on the PR — the
+/// author's view was "council is broken". Same ADR 025 decisions apply: fixed
+/// operational text only, App mode only, behind the status-notice flag.
+fn budget_notice_body(budget: usize) -> String {
+    format!(
+        "{STATUS_NOTICE_MARKER}\n\n⚠️ **Review round budget exhausted.** This PR has \
+         used all {budget} council review rounds, so the council will not convene \
+         here again. A maintainer can raise `OABCP_REVIEW_ROUND_BUDGET` on the \
+         control plane, or proceed with human review."
+    )
+}
+
+/// Post the budget notice for an explicit-command refusal — once per PR
+/// (atomic `mark_once` dedup), flag-gated, fire-and-forget (SEI-820).
+/// Synchronize refusals stay silent: nobody is watching for a reply to a push.
+pub fn maybe_post_budget_notice(state: &Arc<AppState>, trigger_ref: &str, budget: usize) {
+    if !plane_status_notice_enabled() {
+        return;
+    }
+    let Some((repo, pr)) = parse_pr_trigger_ref(trigger_ref) else {
+        return;
+    };
+    match state
+        .store
+        .mark_once(&format!("budget_notice:{trigger_ref}"))
+    {
+        Ok(true) => {}
+        Ok(false) => return, // already told this PR once
+        Err(e) => {
+            tracing::warn!(trigger_ref, "budget notice dedup failed: {e}");
+            return;
+        }
+    }
+    let Some(app) = state.github_app.clone() else {
+        return; // PAT mode — no App to post as
+    };
+    let body = budget_notice_body(budget);
+    tokio::spawn(async move {
+        let token = match app
+            .mint_installation_token(crate::github_app::Role::Chair)
+            .await
+        {
+            Ok(t) => t.token,
+            Err(e) => {
+                tracing::warn!(repo, pr, "budget notice: mint token failed: {e}");
+                return;
+            }
+        };
+        match app.post_pr_comment(&repo, &pr, &token, &body).await {
+            Ok(()) => tracing::info!(repo, pr, "posted round-budget-exhausted notice"),
+            Err(e) => tracing::warn!(repo, pr, "budget notice: post failed: {e}"),
+        }
+        let _ = app.revoke_installation_token(&token).await; // one-off token, drop it
+    });
+}
+
 /// When a PR-review session closes with no synthesized verdict, tell the
 /// requester on the PR (ADR 025) — the one silent-failure the operator-facing
 /// `WARN` (ADR 023) and failover (Phase 4) don't reach. Fire-and-forget on a
