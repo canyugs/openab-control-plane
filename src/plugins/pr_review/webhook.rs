@@ -1785,6 +1785,9 @@ mod tests {
         let state = state_with_review_bots();
         // Round 1 fills the hourly window.
         post_webhook(state.clone(), "pull_request", synchronize_payload("abc")).await;
+        // Real deliveries never share a ms with the round they got capped
+        // behind; keep the test off that boundary too (staleness guard is >=).
+        std::thread::sleep(std::time::Duration::from_millis(2));
         // Round 2's push gets capped — and must land in pending_reviews.
         let capped =
             post_webhook(state.clone(), "pull_request", synchronize_payload("def")).await;
