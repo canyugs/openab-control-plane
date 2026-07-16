@@ -201,7 +201,13 @@ with `{source, seq, status, reason, ttl_ms}`; validation: source
 permission per credential (§1), mandatory TTL for `external:*` bounded
 to [30 s, 24 h], `reason` capped (1 KB, control characters stripped),
 `source` an `is_safe_token`-shaped name ≤ 64 chars, `status` strictly
-the three-value enum, seq monotonicity. The quota watcher (ADR 027) thus gets an idempotent,
+the three-value enum, seq monotonicity. Two abuse bounds on top:
+**per-bot external-lane cardinality is capped** (default 8 distinct
+`external:*` sources per bot; further names → 400 — a compromised
+reporter cannot spam unbounded lanes into the fold or the event
+envelope), and **far-future seq is rejected** (external seq is
+unix-ms by contract, so `seq > now_ms + 5 min` → 400 — a bogus
+clock cannot suppress later legitimate reports). The quota watcher (ADR 027) thus gets an idempotent,
 replay-tolerant, least-privilege write path — buildable without
 touching the plane again.
 
