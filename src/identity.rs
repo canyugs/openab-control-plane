@@ -178,13 +178,25 @@ pub async fn github_token_for(
     session_id: &str,
     role: Role,
 ) -> Result<String> {
-    if let Some(token) = fresh_cached(store, session_id, role)? {
-        return Ok(token); // cache hit, comfortably fresh — no GitHub round-trip
+    // Bot-level fetches (`bot:*` keys) come from the pod's pre_boot refresh
+    // loop, which re-asks only every ~50 minutes — a cached token with less
+    // remaining life than that dies in the pod's hands and every GitHub call
+    // 401s until the next refresh (SEI-810, live on prod: a pod restarted
+    // mid-token-life got a ~20-minutes-left token and ran two blind rounds).
+    // These fetches are rare (per pod per ~50min), so always mint fresh.
+    // Session-level fetches are frequent and short-lived; they keep the cache.
+    let cacheable = !session_id.starts_with("bot:");
+    if cacheable {
+        if let Some(token) = fresh_cached(store, session_id, role)? {
+            return Ok(token); // cache hit, comfortably fresh — no GitHub round-trip
+        }
     }
     // Serialize mints, then re-check: another task may have minted while we waited.
     let _guard = mint_lock.lock().await;
-    if let Some(token) = fresh_cached(store, session_id, role)? {
-        return Ok(token);
+    if cacheable {
+        if let Some(token) = fresh_cached(store, session_id, role)? {
+            return Ok(token);
+        }
     }
     let minted = app.mint_installation_token(role).await?;
     store.cache_installation_token(session_id, role.as_str(), &minted.token, minted.expires_at)?;
@@ -417,6 +429,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(got, "ghs_cached");
+    }
+
+    #[tokio::test]
+    async fn bot_level_key_always_mints_fresh_even_with_fresh_cache() {
+        // SEI-810: the pod's refresh loop re-asks only every ~50min, so handing
+        // back a cached token (however "fresh" by the 5-minute margin) can leave
+        // the pod holding a token that dies mid-cycle. bot:* keys must mint.
+        let store = SqliteStore::memory().unwrap();
+        let far_future = now_ms() + 60 * 60 * 1000;
+        store
+            .cache_installation_token("bot:chair", "chair", "ghs_cached", far_future)
+            .unwrap();
+        let lock = tokio::sync::Mutex::new(());
+        // dummy_app errors on mint — reaching the mint IS the assertion: the
+        // fresh cached row above must NOT short-circuit a bot-level fetch.
+        let err = github_token_for(&store, &dummy_app(), &lock, "bot:chair", Role::Chair).await;
+        assert!(err.is_err(), "bot:* fetch must attempt a fresh mint");
     }
 
     #[tokio::test]
