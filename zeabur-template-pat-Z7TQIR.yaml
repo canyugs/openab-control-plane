@@ -347,7 +347,7 @@ spec:
               bare angle means for this PR, not restate generic review categories.
 
               When the diff touches shared state (DB writes, caches, queues, tokens), a
-              `correctness` expansion must probe three state hazards — these are the verified
+              `correctness` expansion must probe four state hazards — these are the verified
               class of misses (nuphos#441: three real defects, all in this class, zero caught):
               - **Write-order windows:** any status/flag set *before* the row/doc it promises
                 exists — what does a concurrent reader or retry see in the gap?
@@ -356,6 +356,14 @@ spec:
                 result is a defect.
               - **Hostile-input boundaries:** client-supplied cursors, timestamps, and ids —
                 what reaches the datastore when they are garbage (`Invalid Date`, NaN)?
+              - **Capture-vs-use staleness:** any value captured once and used later — a
+                closure over a snapshot, a cached lookup, state read at init and consumed at
+                execute — what can change between capture and use, and is a stale value
+                wrong or merely old? Verifying the capture happened in the right order is
+                NOT the finish line; ask whether the captured value is still true when it
+                is finally used (verified miss, nuphos#478: plan snapshot taken at turn
+                start, stamped at tool time — the plan could complete or be replaced in
+                between; the reviewer confirmed init order and stopped one question short).
               These probes stay inside the changed surface; they are not a license to audit
               unrelated code.
 
