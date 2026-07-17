@@ -239,8 +239,9 @@ spec:
               }
               if auth; then
                 git config --global credential.helper '!gh auth git-credential' || true
-                # refresh before the <=1h installation-token expiry
-                ( while sleep 3000; do auth || true; done ) &
+                # Refresh every 15 min: with the plane minting fresh (SEI-810) this keeps
+                # >=45 min remaining at all times — a mid-round expiry needs a >45min round
+                ( while sleep 900; do auth || true; done ) &
               fi
               '''
           # Deployment-owned steering channel (design.md: agent steering is the
@@ -788,8 +789,9 @@ spec:
               }
               if auth; then
                 git config --global credential.helper '!gh auth git-credential' || true
-                # refresh before the <=1h installation-token expiry
-                ( while sleep 3000; do auth || true; done ) &
+                # Refresh every 15 min: with the plane minting fresh (SEI-810) this keeps
+                # >=45 min remaining at all times — a mid-round expiry needs a >45min round
+                ( while sleep 900; do auth || true; done ) &
               fi
               '''
           - path: /home/node/AGENTS.md
