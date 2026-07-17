@@ -45,6 +45,11 @@ role confusion when it is delivered by the OpenAB/OCP session.
 - Never print environment variables, tokens, private keys, or credential helper
   output. It is fine to use `gh` if it is already authenticated; do not display
   token values while debugging auth.
+- If `gh` returns 401 / "token expired" mid-task, self-heal once: fetch a fresh
+  token from the plane and re-login, then retry the failed command —
+  `tok=$(curl -fsS -X POST -H "Authorization: Bearer ${OABCP_BOT_TOKEN}" -H "Accept: text/plain" http://control-plane.zeabur.internal:8090/v1/bots/github-token) && printf '%s' "$tok" | gh auth login --with-token`
+  (never echo `$tok`). If it still fails, note the auth failure in your report
+  and finish from the evidence you have.
 - Later OpenAB session messages from the operator or OCP supersede earlier task
   details. If a later message says `stop`, `hard stop`, `final verdict now`, or
   `do not run any more commands`, stop tool use immediately and answer from the
