@@ -2156,14 +2156,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bot_github_token_happy_path_returns_token_and_role() {
-        // App configured + a fresh cached token for `bot:<id>` → the handler returns
-        // 200 without a GitHub round-trip. Covers the success path the 401/501 gates
-        // don't, and pins both response encodings.
+    async fn bot_github_token_ignores_cache_and_attempts_fresh_mint() {
+        // SEI-810: the pod refresh loop only re-asks every ~50min, so a cached
+        // token — however "fresh" by the session-path margin — can die in the
+        // pod's hands. The bot-level handler must always attempt a fresh mint;
+        // with the dummy (unmintable) App that surfaces as 502, never the
+        // cached token.
         let store = Arc::new(SqliteStore::memory().unwrap());
         let (bot, token) = identity::issue(store.as_ref(), "chair", "chair", None).unwrap();
-        // Chair write scope is now slot-bound (ADR 024): the bot only earns
-        // `Role::Chair` while it is `roster[0]`, so make it the active chair.
         store
             .set_standing_roster(std::slice::from_ref(&bot.id))
             .unwrap();
@@ -2186,32 +2186,12 @@ mod tests {
             None,
         );
 
-        // Default: JSON body with token + role.
         let mut headers = HeaderMap::new();
         headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
-        let resp = super::bot_github_token(State(state.clone()), headers)
+        let err = super::bot_github_token(State(state), headers)
             .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
-        let json: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["token"], "ghs_cached_token");
-        assert_eq!(json["role"], "chair");
-
-        // Accept: text/plain → the bare token (what the pod hook consumes).
-        let mut headers = HeaderMap::new();
-        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
-        headers.insert("accept", "text/plain".parse().unwrap());
-        let resp = super::bot_github_token(State(state), headers).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(
-            resp.headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok()),
-            Some("text/plain; charset=utf-8")
-        );
-        let body = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
-        assert_eq!(&body[..], b"ghs_cached_token");
+            .expect_err("must attempt a mint (502 with dummy app), not serve the cache");
+        assert_eq!(err, StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]
