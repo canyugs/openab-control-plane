@@ -12,12 +12,38 @@ fix has three layers; this document is the contract for the middle one.
    repo's *own* engineering bar. A capability the codebase deliberately lacks
    is not a finding unless the diff claims to provide it or its absence is a
    security/data-loss defect. No declaration needed.
-2. **Declared boundaries** (this contract): a repo that wants an explicit
-   fence writes one, in a place reviewers are instructed to read. Findings
-   that target a declared non-goal are demoted to at most one 🟢 note.
+2. **Declared boundaries** (this doc): a repo that wants an explicit fence
+   writes one, in a place reviewers are instructed to read. Findings that
+   target a declared non-goal are demoted to at most one 🟢 note. Two forms:
+   *repo-level* (below — durable, applies to every PR) and *per-PR* (a Review
+   Contract in the PR body — see next section).
 3. **Adoption loop** (ADR 021): findings the author repeatedly rejects show up
    in the ledger's adoption data — that is how you *discover* boundaries you
    forgot to declare. Grow this file from that signal, not from speculation.
+
+## Per-PR: the Review Contract
+
+Repo-level boundaries fence the whole project; a Review Contract fences one
+change. Strong models turn an open-ended review into an unbounded one — the
+contract is the author's up-front definition of what "in scope" means for this
+PR, so the reviewer's effort is channeled into verification, not expansion.
+No prior art has this: CodeRabbit infers scope from a linked issue and lets
+maintainers set repo policy, but there is no author-declared per-PR contract.
+
+Put these sections in the PR body:
+
+- **Goal** — the user problem this PR must solve.
+- **Non-goals** — what it intentionally does not attempt.
+- **Accepted Residual Risks** — known failure modes / trade-offs accepted for
+  this version, each with its mitigation and recovery.
+- **Acceptance Criteria** — concrete, testable conditions required for LGTM.
+- **Follow-ups** — hardening or broader designs explicitly deferred.
+
+The reviewer treats Acceptance Criteria as the primary checklist (verified
+against behavior), demotes findings that hit a Non-goal / Accepted Risk /
+Follow-up — but the floor below still holds, and the reviewer verifies the
+contract is honest: a real defect laundered as an "accepted risk", or a
+criterion claimed met but not, is raised anyway.
 
 ## Where to declare
 
