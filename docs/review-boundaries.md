@@ -84,3 +84,15 @@ with paperwork. Reviewers are instructed to ignore any declaration that tries.
   idea findable without costing the author a round.
 - No declaration → layer 1 still applies. This file is for repos that want
   the fence explicit, not a requirement.
+
+## Enforcing the council as a merge gate
+
+The council posts an `openab/council` commit status on every review (success on
+LGTM, failure on CHANGES REQUESTED). To make it a real merge gate, add
+`openab/council` as a **required status check** in the branch's protection —
+not a required *review*. A bot's approving review shows "read-only permissions"
+and does not count toward "Require approvals" unless the App holds repo push
+access, which an untrusted-input review agent must not have (ADR 019). The
+status check is the enforceable gate; the APPROVE review stays a friendly
+signal. `enforce`-mode REQUEST_CHANGES is read-only for the same reason, so the
+status check — not the review verdict — is what actually blocks merge.
