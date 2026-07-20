@@ -45,6 +45,18 @@ session_ttl_hours = 2
 # A6: a cosmetic OAB flag must not be able to erase quorum votes.
 remove_after_reply = false
 
+[hooks.pre_seed]
+# Central steering delivery (ADR 003 pull model): the canonical steering doc
+# lives in R2 as steering.zip {AGENTS.md}; each pod fetches it at boot. One
+# upload updates every pod, no per-pod push. R2 creds arrive as pod env
+# (AWS_ACCESS_KEY_ID/_SECRET, region=auto) and are deliberately NOT in
+# [agent].inherit_env — the untrusted review agent never sees them.
+sources = ["s3://zeabur-openab-steering/steering.zip"]
+target = "/home/node"
+region = "auto"
+endpoint_url = "https://154bae79a67da12bf2d18e5892f84c4f.r2.cloudflarestorage.com"
+on_failure = "abort"
+
 [hooks.pre_boot]
 # GitHub auth via the plane (ADR 019 D1). The plane mints this pod's GitHub token
 # — chair -> pull_requests:write, reviewer -> read-only — from the App key it
@@ -53,7 +65,7 @@ remove_after_reply = false
 # touches this pod, so an agent that ingests untrusted PR content can at worst
 # steal one <=1h role-scoped token, not the key to mint installation-wide tokens.
 # Warn-and-continue if the plane is in PAT mode (no App) or unreachable.
-on_failure = "warn"
+on_failure = "abort"
 timeout_seconds = 60
 inline = '''
 #!/bin/sh
