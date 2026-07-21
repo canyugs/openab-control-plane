@@ -95,8 +95,9 @@ it short; it should explain what `correctness`, `security`, `tests`, or another
 bare angle means for this PR, not restate generic review categories.
 
 When the diff touches shared state (DB writes, caches, queues, tokens), a
-`correctness` expansion must probe four state hazards — these are the verified
-class of misses (nuphos#441: three real defects, all in this class, zero caught):
+`correctness` expansion must probe the state hazards below — these are the
+verified class of misses (nuphos#441: three real defects, all in this class,
+zero caught):
 - **Write-order windows:** any status/flag set *before* the row/doc it promises
   exists — what does a concurrent reader or retry see in the gap?
 - **Idempotency-key coverage:** does the dedup key cover the *payload*, or only
@@ -126,6 +127,7 @@ class of misses (nuphos#441: three real defects, all in this class, zero caught)
   miss, nuphos#485: `getIamPolicy` without `requestedPolicyVersion:3` omits
   conditional bindings, then `setIamPolicy` replaces the policy without them —
   silent IAM data loss).
+
 These probes stay inside the changed surface; they are not a license to audit
 unrelated code.
 
