@@ -112,6 +112,20 @@ class of misses (nuphos#441: three real defects, all in this class, zero caught)
   is finally used (verified miss, nuphos#478: plan snapshot taken at turn
   start, stamped at tool time — the plan could complete or be replaced in
   between; the reviewer confirmed init order and stopped one question short).
+- **Skip-path invariant staleness:** a fast-path or early-return branch that
+  skips the normal reconcile/probe/reset step — does a persisted flag or state
+  it leaves behind stay true when the skip made it false? A `hasX` left `true`
+  after the thing that made it true was wiped is a defect, not a saved
+  round-trip (verified miss, backend#2323/#2330/#2331: custom-image reinstall
+  takes the `imageID != ""` branch, skips the K3s probe, marks the machine
+  READY with `hasK3s` unchanged — a wiped node still accepts cluster deploys).
+- **Read-modify-write completeness:** a policy/config/document read, mutated,
+  and written back — does the read fetch the *complete* object the write will
+  replace? A partial read (a missing field, an unrequested version, a filtered
+  subset) followed by a full write silently drops what was not read (verified
+  miss, nuphos#485: `getIamPolicy` without `requestedPolicyVersion:3` omits
+  conditional bindings, then `setIamPolicy` replaces the policy without them —
+  silent IAM data loss).
 These probes stay inside the changed surface; they are not a license to audit
 unrelated code.
 
@@ -135,6 +149,26 @@ try to defeat the mechanism, not just confirm it handles the intended case
   clusters the pattern reads wrong.
 - **Alternate routes:** other tools or entry points that reach the same
   protected resource without crossing the new check.
+- **Identity normalization:** an id or key deduped or compared with different
+  normalization than the system that ultimately resolves it — case-sensitive
+  storage against a case-insensitive upstream (GUIDs, emails), un-trimmed vs
+  trimmed, or a non-injective transform used as a key. The same principal
+  re-entered in a different case, or two distinct names collapsing to one
+  label, slips a dedup/uniqueness guard (verified miss, nuphos#462: Azure app
+  GUIDs stored case-sensitively but resolved case-insensitively by Entra → a
+  differently-cased rebind bypasses the permission-admin export guard; same
+  class backend#2334: lossy `TransformEnvVar` collisions misassign cloned
+  service passwords).
+
+When the diff wires a **destructive or irreversible action** (cascade delete,
+overwrite, wipe) to a control the user triggers in one step, confirm there is a
+proportionate guard — a confirmation, undo, soft-delete, or explicit force flag.
+Weigh it against the repo's own bar: if the codebase already has a confirmation
+convention (a `ConfirmDialog`, an "are you sure" pattern used elsewhere) and
+this path skips it, that gap is a real inconsistency, not a style preference
+(verified miss, nuphos#452: `deleteDashboard`/`deletePanel` cascade-delete
+scripts, snapshots, insights, and alerts from a single trash click while the
+same app's `ConfirmDialog` guards lower-stakes actions).
 
 Calibrate to the repo's own engineering bar, not an imagined ideal one. A
 capability the diff does not introduce and the codebase deliberately lacks
