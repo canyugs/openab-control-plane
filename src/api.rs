@@ -561,14 +561,18 @@ async fn open_session(
             "superseded": true,
             "old_session_id": old_id,
         }))),
-        Ok(ControllerActionResult::MessagePosted { .. }) => {
-            Err(error_status(StatusCode::INTERNAL_SERVER_ERROR))
-        }
+        Ok(_) => Err(error_status(StatusCode::INTERNAL_SERVER_ERROR)),
         Err(ControllerError::Invalid(message)) => {
             Err((StatusCode::BAD_REQUEST, Json(json!({ "error": message }))))
         }
         Err(ControllerError::Gone(message)) => {
             Err((StatusCode::GONE, Json(json!({ "error": message }))))
+        }
+        Err(ControllerError::Forbidden(message)) => {
+            Err((StatusCode::FORBIDDEN, Json(json!({ "error": message }))))
+        }
+        Err(ControllerError::NotFound(message)) => {
+            Err((StatusCode::NOT_FOUND, Json(json!({ "error": message }))))
         }
         Err(ControllerError::Internal(_)) => Err(error_status(StatusCode::INTERNAL_SERVER_ERROR)),
     }
@@ -844,9 +848,15 @@ async fn post_message(
             Ok(Json(json!({ "message_id": message_id })))
         }
         Ok(_) => Err(error_status(StatusCode::INTERNAL_SERVER_ERROR)),
-        Err(ControllerError::Invalid(_)) => Err(error_status(StatusCode::NOT_FOUND)),
+        Err(ControllerError::Invalid(message)) => {
+            Err((StatusCode::BAD_REQUEST, Json(json!({ "error": message }))))
+        }
+        Err(ControllerError::NotFound(_)) => Err(error_status(StatusCode::NOT_FOUND)),
         Err(ControllerError::Gone(message)) => {
             Err((StatusCode::GONE, Json(json!({ "error": message }))))
+        }
+        Err(ControllerError::Forbidden(message)) => {
+            Err((StatusCode::FORBIDDEN, Json(json!({ "error": message }))))
         }
         Err(ControllerError::Internal(_)) => Err(error_status(StatusCode::INTERNAL_SERVER_ERROR)),
     }
@@ -855,6 +865,8 @@ async fn post_message(
 #[derive(Deserialize)]
 struct AddRoster {
     bot_id: String,
+    #[serde(default)]
+    recipient_input: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -870,18 +882,35 @@ async fn add_roster(
     Json(req): Json<AddRoster>,
 ) -> Result<axum::response::Response, StatusCode> {
     check_auth(&state, &headers)?;
-    use orchestrator::Admission::*;
-    // Err = unknown session (404); admission rejection = 409 with a reason.
-    match orchestrator::add_to_roster(&state, &id, &req.bot_id)
-        .map_err(|_| StatusCode::NOT_FOUND)?
-    {
-        Added => Ok(Json(json!({ "added": true })).into_response()),
-        AlreadyMember => Ok(Json(json!({ "added": false })).into_response()),
-        Rejected(reason) => Ok((
+    let action = crate::controller::AddRosterAction {
+        session_id: id,
+        recipient_inputs: req
+            .recipient_input
+            .map(|input| BTreeMap::from([(req.bot_id.clone(), input)]))
+            .unwrap_or_default(),
+        bots: vec![req.bot_id],
+    };
+    match controller::execute(&state, ControllerAction::AddRoster(action)) {
+        Ok(ControllerActionResult::RosterAdded { added, .. }) if !added.is_empty() => {
+            Ok(Json(json!({ "added": true })).into_response())
+        }
+        Ok(ControllerActionResult::RosterAdded {
+            added,
+            already_members,
+            ..
+        }) if added.is_empty() && !already_members.is_empty() => {
+            Ok(Json(json!({ "added": false })).into_response())
+        }
+        Ok(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(ControllerError::NotFound(_)) => Err(StatusCode::NOT_FOUND),
+        Err(ControllerError::Invalid(reason)) => Ok((
             StatusCode::CONFLICT,
             Json(json!({ "added": false, "rejected": reason })),
         )
             .into_response()),
+        Err(ControllerError::Gone(_)) => Err(StatusCode::GONE),
+        Err(ControllerError::Forbidden(_)) => Err(StatusCode::FORBIDDEN),
+        Err(ControllerError::Internal(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
 
@@ -2018,10 +2047,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_session_rejects_recipient_inputs_before_p3() {
+    async fn open_session_accepts_recipient_inputs_through_p3_interpreter() {
         let state = state_with_review_bots();
 
-        let Err((status, Json(body))) = super::open_session(
+        let response = super::open_session(
             State(state.clone()),
             HeaderMap::new(),
             Json(super::OpenSession {
@@ -2040,20 +2069,15 @@ mod tests {
             }),
         )
         .await
-        else {
-            panic!("recipient inputs must fail closed before P3");
-        };
+        .unwrap();
 
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body["error"]
-            .as_str()
-            .unwrap()
-            .contains("recipient_inputs require the P3 atomic-delivery interpreter"));
-        assert!(state
-            .store
-            .list_sessions(None, None, 10)
-            .unwrap()
-            .is_empty());
+        let session_id = response["session_id"].as_str().unwrap();
+        let messages = state.store.messages(session_id).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].audience.as_deref(), Some("chair"));
+        assert_eq!(messages[0].content, "please review this");
+        assert_eq!(messages[1].audience.as_deref(), Some("rev1"));
+        assert_eq!(messages[1].content, "inspect the failure path");
     }
 
     #[tokio::test]

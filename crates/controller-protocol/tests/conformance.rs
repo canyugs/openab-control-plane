@@ -1,7 +1,7 @@
 use controller_protocol::{
-    ActionEnvelope, ActionResultEnvelope, ControllerAction, ControllerActionResult, ErrorCode,
-    ErrorEnvelope, OpenSessionAction, PostMessageAction, ProtocolError, VersionOffer,
-    CURRENT_VERSION,
+    ActionEnvelope, ActionResultEnvelope, AddRosterAction, CloseSessionAction, ControllerAction,
+    ControllerActionResult, EmitStatusAction, ErrorCode, ErrorEnvelope, OpenSessionAction,
+    PostMessageAction, ProtocolError, VersionOffer, CURRENT_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -56,6 +56,38 @@ fn action_envelopes_are_golden_pinned() {
         }),
     };
     assert_golden_round_trip(&post, include_str!("golden/action_post_message.json"));
+
+    let add_roster = ActionEnvelope {
+        version: CURRENT_VERSION,
+        action_id: "act_roster_001".into(),
+        action: ControllerAction::AddRoster(AddRosterAction {
+            session_id: "ses_001".into(),
+            bots: vec!["analyst".into(), "observer".into()],
+            recipient_inputs: BTreeMap::new(),
+        }),
+    };
+    assert_golden_round_trip(&add_roster, include_str!("golden/action_add_roster.json"));
+
+    let close = ActionEnvelope {
+        version: CURRENT_VERSION,
+        action_id: "act_close_001".into(),
+        action: ControllerAction::CloseSession(CloseSessionAction {
+            session_id: "ses_001".into(),
+            reason: "controller_cancelled".into(),
+        }),
+    };
+    assert_golden_round_trip(&close, include_str!("golden/action_close_session.json"));
+
+    let status = ActionEnvelope {
+        version: CURRENT_VERSION,
+        action_id: "act_status_001".into(),
+        action: ControllerAction::EmitStatus(EmitStatusAction {
+            session_id: "ses_001".into(),
+            target: "operator".into(),
+            body: "Waiting for additional evidence.".into(),
+        }),
+    };
+    assert_golden_round_trip(&status, include_str!("golden/action_emit_status.json"));
 }
 
 #[test]
@@ -82,6 +114,31 @@ fn action_results_are_golden_pinned() {
             action_id: "act_post_001".into(),
             result: ControllerActionResult::MessagePosted {
                 message_id: "msg_001".into(),
+            },
+        },
+        ActionResultEnvelope {
+            version: CURRENT_VERSION,
+            action_id: "act_roster_001".into(),
+            result: ControllerActionResult::RosterAdded {
+                session_id: "ses_001".into(),
+                added: vec!["observer".into()],
+                already_members: vec!["analyst".into()],
+            },
+        },
+        ActionResultEnvelope {
+            version: CURRENT_VERSION,
+            action_id: "act_close_001".into(),
+            result: ControllerActionResult::SessionClosed {
+                session_id: "ses_001".into(),
+                closed: true,
+            },
+        },
+        ActionResultEnvelope {
+            version: CURRENT_VERSION,
+            action_id: "act_status_001".into(),
+            result: ControllerActionResult::StatusEmitted {
+                session_id: "ses_001".into(),
+                status_id: "msg_status_001".into(),
             },
         },
     ];
@@ -141,6 +198,23 @@ fn open_session_defaults_recipient_inputs_for_older_payloads() {
 
     let ControllerAction::OpenSession(action) = action else {
         panic!("expected open_session action");
+    };
+    assert!(action.recipient_inputs.is_empty());
+}
+
+#[test]
+fn add_roster_defaults_recipient_inputs_for_older_payloads() {
+    let action: ControllerAction = serde_json::from_value(serde_json::json!({
+        "type": "add_roster",
+        "params": {
+            "session_id": "ses_001",
+            "bots": ["observer"]
+        }
+    }))
+    .expect("payload without recipient_inputs remains valid");
+
+    let ControllerAction::AddRoster(action) = action else {
+        panic!("expected add_roster action");
     };
     assert!(action.recipient_inputs.is_empty());
 }

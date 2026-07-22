@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "action_id": "act_status_001",
+  "action": {
+    "type": "emit_status",
+    "params": {
+      "session_id": "ses_001",
+      "target": "operator",
+      "body": "Waiting for additional evidence."
+    }
+  }
+}

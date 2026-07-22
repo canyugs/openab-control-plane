@@ -153,18 +153,36 @@ pub enum SessionCreateOutcome {
     Superseded { old_id: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RosterAddOutcome {
+    Added {
+        added: Vec<String>,
+        already_members: Vec<String>,
+    },
+    Full,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
     pub session_id: String,
     pub thread_id: Option<String>,
-    pub author_kind: String, // "bot" | "client" | "system"
+    pub author_kind: String, // "bot" | "client" | "system" | "status"
     pub author_id: Option<String>,
-    /// NULL = broadcast; Some(bot_id) = scoped to one bot/seat owner.
+    /// NULL = broadcast; for conversation rows Some(bot_id) scopes delivery to
+    /// one seat owner; for status rows it stores the opaque operator target.
     pub audience: Option<String>,
     pub content: String,
     pub reply_to: Option<String>,
     pub created_at: i64,
+}
+
+/// One audience-scoped opening message persisted with session creation. The
+/// store owns atomic landing; orchestration owns post-commit delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpeningInput {
+    pub recipient: String,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -318,6 +336,7 @@ pub trait Store: Send + Sync {
     /// Open a session for `trigger_ref` using fingerprint-aware idempotency.
     /// Equal non-NULL fingerprints dedupe to the active row. A different or NULL
     /// fingerprint closes the active row and inserts the successor in one txn.
+    /// Audience-scoped opening inputs, when present, land in that same txn.
     #[allow(clippy::too_many_arguments)]
     fn create_session_superseding(
         &self,
@@ -328,6 +347,7 @@ pub trait Store: Send + Sync {
         chair_bot: Option<&str>,
         roster: &[String],
         mode: &str,
+        opening_inputs: &[OpeningInput],
     ) -> Result<(Session, SessionCreateOutcome)>;
     fn session(&self, id: &str) -> Result<Option<Session>>;
     fn list_sessions(
@@ -339,6 +359,16 @@ pub trait Store: Send + Sync {
     /// Add a bot to a session roster. Returns true if newly added (false if it
     /// was already a member) — the caller backfills history only on a fresh join.
     fn add_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool>;
+    /// Atomically add a batch of known bot ids and their audience-scoped inputs
+    /// without exceeding `max_roster`. Duplicate and existing ids are reported
+    /// as already-members; inputs are persisted only for newly added ids.
+    fn add_session_bots_if_capacity(
+        &self,
+        session_id: &str,
+        bot_ids: &[String],
+        max_roster: usize,
+        opening_inputs: &[OpeningInput],
+    ) -> Result<RosterAddOutcome>;
     /// Replace one session roster member with another, preserving the roster row
     /// position. The caller validates both ids and handles backfill.
     fn replace_session_bot(
@@ -1317,6 +1347,7 @@ impl Store for SqliteStore {
         chair_bot: Option<&str>,
         roster: &[String],
         mode: &str,
+        opening_inputs: &[OpeningInput],
     ) -> Result<(Session, SessionCreateOutcome)> {
         let id = new_id("ses");
         let created_at = now_ms();
@@ -1347,13 +1378,19 @@ impl Store for SqliteStore {
             }
         }
 
+        let initial_state = if opening_inputs.is_empty() {
+            "open"
+        } else {
+            "deliberating"
+        };
         tx.execute(
             "INSERT INTO sessions
                 (id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, mode)
-             VALUES (?1, ?2, 'open', ?3, ?4, ?5, ?6, ?7, ?8)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 id,
                 title,
+                initial_state,
                 trigger_ref,
                 trigger_fingerprint,
                 quorum_n,
@@ -1368,11 +1405,25 @@ impl Store for SqliteStore {
                 params![id, bot_id],
             )?;
         }
+        for input in opening_inputs {
+            tx.execute(
+                "INSERT INTO messages
+                    (id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at)
+                 VALUES (?1, ?2, NULL, 'client', NULL, ?3, ?4, NULL, ?5)",
+                params![
+                    new_id("msg"),
+                    id,
+                    input.recipient,
+                    input.content,
+                    created_at
+                ],
+            )?;
+        }
         tx.commit()?;
         let session = Session {
             id,
             title: title.to_string(),
-            state: "open".into(),
+            state: initial_state.into(),
             trigger_ref: trigger_ref.map(String::from),
             trigger_fingerprint: trigger_fingerprint.map(String::from),
             quorum_n,
@@ -1528,6 +1579,77 @@ impl Store for SqliteStore {
             params![session_id, bot_id],
         )?;
         Ok(n == 1)
+    }
+
+    fn add_session_bots_if_capacity(
+        &self,
+        session_id: &str,
+        bot_ids: &[String],
+        max_roster: usize,
+        opening_inputs: &[OpeningInput],
+    ) -> Result<RosterAddOutcome> {
+        let mut unique = Vec::new();
+        for bot_id in bot_ids {
+            if !unique.iter().any(|known| known == bot_id) {
+                unique.push(bot_id.clone());
+            }
+        }
+
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let roster_len: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM session_bots WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        let mut added = Vec::new();
+        let mut already_members = Vec::new();
+        for bot_id in unique {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM session_bots WHERE session_id = ?1 AND bot_id = ?2
+                )",
+                params![session_id, bot_id],
+                |row| row.get(0),
+            )?;
+            if exists {
+                already_members.push(bot_id);
+            } else {
+                added.push(bot_id);
+            }
+        }
+        if roster_len as usize + added.len() > max_roster {
+            return Ok(RosterAddOutcome::Full);
+        }
+        for bot_id in &added {
+            tx.execute(
+                "INSERT INTO session_bots (session_id, bot_id) VALUES (?1, ?2)",
+                params![session_id, bot_id],
+            )?;
+        }
+        let created_at = now_ms();
+        for input in opening_inputs
+            .iter()
+            .filter(|input| added.iter().any(|bot_id| bot_id == &input.recipient))
+        {
+            tx.execute(
+                "INSERT INTO messages
+                    (id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at)
+                 VALUES (?1, ?2, NULL, 'client', NULL, ?3, ?4, NULL, ?5)",
+                params![
+                    new_id("msg"),
+                    session_id,
+                    input.recipient,
+                    input.content,
+                    created_at
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(RosterAddOutcome::Added {
+            added,
+            already_members,
+        })
     }
 
     fn remove_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool> {
@@ -2998,6 +3120,7 @@ mod tests {
                 None,
                 &[],
                 "council",
+                &[],
             )
             .unwrap();
         assert_eq!(outcome, SessionCreateOutcome::Created);
@@ -3011,12 +3134,169 @@ mod tests {
                 None,
                 &[],
                 "council",
+                &[],
             )
             .unwrap();
         assert_eq!(outcome, SessionCreateOutcome::Deduped);
         assert_eq!(second.id, first.id);
         assert_eq!(second.title, "Review o/r#4");
         assert_eq!(second.trigger_fingerprint.as_deref(), Some("sha:abc"));
+    }
+
+    #[test]
+    fn create_session_superseding_commits_opening_inputs_atomically() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .seed_bot("chair", "chair", "chair", "h1", "t1")
+            .unwrap();
+        store
+            .seed_bot("rev1", "rev1", "reviewer", "h2", "t2")
+            .unwrap();
+        let inputs = vec![
+            OpeningInput {
+                recipient: "chair".into(),
+                content: "Synthesize the report.".into(),
+            },
+            OpeningInput {
+                recipient: "rev1".into(),
+                content: "Inspect the evidence.".into(),
+            },
+        ];
+
+        let (session, outcome) = store
+            .create_session_superseding(
+                "targeted",
+                Some("source:item/atomic"),
+                Some("revision:1"),
+                1,
+                Some("chair"),
+                &["chair".into(), "rev1".into()],
+                "council",
+                &inputs,
+            )
+            .unwrap();
+
+        assert_eq!(outcome, SessionCreateOutcome::Created);
+        assert_eq!(session.state, "deliberating");
+        let messages = store.messages(&session.id).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].audience.as_deref(), Some("chair"));
+        assert_eq!(messages[1].audience.as_deref(), Some("rev1"));
+    }
+
+    #[test]
+    fn opening_input_insert_failure_rolls_back_session_and_roster() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .seed_bot("chair", "chair", "chair", "h1", "t1")
+            .unwrap();
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_opening_input
+                 BEFORE INSERT ON messages
+                 WHEN NEW.content = 'force failure'
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced opening input failure');
+                 END;",
+            )
+            .unwrap();
+
+        let result = store.create_session_superseding(
+            "targeted",
+            Some("source:item/rollback"),
+            Some("revision:1"),
+            0,
+            Some("chair"),
+            &["chair".into()],
+            "solo",
+            &[OpeningInput {
+                recipient: "chair".into(),
+                content: "force failure".into(),
+            }],
+        );
+
+        assert!(result.is_err());
+        assert!(store
+            .list_sessions(Some("source:item/rollback"), None, 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn batch_roster_capacity_rejection_is_atomic() {
+        let store = SqliteStore::memory().unwrap();
+        for (id, role) in [
+            ("chair", "chair"),
+            ("rev1", "reviewer"),
+            ("rev2", "reviewer"),
+        ] {
+            store.seed_bot(id, id, role, "hash", "token").unwrap();
+        }
+        let session = store
+            .create_session(
+                "bounded",
+                None,
+                0,
+                Some("chair"),
+                &["chair".into()],
+                "council",
+            )
+            .unwrap();
+
+        let outcome = store
+            .add_session_bots_if_capacity(&session.id, &["rev1".into(), "rev2".into()], 2, &[])
+            .unwrap();
+
+        assert_eq!(outcome, RosterAddOutcome::Full);
+        assert_eq!(store.roster(&session.id).unwrap(), vec!["chair"]);
+    }
+
+    #[test]
+    fn batch_roster_input_failure_rolls_back_membership() {
+        let store = SqliteStore::memory().unwrap();
+        for (id, role) in [("chair", "chair"), ("rev1", "reviewer")] {
+            store.seed_bot(id, id, role, "hash", "token").unwrap();
+        }
+        let session = store
+            .create_session(
+                "atomic late join",
+                None,
+                0,
+                Some("chair"),
+                &["chair".into()],
+                "council",
+            )
+            .unwrap();
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_late_join_input
+                 BEFORE INSERT ON messages
+                 WHEN NEW.content = 'force failure'
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced late join input failure');
+                 END;",
+            )
+            .unwrap();
+
+        let result = store.add_session_bots_if_capacity(
+            &session.id,
+            &["rev1".into()],
+            2,
+            &[OpeningInput {
+                recipient: "rev1".into(),
+                content: "force failure".into(),
+            }],
+        );
+
+        assert!(result.is_err());
+        assert_eq!(store.roster(&session.id).unwrap(), vec!["chair"]);
+        assert!(store.messages(&session.id).unwrap().is_empty());
     }
 
     #[test]
@@ -3032,6 +3312,7 @@ mod tests {
                 None,
                 &[],
                 "council",
+                &[],
             )
             .unwrap();
 
@@ -3044,6 +3325,7 @@ mod tests {
                 None,
                 &[],
                 "council",
+                &[],
             )
             .unwrap();
 
@@ -3095,6 +3377,7 @@ mod tests {
                 None,
                 &[],
                 "council",
+                &[],
             )
             .unwrap();
         assert_eq!(
@@ -3113,6 +3396,7 @@ mod tests {
                 None,
                 &[],
                 "council",
+                &[],
             )
             .unwrap();
         assert_eq!(
@@ -3137,6 +3421,7 @@ mod tests {
                 None,
                 &[],
                 "council",
+                &[],
             )
             .unwrap();
 
@@ -3156,6 +3441,7 @@ mod tests {
                             None,
                             &[],
                             "council",
+                            &[],
                         )
                         .unwrap()
                 })

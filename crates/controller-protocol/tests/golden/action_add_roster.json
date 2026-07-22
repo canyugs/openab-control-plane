@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "action_id": "act_roster_001",
+  "action": {
+    "type": "add_roster",
+    "params": {
+      "session_id": "ses_001",
+      "bots": [
+        "analyst",
+        "observer"
+      ]
+    }
+  }
+}

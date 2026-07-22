@@ -19,13 +19,20 @@ provider integration.
 The golden corpus under `tests/golden/` pins every action and result variant,
 the version offer, and all error codes.
 
-## P2/P3 boundary
+## P3 interpreter boundary
 
-P2 defines optional `recipient_inputs` because the compatibility fixture corpus
-proves that some sessions need target-specific opening instructions. The OCP
-adapter rejects non-empty values until P3 implements atomic session creation and
-recipient delivery. This fail-closed boundary prevents a controller from
-believing inputs were delivered when the runtime ignored them.
+Optional `recipient_inputs` exist because the compatibility fixture corpus
+proves that some sessions need target-specific opening instructions. The P3
+interpreter validates every recipient, persists all audience-scoped opening
+messages in the same transaction as session creation, and then uses the normal
+durable outbox for delivery. A common `prompt` is the fallback for roster
+members without a specific input.
+
+`add_roster`, `close_session`, and `emit_status` also execute through the same
+interpreter as in-process callers. Controlled close is denied by default and
+requires an explicit runtime policy grant. Transport authentication,
+installation grants, action-id replay storage, and the external HTTP action
+endpoint remain P4 scope.
 
 No opaque terminal `result_ref` is included in version 1 yet. It should be added
 only when the runtime-event/product-projection work demonstrates its required
