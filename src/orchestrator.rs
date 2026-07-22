@@ -279,7 +279,10 @@ fn dispatch_coordinator(
     if session.mode == "review_council" {
         state.record_compatibility_use_once("legacy_review_council_dispatch", &session.id);
     }
-    if let Some(coord) = coordinator::lookup(&session.mode) {
+    if let Some(coord) = coordinator::lookup_with_pr_review_config(
+        &session.mode,
+        &state.pr_review_config,
+    ) {
         return Ok(Some(coord));
     }
 
@@ -570,16 +573,6 @@ fn fire_close_webhook(state: &Arc<AppState>, session_id: &str, verdict: &str, re
 /// a real review and a future upsert (#226) can find its own prior notice.
 const STATUS_NOTICE_MARKER: &str = "<!-- openab-council-status -->";
 
-/// Whether the plane posts a canned "review unavailable" notice to the PR when a
-/// review can't complete (ADR 025). Default OFF: enable per lane via
-/// `OABCP_PLANE_STATUS_NOTICE` after the dev-before-prod deploy gate.
-fn plane_status_notice_enabled() -> bool {
-    matches!(
-        std::env::var("OABCP_PLANE_STATUS_NOTICE").ok().as_deref(),
-        Some("1") | Some("true")
-    )
-}
-
 /// ADR 020: parse the chair's hidden `<!-- openab-findings … -->` block out of
 /// the closing verdict text and append ledger rows. Best-effort — a missing or
 /// malformed block never affects the close; the ledger simply gets no rows.
@@ -684,7 +677,7 @@ fn budget_notice_body(budget: usize) -> String {
 /// (atomic `mark_once` dedup), flag-gated, fire-and-forget (SEI-820).
 /// Synchronize refusals stay silent: nobody is watching for a reply to a push.
 pub fn maybe_post_budget_notice(state: &Arc<AppState>, trigger_ref: &str, budget: usize) {
-    if !plane_status_notice_enabled() {
+    if !state.pr_review_config.plane_status_notice {
         return;
     }
     let Some((repo, pr)) = parse_pr_trigger_ref(trigger_ref) else {
@@ -734,7 +727,11 @@ fn maybe_post_unavailable_notice(
     trigger_ref: Option<&str>,
     has_verdict: bool,
 ) {
-    let Some((repo, pr)) = notice_target(plane_status_notice_enabled(), has_verdict, trigger_ref)
+    let Some((repo, pr)) = notice_target(
+        state.pr_review_config.plane_status_notice,
+        has_verdict,
+        trigger_ref,
+    )
     else {
         return; // notice disabled, verdict posted, or not a PR review
     };
@@ -1750,7 +1747,10 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                 // ADR 013: the chair's structured verdict, parsed from the
                 // closing text. Computed BEFORE the close CAS so it lands in
                 // the same transaction (the close webhook re-reads the row).
-                let structured_verdict = if let Some(coord) = coordinator::lookup(&session.mode) {
+                let structured_verdict = if let Some(coord) = coordinator::lookup_with_pr_review_config(
+                    &session.mode,
+                    &state.pr_review_config,
+                ) {
                     let cx = OrchCtx {
                         state,
                         session,

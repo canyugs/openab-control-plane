@@ -138,21 +138,6 @@ fn permission_is_write_ish(permission: &str) -> bool {
     matches!(permission, "admin" | "write")
 }
 
-/// Per-repo allowlist gate. `allowlist` = the `OABCP_ALLOWED_REPOS` value (comma-sep
-/// `owner/repo`). Unset/empty → allow all (opt-in, no regression). Pure for testing.
-fn repo_allowed(repo: &str, allowlist: Option<&str>) -> bool {
-    match allowlist.map(str::trim).filter(|s| !s.is_empty()) {
-        None => true,
-        Some(list) => list.split(',').map(str::trim).any(|r| r == repo),
-    }
-}
-
-/// The bot's GitHub handle for `@mention` parsing (env `OABCP_BOT_HANDLE`, e.g.
-/// `zeabur-council`). Unset → only the explicit `/ask` command works, not `@mention`.
-fn mention_handle() -> Option<String> {
-    crate::plugins::pr_review::configured_bot_handle()
-}
-
 /// Extract a follow-up question from a PR comment (ADR 011). A comment is an "ask" if
 /// it starts with `/ask` **or** @mentions the bot handle; the returned string is the
 /// question with the command/mention stripped (may be empty — a bare ping = "look at
@@ -281,6 +266,14 @@ pub fn verify_signature(secret: &str, body: &[u8], signature_header: Option<&str
 ///
 /// Everything else → `None`.
 pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
+    parse_trigger_with_config(event, body, &super::PrReviewConfig::default())
+}
+
+fn parse_trigger_with_config(
+    event: &str,
+    body: &Value,
+    config: &super::PrReviewConfig,
+) -> Option<WebhookTrigger> {
     let installation_id = body["installation"]["id"].as_u64();
     match event {
         "pull_request" => {
@@ -376,7 +369,8 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
                     unverified_author,
                 });
             }
-            if let Some(review) = parse_mention_review_comment(comment, mention_handle().as_deref())
+            if let Some(review) =
+                parse_mention_review_comment(comment, config.bot_handle.as_deref())
             {
                 let assoc = body["comment"]["author_association"].as_str().unwrap_or("");
                 // ADR 019 D2: a private-org member renders as CONTRIBUTOR here too, so
@@ -409,7 +403,7 @@ pub fn parse_trigger(event: &str, body: &Value) -> Option<WebhookTrigger> {
             // Conversational follow-up (ADR 011): `/ask` or an `@mention` of the bot,
             // answered by a solo session. Permission-gated (token spend on demand) —
             // only a write-ish commenter may ask; everyone else is ignored.
-            if let Some(question) = parse_ask_comment(comment, mention_handle().as_deref()) {
+            if let Some(question) = parse_ask_comment(comment, config.bot_handle.as_deref()) {
                 let assoc = body["comment"]["author_association"].as_str().unwrap_or("");
                 // ADR 019 D2: a private-org member renders as CONTRIBUTOR here too, so
                 // an untrusted-looking commenter is deferred to the live permission
@@ -472,17 +466,14 @@ pub async fn handle_webhook(
     let payload: Value = serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     // 3. Decide. Non-triggers are acked and ignored (GitHub expects a 2xx).
-    let Some(trigger) = parse_trigger(event, &payload) else {
+    let Some(trigger) = parse_trigger_with_config(event, &payload, &state.pr_review_config) else {
         return Ok(Json(json!({ "ok": true, "triggered": false })).into_response());
     };
 
     // 4. Per-repo allowlist (opt-in via `OABCP_ALLOWED_REPOS`; unset = allow all). A
     //    disallowed repo is acked and ignored — a signed webhook from an un-listed repo
     //    must not convene. (`/ask` is also commenter-permission-gated in parse_trigger.)
-    if !repo_allowed(
-        &trigger.repo,
-        std::env::var("OABCP_ALLOWED_REPOS").ok().as_deref(),
-    ) {
+    if !state.pr_review_config.repo_allowed(&trigger.repo) {
         tracing::warn!(repo = %trigger.repo, "repo not in OABCP_ALLOWED_REPOS — ignoring webhook");
         return Ok(
             Json(json!({ "ok": true, "triggered": false, "reason": "repo_not_allowed" }))
@@ -618,7 +609,7 @@ pub async fn handle_webhook(
                 crate::orchestrator::maybe_post_budget_notice(
                     &state,
                     &trigger_ref,
-                    crate::plugins::pr_review::council::review_round_budget(),
+                    state.pr_review_config.review_round_budget,
                 );
             }
             return Ok(Json(json!({
@@ -802,28 +793,23 @@ mod tests {
         format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
     }
 
-    fn restore_env(key: &str, old: Option<String>) {
-        match old {
-            Some(value) => std::env::set_var(key, value),
-            None => std::env::remove_var(key),
-        }
-    }
-
-    fn with_bot_handle<T>(handle: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let _guard = crate::plugins::pr_review::bot_handle_env_lock()
-            .lock()
-            .unwrap();
-        let old = std::env::var("OABCP_BOT_HANDLE").ok();
-        match handle {
-            Some(handle) => std::env::set_var("OABCP_BOT_HANDLE", handle),
-            None => std::env::remove_var("OABCP_BOT_HANDLE"),
-        }
-        let result = f();
-        restore_env("OABCP_BOT_HANDLE", old);
-        result
+    fn parse_trigger_with_handle(
+        event: &str,
+        body: &Value,
+        handle: Option<&str>,
+    ) -> Option<WebhookTrigger> {
+        let config = super::super::PrReviewConfig {
+            bot_handle: handle.map(str::to_string),
+            ..Default::default()
+        };
+        parse_trigger_with_config(event, body, &config)
     }
 
     fn state_with_review_bots() -> Arc<AppState> {
+        state_with_review_config(super::super::PrReviewConfig::default())
+    }
+
+    fn state_with_review_config(config: super::super::PrReviewConfig) -> Arc<AppState> {
         let store = Arc::new(SqliteStore::memory().unwrap());
         store
             .seed_bot("chair", "chair", "chair", "h1", "t1")
@@ -834,7 +820,14 @@ mod tests {
         store
             .seed_bot("rev2", "rev2", "reviewer", "h3", "t3")
             .unwrap();
-        AppState::new_with_options(
+        state_with_store_and_review_config(store, config)
+    }
+
+    fn state_with_store_and_review_config(
+        store: Arc<dyn Store>,
+        config: super::super::PrReviewConfig,
+    ) -> Arc<AppState> {
+        AppState::new_with_options_and_runtime_config(
             store,
             None,
             None,
@@ -842,6 +835,8 @@ mod tests {
             None,
             "http://control-plane.test".into(),
             None,
+            20,
+            config,
         )
     }
 
@@ -976,26 +971,22 @@ mod tests {
         assert_eq!(ask.reason, "ask");
         assert_eq!(ask.question.as_deref(), Some("why is this a blocker?"));
 
-        with_bot_handle(Some("fixture-council"), || {
-            let mention = parse_trigger(
-                "issue_comment",
-                &replay_fixture("issue_comment_mention_review"),
-            )
-            .expect("mention-review fixture triggers");
-            assert_eq!(mention.reason, "/review");
-            assert_eq!(mention.trigger_fingerprint.as_deref(), Some("cmd:7003"));
-            assert_eq!(
-                mention.review_notes.as_deref(),
-                Some("fixed F1\n\nAdded a regression test.")
-            );
-        });
+        let mention = parse_trigger_with_handle(
+            "issue_comment",
+            &replay_fixture("issue_comment_mention_review"),
+            Some("fixture-council"),
+        )
+        .expect("mention-review fixture triggers");
+        assert_eq!(mention.reason, "/review");
+        assert_eq!(mention.trigger_fingerprint.as_deref(), Some("cmd:7003"));
+        assert_eq!(
+            mention.review_notes.as_deref(),
+            Some("fixed F1\n\nAdded a regression test.")
+        );
     }
 
     #[tokio::test]
     async fn opened_fixture_pins_normalized_session_plan_and_usage() {
-        let _policy_guard = crate::plugins::pr_review::council::review_policy_env_lock()
-            .lock()
-            .await;
         let state = state_with_review_bots();
         state
             .store
@@ -1468,10 +1459,14 @@ mod tests {
 
     #[test]
     fn repo_allowed_opt_in() {
-        assert!(repo_allowed("o/r", None), "unset = allow all");
-        assert!(repo_allowed("o/r", Some("")), "empty = allow all");
-        assert!(repo_allowed("o/r", Some("a/b, o/r ,c/d")));
-        assert!(!repo_allowed("x/y", Some("a/b,o/r")));
+        let allow_all = super::super::PrReviewConfig::default();
+        assert!(allow_all.repo_allowed("o/r"), "empty config = allow all");
+        let restricted = super::super::PrReviewConfig {
+            allowed_repos: vec!["a/b".into(), "o/r".into(), "c/d".into()],
+            ..Default::default()
+        };
+        assert!(restricted.repo_allowed("o/r"));
+        assert!(!restricted.repo_allowed("x/y"));
     }
 
     #[test]
@@ -1507,119 +1502,99 @@ mod tests {
 
     #[test]
     fn comment_leading_mention_review_convenes_with_notes() {
-        with_bot_handle(Some("zeabur-council"), || {
-            let body = issue_comment_payload(
-                777,
-                "@zeabur-council review fixed F1\n\nAdded a regression test.",
-            );
+        let body = issue_comment_payload(
+            777,
+            "@zeabur-council review fixed F1\n\nAdded a regression test.",
+        );
 
-            let t = parse_trigger("issue_comment", &body).expect("mention review should trigger");
+        let t = parse_trigger_with_handle("issue_comment", &body, Some("zeabur-council"))
+            .expect("mention review should trigger");
 
-            assert_eq!(t.reason, "/review");
-            assert_eq!(t.trigger_fingerprint.as_deref(), Some("cmd:777"));
-            assert_eq!(
-                t.review_notes.as_deref(),
-                Some("fixed F1\n\nAdded a regression test.")
-            );
-            assert!(!t.review_from_scratch);
-        });
+        assert_eq!(t.reason, "/review");
+        assert_eq!(t.trigger_fingerprint.as_deref(), Some("cmd:777"));
+        assert_eq!(
+            t.review_notes.as_deref(),
+            Some("fixed F1\n\nAdded a regression test.")
+        );
+        assert!(!t.review_from_scratch);
     }
 
     #[test]
     fn full_review_sets_from_scratch() {
-        with_bot_handle(Some("zeabur-council"), || {
-            let body = issue_comment_payload(778, "@zeabur-council FULL review start over");
+        let body = issue_comment_payload(778, "@zeabur-council FULL review start over");
 
-            let t = parse_trigger("issue_comment", &body).expect("full review should trigger");
+        let t = parse_trigger_with_handle("issue_comment", &body, Some("zeabur-council"))
+            .expect("full review should trigger");
 
-            assert_eq!(t.reason, "/review");
-            assert_eq!(t.review_notes.as_deref(), Some("start over"));
-            assert!(t.review_from_scratch);
-        });
+        assert_eq!(t.reason, "/review");
+        assert_eq!(t.review_notes.as_deref(), Some("start over"));
+        assert!(t.review_from_scratch);
     }
 
     #[test]
     fn quoted_footer_mention_does_not_trigger() {
-        with_bot_handle(Some("zeabur-council"), || {
-            let body = issue_comment_payload(779, "> @zeabur-council review fixed F1");
+        let body = issue_comment_payload(779, "> @zeabur-council review fixed F1");
 
-            let t =
-                parse_trigger("issue_comment", &body).expect("quote still falls through to ask");
+        let t = parse_trigger_with_handle("issue_comment", &body, Some("zeabur-council"))
+            .expect("quote still falls through to ask");
 
-            assert_eq!(t.reason, "ask");
-            assert_eq!(t.question.as_deref(), Some("review fixed F1"));
-            assert_eq!(t.review_notes, None);
-        });
+        assert_eq!(t.reason, "ask");
+        assert_eq!(t.question.as_deref(), Some("review fixed F1"));
+        assert_eq!(t.review_notes, None);
     }
 
     #[test]
     fn code_span_mention_does_not_trigger() {
-        with_bot_handle(Some("zeabur-council"), || {
-            let body = issue_comment_payload(780, "`@zeabur-council review fixed F1`");
+        let body = issue_comment_payload(780, "`@zeabur-council review fixed F1`");
 
-            let t = parse_trigger("issue_comment", &body)
-                .expect("code span still falls through to ask");
+        let t = parse_trigger_with_handle("issue_comment", &body, Some("zeabur-council"))
+            .expect("code span still falls through to ask");
 
-            assert_eq!(t.reason, "ask");
-            assert_eq!(t.question.as_deref(), Some("review fixed F1`"));
-            assert_eq!(t.review_notes, None);
-        });
+        assert_eq!(t.reason, "ask");
+        assert_eq!(t.question.as_deref(), Some("review fixed F1`"));
+        assert_eq!(t.review_notes, None);
     }
 
     #[test]
     fn mid_sentence_mention_falls_through_to_ask() {
-        with_bot_handle(Some("zeabur-council"), || {
-            let body = issue_comment_payload(781, "Could @zeabur-council review the auth flow?");
+        let body = issue_comment_payload(781, "Could @zeabur-council review the auth flow?");
 
-            let t = parse_trigger("issue_comment", &body).expect("mid-sentence mention is ask");
+        let t = parse_trigger_with_handle("issue_comment", &body, Some("zeabur-council"))
+            .expect("mid-sentence mention is ask");
 
-            assert_eq!(t.reason, "ask");
-            assert_eq!(t.question.as_deref(), Some("review the auth flow?"));
-            assert_eq!(t.review_notes, None);
-        });
+        assert_eq!(t.reason, "ask");
+        assert_eq!(t.question.as_deref(), Some("review the auth flow?"));
+        assert_eq!(t.review_notes, None);
     }
 
     #[test]
     fn handle_unset_disables_mention_grammar() {
-        with_bot_handle(None, || {
-            let body = issue_comment_payload(782, "@zeabur-council review fixed F1");
+        let body = issue_comment_payload(782, "@zeabur-council review fixed F1");
 
-            assert!(parse_trigger("issue_comment", &body).is_none());
-        });
+        assert!(parse_trigger_with_handle("issue_comment", &body, None).is_none());
     }
 
     #[test]
     fn bot_author_mention_is_ignored() {
-        with_bot_handle(Some("zeabur-council"), || {
-            let mut body = issue_comment_payload(783, "@zeabur-council review fixed F1");
-            body["comment"]["user"]["type"] = json!("Bot");
+        let mut body = issue_comment_payload(783, "@zeabur-council review fixed F1");
+        body["comment"]["user"]["type"] = json!("Bot");
 
-            assert!(parse_trigger("issue_comment", &body).is_none());
-        });
+        assert!(parse_trigger_with_handle("issue_comment", &body, Some("zeabur-council")).is_none());
     }
 
     #[test]
     fn mention_review_reads_preset_from_issue_labels() {
-        with_bot_handle(Some("zeabur-council"), || {
-            let mut body = issue_comment_payload(784, "@zeabur-council review fixed F1");
-            body["issue"]["labels"] = json!([{ "name": "review:full" }]);
+        let mut body = issue_comment_payload(784, "@zeabur-council review fixed F1");
+        body["issue"]["labels"] = json!([{ "name": "review:full" }]);
 
-            let t = parse_trigger("issue_comment", &body).expect("mention review should trigger");
+        let t = parse_trigger_with_handle("issue_comment", &body, Some("zeabur-council"))
+            .expect("mention review should trigger");
 
-            assert_eq!(t.preset.as_deref(), Some("full"));
-        });
+        assert_eq!(t.preset.as_deref(), Some("full"));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn mention_review_delivers_prior_sha_delta_context_to_reviewer() {
-        let _policy_guard = crate::plugins::pr_review::council::review_policy_env_lock()
-            .lock()
-            .await;
-        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
-        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
-        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
-        std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
-
         let state = state_with_review_bots();
         let first = crate::plugins::pr_review::council::convene_for_pr(
             &state,
@@ -1682,20 +1657,10 @@ mod tests {
                 && frame.contains("git merge-base --is-ancestor abc123 HEAD")
         }));
 
-        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
-        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn synchronize_supersedes_active_review_session() {
-        let _guard = crate::plugins::pr_review::council::review_policy_env_lock()
-            .lock()
-            .await;
-        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
-        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
-        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
-        std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
-
         let state = state_with_review_bots();
         let first = post_webhook(state.clone(), "pull_request", synchronize_payload("old")).await;
         let old_id = first["session_id"].as_str().unwrap().to_string();
@@ -1728,20 +1693,10 @@ mod tests {
                 && event["payload"]["reason"] == "superseded"
         }));
 
-        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
-        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn redelivered_same_head_sha_dedupes() {
-        let _guard = crate::plugins::pr_review::council::review_policy_env_lock()
-            .lock()
-            .await;
-        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
-        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
-        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
-        std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
-
         let state = state_with_review_bots();
         let first = post_webhook(state.clone(), "pull_request", synchronize_payload("same")).await;
         let first_id = first["session_id"].as_str().unwrap().to_string();
@@ -1752,21 +1707,14 @@ mod tests {
         assert_eq!(second["deduped"], json!(true));
         assert_eq!(state.store.messages(&first_id).unwrap().len(), 1);
 
-        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
-        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn hourly_cap_dedupes_synchronize_but_explicit_review_bypasses() {
-        let _guard = crate::plugins::pr_review::council::review_policy_env_lock()
-            .lock()
-            .await;
-        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
-        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
-        std::env::set_var("OABCP_REVIEW_HOURLY_CAP", "1");
-        std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
-
-        let state = state_with_review_bots();
+        let state = state_with_review_config(super::super::PrReviewConfig {
+            review_hourly_cap: 1,
+            ..Default::default()
+        });
         let first = post_webhook(state.clone(), "pull_request", synchronize_payload("one")).await;
         let first_id = first["session_id"].as_str().unwrap().to_string();
 
@@ -1789,21 +1737,14 @@ mod tests {
             SessionState::Closed
         );
 
-        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
-        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn round_budget_refuses_all_paths_leaving_live_round_active() {
-        let _guard = crate::plugins::pr_review::council::review_policy_env_lock()
-            .lock()
-            .await;
-        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
-        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
-        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
-        std::env::set_var("OABCP_REVIEW_ROUND_BUDGET", "1");
-
-        let state = state_with_review_bots();
+        let state = state_with_review_config(super::super::PrReviewConfig {
+            review_round_budget: 1,
+            ..Default::default()
+        });
         let first = post_webhook(state.clone(), "pull_request", synchronize_payload("one")).await;
         let first_id = first["session_id"].as_str().unwrap().to_string();
         let mut north = state.north_tx.subscribe();
@@ -1840,16 +1781,9 @@ mod tests {
                 && event["payload"]["reason"] == "round_budget"
         }));
 
-        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
-        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
     }
     #[tokio::test(flavor = "current_thread")]
     async fn review_endpoint_always_supersedes() {
-        let _guard = crate::plugins::pr_review::council::review_policy_env_lock()
-            .lock()
-            .await;
-        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
-        std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
         let state = state_with_review_bots();
 
         let first = review_pr(
@@ -1892,19 +1826,14 @@ mod tests {
     }
 
     /// Plan S12 acceptance: /v1/review (REST) and the GitHub webhook share ONE
-    /// admission valve — the same store/env state must refuse both ingresses
+    /// admission valve — the same store/config state must refuse both ingresses
     /// with the same reason.
     #[tokio::test(flavor = "current_thread")]
     async fn rest_and_webhook_share_the_admission_valve() {
-        let _guard = crate::plugins::pr_review::council::review_policy_env_lock()
-            .lock()
-            .await;
-        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
-        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
-        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
-        std::env::set_var("OABCP_REVIEW_ROUND_BUDGET", "0");
-
-        let state = state_with_review_bots();
+        let state = state_with_review_config(super::super::PrReviewConfig {
+            review_round_budget: 0,
+            ..Default::default()
+        });
 
         let rest = review_pr(
             State(state.clone()),
@@ -1931,23 +1860,15 @@ mod tests {
         );
         assert_eq!(rest_json["reason"], json!("round_budget"));
 
-        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
-        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn budget_refused_review_command_marks_notice_once() {
-        let _policy_guard = crate::plugins::pr_review::council::review_policy_env_lock()
-            .lock()
-            .await;
-        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
-        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
-        let old_notice = std::env::var("OABCP_PLANE_STATUS_NOTICE").ok();
-        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
-        std::env::set_var("OABCP_REVIEW_ROUND_BUDGET", "0");
-        std::env::set_var("OABCP_PLANE_STATUS_NOTICE", "1");
-
-        let state = state_with_review_bots();
+        let state = state_with_review_config(super::super::PrReviewConfig {
+            review_round_budget: 0,
+            plane_status_notice: true,
+            ..Default::default()
+        });
         let json = post_webhook(
             state.clone(),
             "issue_comment",
@@ -1977,8 +1898,8 @@ mod tests {
         .await;
         assert_eq!(second["reason"], json!("round_budget"));
 
-        // A synchronize refusal stays silent for OTHER PRs — flag off entirely.
-        std::env::remove_var("OABCP_PLANE_STATUS_NOTICE");
+        // A synchronize refusal stays silent for other PRs because only explicit
+        // review commands enter the notice path.
         assert!(
             state
                 .store
@@ -1987,22 +1908,15 @@ mod tests {
             "no marker for a PR that never got a notice"
         );
 
-        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
-        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
-        restore_env("OABCP_PLANE_STATUS_NOTICE", old_notice);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn budget_refusal_with_notice_flag_off_consumes_no_marker() {
-        let _policy_guard = crate::plugins::pr_review::council::review_policy_env_lock()
-            .lock()
-            .await;
-        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
-        let old_notice = std::env::var("OABCP_PLANE_STATUS_NOTICE").ok();
-        std::env::set_var("OABCP_REVIEW_ROUND_BUDGET", "0");
-        std::env::remove_var("OABCP_PLANE_STATUS_NOTICE");
-
-        let state = state_with_review_bots();
+        let state = state_with_review_config(super::super::PrReviewConfig {
+            review_round_budget: 0,
+            plane_status_notice: false,
+            ..Default::default()
+        });
         let json = post_webhook(
             state.clone(),
             "issue_comment",
@@ -2017,21 +1931,14 @@ mod tests {
             .mark_once("budget_notice:github:pr/o/r#7")
             .unwrap());
 
-        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
-        restore_env("OABCP_PLANE_STATUS_NOTICE", old_notice);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn capped_synchronize_queues_pending_and_sweep_catches_up() {
-        let _policy_guard = crate::plugins::pr_review::council::review_policy_env_lock()
-            .lock()
-            .await;
-        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
-        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
-        std::env::set_var("OABCP_REVIEW_HOURLY_CAP", "1");
-        std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
-
-        let state = state_with_review_bots();
+        let state = state_with_review_config(super::super::PrReviewConfig {
+            review_hourly_cap: 1,
+            ..Default::default()
+        });
         // Round 1 fills the hourly window.
         post_webhook(state.clone(), "pull_request", synchronize_payload("abc")).await;
         // Real deliveries never share a ms with the round they got capped
@@ -2051,9 +1958,15 @@ mod tests {
             .unwrap();
         assert_eq!(state.store.pending_reviews().unwrap().len(), 1);
 
-        // Window clears (cap raised stands in for the hour passing) → sweep
-        // convenes the dropped head and clears the queue.
-        std::env::set_var("OABCP_REVIEW_HOURLY_CAP", "10");
+        // A restarted composition with a raised cap (standing in for the hour
+        // passing) uses the same durable store and catches the row up.
+        let state = state_with_store_and_review_config(
+            state.store.clone(),
+            super::super::PrReviewConfig {
+                review_hourly_cap: 10,
+                ..Default::default()
+            },
+        );
         crate::plugins::pr_review::council::sweep_pending_reviews(&state)
             .await
             .unwrap();
@@ -2064,20 +1977,10 @@ mod tests {
             .unwrap();
         assert_eq!(sessions.len(), 2, "catch-up must open the deferred round");
 
-        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
-        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn sweep_drops_stale_pending_when_a_newer_session_already_reviewed() {
-        let _policy_guard = crate::plugins::pr_review::council::review_policy_env_lock()
-            .lock()
-            .await;
-        let old_cap = std::env::var("OABCP_REVIEW_HOURLY_CAP").ok();
-        let old_budget = std::env::var("OABCP_REVIEW_ROUND_BUDGET").ok();
-        std::env::remove_var("OABCP_REVIEW_HOURLY_CAP");
-        std::env::remove_var("OABCP_REVIEW_ROUND_BUDGET");
-
         let state = state_with_review_bots();
         state
             .store
@@ -2100,7 +2003,5 @@ mod tests {
             .unwrap();
         assert_eq!(sessions.len(), 1, "sweep must not re-review the old head");
 
-        restore_env("OABCP_REVIEW_HOURLY_CAP", old_cap);
-        restore_env("OABCP_REVIEW_ROUND_BUDGET", old_budget);
     }
 }

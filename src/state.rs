@@ -9,11 +9,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
 
+fn pr_review_config_from_env() -> crate::plugins::pr_review::PrReviewConfig {
+    crate::plugins::pr_review::PrReviewConfig::from_values(|name| std::env::var(name).ok())
+}
+
+fn ws_ping_secs_from_env() -> u64 {
+    std::env::var("OABCP_WS_PING_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(20)
+}
+
 /// One live south connection: its generation + the outbound frame sender.
 type Conn = (u64, mpsc::UnboundedSender<String>);
 
 pub struct AppState {
     pub store: Arc<dyn Store>,
+    /// Provider-specific review policy, loaded once by the composition root and
+    /// passed to the plugin as immutable data.
+    pub pr_review_config: crate::plugins::pr_review::PrReviewConfig,
     /// bot_id -> stack of live connections `(generation, outbound sender)`, oldest
     /// first, so the LAST entry is the current one messages route to. Keeping every
     /// live conn (not just the newest) is what fixes the double-connect zombie
@@ -85,7 +99,7 @@ impl AppState {
     }
 
     pub fn new(store: Arc<dyn Store>) -> Arc<AppState> {
-        Self::new_with_options(
+        Self::new_with_options_and_runtime_config(
             store,
             std::env::var("OABCP_API_KEY").ok(),
             GitHubApp::from_env(),
@@ -94,6 +108,8 @@ impl AppState {
             std::env::var("OABCP_CONFIG_BASE_URL")
                 .unwrap_or_else(|_| "http://control-plane.zeabur.internal:8090".to_string()),
             std::env::var("OABCP_SESSION_CLOSE_WEBHOOK").ok(),
+            ws_ping_secs_from_env(),
+            pr_review_config_from_env(),
         )
     }
 
@@ -106,10 +122,6 @@ impl AppState {
         config_base_url: String,
         close_webhook_url: Option<String>,
     ) -> Arc<AppState> {
-        let ws_ping_secs = std::env::var("OABCP_WS_PING_SECS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(20);
         Self::new_with_options_and_ws_ping_secs(
             store,
             api_key,
@@ -118,7 +130,7 @@ impl AppState {
             bot_discovery_token,
             config_base_url,
             close_webhook_url,
-            ws_ping_secs,
+            ws_ping_secs_from_env(),
         )
     }
 
@@ -133,9 +145,35 @@ impl AppState {
         close_webhook_url: Option<String>,
         ws_ping_secs: u64,
     ) -> Arc<AppState> {
+        Self::new_with_options_and_runtime_config(
+            store,
+            api_key,
+            github_app,
+            github_webhook_secret,
+            bot_discovery_token,
+            config_base_url,
+            close_webhook_url,
+            ws_ping_secs,
+            crate::plugins::pr_review::PrReviewConfig::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_options_and_runtime_config(
+        store: Arc<dyn Store>,
+        api_key: Option<String>,
+        github_app: Option<GitHubApp>,
+        github_webhook_secret: Option<String>,
+        bot_discovery_token: Option<String>,
+        config_base_url: String,
+        close_webhook_url: Option<String>,
+        ws_ping_secs: u64,
+        pr_review_config: crate::plugins::pr_review::PrReviewConfig,
+    ) -> Arc<AppState> {
         let (north_tx, _) = broadcast::channel(1024);
         Arc::new(AppState {
             store,
+            pr_review_config,
             hub: Mutex::new(HashMap::new()),
             conn_seq: AtomicU64::new(0),
             flush_locks: Mutex::new(HashMap::new()),
