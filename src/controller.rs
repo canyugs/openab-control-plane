@@ -10,36 +10,9 @@ use crate::state::AppState;
 use crate::store::SessionCreateOutcome;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ControllerAction {
-    OpenSession(OpenSessionAction),
-    PostMessage(PostMessageAction),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpenSessionAction {
-    pub title: String,
-    pub trigger_ref: Option<String>,
-    pub trigger_fingerprint: Option<String>,
-    pub roster: Vec<String>,
-    pub quorum_n: i64,
-    pub chair_bot: Option<String>,
-    pub mode: String,
-    pub prompt: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PostMessageAction {
-    pub session_id: String,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ControllerActionResult {
-    SessionOpened { session_id: String, deduped: bool },
-    Superseded { session_id: String, old_id: String },
-    MessagePosted { message_id: String },
-}
+pub use controller_protocol::{
+    ControllerAction, ControllerActionResult, OpenSessionAction, PostMessageAction,
+};
 
 #[derive(Debug)]
 pub enum ControllerError {
@@ -161,6 +134,12 @@ fn validate_open_session(
     state: &Arc<AppState>,
     action: &OpenSessionAction,
 ) -> ControllerResult<()> {
+    if !action.recipient_inputs.is_empty() {
+        return Err(ControllerError::Invalid(
+            "open_session action recipient_inputs require the P3 atomic-delivery interpreter"
+                .into(),
+        ));
+    }
     if action.roster.is_empty() {
         return Err(ControllerError::Invalid(
             "open_session action needs a non-empty roster".into(),
@@ -232,6 +211,7 @@ mod tests {
             chair_bot: Some("chair".into()),
             mode: "council".into(),
             prompt: "review o/r#1".into(),
+            recipient_inputs: Default::default(),
         }
     }
 
@@ -276,6 +256,28 @@ mod tests {
         let messages = state.store.messages(&session_id).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "review o/r#1");
+    }
+
+    #[test]
+    fn serialized_protocol_action_executes_through_in_process_adapter() {
+        let state = state_with_bots();
+        let envelope = controller_protocol::ActionEnvelope {
+            version: controller_protocol::CURRENT_VERSION,
+            action_id: "act_adapter_001".into(),
+            action: ControllerAction::OpenSession(review_action()),
+        };
+        let encoded = serde_json::to_vec(&envelope).unwrap();
+        let decoded: controller_protocol::ActionEnvelope =
+            serde_json::from_slice(&encoded).unwrap();
+
+        let result = execute(&state, decoded.action).unwrap();
+        assert!(matches!(
+            result,
+            ControllerActionResult::SessionOpened {
+                deduped: false,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -677,6 +679,25 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unknown mode"));
+    }
+
+    #[test]
+    fn open_session_rejects_recipient_inputs_until_atomic_delivery_lands() {
+        let state = state_with_bots();
+        let mut action = review_action();
+        action
+            .recipient_inputs
+            .insert("rev1".into(), "Inspect the failure path.".into());
+
+        let error = execute(&state, ControllerAction::OpenSession(action)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("recipient_inputs require the P3 atomic-delivery interpreter"));
+        assert!(state
+            .store
+            .list_sessions(None, None, 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

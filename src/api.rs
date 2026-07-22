@@ -544,6 +544,7 @@ async fn open_session(
         chair_bot: req.chair_bot,
         mode: req.mode,
         prompt: req.prompt,
+        recipient_inputs: Default::default(),
     };
     match controller::execute(&state, ControllerAction::OpenSession(action)) {
         Ok(ControllerActionResult::SessionOpened {

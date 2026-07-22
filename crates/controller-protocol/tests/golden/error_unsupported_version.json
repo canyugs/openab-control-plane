@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "action_id": "act_new",
+  "error": {
+    "code": "unsupported_version",
+    "message": "unsupported protocol version 99; supported versions: 1",
+    "retryable": false
+  }
+}
