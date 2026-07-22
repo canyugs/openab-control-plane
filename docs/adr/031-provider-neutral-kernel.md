@@ -1,8 +1,8 @@
 # ADR 031 — Provider-neutral OCP kernel and controller-owned ingress
 
-Status: proposed · 2026-07-22
+Status: accepted · 2026-07-22
 
-Amends, if accepted:
+Amends:
 [ADR 007](007-control-plugins-and-oab-father.md),
 [ADR 008](008-external-controller-protocol.md), and
 [ADR 018](018-stage3-extraction.md).
@@ -225,8 +225,9 @@ the north and storage boundaries; it does not redesign the south data plane.
 ## Migration invariants
 
 The cutover sequence, PR breakdown, compatibility duration, schema cleanup,
-and rollback commands belong in a separate migration plan. That plan must
-preserve these ADR-level invariants:
+and rollback commands live in the separate
+[provider-neutral kernel migration plan](../provider-neutral-kernel-migration.md).
+That plan must preserve these ADR-level invariants:
 
 1. Pin the existing GitHub flow with replayable fixtures and end-to-end tests
    before changing ingress.
