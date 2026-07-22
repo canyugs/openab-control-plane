@@ -956,8 +956,12 @@ impl Store for SqliteStore {
 
     fn touch_last_seen_at(&self, bot_id: &str, ts: i64) -> Result<()> {
         let c = self.conn.lock().unwrap();
+        // Monotonic: never move last_seen backwards. During a double-connect
+        // overlap (C8) a dying conn's stale activity clock must not clobber a
+        // fresher timestamp from the promoted conn. (council #274 F1)
         c.execute(
-            "UPDATE bots SET last_seen = ?2 WHERE id = ?1",
+            "UPDATE bots SET last_seen = ?2
+             WHERE id = ?1 AND (last_seen IS NULL OR ?2 > last_seen)",
             params![bot_id, ts],
         )?;
         Ok(())
@@ -3287,5 +3291,14 @@ mod tests {
         store.touch_last_seen("b1").unwrap();
         let seen = store.bot_inventory("b1").unwrap().unwrap().last_seen_ms.unwrap();
         assert!(seen > ts, "touch_last_seen should advance last_seen to now()");
+
+        // Monotonic guard (council #274 F1): a stale (older) write is ignored,
+        // so a dying overlapping conn can't regress last_seen.
+        store.touch_last_seen_at("b1", ts).unwrap();
+        assert_eq!(
+            store.bot_inventory("b1").unwrap().unwrap().last_seen_ms,
+            Some(seen),
+            "backward touch must not regress last_seen",
+        );
     }
 }
