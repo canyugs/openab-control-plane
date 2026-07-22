@@ -250,6 +250,10 @@ pub trait Store: Send + Sync {
     /// boot to decide whether an unset OABCP_EXTERNALIZE_TOKENS may safely default on.
     fn bots_with_plaintext_token(&self) -> Result<Vec<String>>;
     fn touch_last_seen(&self, bot_id: &str) -> Result<()>;
+    /// Persist a specific last-seen timestamp (e.g. the in-memory ws activity
+    /// clock). Lets the gateway advance `last_seen` on ongoing traffic, not just
+    /// at connect/disconnect, so `/v1/bots` reports true liveness. (SEI-785)
+    fn touch_last_seen_at(&self, bot_id: &str, ts: i64) -> Result<()>;
     fn list_bots(&self) -> Result<Vec<BotInventory>>;
     fn bot_inventory(&self, id: &str) -> Result<Option<BotInventory>>;
     fn discover_bot(
@@ -947,10 +951,14 @@ impl Store for SqliteStore {
     }
 
     fn touch_last_seen(&self, bot_id: &str) -> Result<()> {
+        self.touch_last_seen_at(bot_id, now_ms())
+    }
+
+    fn touch_last_seen_at(&self, bot_id: &str, ts: i64) -> Result<()> {
         let c = self.conn.lock().unwrap();
         c.execute(
             "UPDATE bots SET last_seen = ?2 WHERE id = ?1",
-            params![bot_id, now_ms()],
+            params![bot_id, ts],
         )?;
         Ok(())
     }
@@ -3258,5 +3266,26 @@ mod tests {
             })
             .unwrap();
         assert_eq!(stale_state, "aborted");
+    }
+
+    // SEI-785: last_seen must reflect the persisted timestamp, not just now(),
+    // so the gateway can flush its in-memory activity clock and `/v1/bots`
+    // reports true liveness instead of a value frozen at connect time.
+    #[test]
+    fn touch_last_seen_at_persists_given_timestamp() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .discover_bot("b1", Some("Bot One"), "chair", &BotMetadata::default())
+            .unwrap();
+
+        // A timestamp deliberately unlike now() — the fix must persist THIS value.
+        let ts = 1_000_000_000_000i64;
+        store.touch_last_seen_at("b1", ts).unwrap();
+        assert_eq!(store.bot_inventory("b1").unwrap().unwrap().last_seen_ms, Some(ts));
+
+        // Plain touch_last_seen still advances to ~now (and past our fixed ts).
+        store.touch_last_seen("b1").unwrap();
+        let seen = store.bot_inventory("b1").unwrap().unwrap().last_seen_ms.unwrap();
+        assert!(seen > ts, "touch_last_seen should advance last_seen to now()");
     }
 }
