@@ -76,6 +76,8 @@ jobs:
           context: .
           push: true
           platforms: linux/${{ matrix.arch }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           tags: |
             ${{ env.GHCR_IMAGE }}:${{ env.VERSION }}-${{ matrix.arch }}
           cache-from: type=gha,scope=${{ matrix.arch }}
