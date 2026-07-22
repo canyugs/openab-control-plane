@@ -50,19 +50,6 @@ pub enum ReviewAdmission {
     },
 }
 
-#[cfg(test)]
-pub(crate) fn review_policy_env_lock() -> &'static tokio::sync::Mutex<()> {
-    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
-fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(default)
-}
-
 fn emit_review_refusal(
     state: &Arc<AppState>,
     session_id: Option<&str>,
@@ -83,12 +70,6 @@ fn emit_review_refusal(
     );
 }
 
-/// The per-PR round-budget ceiling (`OABCP_REVIEW_ROUND_BUDGET`, default 10).
-/// Public so the SEI-820 refusal notice can name the number it enforces.
-pub fn review_round_budget() -> usize {
-    env_usize("OABCP_REVIEW_ROUND_BUDGET", 10)
-}
-
 /// Review cost valves. Checked before the supersede txn so a refusal never closes
 /// the active round. Hourly caps only auto `synchronize`; explicit commands bypass
 /// that cap but all review paths obey the per-PR round budget.
@@ -97,8 +78,8 @@ pub fn check_review_admission(
     trigger_ref: &str,
     is_synchronize: bool,
 ) -> Result<ReviewAdmission> {
-    let hourly_cap = env_usize("OABCP_REVIEW_HOURLY_CAP", 3);
-    let round_budget = review_round_budget();
+    let hourly_cap = state.pr_review_config.review_hourly_cap;
+    let round_budget = state.pr_review_config.review_round_budget;
     let limit = hourly_cap.max(round_budget).max(1);
     let sessions = state.store.list_sessions(Some(trigger_ref), None, limit)?;
     let active = state.store.active_session_for_trigger(trigger_ref)?;
@@ -233,29 +214,13 @@ pub async fn sweep_pending_reviews(state: &Arc<AppState>) -> Result<()> {
     Ok(())
 }
 
-/// Env/default standing council roster (`OABCP_COUNCIL_ROSTER`, comma-separated;
-/// default matches the seeded `OABCP_BOTS`). `roster[0]` is the chair; the rest
-/// review. A runtime DB override may replace this via `runtime_council_roster`.
-pub fn council_roster() -> Vec<String> {
-    std::env::var("OABCP_COUNCIL_ROSTER")
-        .ok()
-        .map(|s| {
-            s.split(',')
-                .map(|x| x.trim().to_string())
-                .filter(|x| !x.is_empty())
-                .collect::<Vec<_>>()
-        })
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| vec!["chair".into(), "rev1".into(), "rev2".into()])
-}
-
 /// Effective standing roster used by webhook/ask convene paths. A DB override
-/// lets operators replace bots without restarting the control-plane; env remains
-/// the fallback and bootstrap source.
+/// lets operators replace bots without restarting the control-plane; injected
+/// process configuration remains the fallback and bootstrap source.
 pub fn runtime_council_roster(state: &Arc<AppState>) -> Result<(Vec<String>, &'static str)> {
     match state.store.standing_roster()? {
         Some(roster) => Ok((roster, "override")),
-        None => Ok((council_roster(), "env")),
+        None => Ok((state.pr_review_config.council_roster.clone(), "config")),
     }
 }
 
@@ -287,30 +252,21 @@ fn preset_angles(preset: &str) -> Option<Vec<&'static str>> {
     }
 }
 
-/// Global default preset from env `OABCP_COUNCIL_PRESET` (lite|quick|standard|full).
-/// `None` → fall through to `DEFAULT_PRESET`.
-fn council_preset() -> Option<String> {
-    std::env::var("OABCP_COUNCIL_PRESET")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 /// Resolve the preset for one convene: a per-PR `review:<preset>` label wins, then the
-/// global env, then `DEFAULT_PRESET` (lite). Unknown values are warned and skipped so
+/// injected default, then `DEFAULT_PRESET` (lite). Unknown values are warned and skipped so
 /// resolution always lands on a valid preset.
-fn pick_preset(label_preset: Option<&str>) -> String {
+fn pick_preset(label_preset: Option<&str>, configured_preset: Option<&str>) -> String {
     if let Some(l) = label_preset {
         if preset_angles(l).is_some() {
             return l.to_string();
         }
         tracing::warn!(label = %l, "unknown review:<preset> label; ignoring");
     }
-    if let Some(e) = council_preset() {
-        if preset_angles(&e).is_some() {
-            return e;
+    if let Some(e) = configured_preset {
+        if preset_angles(e).is_some() {
+            return e.to_string();
         }
-        tracing::warn!(preset = %e, "unknown OABCP_COUNCIL_PRESET (want lite|quick|standard|full); using default");
+        tracing::warn!(preset = %e, "unknown configured council preset (want lite|quick|standard|full); using default");
     }
     DEFAULT_PRESET.to_string()
 }
@@ -421,6 +377,7 @@ pub async fn convene_for_pr(
         roster,
         trigger_fingerprint,
         rereview_context,
+        state.pr_review_config.council_preset.as_deref(),
     )?;
     controller::execute(state, ControllerAction::OpenSession(action)).map_err(Into::into)
 }
@@ -446,7 +403,12 @@ fn review_open_session_action(
     num: u64,
     label_preset: Option<String>,
 ) -> Result<OpenSessionAction> {
-    review_open_session_action_with_roster(repo, num, label_preset, council_roster())
+    review_open_session_action_with_roster(
+        repo,
+        num,
+        label_preset,
+        crate::plugins::pr_review::PrReviewConfig::default().council_roster,
+    )
 }
 
 #[cfg(test)]
@@ -463,6 +425,7 @@ fn review_open_session_action_with_roster(
         roster,
         Some(pr_trigger_ref(repo, num)),
         None,
+        None,
     )
 }
 
@@ -473,13 +436,14 @@ fn review_open_session_action_with_roster_and_fingerprint(
     roster: Vec<String>,
     trigger_fingerprint: Option<String>,
     rereview_context: Option<ReviewRereviewContext>,
+    configured_preset: Option<&str>,
 ) -> Result<OpenSessionAction> {
     if roster.is_empty() {
         return Err(anyhow!("empty council roster"));
     }
     // Preset (per-PR label > global env > lite) assigns angles to reviewers, trims
     // idle ones, and sets quorum to the participating reviewers.
-    let preset = pick_preset(label_preset.as_deref());
+    let preset = pick_preset(label_preset.as_deref(), configured_preset);
     let angles = preset_angles(&preset).expect("pick_preset returns a valid preset");
     let (eff_roster, quorum, assignment) = assign_angles(&roster, &angles);
     tracing::info!(preset = %preset, quorum, "convene preset resolved");
@@ -702,20 +666,17 @@ mod tests {
     }
 
     #[test]
-    fn pick_preset_label_over_env_over_default() {
-        std::env::remove_var("OABCP_COUNCIL_PRESET");
-        // no label, no env → default (lite)
-        assert_eq!(pick_preset(None), "lite");
+    fn pick_preset_label_over_config_over_default() {
+        // no label, no configured preset → default (lite)
+        assert_eq!(pick_preset(None, None), "lite");
         // valid label wins
-        assert_eq!(pick_preset(Some("full")), "full");
+        assert_eq!(pick_preset(Some("full"), None), "full");
         // unknown label ignored → default
-        assert_eq!(pick_preset(Some("bogus")), "lite");
-        // env override when no label
-        std::env::set_var("OABCP_COUNCIL_PRESET", "standard");
-        assert_eq!(pick_preset(None), "standard");
-        // label still beats env
-        assert_eq!(pick_preset(Some("quick")), "quick");
-        std::env::remove_var("OABCP_COUNCIL_PRESET");
+        assert_eq!(pick_preset(Some("bogus"), None), "lite");
+        // injected override when no label
+        assert_eq!(pick_preset(None, Some("standard")), "standard");
+        // label still beats injected config
+        assert_eq!(pick_preset(Some("quick"), Some("standard")), "quick");
     }
 
     #[test]
@@ -746,8 +707,10 @@ mod tests {
 
     #[test]
     fn roster_default_matches_seeded_bots() {
-        std::env::remove_var("OABCP_COUNCIL_ROSTER");
-        assert_eq!(council_roster(), vec!["chair", "rev1", "rev2"]);
+        assert_eq!(
+            crate::plugins::pr_review::PrReviewConfig::default().council_roster,
+            vec!["chair", "rev1", "rev2"]
+        );
     }
 
     #[test]

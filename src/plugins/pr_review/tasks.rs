@@ -86,11 +86,12 @@ pub(crate) fn review_recipient_text_from_context(
     chair: Option<&str>,
     target_id: &str,
     ctx: &ReviewTriggerContext<'_>,
+    config: &super::PrReviewConfig,
 ) -> String {
     let repo = ctx.repo;
     let pr = ctx.pr;
     if chair == Some(target_id) {
-        let mut text = render_review_chair_task(repo, pr);
+        let mut text = render_review_chair_task(repo, pr, config);
         if let Some(rereview) = ctx.rereview.as_ref() {
             text.push_str(&render_rereview_task_context(rereview));
         }
@@ -120,9 +121,10 @@ pub(crate) fn review_recipient_trigger_text(
     chair: Option<&str>,
     recipient: &str,
     text: &str,
+    config: &super::PrReviewConfig,
 ) -> String {
     review_trigger_context(text)
-        .map(|ctx| review_recipient_text_from_context(chair, recipient, &ctx))
+        .map(|ctx| review_recipient_text_from_context(chair, recipient, &ctx, config))
         .unwrap_or_else(|| text.to_string())
 }
 
@@ -143,44 +145,8 @@ pub(crate) fn render_rereview_task_context(ctx: &RereviewTriggerContext<'_>) -> 
     out
 }
 
-/// How the chair turns a verdict into a GitHub PR review (ADR 013 §1, revised).
-/// Env `OABCP_COUNCIL_REVIEW_MODE`, default `approve`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReviewMode {
-    /// Comment + commit status only; no formal `gh pr review` (the pre-#210+ behavior).
-    Status,
-    /// Approve → formal APPROVE review (counts toward required approvals); a
-    /// request_changes verdict stays comment + failure status (no hard merge block).
-    Approve,
-    /// Symmetric: approve → APPROVE, request_changes → REQUEST_CHANGES (blocks merge).
-    Enforce,
-}
-
-impl ReviewMode {
-    fn parse(s: &str) -> Option<ReviewMode> {
-        match s.trim() {
-            "status" => Some(ReviewMode::Status),
-            "approve" => Some(ReviewMode::Approve),
-            "enforce" => Some(ReviewMode::Enforce),
-            _ => None,
-        }
-    }
-}
-
-/// Resolve the chair verdict-review mode from env. Unknown value → warn + default.
-fn review_mode() -> ReviewMode {
-    match std::env::var("OABCP_COUNCIL_REVIEW_MODE") {
-        Ok(v) if !v.trim().is_empty() => ReviewMode::parse(&v).unwrap_or_else(|| {
-            tracing::warn!(mode = %v,
-                "unknown OABCP_COUNCIL_REVIEW_MODE (want status|approve|enforce); using approve");
-            ReviewMode::Approve
-        }),
-        _ => ReviewMode::Approve,
-    }
-}
-
 /// The step-5b block substituted for `{{VERDICT_REVIEW}}` in the chair task.
-fn verdict_review_block(mode: ReviewMode, repo: &str, pr: &str) -> String {
+fn verdict_review_block(mode: super::ReviewMode, repo: &str, pr: &str) -> String {
     let approve = format!(
         "gh pr review {pr} --repo {repo} --approve --body \"Council verdict: LGTM ✅ — see the council comment above.\""
     );
@@ -188,30 +154,41 @@ fn verdict_review_block(mode: ReviewMode, repo: &str, pr: &str) -> String {
         "gh pr review {pr} --repo {repo} --request-changes --body \"Council verdict: CHANGES REQUESTED ⚠️ — see the council comment above.\""
     );
     match mode {
-        ReviewMode::Status =>
+        super::ReviewMode::Status =>
             "  5b. Do NOT submit a `gh pr review` — the commit status above is the council's\n     sole GitHub-side verdict signal (a thin review duplicated it and left a stale\n     \"changes requested\" entry after fixes — see ADR 013).".to_string(),
-        ReviewMode::Approve => format!(
+        super::ReviewMode::Approve => format!(
             "  5b. On an APPROVE verdict, ALSO submit a formal approving review so it counts\n     toward branch-protection required approvals (like a human reviewer):\n       {approve}\n     On a request_changes verdict, do NOT submit a formal review — leave the council\n     comment + failure status only (no hard merge block)."
         ),
-        ReviewMode::Enforce => format!(
+        super::ReviewMode::Enforce => format!(
             "  5b. Submit a formal review matching the verdict:\n       approve         → {approve}\n       request_changes → {request}\n     A request_changes review blocks merge until a maintainer dismisses it."
         ),
     }
 }
 
-pub(crate) fn render_review_chair_task(repo: &str, pr: &str) -> String {
-    let bot_mention = crate::plugins::pr_review::configured_bot_handle()
+pub(crate) fn render_review_chair_task(
+    repo: &str,
+    pr: &str,
+    config: &super::PrReviewConfig,
+) -> String {
+    let bot_mention = config
+        .bot_handle
+        .as_ref()
         .map(|handle| format!("@{handle}"))
         .unwrap_or_else(|| "@<bot-handle>".to_string());
-    render_review_chair_task_with_mention(repo, pr, &bot_mention)
+    render_review_chair_task_with_options(repo, pr, &bot_mention, config.review_mode)
 }
 
-fn render_review_chair_task_with_mention(repo: &str, pr: &str, bot_mention: &str) -> String {
+fn render_review_chair_task_with_options(
+    repo: &str,
+    pr: &str,
+    bot_mention: &str,
+    review_mode: super::ReviewMode,
+) -> String {
     REVIEW_CHAIR_TASK_TMPL
         .replace("{{REPO}}", repo)
         .replace("{{NUM}}", pr)
         .replace("{{BOT_MENTION}}", bot_mention)
-        .replace("{{VERDICT_REVIEW}}", &verdict_review_block(review_mode(), repo, pr))
+        .replace("{{VERDICT_REVIEW}}", &verdict_review_block(review_mode, repo, pr))
 }
 
 pub(crate) fn render_review_reviewer_task(
@@ -242,31 +219,13 @@ mod tests {
         }
     }
 
-    fn restore_env(key: &str, old: Option<String>) {
-        match old {
-            Some(value) => std::env::set_var(key, value),
-            None => std::env::remove_var(key),
-        }
-    }
-
-    fn with_bot_handle<T>(handle: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let _guard = crate::plugins::pr_review::bot_handle_env_lock()
-            .lock()
-            .unwrap();
-        let old = std::env::var("OABCP_BOT_HANDLE").ok();
-        match handle {
-            Some(handle) => std::env::set_var("OABCP_BOT_HANDLE", handle),
-            None => std::env::remove_var("OABCP_BOT_HANDLE"),
-        }
-        let result = f();
-        restore_env("OABCP_BOT_HANDLE", old);
-        result
-    }
-
     fn review_recipient_text(session: &TestSession, target_id: &str, text: &str) -> String {
-        with_bot_handle(None, || {
-            review_recipient_trigger_text(session.chair_bot.as_deref(), target_id, text)
-        })
+        review_recipient_trigger_text(
+            session.chair_bot.as_deref(),
+            target_id,
+            text,
+            &super::super::PrReviewConfig::default(),
+        )
     }
 
     #[test]
@@ -343,24 +302,16 @@ mod tests {
         }
     }
 
-    /// Render the chair task under an explicit `OABCP_COUNCIL_REVIEW_MODE` (None =
-    /// unset → default). Holds the env lock; does not nest `with_bot_handle`.
+    /// Render the chair task under an explicit injected review mode.
     fn render_chair_task(mode: Option<&str>) -> String {
-        let _guard = crate::plugins::pr_review::bot_handle_env_lock()
-            .lock()
-            .unwrap();
-        let old_handle = std::env::var("OABCP_BOT_HANDLE").ok();
-        let old_mode = std::env::var("OABCP_COUNCIL_REVIEW_MODE").ok();
-        std::env::remove_var("OABCP_BOT_HANDLE");
-        match mode {
-            Some(m) => std::env::set_var("OABCP_COUNCIL_REVIEW_MODE", m),
-            None => std::env::remove_var("OABCP_COUNCIL_REVIEW_MODE"),
-        }
+        let config = super::super::PrReviewConfig {
+            review_mode: mode
+                .and_then(super::super::ReviewMode::parse)
+                .unwrap_or(super::super::ReviewMode::Approve),
+            ..Default::default()
+        };
         let trigger = "PR Review Council — canyugs/openab-control-plane #53 \"\"\n\nReview focus assignment:\n- rev1 → correctness";
-        let text = review_recipient_trigger_text(Some("chair"), "chair", trigger);
-        restore_env("OABCP_BOT_HANDLE", old_handle);
-        restore_env("OABCP_COUNCIL_REVIEW_MODE", old_mode);
-        text
+        review_recipient_trigger_text(Some("chair"), "chair", trigger, &config)
     }
 
     #[test]
@@ -423,9 +374,11 @@ mod tests {
 
     #[test]
     fn chair_footer_uses_configured_bot_handle() {
-        let text = with_bot_handle(Some("@opencodezebra"), || {
-            render_review_chair_task("zeabur/openab-control-plane", "149")
-        });
+        let config = super::super::PrReviewConfig {
+            bot_handle: Some("opencodezebra".into()),
+            ..Default::default()
+        };
+        let text = render_review_chair_task("zeabur/openab-control-plane", "149", &config);
 
         assert!(text.contains("Comment `@opencodezebra <question>` for a follow-up"));
         assert!(text.contains("comment `@opencodezebra review <fix notes>`"));

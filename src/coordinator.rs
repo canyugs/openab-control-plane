@@ -293,9 +293,23 @@ impl Coordinator for Pipeline {
 /// Pick a known coordinator for a session's `mode`. The only place a mode is
 /// mapped to a policy; a new mode is a new arm + impl, nothing else changes.
 pub fn lookup(mode: &str) -> Option<Box<dyn Coordinator>> {
+    lookup_with_pr_review_config(
+        mode,
+        &crate::plugins::pr_review::PrReviewConfig::default(),
+    )
+}
+
+/// Runtime lookup variant used by the orchestrator. Only the review policy
+/// consumes provider configuration; the other coordinators remain pure kernels.
+pub fn lookup_with_pr_review_config(
+    mode: &str,
+    config: &crate::plugins::pr_review::PrReviewConfig,
+) -> Option<Box<dyn Coordinator>> {
     match mode {
         "council" => Some(Box::new(QuorumCouncil)),
-        "review_council" => Some(Box::new(crate::plugins::pr_review::ReviewCouncil)),
+        "review_council" => Some(Box::new(crate::plugins::pr_review::ReviewCouncil::new(
+            config.clone(),
+        ))),
         "triage_council" => Some(Box::new(crate::plugins::triage::TriageCouncil)),
         "solo" => Some(Box::new(Solo)),
         "pipeline" => Some(Box::new(Pipeline)),

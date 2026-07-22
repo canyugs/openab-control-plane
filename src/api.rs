@@ -31,6 +31,7 @@ use tokio_stream::StreamExt;
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/stats", get(stats))
+        .route("/v1/compatibility-usage", get(compatibility_usage))
         .route("/v1/bots", get(list_bots).post(register_bot))
         .route("/v1/bots/discover", post(discover_bot))
         .route("/v1/bots/github-token", post(bot_github_token))
@@ -169,6 +170,21 @@ async fn stats(
         })).collect::<Vec<_>>(),
     });
     Ok(Json(snapshot))
+}
+
+/// Temporary operator surface for evidence-based compatibility removal. It is
+/// deliberately separate from the frozen `/v1/stats` response and returns only
+/// generic opaque surface keys plus durable counts/timestamps.
+async fn compatibility_usage(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_auth(&state, &headers)?;
+    let usage = state
+        .store
+        .compatibility_usage()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!({ "usage": usage })))
 }
 
 async fn register_bot(
@@ -1507,10 +1523,6 @@ async fn github_token(
     ) {
         return Err(StatusCode::GONE);
     }
-    let Some(app) = state.github_app.as_ref() else {
-        // PAT mode — no App provisioned yet. The pod keeps using the shared GH_TOKEN.
-        return Err(StatusCode::NOT_IMPLEMENTED);
-    };
     // Authoritative from the bot record — the request carries no role.
     let bot = state
         .store
@@ -1528,6 +1540,13 @@ async fn github_token(
         return Err(StatusCode::FORBIDDEN);
     }
     let role = crate::github_app::Role::from_bot_role(&bot.role);
+    // Count a valid consumer before App availability/minting: a PAT-mode 501 or
+    // mint 502 still proves this legacy route is depended on and blocks removal.
+    state.record_compatibility_use("github_token_route", 1);
+    let Some(app) = state.github_app.as_ref() else {
+        // PAT mode — no App provisioned yet. The pod keeps using the shared GH_TOKEN.
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    };
     let token = identity::github_token_for(
         state.store.as_ref(),
         app,
@@ -1598,10 +1617,6 @@ async fn bot_github_token(
         .bot_by_token_hash(&identity::hash_token(presented))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    let Some(app) = state.github_app.as_ref() else {
-        // PAT mode — no App provisioned. The pod keeps using its shared GH_TOKEN.
-        return Err(StatusCode::NOT_IMPLEMENTED);
-    };
     // Chair write scope is bound to the active chair *slot*, not the `role`
     // label (ADR 024 Decision 1). A bot earns `pull_requests:write` only while
     // it is `roster[0]` of the standing roster; otherwise it is read-only. So a
@@ -1609,6 +1624,13 @@ async fn bot_github_token(
     // write power until a promotion `PUT` makes it the active chair — and even a
     // single-chair deployment is tightened, since write follows the live slot.
     let role = active_chair_role(&state, &bot.id, &bot.role);
+    // Count a valid consumer before App availability/minting: a PAT-mode 501 or
+    // mint 502 still proves this legacy route is depended on and blocks removal.
+    state.record_compatibility_use("github_token_route", 1);
+    let Some(app) = state.github_app.as_ref() else {
+        // PAT mode — no App provisioned. The pod keeps using its shared GH_TOKEN.
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    };
     let token = identity::github_token_for(
         state.store.as_ref(),
         app,
@@ -1717,6 +1739,40 @@ mod tests {
             "ts": now_ms(),
         })
         .to_string()
+    }
+
+    #[tokio::test]
+    async fn compatibility_usage_is_separate_from_frozen_stats_and_requires_auth() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        store
+            .record_compatibility_use("embedded_github_webhook", 2)
+            .unwrap();
+        let state = AppState::new_with_options(
+            store,
+            Some("operator-key".into()),
+            None,
+            None,
+            None,
+            "http://control-plane.test".into(),
+            None,
+        );
+
+        let unauthorized = super::compatibility_usage(State(state.clone()), HeaderMap::new()).await;
+        match unauthorized {
+            Ok(_) => panic!("compatibility telemetry must use north auth"),
+            Err(status) => assert_eq!(status, StatusCode::UNAUTHORIZED),
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer operator-key".parse().unwrap());
+        let response = super::compatibility_usage(State(state), headers)
+            .await
+            .unwrap()
+            .into_response();
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["usage"][0]["surface"], "embedded_github_webhook");
+        assert_eq!(body["usage"][0]["uses"], 2);
     }
 
     fn state_with_review_bots() -> Arc<AppState> {
@@ -2084,10 +2140,14 @@ mod tests {
 
         let mut headers = HeaderMap::new();
         headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
-        let err = super::bot_github_token(State(state), headers)
+        let err = super::bot_github_token(State(state.clone()), headers)
             .await
             .unwrap_err();
         assert_eq!(err, StatusCode::NOT_IMPLEMENTED);
+        let usage = state.store.compatibility_usage().unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].surface, "github_token_route");
+        assert_eq!(usage[0].uses, 1);
     }
 
     #[test]
@@ -2188,10 +2248,14 @@ mod tests {
 
         let mut headers = HeaderMap::new();
         headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
-        let err = super::bot_github_token(State(state), headers)
+        let err = super::bot_github_token(State(state.clone()), headers)
             .await
             .expect_err("must attempt a mint (502 with dummy app), not serve the cache");
         assert_eq!(err, StatusCode::BAD_GATEWAY);
+        let usage = state.store.compatibility_usage().unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].surface, "github_token_route");
+        assert_eq!(usage[0].uses, 1);
     }
 
     #[tokio::test]

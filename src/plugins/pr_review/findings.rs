@@ -193,6 +193,14 @@ mod tests {
                 .len(),
             0
         );
+        let usage = store.compatibility_usage().unwrap();
+        assert_eq!(
+            usage
+                .iter()
+                .find(|row| row.surface == "review_findings_write")
+                .map(|row| row.uses),
+            Some(2)
+        );
     }
 
     #[test]

@@ -1,0 +1,16 @@
+{
+  "action": "created",
+  "installation": { "id": 99 },
+  "repository": { "full_name": "example/repo" },
+  "issue": {
+    "number": 42,
+    "pull_request": { "url": "https://api.github.test/repos/example/repo/pulls/42" },
+    "labels": []
+  },
+  "comment": {
+    "id": 7003,
+    "body": "@fixture-council review fixed F1\n\nAdded a regression test.",
+    "author_association": "COLLABORATOR",
+    "user": { "type": "User", "login": "fixture-collaborator" }
+  }
+}
