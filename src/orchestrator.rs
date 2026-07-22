@@ -7,7 +7,9 @@ use crate::protocol::{Content, GatewayReply, GatewayResponse, SenderInfo, RESPON
 use crate::routing;
 use crate::session::DONE_EMOJI;
 use crate::state::AppState;
-use crate::store::{BotHealthTransition, Message, RosterAddOutcome, Session, SessionState};
+use crate::store::{
+    BotHealthTransition, Message, OpeningInput, RosterAddOutcome, Session, SessionState,
+};
 use anyhow::Result;
 use serde_json::json;
 use std::sync::Arc;
@@ -1015,6 +1017,7 @@ pub fn add_to_roster_batch(
     state: &Arc<AppState>,
     session_id: &str,
     bot_ids: &[String],
+    opening_inputs: &[OpeningInput],
 ) -> Result<BatchAdmission> {
     let Some(session) = state.store.session(session_id)? else {
         anyhow::bail!("unknown session {session_id}");
@@ -1031,9 +1034,12 @@ pub fn add_to_roster_batch(
         }
     }
 
-    let outcome = state
-        .store
-        .add_session_bots_if_capacity(session_id, bot_ids, max_roster())?;
+    let outcome = state.store.add_session_bots_if_capacity(
+        session_id,
+        bot_ids,
+        max_roster(),
+        opening_inputs,
+    )?;
     let RosterAddOutcome::Added {
         added,
         already_members,

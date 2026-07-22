@@ -359,13 +359,15 @@ pub trait Store: Send + Sync {
     /// Add a bot to a session roster. Returns true if newly added (false if it
     /// was already a member) — the caller backfills history only on a fresh join.
     fn add_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool>;
-    /// Atomically add a batch of known bot ids without exceeding `max_roster`.
-    /// Duplicate and existing ids are reported as already-members.
+    /// Atomically add a batch of known bot ids and their audience-scoped inputs
+    /// without exceeding `max_roster`. Duplicate and existing ids are reported
+    /// as already-members; inputs are persisted only for newly added ids.
     fn add_session_bots_if_capacity(
         &self,
         session_id: &str,
         bot_ids: &[String],
         max_roster: usize,
+        opening_inputs: &[OpeningInput],
     ) -> Result<RosterAddOutcome>;
     /// Replace one session roster member with another, preserving the roster row
     /// position. The caller validates both ids and handles backfill.
@@ -1584,6 +1586,7 @@ impl Store for SqliteStore {
         session_id: &str,
         bot_ids: &[String],
         max_roster: usize,
+        opening_inputs: &[OpeningInput],
     ) -> Result<RosterAddOutcome> {
         let mut unique = Vec::new();
         for bot_id in bot_ids {
@@ -1622,6 +1625,24 @@ impl Store for SqliteStore {
             tx.execute(
                 "INSERT INTO session_bots (session_id, bot_id) VALUES (?1, ?2)",
                 params![session_id, bot_id],
+            )?;
+        }
+        let created_at = now_ms();
+        for input in opening_inputs
+            .iter()
+            .filter(|input| added.iter().any(|bot_id| bot_id == &input.recipient))
+        {
+            tx.execute(
+                "INSERT INTO messages
+                    (id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at)
+                 VALUES (?1, ?2, NULL, 'client', NULL, ?3, ?4, NULL, ?5)",
+                params![
+                    new_id("msg"),
+                    session_id,
+                    input.recipient,
+                    input.content,
+                    created_at
+                ],
             )?;
         }
         tx.commit()?;
@@ -3226,11 +3247,56 @@ mod tests {
             .unwrap();
 
         let outcome = store
-            .add_session_bots_if_capacity(&session.id, &["rev1".into(), "rev2".into()], 2)
+            .add_session_bots_if_capacity(&session.id, &["rev1".into(), "rev2".into()], 2, &[])
             .unwrap();
 
         assert_eq!(outcome, RosterAddOutcome::Full);
         assert_eq!(store.roster(&session.id).unwrap(), vec!["chair"]);
+    }
+
+    #[test]
+    fn batch_roster_input_failure_rolls_back_membership() {
+        let store = SqliteStore::memory().unwrap();
+        for (id, role) in [("chair", "chair"), ("rev1", "reviewer")] {
+            store.seed_bot(id, id, role, "hash", "token").unwrap();
+        }
+        let session = store
+            .create_session(
+                "atomic late join",
+                None,
+                0,
+                Some("chair"),
+                &["chair".into()],
+                "council",
+            )
+            .unwrap();
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_late_join_input
+                 BEFORE INSERT ON messages
+                 WHEN NEW.content = 'force failure'
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced late join input failure');
+                 END;",
+            )
+            .unwrap();
+
+        let result = store.add_session_bots_if_capacity(
+            &session.id,
+            &["rev1".into()],
+            2,
+            &[OpeningInput {
+                recipient: "rev1".into(),
+                content: "force failure".into(),
+            }],
+        );
+
+        assert!(result.is_err());
+        assert_eq!(store.roster(&session.id).unwrap(), vec!["chair"]);
+        assert!(store.messages(&session.id).unwrap().is_empty());
     }
 
     #[test]

@@ -63,6 +63,7 @@ fn action_envelopes_are_golden_pinned() {
         action: ControllerAction::AddRoster(AddRosterAction {
             session_id: "ses_001".into(),
             bots: vec!["analyst".into(), "observer".into()],
+            recipient_inputs: BTreeMap::new(),
         }),
     };
     assert_golden_round_trip(&add_roster, include_str!("golden/action_add_roster.json"));
@@ -197,6 +198,23 @@ fn open_session_defaults_recipient_inputs_for_older_payloads() {
 
     let ControllerAction::OpenSession(action) = action else {
         panic!("expected open_session action");
+    };
+    assert!(action.recipient_inputs.is_empty());
+}
+
+#[test]
+fn add_roster_defaults_recipient_inputs_for_older_payloads() {
+    let action: ControllerAction = serde_json::from_value(serde_json::json!({
+        "type": "add_roster",
+        "params": {
+            "session_id": "ses_001",
+            "bots": ["observer"]
+        }
+    }))
+    .expect("payload without recipient_inputs remains valid");
+
+    let ControllerAction::AddRoster(action) = action else {
+        panic!("expected add_roster action");
     };
     assert!(action.recipient_inputs.is_empty());
 }

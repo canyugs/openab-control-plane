@@ -85,6 +85,11 @@ pub struct PostMessageAction {
 pub struct AddRosterAction {
     pub session_id: String,
     pub bots: Vec<String>,
+    /// Target-specific opening inputs for newly added members. A controller
+    /// must supply these when extending a session whose client context is
+    /// entirely audience-scoped.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub recipient_inputs: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

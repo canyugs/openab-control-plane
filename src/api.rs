@@ -865,6 +865,8 @@ async fn post_message(
 #[derive(Deserialize)]
 struct AddRoster {
     bot_id: String,
+    #[serde(default)]
+    recipient_input: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -882,6 +884,10 @@ async fn add_roster(
     check_auth(&state, &headers)?;
     let action = crate::controller::AddRosterAction {
         session_id: id,
+        recipient_inputs: req
+            .recipient_input
+            .map(|input| BTreeMap::from([(req.bot_id.clone(), input)]))
+            .unwrap_or_default(),
         bots: vec![req.bot_id],
     };
     match controller::execute(&state, ControllerAction::AddRoster(action)) {

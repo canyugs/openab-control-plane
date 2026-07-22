@@ -202,7 +202,57 @@ fn add_roster(
             action.session_id
         )));
     }
-    match orchestrator::add_to_roster_batch(state, &action.session_id, &action.bots) {
+    for (recipient, content) in &action.recipient_inputs {
+        if !action.bots.iter().any(|bot| bot == recipient) {
+            return Err(ControllerError::Invalid(format!(
+                "add_roster action recipient_inputs references unrequested bot '{recipient}'"
+            )));
+        }
+        if content.trim().is_empty() {
+            return Err(ControllerError::Invalid(format!(
+                "add_roster action recipient input for '{recipient}' is empty"
+            )));
+        }
+    }
+
+    let current_roster = state.store.roster(&action.session_id)?;
+    let new_bots = action
+        .bots
+        .iter()
+        .filter(|bot| !current_roster.iter().any(|member| member == *bot))
+        .collect::<std::collections::BTreeSet<_>>();
+    let messages = state.store.messages(&action.session_id)?;
+    let has_targeted_client_context = messages.iter().any(|message| {
+        message.author_kind == "client" && message.author_id.is_none() && message.audience.is_some()
+    });
+    let has_broadcast_client_context = messages.iter().any(|message| {
+        message.author_kind == "client" && message.author_id.is_none() && message.audience.is_none()
+    });
+    if has_targeted_client_context && !has_broadcast_client_context {
+        if let Some(bot) = new_bots
+            .iter()
+            .find(|bot| !action.recipient_inputs.contains_key(**bot))
+        {
+            return Err(ControllerError::Invalid(format!(
+                "add_roster action needs recipient input for '{bot}' because session client context is audience-scoped"
+            )));
+        }
+    }
+
+    let opening_inputs = action
+        .recipient_inputs
+        .iter()
+        .map(|(recipient, content)| OpeningInput {
+            recipient: recipient.clone(),
+            content: content.clone(),
+        })
+        .collect::<Vec<_>>();
+    match orchestrator::add_to_roster_batch(
+        state,
+        &action.session_id,
+        &action.bots,
+        &opening_inputs,
+    ) {
         Ok(orchestrator::BatchAdmission::Added {
             added,
             already_members,
@@ -929,6 +979,7 @@ mod tests {
             ControllerAction::AddRoster(AddRosterAction {
                 session_id: session_id.clone(),
                 bots: vec!["rev2".into(), "ghost".into()],
+                recipient_inputs: Default::default(),
             }),
         )
         .unwrap_err();
@@ -943,6 +994,7 @@ mod tests {
             ControllerAction::AddRoster(AddRosterAction {
                 session_id: session_id.clone(),
                 bots: vec!["rev2".into()],
+                recipient_inputs: Default::default(),
             }),
         )
         .unwrap();
@@ -965,6 +1017,7 @@ mod tests {
             ControllerAction::AddRoster(AddRosterAction {
                 session_id: session_id.clone(),
                 bots: vec!["rev2".into()],
+                recipient_inputs: Default::default(),
             }),
         )
         .unwrap();
@@ -979,6 +1032,66 @@ mod tests {
     }
 
     #[test]
+    fn add_roster_requires_and_delivers_input_for_audience_scoped_sessions() {
+        let state = state_with_bots();
+        let mut open = review_action();
+        open.recipient_inputs = std::collections::BTreeMap::from([
+            ("chair".into(), "Chair the targeted review.".into()),
+            ("rev1".into(), "Inspect the targeted change.".into()),
+        ]);
+        let opened = execute(&state, ControllerAction::OpenSession(open)).unwrap();
+        let ControllerActionResult::SessionOpened { session_id, .. } = opened else {
+            panic!("targeted session should open");
+        };
+
+        let error = execute(
+            &state,
+            ControllerAction::AddRoster(AddRosterAction {
+                session_id: session_id.clone(),
+                bots: vec!["rev2".into()],
+                recipient_inputs: Default::default(),
+            }),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("needs recipient input for 'rev2'"));
+        assert_eq!(
+            state.store.roster(&session_id).unwrap(),
+            vec!["chair", "rev1"],
+            "a context-free late join must not mutate membership"
+        );
+
+        let result = execute(
+            &state,
+            ControllerAction::AddRoster(AddRosterAction {
+                session_id: session_id.clone(),
+                bots: vec!["rev2".into()],
+                recipient_inputs: std::collections::BTreeMap::from([(
+                    "rev2".into(),
+                    "Inspect the newly assigned subsystem.".into(),
+                )]),
+            }),
+        )
+        .unwrap();
+        assert!(matches!(
+            result,
+            ControllerActionResult::RosterAdded { ref added, .. } if added == &["rev2"]
+        ));
+        let messages = state.store.messages(&session_id).unwrap();
+        let late_input = messages
+            .iter()
+            .find(|message| message.audience.as_deref() == Some("rev2"))
+            .expect("late join input is persisted");
+        assert_eq!(late_input.content, "Inspect the newly assigned subsystem.");
+        assert_eq!(
+            pending_frames_for_session(state.store.as_ref(), "rev2", &session_id),
+            1,
+            "the new member receives its targeted prompt through backfill"
+        );
+    }
+
+    #[test]
     fn reserved_actions_report_unknown_and_terminal_sessions() {
         let state = state_with_bots();
         let unknown = "ses_missing".to_string();
@@ -986,6 +1099,7 @@ mod tests {
             ControllerAction::AddRoster(AddRosterAction {
                 session_id: unknown.clone(),
                 bots: vec!["rev2".into()],
+                recipient_inputs: Default::default(),
             }),
             ControllerAction::EmitStatus(EmitStatusAction {
                 session_id: unknown.clone(),
@@ -1015,6 +1129,7 @@ mod tests {
             ControllerAction::AddRoster(AddRosterAction {
                 session_id,
                 bots: vec!["rev2".into()],
+                recipient_inputs: Default::default(),
             }),
         )
         .unwrap_err();
@@ -1115,6 +1230,7 @@ mod tests {
             ControllerAction::AddRoster(AddRosterAction {
                 session_id: session_id.clone(),
                 bots: vec!["rev2".into()],
+                recipient_inputs: Default::default(),
             }),
         )
         .unwrap();
