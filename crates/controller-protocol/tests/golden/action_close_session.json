@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "action_id": "act_close_001",
+  "action": {
+    "type": "close_session",
+    "params": {
+      "session_id": "ses_001",
+      "reason": "controller_cancelled"
+    }
+  }
+}

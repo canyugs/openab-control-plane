@@ -7,7 +7,7 @@ use crate::protocol::{Content, GatewayReply, GatewayResponse, SenderInfo, RESPON
 use crate::routing;
 use crate::session::DONE_EMOJI;
 use crate::state::AppState;
-use crate::store::{BotHealthTransition, Message, Session, SessionState};
+use crate::store::{BotHealthTransition, Message, RosterAddOutcome, Session, SessionState};
 use anyhow::Result;
 use serde_json::json;
 use std::sync::Arc;
@@ -163,6 +163,124 @@ pub fn post_client_message(
         json!({ "message_id": msg.id, "author": "client", "content": content }),
     );
     Ok(msg)
+}
+
+/// Deliver audience-scoped opening inputs that were committed atomically with
+/// their session. The durable message rows are the source of truth; outbox
+/// enqueue and live flush remain the existing post-commit delivery mechanism.
+pub fn deliver_opening_inputs(state: &Arc<AppState>, session_id: &str) -> Result<()> {
+    let Some(session) = state.store.session(session_id)? else {
+        anyhow::bail!("unknown session {session_id}");
+    };
+    let Some(coord) = dispatch_coordinator(state, &session)? else {
+        return Ok(());
+    };
+    let roster = state.store.roster(session_id)?;
+    let starters = coord.starters(&roster, session.chair_bot.as_deref());
+    let thread = state.store.thread_for_session(session_id)?;
+    let sender = SenderInfo {
+        id: "client".into(),
+        name: "client".into(),
+        display_name: "client".into(),
+        is_bot: false,
+    };
+
+    for message in state.store.messages(session_id)? {
+        if message.author_kind != "client" || message.author_id.is_some() {
+            continue;
+        }
+        let Some(target) = message.audience.as_deref() else {
+            continue;
+        };
+        let name = state
+            .store
+            .bot(target)?
+            .map(|bot| bot.name)
+            .unwrap_or_default();
+        let mentions = starters
+            .iter()
+            .any(|starter| starter == target)
+            .then_some(vec![name])
+            .unwrap_or_default();
+        state.deliver_event(
+            target,
+            session_id,
+            thread.as_deref(),
+            sender.clone(),
+            Content::text(&message.content),
+            mentions,
+            &message.id,
+        );
+        state.emit_north(
+            "message",
+            session_id,
+            json!({
+                "message_id": message.id,
+                "author": "client",
+                "audience": target,
+                "content": message.content,
+            }),
+        );
+    }
+    Ok(())
+}
+
+/// Controller-requested terminal transition. Authorization is enforced by the
+/// action interpreter; this function owns the same CAS, outbox cleanup, token
+/// revoke, north event, and close-webhook effects as other terminal paths.
+pub fn close_session_by_controller(
+    state: &Arc<AppState>,
+    session_id: &str,
+    reason: &str,
+) -> Result<bool> {
+    if state.store.session(session_id)?.is_none() {
+        anyhow::bail!("unknown session {session_id}");
+    }
+    if !state.store.close_if_active(session_id)? {
+        return Ok(false);
+    }
+    purge_session_outbox_after_close(state, session_id);
+    if let Err(error) = crate::identity::revoke_session_github_tokens(
+        state.store.as_ref(),
+        state.github_app.as_ref(),
+        session_id,
+    ) {
+        tracing::warn!("revoke provider tokens for {session_id} failed: {error}");
+    }
+    state.emit_north(
+        "state",
+        session_id,
+        json!({ "state": "closed", "reason": reason }),
+    );
+    fire_close_webhook(state, session_id, "", reason);
+    Ok(true)
+}
+
+/// Persist a controller status as a status audit row and surface it to north
+/// subscribers. It is deliberately not delivered to bots or mapped to a
+/// provider side effect.
+pub fn emit_controller_status(
+    state: &Arc<AppState>,
+    session_id: &str,
+    target: &str,
+    body: &str,
+) -> Result<Message> {
+    if state.store.session(session_id)?.is_none() {
+        anyhow::bail!("unknown session {session_id}");
+    }
+    let message = state
+        .store
+        .add_message(session_id, None, "status", None, Some(target), body, None)?;
+    state.emit_north(
+        "controller_status",
+        session_id,
+        json!({
+            "status_id": message.id,
+            "target": target,
+            "body": body,
+        }),
+    );
+    Ok(message)
 }
 
 /// A *settled* bot turn: non-empty and not the "…" streaming placeholder. The
@@ -797,6 +915,15 @@ pub enum Admission {
     Rejected(&'static str),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum BatchAdmission {
+    Added {
+        added: Vec<String>,
+        already_members: Vec<String>,
+    },
+    Rejected(&'static str),
+}
+
 /// Outcome of a dynamic one-for-one roster replacement.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Replacement {
@@ -878,6 +1005,50 @@ pub fn add_to_roster(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> R
     backfill_bot(state, session_id, bot_id)?;
     state.emit_north("roster_add", session_id, json!({ "bot": bot_id }));
     Ok(Admission::Added)
+}
+
+/// Add a controller-supplied batch atomically at the membership layer, then
+/// backfill every newly added bot through the normal durable delivery path.
+/// All ids are validated before mutation, so an unknown bot cannot leave a
+/// partially updated roster.
+pub fn add_to_roster_batch(
+    state: &Arc<AppState>,
+    session_id: &str,
+    bot_ids: &[String],
+) -> Result<BatchAdmission> {
+    let Some(session) = state.store.session(session_id)? else {
+        anyhow::bail!("unknown session {session_id}");
+    };
+    if matches!(
+        SessionState::from_db_str(&session.state),
+        SessionState::Closed | SessionState::Aborted
+    ) {
+        return Ok(BatchAdmission::Rejected("terminal session"));
+    }
+    for bot_id in bot_ids {
+        if state.store.bot(bot_id)?.is_none() {
+            return Ok(BatchAdmission::Rejected("unknown bot"));
+        }
+    }
+
+    let outcome = state
+        .store
+        .add_session_bots_if_capacity(session_id, bot_ids, max_roster())?;
+    let RosterAddOutcome::Added {
+        added,
+        already_members,
+    } = outcome
+    else {
+        return Ok(BatchAdmission::Rejected("roster full"));
+    };
+    for bot_id in &added {
+        backfill_bot(state, session_id, bot_id)?;
+        state.emit_north("roster_add", session_id, json!({ "bot": bot_id }));
+    }
+    Ok(BatchAdmission::Added {
+        added,
+        already_members,
+    })
 }
 
 /// Replace one session roster member with another without changing roster size.
@@ -965,6 +1136,9 @@ fn backfill_bot_with_audience_alias(
     let thread = state.store.thread_for_session(session_id)?;
     let mut eligible = vec![];
     for m in state.store.messages(session_id)? {
+        if m.author_kind == "status" {
+            continue; // operator audit is never bot conversation context
+        }
         if m.author_id.as_deref() == Some(bot_id) {
             continue; // don't echo the joiner's own messages
         }
@@ -1479,12 +1653,18 @@ fn redeliver_trigger_to_non_starter_chair(state: &Arc<AppState>, session: &Sessi
     if starters.iter().any(|bot| bot == chair) {
         return Ok(());
     }
-    let Some(trigger) = state
-        .store
-        .messages(&session.id)?
-        .into_iter()
-        .find(|m| m.author_kind == "client")
-    else {
+    let messages = state.store.messages(&session.id)?;
+    let trigger = messages
+        .iter()
+        .find(|message| {
+            message.author_kind == "client" && message.audience.as_deref() == Some(chair)
+        })
+        .or_else(|| {
+            messages.iter().find(|message| {
+                message.author_kind == "client" && message.audience.is_none()
+            })
+        });
+    let Some(trigger) = trigger else {
         return Ok(());
     };
 
@@ -1696,7 +1876,7 @@ fn settled_result_span(messages: &[Message], author: &str) -> Vec<String> {
     };
     let mut ids = vec![messages[last].id.clone()];
     for m in messages[..last].iter().rev() {
-        if m.author_kind == "system" {
+        if matches!(m.author_kind.as_str(), "system" | "status") {
             continue;
         }
         if !is_author(m) {
@@ -2223,6 +2403,16 @@ mod tests {
         let msgs = vec![
             span_msg("m1", "bot", Some("a"), "chunk 1"),
             span_msg("m2", "system", None, "coordination prompt"),
+            span_msg("m3", "bot", Some("a"), "chunk 2"),
+        ];
+        assert_eq!(settled_result_span(&msgs, "a"), vec!["m1", "m3"]);
+    }
+
+    #[test]
+    fn span_tolerates_controller_status_audit_interleave() {
+        let msgs = vec![
+            span_msg("m1", "bot", Some("a"), "chunk 1"),
+            span_msg("m2", "status", None, "waiting for evidence"),
             span_msg("m3", "bot", Some("a"), "chunk 2"),
         ];
         assert_eq!(settled_result_span(&msgs, "a"), vec!["m1", "m3"]);
@@ -3697,6 +3887,58 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn first_topic_redelivers_the_chairs_targeted_opening_input() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev = store.register_bot("rev", "reviewer", "h2", "t2").unwrap();
+        let roster = vec![rev.id.clone(), chair.id.clone()];
+        let inputs = vec![
+            crate::store::OpeningInput {
+                recipient: rev.id.clone(),
+                content: "reviewer task".into(),
+            },
+            crate::store::OpeningInput {
+                recipient: chair.id.clone(),
+                content: "chair task".into(),
+            },
+        ];
+        let (session, _) = store
+            .create_session_superseding(
+                "targeted",
+                None,
+                None,
+                1,
+                Some(&chair.id),
+                &roster,
+                "council",
+                &inputs,
+            )
+            .unwrap();
+        let reviewer_trigger = store
+            .messages(&session.id)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.audience.as_deref() == Some(rev.id.as_str()))
+            .unwrap();
+
+        handle_reply(
+            &state,
+            &rev.id,
+            create_topic_reply(&session.id, &reviewer_trigger.id),
+        )
+        .unwrap();
+
+        let chair_frames = pending_frame_values(&store, &chair.id);
+        assert!(chair_frames.iter().any(|frame| {
+            frame["sender"]["id"] == "system" && frame["content"]["text"] == "chair task"
+        }));
+        assert!(!chair_frames
+            .iter()
+            .any(|frame| frame["content"]["text"] == "reviewer task"));
     }
 
     #[test]

@@ -2,21 +2,25 @@
 //!
 //! Bundled controllers and future external controllers both propose declarative
 //! actions; this module is the core-owned boundary that validates and executes
-//! them. The first slice supports opening a session and posting client messages.
+//! them. P3 covers the complete v1 action vocabulary while transport auth and
+//! action-id persistence remain outside this module.
 
 use crate::coordinator;
 use crate::orchestrator;
 use crate::state::AppState;
-use crate::store::SessionCreateOutcome;
+use crate::store::{OpeningInput, SessionCreateOutcome};
 use std::sync::Arc;
 
 pub use controller_protocol::{
-    ControllerAction, ControllerActionResult, OpenSessionAction, PostMessageAction,
+    AddRosterAction, CloseSessionAction, ControllerAction, ControllerActionResult,
+    EmitStatusAction, OpenSessionAction, PostMessageAction,
 };
 
 #[derive(Debug)]
 pub enum ControllerError {
     Invalid(String),
+    Forbidden(String),
+    NotFound(String),
     Gone(String),
     Internal(anyhow::Error),
 }
@@ -24,9 +28,10 @@ pub enum ControllerError {
 impl std::fmt::Display for ControllerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ControllerError::Invalid(message) | ControllerError::Gone(message) => {
-                f.write_str(message)
-            }
+            ControllerError::Invalid(message)
+            | ControllerError::Forbidden(message)
+            | ControllerError::NotFound(message)
+            | ControllerError::Gone(message) => f.write_str(message),
             ControllerError::Internal(err) => write!(f, "{err}"),
         }
     }
@@ -35,7 +40,10 @@ impl std::fmt::Display for ControllerError {
 impl std::error::Error for ControllerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            ControllerError::Invalid(_) | ControllerError::Gone(_) => None,
+            ControllerError::Invalid(_)
+            | ControllerError::Forbidden(_)
+            | ControllerError::NotFound(_)
+            | ControllerError::Gone(_) => None,
             ControllerError::Internal(err) => err.source(),
         }
     }
@@ -51,7 +59,7 @@ impl From<orchestrator::PostClientMessageError> for ControllerError {
     fn from(err: orchestrator::PostClientMessageError) -> Self {
         match err {
             orchestrator::PostClientMessageError::UnknownSession(message) => {
-                ControllerError::Invalid(message)
+                ControllerError::NotFound(message)
             }
             orchestrator::PostClientMessageError::ReopenRefused(message) => {
                 ControllerError::Gone(message)
@@ -63,13 +71,33 @@ impl From<orchestrator::PostClientMessageError> for ControllerError {
 
 type ControllerResult<T> = std::result::Result<T, ControllerError>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlledClosePolicy {
+    Allow,
+    Deny,
+}
+
+/// Execute an action with fail-closed controlled-close policy. Callers that
+/// have independently authorized `close_session` must opt in explicitly via
+/// `execute_with_close_policy`.
 pub fn execute(
     state: &Arc<AppState>,
     action: ControllerAction,
 ) -> ControllerResult<ControllerActionResult> {
+    execute_with_close_policy(state, action, ControlledClosePolicy::Deny)
+}
+
+pub fn execute_with_close_policy(
+    state: &Arc<AppState>,
+    action: ControllerAction,
+    close_policy: ControlledClosePolicy,
+) -> ControllerResult<ControllerActionResult> {
     match action {
         ControllerAction::OpenSession(action) => open_session(state, action),
         ControllerAction::PostMessage(action) => post_message(state, action),
+        ControllerAction::AddRoster(action) => add_roster(state, action),
+        ControllerAction::CloseSession(action) => close_session(state, action, close_policy),
+        ControllerAction::EmitStatus(action) => emit_status(state, action),
     }
 }
 
@@ -78,6 +106,7 @@ fn open_session(
     action: OpenSessionAction,
 ) -> ControllerResult<ControllerActionResult> {
     validate_open_session(state, &action)?;
+    let opening_inputs = opening_inputs(&action);
 
     let (session, outcome) = state.store.create_session_superseding(
         &action.title,
@@ -87,6 +116,7 @@ fn open_session(
         action.chair_bot.as_deref(),
         &action.roster,
         &action.mode,
+        &opening_inputs,
     )?;
     match outcome {
         SessionCreateOutcome::Deduped => Ok(ControllerActionResult::SessionOpened {
@@ -94,7 +124,9 @@ fn open_session(
             deduped: true,
         }),
         SessionCreateOutcome::Created => {
-            if !action.prompt.trim().is_empty() {
+            if !opening_inputs.is_empty() {
+                orchestrator::deliver_opening_inputs(state, &session.id)?;
+            } else if !action.prompt.trim().is_empty() {
                 orchestrator::post_client_message(state, &session.id, &action.prompt)?;
             }
             Ok(ControllerActionResult::SessionOpened {
@@ -104,7 +136,9 @@ fn open_session(
         }
         SessionCreateOutcome::Superseded { old_id } => {
             orchestrator::handle_superseded_session(state, &old_id);
-            if !action.prompt.trim().is_empty() {
+            if !opening_inputs.is_empty() {
+                orchestrator::deliver_opening_inputs(state, &session.id)?;
+            } else if !action.prompt.trim().is_empty() {
                 orchestrator::post_client_message(state, &session.id, &action.prompt)?;
             }
             Ok(ControllerActionResult::Superseded {
@@ -115,12 +149,30 @@ fn open_session(
     }
 }
 
+fn opening_inputs(action: &OpenSessionAction) -> Vec<OpeningInput> {
+    if action.recipient_inputs.is_empty() {
+        return Vec::new();
+    }
+    action
+        .roster
+        .iter()
+        .map(|recipient| OpeningInput {
+            recipient: recipient.clone(),
+            content: action
+                .recipient_inputs
+                .get(recipient)
+                .unwrap_or(&action.prompt)
+                .clone(),
+        })
+        .collect()
+}
+
 fn post_message(
     state: &Arc<AppState>,
     action: PostMessageAction,
 ) -> ControllerResult<ControllerActionResult> {
     if state.store.session(&action.session_id)?.is_none() {
-        return Err(ControllerError::Invalid(format!(
+        return Err(ControllerError::NotFound(format!(
             "unknown session {}",
             action.session_id
         )));
@@ -130,16 +182,112 @@ fn post_message(
     Ok(ControllerActionResult::MessagePosted { message_id: msg.id })
 }
 
+fn add_roster(
+    state: &Arc<AppState>,
+    action: AddRosterAction,
+) -> ControllerResult<ControllerActionResult> {
+    if action.bots.is_empty() {
+        return Err(ControllerError::Invalid(
+            "add_roster action needs at least one bot".into(),
+        ));
+    }
+    if action.bots.iter().any(|bot| bot.trim().is_empty()) {
+        return Err(ControllerError::Invalid(
+            "add_roster action contains an empty bot id".into(),
+        ));
+    }
+    if state.store.session(&action.session_id)?.is_none() {
+        return Err(ControllerError::NotFound(format!(
+            "unknown session {}",
+            action.session_id
+        )));
+    }
+    match orchestrator::add_to_roster_batch(state, &action.session_id, &action.bots) {
+        Ok(orchestrator::BatchAdmission::Added {
+            added,
+            already_members,
+        }) => Ok(ControllerActionResult::RosterAdded {
+            session_id: action.session_id,
+            added,
+            already_members,
+        }),
+        Ok(orchestrator::BatchAdmission::Rejected("terminal session")) => Err(
+            ControllerError::Gone(format!("session {} is terminal", action.session_id)),
+        ),
+        Ok(orchestrator::BatchAdmission::Rejected(reason)) => {
+            Err(ControllerError::Invalid(reason.into()))
+        }
+        Err(error) => Err(ControllerError::Internal(error)),
+    }
+}
+
+fn close_session(
+    state: &Arc<AppState>,
+    action: CloseSessionAction,
+    policy: ControlledClosePolicy,
+) -> ControllerResult<ControllerActionResult> {
+    if policy == ControlledClosePolicy::Deny {
+        return Err(ControllerError::Forbidden(
+            "close_session action is not authorized by controller policy".into(),
+        ));
+    }
+    if state.store.session(&action.session_id)?.is_none() {
+        return Err(ControllerError::NotFound(format!(
+            "unknown session {}",
+            action.session_id
+        )));
+    }
+    let reason = action.reason.trim();
+    if reason.is_empty() || reason.len() > 256 {
+        return Err(ControllerError::Invalid(
+            "close_session action reason must contain 1..=256 bytes".into(),
+        ));
+    }
+    let closed = orchestrator::close_session_by_controller(state, &action.session_id, reason)
+        .map_err(ControllerError::Internal)?;
+    Ok(ControllerActionResult::SessionClosed {
+        session_id: action.session_id,
+        closed,
+    })
+}
+
+fn emit_status(
+    state: &Arc<AppState>,
+    action: EmitStatusAction,
+) -> ControllerResult<ControllerActionResult> {
+    if action.target.trim().is_empty() {
+        return Err(ControllerError::Invalid(
+            "emit_status action target must not be empty".into(),
+        ));
+    }
+    if action.body.trim().is_empty() {
+        return Err(ControllerError::Invalid(
+            "emit_status action body must not be empty".into(),
+        ));
+    }
+    if state.store.session(&action.session_id)?.is_none() {
+        return Err(ControllerError::NotFound(format!(
+            "unknown session {}",
+            action.session_id
+        )));
+    }
+    let status = orchestrator::emit_controller_status(
+        state,
+        &action.session_id,
+        &action.target,
+        &action.body,
+    )
+    .map_err(ControllerError::Internal)?;
+    Ok(ControllerActionResult::StatusEmitted {
+        session_id: action.session_id,
+        status_id: status.id,
+    })
+}
+
 fn validate_open_session(
     state: &Arc<AppState>,
     action: &OpenSessionAction,
 ) -> ControllerResult<()> {
-    if !action.recipient_inputs.is_empty() {
-        return Err(ControllerError::Invalid(
-            "open_session action recipient_inputs require the P3 atomic-delivery interpreter"
-                .into(),
-        ));
-    }
     if action.roster.is_empty() {
         return Err(ControllerError::Invalid(
             "open_session action needs a non-empty roster".into(),
@@ -174,12 +322,42 @@ fn validate_open_session(
             action.quorum_n, reviewer_capacity
         )));
     }
+    let mut unique_roster = std::collections::BTreeSet::new();
     for bot in &action.roster {
+        if !unique_roster.insert(bot) {
+            return Err(ControllerError::Invalid(format!(
+                "open_session action roster contains duplicate bot '{bot}'"
+            )));
+        }
         if state.store.bot(bot)?.is_none() {
             return Err(ControllerError::Invalid(format!(
                 "open_session action references unknown bot '{bot}'"
             )));
         }
+    }
+    for (recipient, content) in &action.recipient_inputs {
+        if !action.roster.iter().any(|bot| bot == recipient) {
+            return Err(ControllerError::Invalid(format!(
+                "open_session action recipient_inputs references non-roster bot '{recipient}'"
+            )));
+        }
+        if content.trim().is_empty() {
+            return Err(ControllerError::Invalid(format!(
+                "open_session action recipient input for '{recipient}' is empty"
+            )));
+        }
+    }
+    if !action.recipient_inputs.is_empty()
+        && action.prompt.trim().is_empty()
+        && action
+            .roster
+            .iter()
+            .any(|bot| !action.recipient_inputs.contains_key(bot))
+    {
+        return Err(ControllerError::Invalid(
+            "open_session action needs prompt fallback or recipient input for every roster bot"
+                .into(),
+        ));
     }
     Ok(())
 }
@@ -197,6 +375,9 @@ mod tests {
             .unwrap();
         store
             .seed_bot("rev1", "rev1", "reviewer", "h2", "t2")
+            .unwrap();
+        store
+            .seed_bot("rev2", "rev2", "reviewer", "h3", "t3")
             .unwrap();
         AppState::new(store)
     }
@@ -273,10 +454,7 @@ mod tests {
         let result = execute(&state, decoded.action).unwrap();
         assert!(matches!(
             result,
-            ControllerActionResult::SessionOpened {
-                deduped: false,
-                ..
-            }
+            ControllerActionResult::SessionOpened { deduped: false, .. }
         ));
     }
 
@@ -323,7 +501,7 @@ mod tests {
         .unwrap_err();
 
         assert!(
-            matches!(err, ControllerError::Invalid(message) if message == "unknown session ses_missing")
+            matches!(err, ControllerError::NotFound(message) if message == "unknown session ses_missing")
         );
     }
 
@@ -647,6 +825,13 @@ mod tests {
             .to_string()
             .contains("unknown bot"));
 
+        let mut duplicate = review_action();
+        duplicate.roster.push("rev1".into());
+        assert!(execute(&state, ControllerAction::OpenSession(duplicate))
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate bot 'rev1'"));
+
         let mut bad_chair = review_action();
         bad_chair.chair_bot = Some("ghost".into());
         assert!(execute(&state, ControllerAction::OpenSession(bad_chair))
@@ -682,22 +867,265 @@ mod tests {
     }
 
     #[test]
-    fn open_session_rejects_recipient_inputs_until_atomic_delivery_lands() {
+    fn open_session_persists_and_delivers_recipient_inputs_atomically() {
         let state = state_with_bots();
         let mut action = review_action();
         action
             .recipient_inputs
             .insert("rev1".into(), "Inspect the failure path.".into());
 
+        let result = execute(&state, ControllerAction::OpenSession(action)).unwrap();
+        let ControllerActionResult::SessionOpened { session_id, .. } = result else {
+            panic!("recipient inputs should open a session");
+        };
+        let session = state.store.session(&session_id).unwrap().unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&session.state),
+            SessionState::Deliberating
+        );
+        let messages = state.store.messages(&session_id).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].audience.as_deref(), Some("chair"));
+        assert_eq!(messages[0].content, "review o/r#1");
+        assert_eq!(messages[1].audience.as_deref(), Some("rev1"));
+        assert_eq!(messages[1].content, "Inspect the failure path.");
+        assert_eq!(
+            pending_frames_for_session(state.store.as_ref(), "chair", &session_id),
+            1
+        );
+        assert_eq!(
+            pending_frames_for_session(state.store.as_ref(), "rev1", &session_id),
+            1
+        );
+    }
+
+    #[test]
+    fn open_session_rejects_invalid_recipient_inputs_without_partial_state() {
+        let state = state_with_bots();
+        let mut action = review_action();
+        action
+            .recipient_inputs
+            .insert("ghost".into(), "Do hidden work.".into());
+
         let error = execute(&state, ControllerAction::OpenSession(action)).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("recipient_inputs require the P3 atomic-delivery interpreter"));
+        assert!(error.to_string().contains("non-roster bot 'ghost'"));
         assert!(state
             .store
             .list_sessions(None, None, 10)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn add_roster_action_is_batch_atomic_and_backfills_new_members() {
+        let state = state_with_bots();
+        let opened = execute(&state, ControllerAction::OpenSession(review_action())).unwrap();
+        let ControllerActionResult::SessionOpened { session_id, .. } = opened else {
+            panic!("session should open");
+        };
+
+        let error = execute(
+            &state,
+            ControllerAction::AddRoster(AddRosterAction {
+                session_id: session_id.clone(),
+                bots: vec!["rev2".into(), "ghost".into()],
+            }),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown bot"));
+        assert_eq!(
+            state.store.roster(&session_id).unwrap(),
+            vec!["chair", "rev1"]
+        );
+
+        let result = execute(
+            &state,
+            ControllerAction::AddRoster(AddRosterAction {
+                session_id: session_id.clone(),
+                bots: vec!["rev2".into()],
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            ControllerActionResult::RosterAdded {
+                session_id: session_id.clone(),
+                added: vec!["rev2".into()],
+                already_members: vec![],
+            }
+        );
+        assert_eq!(
+            pending_frames_for_session(state.store.as_ref(), "rev2", &session_id),
+            1,
+            "new member receives opening history through normal backfill"
+        );
+
+        let replay = execute(
+            &state,
+            ControllerAction::AddRoster(AddRosterAction {
+                session_id: session_id.clone(),
+                bots: vec!["rev2".into()],
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            replay,
+            ControllerActionResult::RosterAdded {
+                session_id,
+                added: vec![],
+                already_members: vec!["rev2".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn reserved_actions_report_unknown_and_terminal_sessions() {
+        let state = state_with_bots();
+        let unknown = "ses_missing".to_string();
+        for action in [
+            ControllerAction::AddRoster(AddRosterAction {
+                session_id: unknown.clone(),
+                bots: vec!["rev2".into()],
+            }),
+            ControllerAction::EmitStatus(EmitStatusAction {
+                session_id: unknown.clone(),
+                target: "operator".into(),
+                body: "Waiting.".into(),
+            }),
+        ] {
+            assert!(matches!(
+                execute(&state, action).unwrap_err(),
+                ControllerError::NotFound(message) if message == "unknown session ses_missing"
+            ));
+        }
+        let missing_close = execute_with_close_policy(
+            &state,
+            ControllerAction::CloseSession(CloseSessionAction {
+                session_id: unknown,
+                reason: "cancelled".into(),
+            }),
+            ControlledClosePolicy::Allow,
+        )
+        .unwrap_err();
+        assert!(matches!(missing_close, ControllerError::NotFound(_)));
+
+        let session_id = terminal_session(&state, "council", SessionState::Closed);
+        let error = execute(
+            &state,
+            ControllerAction::AddRoster(AddRosterAction {
+                session_id,
+                bots: vec!["rev2".into()],
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(error, ControllerError::Gone(_)));
+    }
+
+    #[test]
+    fn controlled_close_requires_policy_and_runs_terminal_cleanup_once() {
+        let state = state_with_bots();
+        let opened = execute(&state, ControllerAction::OpenSession(review_action())).unwrap();
+        let ControllerActionResult::SessionOpened { session_id, .. } = opened else {
+            panic!("session should open");
+        };
+        let action = CloseSessionAction {
+            session_id: session_id.clone(),
+            reason: "controller_cancelled".into(),
+        };
+
+        let denied = execute_with_close_policy(
+            &state,
+            ControllerAction::CloseSession(action.clone()),
+            ControlledClosePolicy::Deny,
+        )
+        .unwrap_err();
+        assert!(matches!(denied, ControllerError::Forbidden(_)));
+        assert_ne!(
+            SessionState::from_db_str(&state.store.session(&session_id).unwrap().unwrap().state),
+            SessionState::Closed
+        );
+
+        let closed = execute_with_close_policy(
+            &state,
+            ControllerAction::CloseSession(action.clone()),
+            ControlledClosePolicy::Allow,
+        )
+        .unwrap();
+        assert_eq!(
+            closed,
+            ControllerActionResult::SessionClosed {
+                session_id: session_id.clone(),
+                closed: true,
+            }
+        );
+        assert_eq!(
+            pending_frames_for_session(state.store.as_ref(), "rev1", &session_id),
+            0
+        );
+        let replay = execute_with_close_policy(
+            &state,
+            ControllerAction::CloseSession(action),
+            ControlledClosePolicy::Allow,
+        )
+        .unwrap();
+        assert_eq!(
+            replay,
+            ControllerActionResult::SessionClosed {
+                session_id,
+                closed: false,
+            }
+        );
+    }
+
+    #[test]
+    fn emit_status_persists_audit_without_delivering_to_bots() {
+        let state = state_with_bots();
+        let mut open = review_action();
+        open.prompt.clear();
+        let opened = execute(&state, ControllerAction::OpenSession(open)).unwrap();
+        let ControllerActionResult::SessionOpened { session_id, .. } = opened else {
+            panic!("session should open");
+        };
+        let mut north = state.north_tx.subscribe();
+
+        let result = execute(
+            &state,
+            ControllerAction::EmitStatus(EmitStatusAction {
+                session_id: session_id.clone(),
+                target: "operator".into(),
+                body: "Waiting for evidence.".into(),
+            }),
+        )
+        .unwrap();
+        let ControllerActionResult::StatusEmitted { status_id, .. } = result else {
+            panic!("status should be emitted");
+        };
+        let messages = state.store.messages(&session_id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, status_id);
+        assert_eq!(messages[0].author_kind, "status");
+        assert_eq!(messages[0].audience.as_deref(), Some("operator"));
+        assert_eq!(messages[0].content, "Waiting for evidence.");
+        assert_eq!(
+            pending_frames_for_session(state.store.as_ref(), "rev1", &session_id),
+            0
+        );
+        execute(
+            &state,
+            ControllerAction::AddRoster(AddRosterAction {
+                session_id: session_id.clone(),
+                bots: vec!["rev2".into()],
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            pending_frames_for_session(state.store.as_ref(), "rev2", &session_id),
+            0,
+            "operator status must not enter late-joiner conversation context"
+        );
+        let event: serde_json::Value = serde_json::from_str(&north.try_recv().unwrap()).unwrap();
+        assert_eq!(event["type"], "controller_status");
+        assert_eq!(event["payload"]["target"], "operator");
     }
 
     #[test]

@@ -50,6 +50,9 @@ pub struct ActionEnvelope {
 pub enum ControllerAction {
     OpenSession(OpenSessionAction),
     PostMessage(PostMessageAction),
+    AddRoster(AddRosterAction),
+    CloseSession(CloseSessionAction),
+    EmitStatus(EmitStatusAction),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +82,25 @@ pub struct PostMessageAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddRosterAction {
+    pub session_id: String,
+    pub bots: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloseSessionAction {
+    pub session_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmitStatusAction {
+    pub session_id: String,
+    pub target: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionResultEnvelope {
     pub version: u16,
     pub action_id: String,
@@ -88,9 +110,30 @@ pub struct ActionResultEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ControllerActionResult {
-    SessionOpened { session_id: String, deduped: bool },
-    Superseded { session_id: String, old_id: String },
-    MessagePosted { message_id: String },
+    SessionOpened {
+        session_id: String,
+        deduped: bool,
+    },
+    Superseded {
+        session_id: String,
+        old_id: String,
+    },
+    MessagePosted {
+        message_id: String,
+    },
+    RosterAdded {
+        session_id: String,
+        added: Vec<String>,
+        already_members: Vec<String>,
+    },
+    SessionClosed {
+        session_id: String,
+        closed: bool,
+    },
+    StatusEmitted {
+        session_id: String,
+        status_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

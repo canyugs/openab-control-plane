@@ -702,9 +702,7 @@ pub async fn handle_webhook(
             }))
             .into_response())
         }
-        Ok(crate::controller::ControllerActionResult::MessagePosted { .. }) => {
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Ok(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
         Err(e) => {
             // 500 lets GitHub retry a transient failure (the idempotency check above
             // prevents a duplicate council if a retry lands after a partial success).
@@ -773,7 +771,7 @@ pub(crate) async fn review_pr(
             "old_session_id": old_id,
         }))
         .into_response()),
-        ControllerActionResult::MessagePosted { .. } => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        _ => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
 
