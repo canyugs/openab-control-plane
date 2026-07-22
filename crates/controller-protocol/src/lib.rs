@@ -27,11 +27,15 @@ impl Default for VersionOffer {
 
 /// Select the highest mutually supported version.
 pub fn negotiate_version(peer: &VersionOffer) -> Option<u16> {
-    SUPPORTED_VERSIONS
+    highest_mutual_version(SUPPORTED_VERSIONS, peer)
+}
+
+fn highest_mutual_version(supported: &[u16], peer: &VersionOffer) -> Option<u16> {
+    supported
         .iter()
-        .rev()
         .copied()
-        .find(|version| peer.supported_versions.contains(version))
+        .filter(|version| peer.supported_versions.contains(version))
+        .max()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,5 +161,14 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn negotiation_does_not_depend_on_supported_version_order() {
+        let supported = [3, 1, 2];
+        let peer = VersionOffer {
+            supported_versions: vec![1, 2, 4],
+        };
+        assert_eq!(highest_mutual_version(&supported, &peer), Some(2));
     }
 }
