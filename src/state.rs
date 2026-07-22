@@ -20,6 +20,16 @@ fn ws_ping_secs_from_env() -> u64 {
         .unwrap_or(20)
 }
 
+fn controller_auth_from_env() -> Option<crate::controller_api::ControllerAuthConfig> {
+    match crate::controller_api::ControllerAuthConfig::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::error!(%error, "controller action auth configuration rejected; API disabled");
+            None
+        }
+    }
+}
+
 /// One live south connection: its generation + the outbound frame sender.
 type Conn = (u64, mpsc::UnboundedSender<String>);
 
@@ -45,6 +55,12 @@ pub struct AppState {
     pub platform: String,
     /// North API bearer key. None = open (dev/tests).
     pub api_key: Option<String>,
+    /// Versioned deployment-held HMAC peppers for external controller action
+    /// tokens. None disables the external action endpoint fail-closed.
+    pub controller_auth: Option<crate::controller_api::ControllerAuthConfig>,
+    /// Serializes action execution after durable admission so concurrent replay
+    /// cannot execute the interpreter twice in this single-process SQLite runtime.
+    pub controller_action_lock: std::sync::Mutex<()>,
     /// GitHub App credential for minting per-role scoped installation tokens.
     /// None = PAT mode (pr-agent's `deployment_type = "user"`): pods fall back to the
     /// shared `GH_TOKEN` until the App is provisioned (ROADMAP Phase 1).
@@ -110,6 +126,7 @@ impl AppState {
             std::env::var("OABCP_SESSION_CLOSE_WEBHOOK").ok(),
             ws_ping_secs_from_env(),
             pr_review_config_from_env(),
+            controller_auth_from_env(),
         )
     }
 
@@ -155,6 +172,26 @@ impl AppState {
             close_webhook_url,
             ws_ping_secs,
             crate::plugins::pr_review::PrReviewConfig::default(),
+            None,
+        )
+    }
+
+    /// Test/embedding constructor for the external-controller action boundary.
+    pub fn new_with_controller_auth(
+        store: Arc<dyn Store>,
+        controller_auth: crate::controller_api::ControllerAuthConfig,
+    ) -> Arc<AppState> {
+        Self::new_with_options_and_runtime_config(
+            store,
+            None,
+            None,
+            None,
+            None,
+            "http://control-plane.test".into(),
+            None,
+            0,
+            crate::plugins::pr_review::PrReviewConfig::default(),
+            Some(controller_auth),
         )
     }
 
@@ -169,6 +206,7 @@ impl AppState {
         close_webhook_url: Option<String>,
         ws_ping_secs: u64,
         pr_review_config: crate::plugins::pr_review::PrReviewConfig,
+        controller_auth: Option<crate::controller_api::ControllerAuthConfig>,
     ) -> Arc<AppState> {
         let (north_tx, _) = broadcast::channel(1024);
         Arc::new(AppState {
@@ -180,6 +218,8 @@ impl AppState {
             north_tx,
             platform: "feishu".into(),
             api_key,
+            controller_auth,
+            controller_action_lock: std::sync::Mutex::new(()),
             github_app,
             github_webhook_secret,
             bot_discovery_token,
