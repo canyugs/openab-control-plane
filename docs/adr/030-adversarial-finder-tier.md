@@ -14,14 +14,13 @@ move?
 Fifteen context-aware adjudicators then read the actual code at each PR head to
 classify the contested reds (codex-solo + the PRs where council alone passed):
 
-- **12 real recall gaps** the council genuinely missed (stale `hasK3s` after a
-  skip-path reinstall; `getIamPolicy` without policy v3 erasing conditional
-  bindings; case-insensitive GUID rebind bypassing an export guard; a one-click
-  cascade delete where the app's own `ConfirmDialog` convention was skipped).
+- **12 real recall gaps** the council genuinely missed — the shapes now covered
+  by the shipped probes (skip-path invariant staleness, read-modify-write
+  completeness, identity normalization, destructive-default confirmation).
 - **4 minor** — real but the council's LGTM was defensible.
 - **9 flat false positives** — every one a Codex artifact of judging the diff
-  *without repo context* (gqlgen generated code that IS committed; config
-  defaults that ARE handled elsewhere).
+  *without repo context* (generated code that IS committed; config defaults
+  that ARE handled elsewhere).
 
 So on contested reds: 48% real, 36% false. **If Codex reds were the merge gate,
 block-precision would be ~57%** — roughly four in ten unilateral blocks wrong.

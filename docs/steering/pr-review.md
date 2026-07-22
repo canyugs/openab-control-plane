@@ -95,9 +95,9 @@ it short; it should explain what `correctness`, `security`, `tests`, or another
 bare angle means for this PR, not restate generic review categories.
 
 When the diff touches shared state (DB writes, caches, queues, tokens), a
-`correctness` expansion must probe the state hazards below — these are the
-verified class of misses (nuphos#441: three real defects, all in this class,
-zero caught):
+`correctness` expansion must probe the state hazards below — these are a
+verified class of misses (a real batch of shared-state defects, all in this
+class, all missed by a first-pass review):
 - **Write-order windows:** any status/flag set *before* the row/doc it promises
   exists — what does a concurrent reader or retry see in the gap?
 - **Idempotency-key coverage:** does the dedup key cover the *payload*, or only
@@ -110,23 +110,23 @@ zero caught):
   execute — what can change between capture and use, and is a stale value
   wrong or merely old? Verifying the capture happened in the right order is
   NOT the finish line; ask whether the captured value is still true when it
-  is finally used (verified miss, nuphos#478: plan snapshot taken at turn
-  start, stamped at tool time — the plan could complete or be replaced in
-  between; the reviewer confirmed init order and stopped one question short).
+  is finally used (a real miss: a plan/state snapshot taken at the start of a
+  turn and stamped at tool-execution time — it can complete or be replaced in
+  between; confirming the capture order is not the finish line).
 - **Skip-path invariant staleness:** a fast-path or early-return branch that
   skips the normal reconcile/probe/reset step — does a persisted flag or state
   it leaves behind stay true when the skip made it false? A `hasX` left `true`
   after the thing that made it true was wiped is a defect, not a saved
-  round-trip (verified miss, backend#2323/#2330/#2331: custom-image reinstall
-  takes the `imageID != ""` branch, skips the K3s probe, marks the machine
-  READY with `hasK3s` unchanged — a wiped node still accepts cluster deploys).
+  round-trip (a real miss: a provisioning fast-path skipped the normal
+  probe/reset and marked a resource READY while a "capability present" flag
+  stayed true — a wiped node kept accepting workloads it could no longer run).
 - **Read-modify-write completeness:** a policy/config/document read, mutated,
   and written back — does the read fetch the *complete* object the write will
   replace? A partial read (a missing field, an unrequested version, a filtered
-  subset) followed by a full write silently drops what was not read (verified
-  miss, nuphos#485: `getIamPolicy` without `requestedPolicyVersion:3` omits
-  conditional bindings, then `setIamPolicy` replaces the policy without them —
-  silent IAM data loss).
+  subset) followed by a full write silently drops what was not read (a real
+  miss: an IAM get-policy that omits conditional bindings unless the correct
+  policy version is requested, then a full set-policy replaced the policy
+  without them — silent access-control data loss).
 
 These probes stay inside the changed surface; they are not a license to audit
 unrelated code.
@@ -140,7 +140,8 @@ definition per load-bearing symbol.
 When the diff adds or changes a **guard, validator, filter, or allow/deny
 list**, the assigned focus must include a bypass-enumeration pass — actively
 try to defeat the mechanism, not just confirm it handles the intended case
-(verified miss class, zeabur.com#702 round 1: five real bypasses, zero caught):
+(a verified miss class: a path/argument guard where five real bypasses all
+slipped a first-pass review):
 - **Path tricks:** `..` traversal, `./` prefixes, trailing slashes, unresolved
   relative targets — anything a prefix/equality check sees differently than
   the filesystem or shell does.
@@ -156,11 +157,10 @@ try to defeat the mechanism, not just confirm it handles the intended case
   storage against a case-insensitive upstream (GUIDs, emails), un-trimmed vs
   trimmed, or a non-injective transform used as a key. The same principal
   re-entered in a different case, or two distinct names collapsing to one
-  label, slips a dedup/uniqueness guard (verified miss, nuphos#462: Azure app
-  GUIDs stored case-sensitively but resolved case-insensitively by Entra → a
-  differently-cased rebind bypasses the permission-admin export guard; same
-  class backend#2334: lossy `TransformEnvVar` collisions misassign cloned
-  service passwords).
+  label, slips a dedup/uniqueness guard (real misses: cloud app GUIDs stored
+  case-sensitively but resolved case-insensitively upstream, so a
+  differently-cased re-entry bypassed a uniqueness/permission guard; and a
+  lossy name→key transform whose collisions misassigned cloned secrets).
 
 When the diff wires a **destructive or irreversible action** (cascade delete,
 overwrite, wipe) to a control the user triggers in one step, confirm there is a
@@ -168,9 +168,9 @@ proportionate guard — a confirmation, undo, soft-delete, or explicit force fla
 Weigh it against the repo's own bar: if the codebase already has a confirmation
 convention (a `ConfirmDialog`, an "are you sure" pattern used elsewhere) and
 this path skips it, that gap is a real inconsistency, not a style preference
-(verified miss, nuphos#452: `deleteDashboard`/`deletePanel` cascade-delete
-scripts, snapshots, insights, and alerts from a single trash click while the
-same app's `ConfirmDialog` guards lower-stakes actions).
+(a real miss: single-click cascade-deletes of user-authored data — scripts,
+snapshots, insights, alerts — with no confirmation, while the same app already
+had a confirmation-dialog convention used for lower-stakes actions).
 
 Calibrate to the repo's own engineering bar, not an imagined ideal one. A
 capability the diff does not introduce and the codebase deliberately lacks
