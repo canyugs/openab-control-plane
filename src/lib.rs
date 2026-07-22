@@ -26,6 +26,19 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/ws", get(ws::ws_handler))
         .route("/healthz", get(|| async { "ok" }))
+        // Build identity — lets ops confirm which control-plane build is live
+        // without shelling into the pod. git_sha is "unknown" unless the image
+        // build passes GIT_SHA at compile time. (SEI-787)
+        .route(
+            "/version",
+            get(|| async {
+                axum::Json(serde_json::json!({
+                    "name": env!("CARGO_PKG_NAME"),
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "git_sha": option_env!("GIT_SHA").unwrap_or("unknown"),
+                }))
+            }),
+        )
         .merge(api::router())
         .with_state(state)
 }

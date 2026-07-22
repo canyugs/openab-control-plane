@@ -66,6 +66,7 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
     let ping_secs = state.ws_ping_secs;
     let ping_activity = last_activity.clone();
     let ping_bot_id = bot_id.clone();
+    let ping_store = state.store.clone();
     let send_task = tokio::spawn(async move {
         if ping_secs == 0 {
             while let Some(text) = rx.recv().await {
@@ -91,13 +92,19 @@ async fn handle_conn(state: Arc<AppState>, socket: WebSocket, bot_id: String) {
                     }
                 }
                 _ = ping.tick() => {
-                    let idle_ms = crate::store::now_ms() - ping_activity.load(Ordering::Relaxed);
+                    let activity = ping_activity.load(Ordering::Relaxed);
+                    let idle_ms = crate::store::now_ms() - activity;
                     if idle_ms > deadline_ms {
                         tracing::warn!("bot {ping_bot_id} missed websocket pong deadline ({idle_ms}ms idle)");
                         let _ = sink.send(Message::Close(None)).await;
                         let _ = disconnect_tx.send(());
                         break;
                     }
+                    // Flush the in-memory activity clock to the DB so `/v1/bots`
+                    // last_seen tracks real liveness. Throttled to the ping
+                    // interval; only persists while the socket is live, so a
+                    // dead/stale connection stops advancing last_seen. (SEI-785)
+                    let _ = ping_store.touch_last_seen_at(&ping_bot_id, activity);
                     tracing::trace!("ping bot {ping_bot_id}");
                     if sink.send(Message::Ping(Vec::new())).await.is_err() {
                         let _ = disconnect_tx.send(());
