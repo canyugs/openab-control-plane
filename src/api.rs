@@ -20,7 +20,7 @@ use axum::{Json, Router};
 use futures::Stream;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::broadcast;
@@ -520,6 +520,8 @@ struct OpenSession {
     mode: String,
     #[serde(default)]
     prompt: String,
+    #[serde(default)]
+    recipient_inputs: BTreeMap<String, String>,
 }
 
 fn default_mode() -> String {
@@ -544,6 +546,7 @@ async fn open_session(
         chair_bot: req.chair_bot,
         mode: req.mode,
         prompt: req.prompt,
+        recipient_inputs: req.recipient_inputs,
     };
     match controller::execute(&state, ControllerAction::OpenSession(action)) {
         Ok(ControllerActionResult::SessionOpened {
@@ -1727,6 +1730,7 @@ mod tests {
     use axum::Json;
     use futures::StreamExt;
     use serde_json::{json, Value};
+    use std::collections::BTreeMap;
     use std::sync::Arc;
     use tokio::sync::broadcast;
     use tokio::time::{timeout, Duration};
@@ -1998,6 +2002,7 @@ mod tests {
                 chair_bot: Some("chair".into()),
                 mode: "council".into(),
                 prompt: "please review this".into(),
+                recipient_inputs: Default::default(),
             }),
         )
         .await
@@ -2010,6 +2015,45 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].author_kind, "client");
         assert_eq!(messages[0].content, "please review this");
+    }
+
+    #[tokio::test]
+    async fn open_session_rejects_recipient_inputs_before_p3() {
+        let state = state_with_review_bots();
+
+        let Err((status, Json(body))) = super::open_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(super::OpenSession {
+                title: "targeted council".into(),
+                trigger_ref: Some("test:targeted".into()),
+                trigger_fingerprint: None,
+                roster: vec!["chair".into(), "rev1".into()],
+                quorum_n: 1,
+                chair_bot: Some("chair".into()),
+                mode: "council".into(),
+                prompt: "please review this".into(),
+                recipient_inputs: BTreeMap::from([(
+                    "rev1".into(),
+                    "inspect the failure path".into(),
+                )]),
+            }),
+        )
+        .await
+        else {
+            panic!("recipient inputs must fail closed before P3");
+        };
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("recipient_inputs require the P3 atomic-delivery interpreter"));
+        assert!(state
+            .store
+            .list_sessions(None, None, 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

@@ -1,0 +1,83 @@
+[
+  {
+    "version": 1,
+    "action_id": "act_error_00",
+    "error": {
+      "code": "invalid_request",
+      "message": "stable public message",
+      "retryable": false
+    }
+  },
+  {
+    "version": 1,
+    "action_id": "act_error_01",
+    "error": {
+      "code": "unsupported_version",
+      "message": "stable public message",
+      "retryable": false
+    }
+  },
+  {
+    "version": 1,
+    "action_id": "act_error_02",
+    "error": {
+      "code": "unauthorized",
+      "message": "stable public message",
+      "retryable": false
+    }
+  },
+  {
+    "version": 1,
+    "action_id": "act_error_03",
+    "error": {
+      "code": "forbidden",
+      "message": "stable public message",
+      "retryable": false
+    }
+  },
+  {
+    "version": 1,
+    "action_id": "act_error_04",
+    "error": {
+      "code": "not_found",
+      "message": "stable public message",
+      "retryable": false
+    }
+  },
+  {
+    "version": 1,
+    "action_id": "act_error_05",
+    "error": {
+      "code": "gone",
+      "message": "stable public message",
+      "retryable": false
+    }
+  },
+  {
+    "version": 1,
+    "action_id": "act_error_06",
+    "error": {
+      "code": "conflict",
+      "message": "stable public message",
+      "retryable": false
+    }
+  },
+  {
+    "version": 1,
+    "action_id": "act_error_07",
+    "error": {
+      "code": "rate_limited",
+      "message": "stable public message",
+      "retryable": true
+    }
+  },
+  {
+    "version": 1,
+    "action_id": "act_error_08",
+    "error": {
+      "code": "internal",
+      "message": "stable public message",
+      "retryable": true
+    }
+  }
+]

@@ -5,6 +5,7 @@ FROM rust:1.94-slim-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
 COPY src ./src
 # scripts/ holds pr-review-trigger.tmpl, pulled in at compile time via include_str!
 # (src/council.rs). Must be in the build context or the build can't find it.

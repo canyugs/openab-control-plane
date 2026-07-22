@@ -470,6 +470,7 @@ fn review_open_session_action_with_roster_and_fingerprint(
         chair_bot: Some(chair_bot),
         mode: mode.into(),
         prompt: trigger,
+        recipient_inputs: Default::default(),
     })
 }
 
@@ -538,6 +539,7 @@ fn ask_open_session_action_with_roster(
         chair_bot: Some(chair),
         mode: "solo".into(),
         prompt: trigger,
+        recipient_inputs: Default::default(),
     })
 }
 

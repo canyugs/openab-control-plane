@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "action_id": "act_post_001",
+  "action": {
+    "type": "post_message",
+    "params": {
+      "session_id": "ses_001",
+      "content": "Additional source context."
+    }
+  }
+}

@@ -1,0 +1,34 @@
+[
+  {
+    "version": 1,
+    "action_id": "act_open_001",
+    "result": {
+      "type": "session_opened",
+      "data": {
+        "session_id": "ses_001",
+        "deduped": false
+      }
+    }
+  },
+  {
+    "version": 1,
+    "action_id": "act_open_002",
+    "result": {
+      "type": "superseded",
+      "data": {
+        "session_id": "ses_002",
+        "old_id": "ses_001"
+      }
+    }
+  },
+  {
+    "version": 1,
+    "action_id": "act_post_001",
+    "result": {
+      "type": "message_posted",
+      "data": {
+        "message_id": "msg_001"
+      }
+    }
+  }
+]

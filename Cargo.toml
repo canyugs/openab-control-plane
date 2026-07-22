@@ -4,7 +4,13 @@ version = "0.1.38"
 edition = "2021"
 license = "MIT"
 
+[workspace]
+members = ["crates/controller-protocol"]
+default-members = [".", "crates/controller-protocol"]
+resolver = "2"
+
 [dependencies]
+controller-protocol = { path = "crates/controller-protocol" }
 axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
