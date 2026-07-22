@@ -169,7 +169,11 @@ The initial keys are `embedded_github_webhook`,
 `legacy_review_council_dispatch`, `github_token_route`, and
 `review_findings_write`. The last key counts rows; the others count uses. A
 missing key means zero use since the table was created. Invalid webhook
-signatures and unauthenticated/invalid token callers are not counted.
+signatures and unauthenticated/invalid token callers are not counted. Every
+signature-valid delivery to the embedded webhook is counted, including events
+that do not trigger a review and repositories rejected by the allowlist; this
+is intentionally conservative evidence that the embedded ingress is still in
+use.
 
 ## Provider Map
 
