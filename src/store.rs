@@ -222,6 +222,17 @@ pub struct NewReviewFinding {
     pub angle: Option<String>,
 }
 
+/// Durable use count for a deprecated compatibility surface. The key is opaque
+/// to the store so the same mechanism can gate any staged removal; callers own
+/// the key vocabulary and delete it with the compatibility path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompatibilityUsage {
+    pub surface: String,
+    pub uses: i64,
+    pub first_used_at: i64,
+    pub last_used_at: i64,
+}
+
 /// Backing-service seam (design §6c). All callers depend on this, not on SQLite.
 pub trait Store: Send + Sync {
     fn register_bot(
@@ -494,6 +505,12 @@ pub trait Store: Send + Sync {
     /// closes so a pod can't keep acting on GitHub after the verdict.
     fn purge_installation_tokens(&self, session_id: &str) -> Result<()>;
 
+    /// Persist evidence that a deprecated surface was used. This is best-effort
+    /// at call sites: observability must never change the behavior being measured.
+    fn record_compatibility_use(&self, surface: &str, amount: i64) -> Result<()>;
+    /// All compatibility counters, ordered by surface for stable operator output.
+    fn compatibility_usage(&self) -> Result<Vec<CompatibilityUsage>>;
+
     /// Read-only observability snapshot: session outcome aggregates (state split,
     /// 24h throughput, time-to-verdict p50/p95, mode/decision split, findings
     /// totals) + outbox backlog. Distribution only — NOT a quality signal (see C6).
@@ -603,6 +620,15 @@ CREATE TABLE IF NOT EXISTS pending_reviews (
     repo TEXT NOT NULL, pr_number INTEGER NOT NULL,
     fingerprint TEXT, preset TEXT,
     requested_at INTEGER NOT NULL
+);
+-- Durable removal evidence for staged compatibility surfaces. Generic by
+-- design: the store treats `surface` as an opaque key and owns no provider
+-- vocabulary. Counters survive process and image restarts across a release.
+CREATE TABLE IF NOT EXISTS compatibility_usage (
+    surface TEXT PRIMARY KEY,
+    uses INTEGER NOT NULL,
+    first_used_at INTEGER NOT NULL,
+    last_used_at INTEGER NOT NULL
 );
 "#;
 
@@ -2105,6 +2131,40 @@ impl Store for SqliteStore {
         Ok(())
     }
 
+    fn record_compatibility_use(&self, surface: &str, amount: i64) -> Result<()> {
+        if surface.is_empty() || amount <= 0 {
+            anyhow::bail!("compatibility usage needs a non-empty surface and positive amount");
+        }
+        let c = self.conn.lock().unwrap();
+        let now = now_ms();
+        c.execute(
+            "INSERT INTO compatibility_usage (surface, uses, first_used_at, last_used_at)
+             VALUES (?1, ?2, ?3, ?3)
+             ON CONFLICT(surface) DO UPDATE SET
+                 uses = compatibility_usage.uses + excluded.uses,
+                 last_used_at = excluded.last_used_at",
+            params![surface, amount, now],
+        )?;
+        Ok(())
+    }
+
+    fn compatibility_usage(&self) -> Result<Vec<CompatibilityUsage>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt = c.prepare(
+            "SELECT surface, uses, first_used_at, last_used_at
+             FROM compatibility_usage ORDER BY surface ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(CompatibilityUsage {
+                surface: r.get(0)?,
+                uses: r.get(1)?,
+                first_used_at: r.get(2)?,
+                last_used_at: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     fn stats(&self, now: i64) -> Result<Value> {
         let c = self.conn.lock().unwrap();
 
@@ -2573,6 +2633,35 @@ mod tests {
         assert_eq!(percentile(&mut [30, 10, 20], 50.0), Some(20));
         // p>100 clamps to the max instead of panicking on an OOB index.
         assert_eq!(percentile(&mut [1, 2, 3], 150.0), Some(3));
+    }
+
+    #[test]
+    fn compatibility_usage_is_durable_additive_and_stably_ordered() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .record_compatibility_use("legacy_review_council_dispatch", 1)
+            .unwrap();
+        store
+            .record_compatibility_use("embedded_github_webhook", 1)
+            .unwrap();
+        store
+            .record_compatibility_use("embedded_github_webhook", 2)
+            .unwrap();
+
+        let usage = store.compatibility_usage().unwrap();
+        assert_eq!(
+            usage
+                .iter()
+                .map(|row| (row.surface.as_str(), row.uses))
+                .collect::<Vec<_>>(),
+            vec![
+                ("embedded_github_webhook", 3),
+                ("legacy_review_council_dispatch", 1),
+            ]
+        );
+        assert!(usage
+            .iter()
+            .all(|row| row.first_used_at <= row.last_used_at));
     }
 
     #[test]

@@ -1,0 +1,16 @@
+{
+  "action": "created",
+  "installation": { "id": 99 },
+  "repository": { "full_name": "example/repo" },
+  "issue": {
+    "number": 42,
+    "pull_request": { "url": "https://api.github.test/repos/example/repo/pulls/42" },
+    "labels": [{ "name": "review:quick" }]
+  },
+  "comment": {
+    "id": 7001,
+    "body": "/review please check the auth boundary",
+    "author_association": "OWNER",
+    "user": { "type": "User", "login": "fixture-owner" }
+  }
+}

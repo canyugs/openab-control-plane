@@ -153,6 +153,24 @@ live snapshot over whatever the current DB holds; with the durable `/data` PVC
 `DELETE /v1/bots/:id` or PVC wipe still changes it. No Prometheus/OTel — JSON is enough
 for humans and scripts.
 
+### Provider-neutral migration usage (`GET /v1/compatibility-usage`)
+
+ADR 031 removals use a separate authenticated surface so the frozen `/v1/stats`
+shape does not change. Counts are cumulative in SQLite and survive process/image
+restarts; compare snapshots across a full release window rather than resetting
+them in place.
+
+```sh
+curl -s -H "Authorization: Bearer $KEY" \
+  "$PLANE/v1/compatibility-usage" | jq
+```
+
+The initial keys are `embedded_github_webhook`,
+`legacy_review_council_dispatch`, `github_token_route`, and
+`review_findings_write`. The last key counts rows; the others count uses. A
+missing key means zero use since the table was created. Invalid webhook
+signatures and unauthenticated/invalid token callers are not counted.
+
 ## Provider Map
 
 The provider is selected by either:

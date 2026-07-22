@@ -462,6 +462,7 @@ pub async fn handle_webhook(
     if !verify_signature(secret, &body, sig) {
         return Err(StatusCode::FORBIDDEN);
     }
+    state.record_compatibility_use("embedded_github_webhook", 1);
 
     // 2. Parse the event.
     let event = headers
@@ -911,6 +912,159 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    fn replay_fixture(name: &str) -> Value {
+        let raw = match name {
+            "pull_request_opened" => include_str!(
+                "../../../tests/fixtures/github/pull_request_opened.json"
+            ),
+            "pull_request_ready_for_review" => include_str!(
+                "../../../tests/fixtures/github/pull_request_ready_for_review.json"
+            ),
+            "pull_request_draft_opened" => include_str!(
+                "../../../tests/fixtures/github/pull_request_draft_opened.json"
+            ),
+            "issue_comment_review" => include_str!(
+                "../../../tests/fixtures/github/issue_comment_review.json"
+            ),
+            "issue_comment_ask" => include_str!(
+                "../../../tests/fixtures/github/issue_comment_ask.json"
+            ),
+            "issue_comment_mention_review" => include_str!(
+                "../../../tests/fixtures/github/issue_comment_mention_review.json"
+            ),
+            other => panic!("unknown replay fixture {other}"),
+        };
+        serde_json::from_str(raw).unwrap()
+    }
+
+    #[test]
+    fn compatibility_replay_corpus_pins_trigger_interpretation() {
+        let opened = parse_trigger("pull_request", &replay_fixture("pull_request_opened"))
+            .expect("opened fixture triggers");
+        assert_eq!(opened.repo, "example/repo");
+        assert_eq!(opened.pr_number, 42);
+        assert_eq!(opened.reason, "auto");
+        assert_eq!(opened.trigger_fingerprint.as_deref(), Some("sha:abc123"));
+        assert_eq!(opened.preset.as_deref(), Some("full"));
+
+        let ready = parse_trigger(
+            "pull_request",
+            &replay_fixture("pull_request_ready_for_review"),
+        )
+        .expect("ready fixture triggers");
+        assert_eq!(ready.trigger_fingerprint.as_deref(), Some("sha:def456"));
+
+        assert!(parse_trigger(
+            "pull_request",
+            &replay_fixture("pull_request_draft_opened")
+        )
+        .is_none());
+
+        let review = parse_trigger(
+            "issue_comment",
+            &replay_fixture("issue_comment_review"),
+        )
+        .expect("review fixture triggers");
+        assert_eq!(review.reason, "/review");
+        assert_eq!(review.trigger_fingerprint.as_deref(), Some("cmd:7001"));
+        assert_eq!(review.preset.as_deref(), Some("quick"));
+
+        let ask = parse_trigger("issue_comment", &replay_fixture("issue_comment_ask"))
+            .expect("ask fixture triggers");
+        assert_eq!(ask.reason, "ask");
+        assert_eq!(ask.question.as_deref(), Some("why is this a blocker?"));
+
+        with_bot_handle(Some("fixture-council"), || {
+            let mention = parse_trigger(
+                "issue_comment",
+                &replay_fixture("issue_comment_mention_review"),
+            )
+            .expect("mention-review fixture triggers");
+            assert_eq!(mention.reason, "/review");
+            assert_eq!(mention.trigger_fingerprint.as_deref(), Some("cmd:7003"));
+            assert_eq!(
+                mention.review_notes.as_deref(),
+                Some("fixed F1\n\nAdded a regression test.")
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn opened_fixture_pins_normalized_session_plan_and_usage() {
+        let _policy_guard = crate::plugins::pr_review::council::review_policy_env_lock()
+            .lock()
+            .await;
+        let state = state_with_review_bots();
+        state
+            .store
+            .set_standing_roster(&["chair".into(), "rev1".into(), "rev2".into()])
+            .unwrap();
+
+        let response = post_webhook(
+            state.clone(),
+            "pull_request",
+            replay_fixture("pull_request_opened"),
+        )
+        .await;
+        let session_id = response["session_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("fixture did not open a session: {response}"));
+        let session = state.store.session(session_id).unwrap().unwrap();
+        let prompt = state
+            .store
+            .messages(session_id)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.author_kind == "client")
+            .expect("opening prompt is stored")
+            .content;
+        let actual = json!({
+            "title": session.title,
+            "trigger_ref": session.trigger_ref,
+            "trigger_fingerprint": session.trigger_fingerprint,
+            "roster": state.store.roster(session_id).unwrap(),
+            "quorum_n": session.quorum_n,
+            "chair_bot": session.chair_bot,
+            "mode": session.mode,
+            "prompt": prompt,
+        });
+        let expected: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/github/pull_request_opened.plan.json"
+        ))
+        .unwrap();
+        assert_eq!(actual, expected);
+
+        let usage = state.store.compatibility_usage().unwrap();
+        assert_eq!(
+            usage
+                .iter()
+                .map(|row| (row.surface.as_str(), row.uses))
+                .collect::<Vec<_>>(),
+            vec![
+                ("embedded_github_webhook", 1),
+                ("legacy_review_council_dispatch", 1),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_signature_neither_executes_nor_counts_embedded_ingress() {
+        let state = state_with_review_bots();
+        let body = serde_json::to_vec(&replay_fixture("pull_request_opened")).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-github-event", HeaderValue::from_static("pull_request"));
+        headers.insert(
+            "x-hub-signature-256",
+            HeaderValue::from_static(
+                "sha256=0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+        );
+
+        let result = handle_webhook(State(state.clone()), headers, Bytes::from(body)).await;
+        assert!(matches!(result, Err(StatusCode::FORBIDDEN)));
+        assert!(state.store.compatibility_usage().unwrap().is_empty());
     }
 
     #[test]

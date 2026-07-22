@@ -276,6 +276,9 @@ fn dispatch_coordinator(
     state: &Arc<AppState>,
     session: &Session,
 ) -> Result<Option<Box<dyn Coordinator>>> {
+    if session.mode == "review_council" {
+        state.record_compatibility_use_once("legacy_review_council_dispatch", &session.id);
+    }
     if let Some(coord) = coordinator::lookup(&session.mode) {
         return Ok(Some(coord));
     }
@@ -622,6 +625,8 @@ fn record_review_findings(state: &Arc<AppState>, session: &Session, verdict_text
         &rows,
     ) {
         tracing::warn!("record findings for {} failed: {e}", session.id);
+    } else if !rows.is_empty() {
+        state.record_compatibility_use("review_findings_write", rows.len() as i64);
     }
 }
 

@@ -1,0 +1,13 @@
+{
+  "action": "opened",
+  "installation": { "id": 99 },
+  "repository": { "full_name": "example/repo" },
+  "pull_request": {
+    "author_association": "MEMBER",
+    "number": 42,
+    "url": "https://api.github.test/repos/example/repo/pulls/42",
+    "draft": true,
+    "head": { "sha": "draft123" },
+    "labels": []
+  }
+}

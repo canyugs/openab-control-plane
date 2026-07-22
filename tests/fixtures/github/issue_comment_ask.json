@@ -1,0 +1,16 @@
+{
+  "action": "created",
+  "installation": { "id": 99 },
+  "repository": { "full_name": "example/repo" },
+  "issue": {
+    "number": 42,
+    "pull_request": { "url": "https://api.github.test/repos/example/repo/pulls/42" },
+    "labels": []
+  },
+  "comment": {
+    "id": 7002,
+    "body": "/ask why is this a blocker?",
+    "author_association": "MEMBER",
+    "user": { "type": "User", "login": "fixture-member" }
+  }
+}

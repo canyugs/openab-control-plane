@@ -60,9 +60,30 @@ pub struct AppState {
     /// this across the read-modify-write makes the swap atomic. Sync mutex: the
     /// swap path is fully synchronous (no await held).
     pub failover_lock: std::sync::Mutex<()>,
+    /// Process-local dedupe for compatibility counters whose hot paths can run
+    /// repeatedly for one logical object. The durable counter still survives
+    /// restarts; at most one new use is recorded per `(surface, identity)` per
+    /// process lifetime.
+    compatibility_seen: Mutex<HashSet<String>>,
 }
 
 impl AppState {
+    /// Record a migration/deprecation counter without making the observed path
+    /// depend on telemetry availability. The structured warning provides a log
+    /// signal while the store row provides restart-durable release evidence.
+    pub fn record_compatibility_use(&self, surface: &str, amount: i64) {
+        if let Err(error) = self.store.record_compatibility_use(surface, amount) {
+            tracing::warn!(surface, amount, %error, "compatibility usage telemetry failed");
+        }
+    }
+
+    pub fn record_compatibility_use_once(&self, surface: &str, identity: &str) {
+        let key = format!("{surface}\0{identity}");
+        if self.compatibility_seen.lock().unwrap().insert(key) {
+            self.record_compatibility_use(surface, 1);
+        }
+    }
+
     pub fn new(store: Arc<dyn Store>) -> Arc<AppState> {
         Self::new_with_options(
             store,
@@ -130,6 +151,7 @@ impl AppState {
             ws_ping_secs,
             recruit_seen: Mutex::new(HashMap::new()),
             failover_lock: std::sync::Mutex::new(()),
+            compatibility_seen: Mutex::new(HashSet::new()),
         })
     }
 
