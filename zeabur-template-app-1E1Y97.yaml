@@ -220,12 +220,18 @@ spec:
 
               [hooks.pre_seed]
               # Central steering delivery (ADR 003 pull model): the canonical steering doc
-              # lives in R2 as steering.zip {AGENTS.md}; each pod fetches it at boot. One
-              # upload updates every pod, no per-pod push. R2 creds arrive as pod env
-              # (AWS_ACCESS_KEY_ID/_SECRET, region=auto) and are deliberately NOT in
-              # [agent].inherit_env — the untrusted review agent never sees them.
-              sources = ["s3://zeabur-openab-steering/steering.zip"]
-              target = "/home/node"
+              # lives in R2; each pod fetches it at boot. One upload updates every pod, no
+              # per-pod push. R2 creds arrive as pod env (AWS_ACCESS_KEY_ID/_SECRET,
+              # region=auto) and are deliberately NOT in [agent].inherit_env — the untrusted
+              # review agent never sees them.
+              #
+              # CHAIR runs Kiro, which reads steering from .kiro/steering/<name>.md — NOT the
+              # AGENTS.md-style /home/node/AGENTS.md the reviewers use. So the chair pulls the
+              # `kiro` steering variant (steering-kiro.zip, member = openab-pr-review.md) and
+              # extracts it into the Kiro steering dir, overwriting the image-baked copy.
+              # sync-steering.py builds this variant from the same source doc as AGENTS.md.
+              sources = ["s3://zeabur-openab-steering/steering-kiro.zip"]
+              target = "/home/agent/.kiro/steering"
               region = "auto"
               endpoint_url = "https://154bae79a67da12bf2d18e5892f84c4f.r2.cloudflarestorage.com"
               on_failure = "abort"
@@ -255,6 +261,7 @@ spec:
                 ( while sleep 900; do auth || true; done ) &
               fi
               '''
+
           # Deployment-owned steering channel (design.md: agent steering is the
           # bot deployer's job; the plane must not serve it from /bot-config).
           # Content is byte-synced with docs/steering/pr-review.md by
