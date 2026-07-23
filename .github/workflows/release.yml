@@ -1,14 +1,15 @@
 name: release
 
-# Tag a version → test, then build + push the plane image.
-#   git tag v0.1.1 && git push origin v0.1.1   → pushes :0.1.1 and :latest
+# Tag a version → test, then build + push the plane and controller images.
+#   git tag v0.1.1 && git push origin v0.1.1
+#     → ghcr.io/canyugs/openab-control-plane:0.1.1 and :latest
+#     → ghcr.io/canyugs/github-pr-controller:0.1.1 and :latest
 #
-# Registry (#192 complete): images publish to GHCR only
-# (ghcr.io/canyugs/openab-control-plane) — same-origin with the repo, authenticates
-# with the built-in GITHUB_TOKEN (no external secret), and has no anonymous-pull
-# rate limit. The Docker Hub dual-push (and the DOCKERHUB_* secrets) were dropped
-# after both lanes + templates cut over to GHCR; tags ≤0.1.23 still exist on
-# docker.io for rollback, but new tags are GHCR-only.
+# Registry (#192 complete): both images publish to GHCR only, authenticate with
+# the built-in GITHUB_TOKEN (no external secret), and have no anonymous-pull rate
+# limit. The Docker Hub dual-push (and the DOCKERHUB_* secrets) were dropped after
+# both lanes + templates cut over to GHCR; tags ≤0.1.23 still exist on docker.io
+# for rollback, but new tags are GHCR-only.
 #   GHCR push needs the workflow `packages: write` permission below (no secret).
 # NOTE: on the FIRST GHCR push the package is created private — flip it public
 # (Settings → Packages, or `gh api`) so Zeabur pulls it without a pull secret.
@@ -26,18 +27,14 @@ on:
   push:
     tags: ['v*']
 
-# GHCR push authenticates with GITHUB_TOKEN; it needs packages:write. contents
-# stays read (checkout only) — least privilege.
-permissions:
-  contents: read
-  packages: write
-
-env:
-  GHCR_IMAGE: ghcr.io/canyugs/openab-control-plane
+# Jobs opt into only the GITHUB_TOKEN capabilities they need below.
+permissions: {}
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -46,12 +43,31 @@ jobs:
 
   image:
     needs: test
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         include:
-          - arch: amd64
+          - component: plane
+            image: ghcr.io/canyugs/openab-control-plane
+            dockerfile: Dockerfile
+            arch: amd64
             runner: ubuntu-24.04
-          - arch: arm64
+          - component: plane
+            image: ghcr.io/canyugs/openab-control-plane
+            dockerfile: Dockerfile
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - component: controller
+            image: ghcr.io/canyugs/github-pr-controller
+            dockerfile: Dockerfile.github-controller
+            arch: amd64
+            runner: ubuntu-24.04
+          - component: controller
+            image: ghcr.io/canyugs/github-pr-controller
+            dockerfile: Dockerfile.github-controller
+            arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
@@ -74,17 +90,27 @@ jobs:
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           push: true
           platforms: linux/${{ matrix.arch }}
           build-args: |
             GIT_SHA=${{ github.sha }}
           tags: |
-            ${{ env.GHCR_IMAGE }}:${{ env.VERSION }}-${{ matrix.arch }}
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+            ${{ matrix.image }}:${{ env.VERSION }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.component }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}-${{ matrix.arch }}
 
   manifest:
     needs: image
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - component: plane
+            image: ghcr.io/canyugs/openab-control-plane
+          - component: controller
+            image: ghcr.io/canyugs/github-pr-controller
     runs-on: ubuntu-24.04
     steps:
       - name: Log in to GHCR
@@ -93,19 +119,19 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Stitch multi-arch manifest (:X.Y.Z + :latest)
+      - name: Stitch ${{ matrix.component }} multi-arch manifest (:X.Y.Z + :latest)
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           docker buildx imagetools create \
-            -t "${GHCR_IMAGE}:${VERSION}" \
-            -t "${GHCR_IMAGE}:latest" \
-            "${GHCR_IMAGE}:${VERSION}-amd64" \
-            "${GHCR_IMAGE}:${VERSION}-arm64"
+            -t "${{ matrix.image }}:${VERSION}" \
+            -t "${{ matrix.image }}:latest" \
+            "${{ matrix.image }}:${VERSION}-amd64" \
+            "${{ matrix.image }}:${VERSION}-arm64"
       - name: Verify both platforms present
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          out=$(docker buildx imagetools inspect "${GHCR_IMAGE}:${VERSION}")
-          echo "== ${GHCR_IMAGE}:${VERSION} =="
+          out=$(docker buildx imagetools inspect "${{ matrix.image }}:${VERSION}")
+          echo "== ${{ matrix.image }}:${VERSION} =="
           echo "$out"
           echo "$out" | grep -q 'linux/amd64' || { echo "missing linux/amd64" >&2; exit 1; }
           echo "$out" | grep -q 'linux/arm64' || { echo "missing linux/arm64" >&2; exit 1; }
