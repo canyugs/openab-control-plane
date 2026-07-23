@@ -985,6 +985,85 @@ mod tests {
         );
     }
 
+    #[test]
+    fn external_controller_matches_embedded_open_actions_for_full_p0_corpus() {
+        use crate::plugins::pr_review::council::{
+            ask_open_session_action_with_roster,
+            review_open_session_action_with_roster_and_fingerprint,
+            ReviewRereviewContext,
+        };
+        use github_pr_controller::planner;
+
+        let roster = vec!["chair".into(), "rev1".into(), "rev2".into()];
+        let cases = [
+            ("pull_request_opened", "pull_request", None),
+            ("pull_request_ready_for_review", "pull_request", None),
+            ("pull_request_draft_opened", "pull_request", None),
+            ("issue_comment_review", "issue_comment", None),
+            ("issue_comment_ask", "issue_comment", None),
+            (
+                "issue_comment_mention_review",
+                "issue_comment",
+                Some("fixture-council"),
+            ),
+        ];
+
+        for (name, event, handle) in cases {
+            let payload = replay_fixture(name);
+            let embedded_trigger = parse_trigger_with_handle(event, &payload, handle);
+            let controller_trigger = planner::parse_trigger(event, &payload, handle);
+            assert_eq!(
+                embedded_trigger.is_some(),
+                controller_trigger.is_some(),
+                "trigger decision drift for {name}"
+            );
+            let Some(embedded_trigger) = embedded_trigger else {
+                continue;
+            };
+            let controller = planner::build_plan(
+                "fixture-delivery",
+                controller_trigger.unwrap(),
+                &roster,
+                None,
+                "approve",
+            )
+            .open_session_action();
+            let embedded = if embedded_trigger.reason == "ask" {
+                ask_open_session_action_with_roster(
+                    &embedded_trigger.repo,
+                    embedded_trigger.pr_number,
+                    embedded_trigger.question.as_deref().unwrap_or_default(),
+                    embedded_trigger.comment_id,
+                    roster.clone(),
+                )
+                .unwrap()
+            } else {
+                let rereview_context = if embedded_trigger.review_notes.is_some()
+                    || embedded_trigger.review_from_scratch
+                {
+                    Some(ReviewRereviewContext {
+                        base_sha: None,
+                        author_notes: embedded_trigger.review_notes.clone(),
+                        from_scratch: embedded_trigger.review_from_scratch,
+                    })
+                } else {
+                    None
+                };
+                review_open_session_action_with_roster_and_fingerprint(
+                    &embedded_trigger.repo,
+                    embedded_trigger.pr_number,
+                    embedded_trigger.preset.clone(),
+                    roster.clone(),
+                    embedded_trigger.trigger_fingerprint.clone(),
+                    rereview_context,
+                    None,
+                )
+                .unwrap()
+            };
+            assert_eq!(controller, embedded, "session plan drift for {name}");
+        }
+    }
+
     #[tokio::test]
     async fn opened_fixture_pins_normalized_session_plan_and_usage() {
         let state = state_with_review_bots();
