@@ -14,6 +14,7 @@ are retained for bootstrap compatibility and local dogfood.
 | `OABCP_DB` | `plane.db` | SQLite database path. Use `/data/plane.db` with a persistent volume for durability |
 | `OABCP_API_KEY` | _(open)_ | Bearer token for north API authentication. Unset = no auth |
 | `OABCP_CONTROLLER_ACTION_PEPPERS` | _(disabled)_ | JSON map of positive key version to base64url-encoded HMAC pepper, e.g. `{"1":"<32+-byte-secret>"}`. Enables the external controller action API. Invalid/unset configuration disables that API fail-closed. Keep old versions present until every token hashed with them is rotated or revoked |
+| `OABCP_CONTROLLER_EVENT_SIGNING_KEYS` | _(disabled)_ | JSON map of positive key version to base64url-encoded 32+-byte event master key. Enables controller event configuration and the durable dispatcher. OCP derives a per-controller HMAC secret and stores only the key version. Invalid/unset configuration disables event delivery fail-closed. Keep old versions until all events signed with them are delivered or dead-lettered |
 | `OABCP_BOTS` | _(none)_ | Initial bot roster registered at boot. Format: `name:role,name:role,...` e.g. `chair:chair,rev1:reviewer,rev2:reviewer`. Idempotent — existing bots are skipped |
 | `OABCP_WS_URL` | auto-detected | WebSocket URL bots connect to. Override when the internal hostname differs from default |
 | `OABCP_AGENT_COMMAND` | `claude` | Legacy `/bot-config` default agent profile when a pod fetch has no `?agent=`. Do not add new OpenAB config features here; use OpenAB `configUrl` for production |

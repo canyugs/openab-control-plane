@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
     spawn_watchdog(state.clone());
     spawn_liveness(state.clone());
     spawn_review_catchup(state.clone());
+    openab_control_plane::controller_events::spawn_dispatcher(state.clone());
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;

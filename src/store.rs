@@ -301,19 +301,39 @@ pub struct ControllerActionReplay {
     pub response_json: String,
 }
 
+/// Open-session trigger data carried into the same SQLite transaction that
+/// authenticates and admits the controller action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerOpenIntent {
+    pub trigger_ref: String,
+    pub trigger_fingerprint: Option<String>,
+}
+
+/// The trigger decision made at the controller action's durable admission
+/// point. The handler must not repeat liveness reads after this decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControllerOpenDecision {
+    Create,
+    Deduplicate(ControllerSessionBinding),
+    Supersede(ControllerSessionBinding),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControllerActionDenial {
     Credential,
     Grant,
     Scope,
     SessionOwnership,
+    TriggerScope,
     RateQuota { limit: i64, reset_at: i64 },
     ConcurrentSessionQuota { limit: i64, current: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControllerActionStart {
-    Started,
+    Started {
+        open_decision: Option<ControllerOpenDecision>,
+    },
     Replay(ControllerActionReplay),
     InProgress,
     OutcomeUnknown,
@@ -328,6 +348,29 @@ pub struct ControllerSessionBinding {
     pub trigger_ref: String,
     pub trigger_fingerprint: Option<String>,
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerEventDelivery {
+    pub id: String,
+    pub controller_id: String,
+    pub session_id: Option<String>,
+    pub event_type: String,
+    pub endpoint: String,
+    pub key_version: i64,
+    pub body_json: String,
+    pub attempts: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ControllerEventAudit {
+    pub id: i64,
+    pub controller_id: String,
+    pub event_id: String,
+    pub kind: String,
+    pub detail: String,
+    pub created_at: i64,
 }
 
 /// Backing-service seam (design §6c). All callers depend on this, not on SQLite.
@@ -411,7 +454,7 @@ pub trait Store: Send + Sync {
         action_kind: &str,
         scope: &str,
         session_id: Option<&str>,
-        opens_new_session: bool,
+        open_intent: Option<&ControllerOpenIntent>,
         now: i64,
     ) -> Result<ControllerActionStart>;
     fn finish_controller_action(
@@ -428,6 +471,29 @@ pub trait Store: Send + Sync {
         controller_id: &str,
         trigger_ref: &str,
     ) -> Result<Option<ControllerSessionBinding>>;
+    fn configure_controller_events(
+        &self,
+        controller_id: &str,
+        endpoint: &str,
+        key_version: i64,
+        event_types: &[String],
+        now: i64,
+    ) -> Result<bool>;
+    fn claim_controller_events(
+        &self,
+        now: i64,
+        limit: usize,
+        lease_ms: i64,
+    ) -> Result<Vec<ControllerEventDelivery>>;
+    fn complete_controller_event(&self, event_id: &str, delivered_at: i64) -> Result<bool>;
+    fn fail_controller_event(
+        &self,
+        event_id: &str,
+        error: &str,
+        next_attempt_at: Option<i64>,
+        now: i64,
+    ) -> Result<bool>;
+    fn controller_event_audit(&self, controller_id: &str) -> Result<Vec<ControllerEventAudit>>;
 
     fn register_bot(
         &self,
@@ -567,7 +633,7 @@ pub trait Store: Send + Sync {
     /// Close from *any* non-terminal state (the liveness watchdog — the current
     /// state is unknown when a timeout fires). CAS so only one caller wins;
     /// returns true if this call performed the close.
-    fn close_if_active(&self, session_id: &str) -> Result<bool>;
+    fn close_if_active(&self, session_id: &str, event_type: &str, reason: &str) -> Result<bool>;
     /// Record the structured verdict (ADR 013) parsed from the chair's
     /// `[[verdict:…]]` trailer. Called once at normal close; never on timeout.
     fn set_session_verdict(
@@ -907,6 +973,43 @@ CREATE INDEX IF NOT EXISTS idx_controller_sessions_scope
     ON controller_sessions(controller_id, scope, session_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_controller_current_trigger
     ON controller_sessions(controller_id, trigger_ref) WHERE current = 1;
+CREATE TABLE IF NOT EXISTS controller_event_grants (
+    controller_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    granted INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (controller_id, event_type)
+);
+CREATE TABLE IF NOT EXISTS controller_events (
+    id TEXT PRIMARY KEY,
+    controller_id TEXT NOT NULL,
+    session_id TEXT,
+    event_type TEXT NOT NULL,
+    event_endpoint TEXT NOT NULL,
+    event_key_version INTEGER NOT NULL,
+    body_json TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    next_attempt_at INTEGER NOT NULL,
+    lease_until INTEGER,
+    delivered_at INTEGER,
+    last_error TEXT,
+    UNIQUE(controller_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_controller_events_due
+    ON controller_events(state, next_attempt_at, created_at);
+CREATE TABLE IF NOT EXISTS controller_event_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    controller_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_controller_event_audit_controller
+    ON controller_event_audit(controller_id, created_at);
 "#;
 
 /// Additive migrations for DBs created before a column or index existed. Each
@@ -974,6 +1077,15 @@ fn migrate(conn: &Connection) -> Result<()> {
     let _ = conn.execute("ALTER TABLE bots ADD COLUMN note TEXT", []);
     let _ = conn.execute("ALTER TABLE bots ADD COLUMN version TEXT", []);
     let _ = conn.execute("ALTER TABLE bots ADD COLUMN runtime TEXT", []);
+    let _ = conn.execute("ALTER TABLE controllers ADD COLUMN event_endpoint TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE controllers ADD COLUMN event_key_version INTEGER",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE controller_action_idempotency ADD COLUMN session_id TEXT",
+        [],
+    );
     let _ = conn.execute(
         "ALTER TABLE bots ADD COLUMN source TEXT NOT NULL DEFAULT 'registered'",
         [],
@@ -1057,6 +1169,89 @@ fn parse_capabilities(raw: String) -> Vec<String> {
 
 fn parse_runtime(raw: Option<String>) -> Option<Value> {
     raw.and_then(|value| serde_json::from_str(&value).ok())
+}
+
+fn enqueue_controller_event_locked(
+    conn: &Connection,
+    controller_id: &str,
+    session_id: Option<&str>,
+    event_type: &str,
+    payload: Value,
+    idempotency_key: &str,
+    occurred_at: i64,
+) -> Result<()> {
+    let destination = conn
+        .query_row(
+            "SELECT c.event_endpoint, c.event_key_version
+             FROM controllers c
+             JOIN controller_event_grants g ON g.controller_id = c.id
+             WHERE c.id = ?1 AND c.enabled = 1
+               AND c.event_endpoint IS NOT NULL AND c.event_key_version IS NOT NULL
+               AND g.event_type = ?2 AND g.granted = 1",
+            params![controller_id, event_type],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    let Some((event_endpoint, event_key_version)) = destination else {
+        return Ok(());
+    };
+    let event_id = new_id("cev");
+    let body_json = serde_json::to_string(&json!({
+        "version": "1",
+        "event_id": event_id,
+        "controller_id": controller_id,
+        "event_type": event_type,
+        "session_id": session_id,
+        "occurred_at": occurred_at,
+        "payload": payload,
+    }))?;
+    conn.execute(
+        "INSERT OR IGNORE INTO controller_events
+            (id, controller_id, session_id, event_type, event_endpoint, event_key_version,
+             body_json, idempotency_key, state, attempts, created_at, next_attempt_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', 0, ?9, ?9)",
+        params![
+            event_id,
+            controller_id,
+            session_id,
+            event_type,
+            event_endpoint,
+            event_key_version,
+            body_json,
+            idempotency_key,
+            occurred_at
+        ],
+    )?;
+    Ok(())
+}
+
+fn enqueue_controller_session_event_locked(
+    conn: &Connection,
+    session_id: &str,
+    event_type: &str,
+    payload: Value,
+    idempotency_key: &str,
+    occurred_at: i64,
+) -> Result<()> {
+    let controller_id = conn
+        .query_row(
+            "SELECT controller_id FROM controller_sessions WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if let Some(controller_id) = controller_id {
+        enqueue_controller_event_locked(
+            conn,
+            &controller_id,
+            Some(session_id),
+            event_type,
+            payload,
+            idempotency_key,
+            occurred_at,
+        )?;
+    }
+    Ok(())
 }
 
 fn map_bot_inventory(r: &rusqlite::Row<'_>) -> rusqlite::Result<BotInventory> {
@@ -1446,7 +1641,7 @@ impl Store for SqliteStore {
         action_kind: &str,
         scope: &str,
         session_id: Option<&str>,
-        opens_new_session: bool,
+        open_intent: Option<&ControllerOpenIntent>,
         now: i64,
     ) -> Result<ControllerActionStart> {
         let mut c = self.conn.lock().unwrap();
@@ -1598,7 +1793,60 @@ impl Store for SqliteStore {
             ));
         }
 
-        if opens_new_session {
+        let open_decision = if let Some(intent) = open_intent {
+            let existing = tx
+                .query_row(
+                    "SELECT cs.controller_id, cs.scope, cs.trigger_ref,
+                            cs.trigger_fingerprint, cs.session_id, s.state
+                     FROM controller_sessions cs
+                     LEFT JOIN sessions s ON s.id = cs.session_id
+                     WHERE cs.controller_id = ?1 AND cs.trigger_ref = ?2 AND cs.current = 1",
+                    params![controller_id, intent.trigger_ref],
+                    |row| {
+                        Ok((
+                            ControllerSessionBinding {
+                                controller_id: row.get(0)?,
+                                scope: row.get(1)?,
+                                trigger_ref: row.get(2)?,
+                                trigger_fingerprint: row.get(3)?,
+                                session_id: row.get(4)?,
+                            },
+                            row.get::<_, Option<String>>(5)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            match existing {
+                Some((binding, _)) if binding.scope != scope => {
+                    return Ok(ControllerActionStart::Denied(
+                        ControllerActionDenial::TriggerScope,
+                    ));
+                }
+                Some((binding, Some(state)))
+                    if !matches!(
+                        SessionState::from_db_str(&state),
+                        SessionState::Closed | SessionState::Aborted
+                    ) =>
+                {
+                    if matches!(
+                        (
+                            binding.trigger_fingerprint.as_deref(),
+                            intent.trigger_fingerprint.as_deref()
+                        ),
+                        (Some(stored), Some(incoming)) if stored == incoming
+                    ) {
+                        Some(ControllerOpenDecision::Deduplicate(binding))
+                    } else {
+                        Some(ControllerOpenDecision::Supersede(binding))
+                    }
+                }
+                _ => Some(ControllerOpenDecision::Create),
+            }
+        } else {
+            None
+        };
+
+        if matches!(open_decision, Some(ControllerOpenDecision::Create)) {
             let current: i64 = tx.query_row(
                 "SELECT COUNT(*)
                  FROM controller_sessions cs
@@ -1620,19 +1868,20 @@ impl Store for SqliteStore {
 
         tx.execute(
             "INSERT INTO controller_action_idempotency
-                (controller_id, action_id, request_hash, action_kind, scope, state, received_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'processing', ?6)",
+                (controller_id, action_id, request_hash, action_kind, scope, session_id, state, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'processing', ?7)",
             params![
                 controller_id,
                 action_id,
                 request_hash,
                 action_kind,
                 scope,
+                session_id,
                 now
             ],
         )?;
         tx.commit()?;
-        Ok(ControllerActionStart::Started)
+        Ok(ControllerActionStart::Started { open_decision })
     }
 
     fn finish_controller_action(
@@ -1668,6 +1917,19 @@ impl Store for SqliteStore {
                     completed_at
                 ],
             )?;
+            enqueue_controller_event_locked(
+                &tx,
+                controller_id,
+                Some(&binding.session_id),
+                "session.opened",
+                json!({
+                    "scope": binding.scope,
+                    "trigger_ref": binding.trigger_ref,
+                    "trigger_fingerprint": binding.trigger_fingerprint,
+                }),
+                &format!("session.opened:{}", binding.session_id),
+                completed_at,
+            )?;
         }
         let updated = tx.execute(
             "UPDATE controller_action_idempotency
@@ -1683,6 +1945,23 @@ impl Store for SqliteStore {
         )?;
         if updated != 1 {
             anyhow::bail!("controller action is not in processing state");
+        }
+        if !(200..300).contains(&http_status) {
+            let session_id = tx.query_row(
+                "SELECT session_id FROM controller_action_idempotency
+                     WHERE controller_id = ?1 AND action_id = ?2",
+                params![controller_id, action_id],
+                |row| row.get::<_, Option<String>>(0),
+            )?;
+            enqueue_controller_event_locked(
+                &tx,
+                controller_id,
+                session_id.as_deref(),
+                "action.failed",
+                json!({ "action_id": action_id, "http_status": http_status }),
+                &format!("action.failed:{action_id}"),
+                completed_at,
+            )?;
         }
         tx.commit()?;
         Ok(())
@@ -1710,6 +1989,173 @@ impl Store for SqliteStore {
             },
         )
         .optional()?)
+    }
+
+    fn configure_controller_events(
+        &self,
+        controller_id: &str,
+        endpoint: &str,
+        key_version: i64,
+        event_types: &[String],
+        now: i64,
+    ) -> Result<bool> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let updated = tx.execute(
+            "UPDATE controllers SET event_endpoint = ?2, event_key_version = ?3, updated_at = ?4
+             WHERE id = ?1",
+            params![controller_id, endpoint, key_version, now],
+        )?;
+        if updated != 1 {
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE controller_event_grants SET granted = 0, updated_at = ?2
+             WHERE controller_id = ?1",
+            params![controller_id, now],
+        )?;
+        for event_type in event_types {
+            tx.execute(
+                "INSERT INTO controller_event_grants
+                    (controller_id, event_type, granted, updated_at)
+                 VALUES (?1, ?2, 1, ?3)
+                 ON CONFLICT(controller_id, event_type) DO UPDATE SET
+                    granted = 1, updated_at = excluded.updated_at",
+                params![controller_id, event_type, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    fn claim_controller_events(
+        &self,
+        now: i64,
+        limit: usize,
+        lease_ms: i64,
+    ) -> Result<Vec<ControllerEventDelivery>> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE controller_events SET state = 'pending', lease_until = NULL
+             WHERE state = 'delivering' AND lease_until <= ?1",
+            params![now],
+        )?;
+        let ids = {
+            let mut stmt = tx.prepare(
+                "SELECT e.id FROM controller_events e
+                 JOIN controllers c ON c.id = e.controller_id
+                 WHERE e.state = 'pending' AND e.next_attempt_at <= ?1 AND c.enabled = 1
+                 ORDER BY e.next_attempt_at, e.created_at LIMIT ?2",
+            )?;
+            let rows = stmt
+                .query_map(params![now, limit as i64], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rows
+        };
+        let lease_until = now.saturating_add(lease_ms);
+        let mut deliveries = Vec::new();
+        for id in ids {
+            if tx.execute(
+                "UPDATE controller_events
+                 SET state = 'delivering', attempts = attempts + 1, lease_until = ?2
+                 WHERE id = ?1 AND state = 'pending'",
+                params![id, lease_until],
+            )? != 1
+            {
+                continue;
+            }
+            deliveries.push(tx.query_row(
+                "SELECT id, controller_id, session_id, event_type,
+                        event_endpoint, event_key_version, body_json,
+                        attempts, created_at
+                 FROM controller_events WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(ControllerEventDelivery {
+                        id: row.get(0)?,
+                        controller_id: row.get(1)?,
+                        session_id: row.get(2)?,
+                        event_type: row.get(3)?,
+                        endpoint: row.get(4)?,
+                        key_version: row.get(5)?,
+                        body_json: row.get(6)?,
+                        attempts: row.get(7)?,
+                        created_at: row.get(8)?,
+                    })
+                },
+            )?);
+        }
+        tx.commit()?;
+        Ok(deliveries)
+    }
+
+    fn complete_controller_event(&self, event_id: &str, delivered_at: i64) -> Result<bool> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.execute(
+            "UPDATE controller_events SET state = 'delivered', delivered_at = ?2,
+                    lease_until = NULL, last_error = NULL
+             WHERE id = ?1 AND state = 'delivering'",
+            params![event_id, delivered_at],
+        )? == 1)
+    }
+
+    fn fail_controller_event(
+        &self,
+        event_id: &str,
+        error: &str,
+        next_attempt_at: Option<i64>,
+        now: i64,
+    ) -> Result<bool> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let updated = if let Some(next_attempt_at) = next_attempt_at {
+            tx.execute(
+                "UPDATE controller_events SET state = 'pending', next_attempt_at = ?2,
+                        lease_until = NULL, last_error = ?3
+                 WHERE id = ?1 AND state = 'delivering'",
+                params![event_id, next_attempt_at, error],
+            )?
+        } else {
+            let updated = tx.execute(
+                "UPDATE controller_events SET state = 'dead_letter', lease_until = NULL,
+                        last_error = ?2
+                 WHERE id = ?1 AND state = 'delivering'",
+                params![event_id, error],
+            )?;
+            if updated == 1 {
+                tx.execute(
+                    "INSERT INTO controller_event_audit
+                        (controller_id, event_id, kind, detail, created_at)
+                     SELECT controller_id, id, 'dead_letter', ?2, ?3
+                     FROM controller_events WHERE id = ?1",
+                    params![event_id, error, now],
+                )?;
+            }
+            updated
+        };
+        tx.commit()?;
+        Ok(updated == 1)
+    }
+
+    fn controller_event_audit(&self, controller_id: &str) -> Result<Vec<ControllerEventAudit>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt = c.prepare(
+            "SELECT id, controller_id, event_id, kind, detail, created_at
+             FROM controller_event_audit WHERE controller_id = ?1
+             ORDER BY created_at DESC, id DESC LIMIT 200",
+        )?;
+        let rows = stmt.query_map(params![controller_id], |row| {
+            Ok(ControllerEventAudit {
+                id: row.get(0)?,
+                controller_id: row.get(1)?,
+                event_id: row.get(2)?,
+                kind: row.get(3)?,
+                detail: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     fn register_bot(
@@ -2174,6 +2620,14 @@ impl Store for SqliteStore {
                      WHERE id = ?1 AND state NOT IN ('closed', 'aborted')",
                     params![existing.id.as_str(), created_at],
                 )?;
+                enqueue_controller_session_event_locked(
+                    &tx,
+                    &existing.id,
+                    "session.superseded",
+                    json!({ "reason": "superseded" }),
+                    &format!("session.superseded:{}", existing.id),
+                    created_at,
+                )?;
                 outcome = SessionCreateOutcome::Superseded {
                     old_id: existing.id,
                 };
@@ -2531,13 +2985,26 @@ impl Store for SqliteStore {
         Ok(n == 1)
     }
 
-    fn close_if_active(&self, session_id: &str) -> Result<bool> {
-        let c = self.conn.lock().unwrap();
-        let n = c.execute(
+    fn close_if_active(&self, session_id: &str, event_type: &str, reason: &str) -> Result<bool> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let closed_at = now_ms();
+        let n = tx.execute(
             "UPDATE sessions SET state = 'closed', closed_at = ?2
              WHERE id = ?1 AND state NOT IN ('closed', 'aborted')",
-            params![session_id, now_ms()],
+            params![session_id, closed_at],
         )?;
+        if n == 1 {
+            enqueue_controller_session_event_locked(
+                &tx,
+                session_id,
+                event_type,
+                json!({ "state": "closed", "reason": reason }),
+                &format!("{event_type}:{session_id}:{closed_at}"),
+                closed_at,
+            )?;
+        }
+        tx.commit()?;
         Ok(n == 1)
     }
 
@@ -2570,8 +3037,10 @@ impl Store for SqliteStore {
         result_author_id: Option<&str>,
         result_message_ids_json: Option<&str>,
     ) -> Result<bool> {
-        let c = self.conn.lock().unwrap();
-        let n = c.execute(
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let closed_at = now_ms();
+        let n = tx.execute(
             "UPDATE sessions SET state = 'closed', closed_at = ?3,
                     decision = ?4, findings_red = ?5, findings_yellow = ?6, findings_green = ?7,
                     result_author_id = ?8, result_message_ids = ?9
@@ -2579,7 +3048,7 @@ impl Store for SqliteStore {
             params![
                 session_id,
                 from.as_str(),
-                now_ms(),
+                closed_at,
                 decision,
                 red,
                 yellow,
@@ -2588,6 +3057,24 @@ impl Store for SqliteStore {
                 result_message_ids_json
             ],
         )?;
+        if n == 1 {
+            enqueue_controller_session_event_locked(
+                &tx,
+                session_id,
+                "session.terminal",
+                json!({
+                    "state": "closed",
+                    "reason": "normal",
+                    "decision": decision,
+                    "findings_red": red,
+                    "findings_yellow": yellow,
+                    "findings_green": green,
+                }),
+                &format!("session.terminal:{session_id}:{closed_at}"),
+                closed_at,
+            )?;
+        }
+        tx.commit()?;
         Ok(n == 1)
     }
 
@@ -2823,12 +3310,27 @@ impl Store for SqliteStore {
     ) -> Result<Message> {
         let id = new_id("msg");
         let created_at = now_ms();
-        let c = self.conn.lock().unwrap();
-        c.execute(
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
             "INSERT INTO messages (id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at],
         )?;
+        enqueue_controller_session_event_locked(
+            &tx,
+            session_id,
+            "session.progress",
+            json!({
+                "message_id": id,
+                "author_kind": author_kind,
+                "author_id": author_id,
+                "audience": audience,
+            }),
+            &format!("session.progress:{id}"),
+            created_at,
+        )?;
+        tx.commit()?;
         Ok(Message {
             id,
             session_id: session_id.to_string(),
@@ -3349,11 +3851,13 @@ mod tests {
                     "open_session",
                     "scope:lease",
                     None,
-                    false,
+                    None,
                     started_at,
                 )
                 .unwrap(),
-            ControllerActionStart::Started
+            ControllerActionStart::Started {
+                open_decision: None,
+            }
         );
         assert_eq!(
             store
@@ -3365,7 +3869,7 @@ mod tests {
                     "open_session",
                     "scope:lease",
                     None,
-                    false,
+                    None,
                     started_at + CONTROLLER_ACTION_LEASE_MS,
                 )
                 .unwrap(),
@@ -3385,7 +3889,7 @@ mod tests {
                         "open_session",
                         "scope:lease",
                         None,
-                        false,
+                        None,
                         now,
                     )
                     .unwrap(),
@@ -4646,5 +5150,140 @@ mod tests {
             Some(seen),
             "backward touch must not regress last_seen",
         );
+    }
+
+    #[test]
+    fn controller_open_admission_decides_liveness_dedupe_and_supersede_atomically() {
+        let store = SqliteStore::memory().unwrap();
+        let now = 1_000_000;
+        store
+            .upsert_controller_installation("ctrl-atomic", 1, 60)
+            .unwrap();
+        store
+            .put_controller_action_token(
+                "tok-atomic",
+                "ctrl-atomic",
+                &[7; 32],
+                1,
+                now - 1,
+                None,
+            )
+            .unwrap();
+        store
+            .set_controller_action_grant("ctrl-atomic", "open_session", true)
+            .unwrap();
+        store
+            .set_controller_scope_binding("ctrl-atomic", "scope:atomic", true)
+            .unwrap();
+        let session = store
+            .create_session("atomic", Some("controller:atomic"), 1, None, &[], "solo")
+            .unwrap();
+        let binding = ControllerSessionBinding {
+            controller_id: "ctrl-atomic".into(),
+            scope: "scope:atomic".into(),
+            trigger_ref: "trigger:atomic".into(),
+            trigger_fingerprint: Some("v1".into()),
+            session_id: session.id.clone(),
+        };
+        let credential = [ControllerCredentialHash {
+            pepper_version: 1,
+            token_hash: vec![7; 32],
+        }];
+        let first_intent = ControllerOpenIntent {
+            trigger_ref: binding.trigger_ref.clone(),
+            trigger_fingerprint: binding.trigger_fingerprint.clone(),
+        };
+        assert!(matches!(
+            store
+                .begin_controller_action(
+                    "ctrl-atomic",
+                    &credential,
+                    "act-initial",
+                    &[1; 32],
+                    "open_session",
+                    "scope:atomic",
+                    None,
+                    Some(&first_intent),
+                    now,
+                )
+                .unwrap(),
+            ControllerActionStart::Started {
+                open_decision: Some(ControllerOpenDecision::Create)
+            }
+        ));
+        store
+            .finish_controller_action(
+                "ctrl-atomic",
+                "act-initial",
+                200,
+                "{}",
+                Some(&binding),
+                now,
+            )
+            .unwrap();
+
+        assert!(matches!(
+            store
+                .begin_controller_action(
+                    "ctrl-atomic",
+                    &credential,
+                    "act-dedupe",
+                    &[2; 32],
+                    "open_session",
+                    "scope:atomic",
+                    None,
+                    Some(&first_intent),
+                    now + 1,
+                )
+                .unwrap(),
+            ControllerActionStart::Started {
+                open_decision: Some(ControllerOpenDecision::Deduplicate(_))
+            }
+        ));
+
+        let changed = ControllerOpenIntent {
+            trigger_ref: binding.trigger_ref.clone(),
+            trigger_fingerprint: Some("v2".into()),
+        };
+        assert!(matches!(
+            store
+                .begin_controller_action(
+                    "ctrl-atomic",
+                    &credential,
+                    "act-supersede",
+                    &[3; 32],
+                    "open_session",
+                    "scope:atomic",
+                    None,
+                    Some(&changed),
+                    now + 2,
+                )
+                .unwrap(),
+            ControllerActionStart::Started {
+                open_decision: Some(ControllerOpenDecision::Supersede(_))
+            }
+        ));
+
+        store
+            .close_if_active(&session.id, "session.terminal", "external-close")
+            .unwrap();
+        assert!(matches!(
+            store
+                .begin_controller_action(
+                    "ctrl-atomic",
+                    &credential,
+                    "act-after-close",
+                    &[4; 32],
+                    "open_session",
+                    "scope:atomic",
+                    None,
+                    Some(&first_intent),
+                    now + 3,
+                )
+                .unwrap(),
+            ControllerActionStart::Started {
+                open_decision: Some(ControllerOpenDecision::Create)
+            }
+        ));
     }
 }

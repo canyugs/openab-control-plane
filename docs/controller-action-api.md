@@ -1,21 +1,24 @@
 # Controller Action API
 
-Status: P4 provider-neutral boundary. This API implements the inbound action
-half of [ADR 008](adr/008-external-controller-protocol.md). Runtime-event
-delivery is a separate P5 deliverable.
+Status: P5 provider-neutral boundary. This API implements inbound actions and
+durable signed runtime-event delivery from
+[ADR 008](adr/008-external-controller-protocol.md).
 
 ## Configuration
 
-Set both variables on OCP:
+Set all three variables on OCP:
 
 ```text
 OABCP_API_KEY=<root operator bearer>
 OABCP_CONTROLLER_ACTION_PEPPERS={"1":"<base64url-encoded 32+-byte secret>"}
+OABCP_CONTROLLER_EVENT_SIGNING_KEYS={"1":"<base64url-encoded 32+-byte secret>"}
 ```
 
 Pepper versions are positive integers. OCP stores only the HMAC-SHA256 of each
 action token (using `pepper_vN` as the HMAC key) and the selected version. Keep
 an old pepper configured until its tokens have been rotated or revoked.
+Event signing keys are also versioned deployment secrets. OCP derives a unique
+HMAC secret for each controller and stores only the selected key version.
 
 ## Install a controller
 
@@ -58,6 +61,65 @@ Authorization: Bearer <OABCP_API_KEY>
 Content-Type: application/json
 
 {"enabled":false}
+```
+
+## Configure runtime events
+
+Configure an HTTPS endpoint and explicit provider-neutral event grants after
+creating the installation:
+
+```http
+POST /v1/controller-installations/<controller_id>/events
+Authorization: Bearer <OABCP_API_KEY>
+Content-Type: application/json
+
+{
+  "endpoint": "https://controller.example.com/openab/events?version=1",
+  "events": [
+    "session.opened",
+    "session.progress",
+    "session.terminal",
+    "session.timeout",
+    "session.superseded",
+    "action.failed"
+  ]
+}
+```
+
+The response returns the controller-specific `event_signing_secret`. Store it
+in the controller's secret store. Event rows are committed with their action,
+message, or terminal session transition before dispatch. OCP sends the exact
+stored JSON bytes with these headers:
+
+```text
+X-OAB-Controller-ID: <controller_id>
+X-OAB-Event-ID: <event_id>
+X-OAB-Timestamp: <unix seconds>
+X-OAB-Signature: sha256=<lowercase hex HMAC>
+```
+
+The canonical HMAC input is:
+
+```text
+v1
+<controller_id>
+<event_id>
+<timestamp>
+POST
+<exact encoded path and query>
+<sha256 lowercase hex of exact body bytes>
+```
+
+Receivers reject timestamps outside five minutes and retain accepted event ids
+for at least ten minutes to reject replays. Delivery has a ten-second request
+timeout and retries after 10, 30, and 90 seconds. Four failed attempts, or a
+five-minute delivery window, moves the event to dead letter without rolling
+back the already-valid runtime transition. Operator-visible dead letters are
+available at:
+
+```http
+GET /v1/controller-installations/<controller_id>/event-audit
+Authorization: Bearer <OABCP_API_KEY>
 ```
 
 ## Execute an action
