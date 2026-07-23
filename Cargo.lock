@@ -551,6 +551,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "github-pr-controller"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "hex",
+ "hmac",
+ "http-body-util",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

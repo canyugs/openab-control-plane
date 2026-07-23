@@ -6,6 +6,11 @@ configuration is a separate concern: production bots should prefer OpenAB
 [ADR 010](adr/010-openab-configurl-boundary.md). The `/bot-config` settings below
 are retained for bootstrap compatibility and local dogfood.
 
+The independently deployable, plan-only GitHub adapter has a separate
+configuration namespace, database, image, and readiness contract. See
+[GitHub PR controller](github-pr-controller.md). It deliberately ignores every
+`OABCP_*` variable.
+
 ## Control plane
 
 | Variable | Default | Description |
