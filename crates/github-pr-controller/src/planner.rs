@@ -265,7 +265,8 @@ fn parse_ask(comment: &str, handle: Option<&str>) -> Option<String> {
     if strip_ci_word(rest, "review").is_some() || strip_ci_word(rest, "full").is_some() {
         return None;
     }
-    Some(rest.to_string())
+    let question = rest.trim();
+    (!question.is_empty()).then(|| question.to_string())
 }
 
 #[cfg(test)]
@@ -329,5 +330,18 @@ mod tests {
         assert_eq!(plan.trigger_ref, "github:pr/example/repo#42");
         assert_eq!(plan.quorum_n, 2);
         assert!(plan.proposed_writes.is_empty());
+    }
+
+    #[test]
+    fn bare_or_prefix_colliding_mentions_do_not_create_empty_asks() {
+        assert_eq!(parse_ask("@fixture-council", Some("fixture-council")), None);
+        assert_eq!(
+            parse_ask("@fixture-council-admin help", Some("fixture-council")),
+            None
+        );
+        assert_eq!(
+            parse_ask("@fixture-council help", Some("fixture-council")),
+            Some("help".into())
+        );
     }
 }
