@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod controller;
+pub mod controller_api;
 pub mod coordinator;
 pub mod github_app;
 pub mod identity;

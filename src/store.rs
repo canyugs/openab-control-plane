@@ -6,11 +6,14 @@
 //! is deliberate (see design §6c "12-factor posture").
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use subtle::ConstantTimeEq;
+
+const CONTROLLER_ACTION_LEASE_MS: i64 = 5 * 60 * 1000;
 
 pub fn now_ms() -> i64 {
     SystemTime::now()
@@ -251,8 +254,181 @@ pub struct CompatibilityUsage {
     pub last_used_at: i64,
 }
 
+/// One independently installed external controller. Quotas are installation-
+/// scoped and intentionally live beside the installation instead of in an
+/// untyped manifest blob (ADR 008 / provider-neutral migration P4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerInstallation {
+    pub id: String,
+    pub enabled: bool,
+    pub max_concurrent_sessions: i64,
+    pub max_actions_per_minute: i64,
+}
+
+/// One hashed action credential. Multiple rows per installation provide the
+/// bounded overlap needed for token rotation; `pepper_version` selects the
+/// deployment-held HMAC key without storing that key in SQLite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerActionToken {
+    pub id: String,
+    pub controller_id: String,
+    pub token_hash: Vec<u8>,
+    pub pepper_version: i64,
+}
+
+/// Hashed token material supplied to an atomic installation or rotation
+/// transaction. The plaintext credential never crosses the store boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewControllerActionToken {
+    pub id: String,
+    pub token_hash: Vec<u8>,
+    pub pepper_version: i64,
+    pub not_before: i64,
+}
+
+/// One deployment-keyed candidate hash for atomically revalidating a bearer
+/// credential inside the action admission transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerCredentialHash {
+    pub pepper_version: i64,
+    pub token_hash: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerActionReplay {
+    pub request_hash: Vec<u8>,
+    pub http_status: i64,
+    pub response_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControllerActionDenial {
+    Credential,
+    Grant,
+    Scope,
+    SessionOwnership,
+    RateQuota { limit: i64, reset_at: i64 },
+    ConcurrentSessionQuota { limit: i64, current: i64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControllerActionStart {
+    Started,
+    Replay(ControllerActionReplay),
+    InProgress,
+    OutcomeUnknown,
+    RequestMismatch,
+    Denied(ControllerActionDenial),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerSessionBinding {
+    pub controller_id: String,
+    pub scope: String,
+    pub trigger_ref: String,
+    pub trigger_fingerprint: Option<String>,
+    pub session_id: String,
+}
+
 /// Backing-service seam (design §6c). All callers depend on this, not on SQLite.
 pub trait Store: Send + Sync {
+    /// P4 external-controller installation primitives. Provisioning is still an
+    /// operator concern; these typed methods are the storage boundary used by
+    /// the future OAB Father surface and by conformance tests.
+    fn upsert_controller_installation(
+        &self,
+        controller_id: &str,
+        max_concurrent_sessions: i64,
+        max_actions_per_minute: i64,
+    ) -> Result<()>;
+    #[allow(clippy::too_many_arguments)]
+    fn provision_controller_installation(
+        &self,
+        controller_id: &str,
+        max_concurrent_sessions: i64,
+        max_actions_per_minute: i64,
+        actions: &[String],
+        scopes: &[String],
+        token: &NewControllerActionToken,
+    ) -> Result<bool>;
+    fn controller_installation(
+        &self,
+        controller_id: &str,
+    ) -> Result<Option<ControllerInstallation>>;
+    fn set_controller_installation_enabled(
+        &self,
+        controller_id: &str,
+        enabled: bool,
+    ) -> Result<bool>;
+    #[allow(clippy::too_many_arguments)]
+    fn put_controller_action_token(
+        &self,
+        token_id: &str,
+        controller_id: &str,
+        token_hash: &[u8],
+        pepper_version: i64,
+        not_before: i64,
+        expires_at: Option<i64>,
+    ) -> Result<()>;
+    fn expire_controller_action_tokens(
+        &self,
+        controller_id: &str,
+        expires_at: i64,
+        now: i64,
+    ) -> Result<usize>;
+    fn rotate_controller_action_token(
+        &self,
+        controller_id: &str,
+        token: &NewControllerActionToken,
+        old_tokens_expire_at: i64,
+    ) -> Result<bool>;
+    fn revoke_controller_action_token(
+        &self,
+        controller_id: &str,
+        token_id: &str,
+        revoked_at: i64,
+    ) -> Result<bool>;
+    fn active_controller_action_tokens(&self, now: i64) -> Result<Vec<ControllerActionToken>>;
+    fn set_controller_action_grant(
+        &self,
+        controller_id: &str,
+        action_kind: &str,
+        granted: bool,
+    ) -> Result<()>;
+    fn set_controller_scope_binding(
+        &self,
+        controller_id: &str,
+        scope: &str,
+        enabled: bool,
+    ) -> Result<()>;
+    #[allow(clippy::too_many_arguments)]
+    fn begin_controller_action(
+        &self,
+        controller_id: &str,
+        credential_hashes: &[ControllerCredentialHash],
+        action_id: &str,
+        request_hash: &[u8],
+        action_kind: &str,
+        scope: &str,
+        session_id: Option<&str>,
+        opens_new_session: bool,
+        now: i64,
+    ) -> Result<ControllerActionStart>;
+    fn finish_controller_action(
+        &self,
+        controller_id: &str,
+        action_id: &str,
+        http_status: i64,
+        response_json: &str,
+        session_binding: Option<&ControllerSessionBinding>,
+        completed_at: i64,
+    ) -> Result<()>;
+    fn controller_session_for_trigger(
+        &self,
+        controller_id: &str,
+        trigger_ref: &str,
+    ) -> Result<Option<ControllerSessionBinding>>;
+
     fn register_bot(
         &self,
         name: &str,
@@ -664,6 +840,73 @@ CREATE TABLE IF NOT EXISTS compatibility_usage (
     first_used_at INTEGER NOT NULL,
     last_used_at INTEGER NOT NULL
 );
+-- Provider-neutral external-controller boundary (ADR 008 / migration P4).
+-- These are additive typed tables so the previous OCP image ignores them and
+-- still starts against the same database.
+CREATE TABLE IF NOT EXISTS controllers (
+    id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    max_concurrent_sessions INTEGER NOT NULL DEFAULT 5,
+    max_actions_per_minute INTEGER NOT NULL DEFAULT 60,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS controller_action_tokens (
+    id TEXT PRIMARY KEY,
+    controller_id TEXT NOT NULL,
+    token_hash BLOB NOT NULL,
+    pepper_version INTEGER NOT NULL,
+    not_before INTEGER NOT NULL,
+    expires_at INTEGER,
+    revoked_at INTEGER,
+    created_at INTEGER NOT NULL,
+    UNIQUE(controller_id, token_hash, pepper_version)
+);
+CREATE INDEX IF NOT EXISTS idx_controller_action_tokens_active
+    ON controller_action_tokens(controller_id, revoked_at, expires_at);
+CREATE TABLE IF NOT EXISTS controller_action_grants (
+    controller_id TEXT NOT NULL,
+    action_kind TEXT NOT NULL,
+    granted INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (controller_id, action_kind)
+);
+CREATE TABLE IF NOT EXISTS controller_bindings (
+    controller_id TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (controller_id, scope)
+);
+CREATE TABLE IF NOT EXISTS controller_action_idempotency (
+    controller_id TEXT NOT NULL,
+    action_id TEXT NOT NULL,
+    request_hash BLOB NOT NULL,
+    action_kind TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    state TEXT NOT NULL,
+    http_status INTEGER,
+    response_json TEXT,
+    received_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    PRIMARY KEY (controller_id, action_id)
+);
+CREATE INDEX IF NOT EXISTS idx_controller_actions_rate
+    ON controller_action_idempotency(controller_id, received_at);
+CREATE TABLE IF NOT EXISTS controller_sessions (
+    controller_id TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    trigger_ref TEXT NOT NULL,
+    trigger_fingerprint TEXT,
+    session_id TEXT NOT NULL UNIQUE,
+    current INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (controller_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_controller_sessions_scope
+    ON controller_sessions(controller_id, scope, session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_controller_current_trigger
+    ON controller_sessions(controller_id, trigger_ref) WHERE current = 1;
 "#;
 
 /// Additive migrations for DBs created before a column or index existed. Each
@@ -910,6 +1153,565 @@ impl SqliteStore {
 }
 
 impl Store for SqliteStore {
+    fn upsert_controller_installation(
+        &self,
+        controller_id: &str,
+        max_concurrent_sessions: i64,
+        max_actions_per_minute: i64,
+    ) -> Result<()> {
+        let now = now_ms();
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO controllers
+                (id, enabled, max_concurrent_sessions, max_actions_per_minute, created_at, updated_at)
+             VALUES (?1, 1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(id) DO UPDATE SET
+                max_concurrent_sessions = excluded.max_concurrent_sessions,
+                max_actions_per_minute = excluded.max_actions_per_minute,
+                updated_at = excluded.updated_at",
+            params![
+                controller_id,
+                max_concurrent_sessions,
+                max_actions_per_minute,
+                now
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn provision_controller_installation(
+        &self,
+        controller_id: &str,
+        max_concurrent_sessions: i64,
+        max_actions_per_minute: i64,
+        actions: &[String],
+        scopes: &[String],
+        token: &NewControllerActionToken,
+    ) -> Result<bool> {
+        let now = now_ms();
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO controllers
+                (id, enabled, max_concurrent_sessions, max_actions_per_minute, created_at, updated_at)
+             VALUES (?1, 1, ?2, ?3, ?4, ?4)",
+            params![
+                controller_id,
+                max_concurrent_sessions,
+                max_actions_per_minute,
+                now
+            ],
+        )?;
+        if inserted == 0 {
+            return Ok(false);
+        }
+        for action in actions {
+            tx.execute(
+                "INSERT INTO controller_action_grants
+                    (controller_id, action_kind, granted, updated_at)
+                 VALUES (?1, ?2, 1, ?3)",
+                params![controller_id, action, now],
+            )?;
+        }
+        for scope in scopes {
+            tx.execute(
+                "INSERT INTO controller_bindings (controller_id, scope, enabled, updated_at)
+                 VALUES (?1, ?2, 1, ?3)",
+                params![controller_id, scope, now],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO controller_action_tokens
+                (id, controller_id, token_hash, pepper_version, not_before, expires_at, revoked_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6)",
+            params![
+                token.id,
+                controller_id,
+                token.token_hash,
+                token.pepper_version,
+                token.not_before,
+                now
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    fn controller_installation(
+        &self,
+        controller_id: &str,
+    ) -> Result<Option<ControllerInstallation>> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT id, enabled, max_concurrent_sessions, max_actions_per_minute
+             FROM controllers WHERE id = ?1",
+            params![controller_id],
+            |row| {
+                Ok(ControllerInstallation {
+                    id: row.get(0)?,
+                    enabled: row.get::<_, i64>(1)? != 0,
+                    max_concurrent_sessions: row.get(2)?,
+                    max_actions_per_minute: row.get(3)?,
+                })
+            },
+        )
+        .optional()?)
+    }
+
+    fn set_controller_installation_enabled(
+        &self,
+        controller_id: &str,
+        enabled: bool,
+    ) -> Result<bool> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.execute(
+            "UPDATE controllers SET enabled = ?2, updated_at = ?3 WHERE id = ?1",
+            params![controller_id, i64::from(enabled), now_ms()],
+        )? == 1)
+    }
+
+    fn put_controller_action_token(
+        &self,
+        token_id: &str,
+        controller_id: &str,
+        token_hash: &[u8],
+        pepper_version: i64,
+        not_before: i64,
+        expires_at: Option<i64>,
+    ) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO controller_action_tokens
+                (id, controller_id, token_hash, pepper_version, not_before, expires_at, revoked_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)
+             ON CONFLICT(id) DO UPDATE SET
+                controller_id = excluded.controller_id,
+                token_hash = excluded.token_hash,
+                pepper_version = excluded.pepper_version,
+                not_before = excluded.not_before,
+                expires_at = excluded.expires_at,
+                revoked_at = NULL",
+            params![
+                token_id,
+                controller_id,
+                token_hash,
+                pepper_version,
+                not_before,
+                expires_at,
+                now_ms()
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn expire_controller_action_tokens(
+        &self,
+        controller_id: &str,
+        expires_at: i64,
+        now: i64,
+    ) -> Result<usize> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.execute(
+            "UPDATE controller_action_tokens
+             SET expires_at = ?2
+             WHERE controller_id = ?1
+               AND revoked_at IS NULL
+               AND not_before <= ?3
+               AND (expires_at IS NULL OR expires_at > ?2)",
+            params![controller_id, expires_at, now],
+        )?)
+    }
+
+    fn rotate_controller_action_token(
+        &self,
+        controller_id: &str,
+        token: &NewControllerActionToken,
+        old_tokens_expire_at: i64,
+    ) -> Result<bool> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM controllers WHERE id = ?1)",
+            params![controller_id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE controller_action_tokens
+             SET expires_at = ?2
+             WHERE controller_id = ?1
+               AND revoked_at IS NULL
+               AND not_before <= ?3
+               AND (expires_at IS NULL OR expires_at > ?2)",
+            params![controller_id, old_tokens_expire_at, token.not_before],
+        )?;
+        tx.execute(
+            "INSERT INTO controller_action_tokens
+                (id, controller_id, token_hash, pepper_version, not_before, expires_at, revoked_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?5)",
+            params![
+                token.id,
+                controller_id,
+                token.token_hash,
+                token.pepper_version,
+                token.not_before
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    fn revoke_controller_action_token(
+        &self,
+        controller_id: &str,
+        token_id: &str,
+        revoked_at: i64,
+    ) -> Result<bool> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.execute(
+            "UPDATE controller_action_tokens SET revoked_at = ?2
+             WHERE id = ?1 AND controller_id = ?3 AND revoked_at IS NULL",
+            params![token_id, revoked_at, controller_id],
+        )? == 1)
+    }
+
+    fn active_controller_action_tokens(&self, now: i64) -> Result<Vec<ControllerActionToken>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt = c.prepare(
+            "SELECT t.id, t.controller_id, t.token_hash, t.pepper_version
+             FROM controller_action_tokens t
+             JOIN controllers c ON c.id = t.controller_id
+             WHERE c.enabled = 1
+               AND t.revoked_at IS NULL
+               AND t.not_before <= ?1
+               AND (t.expires_at IS NULL OR t.expires_at > ?1)
+             ORDER BY t.id",
+        )?;
+        let rows = stmt.query_map(params![now], |row| {
+            Ok(ControllerActionToken {
+                id: row.get(0)?,
+                controller_id: row.get(1)?,
+                token_hash: row.get(2)?,
+                pepper_version: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    fn set_controller_action_grant(
+        &self,
+        controller_id: &str,
+        action_kind: &str,
+        granted: bool,
+    ) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO controller_action_grants
+                (controller_id, action_kind, granted, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(controller_id, action_kind) DO UPDATE SET
+                granted = excluded.granted,
+                updated_at = excluded.updated_at",
+            params![controller_id, action_kind, i64::from(granted), now_ms()],
+        )?;
+        Ok(())
+    }
+
+    fn set_controller_scope_binding(
+        &self,
+        controller_id: &str,
+        scope: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO controller_bindings (controller_id, scope, enabled, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(controller_id, scope) DO UPDATE SET
+                enabled = excluded.enabled,
+                updated_at = excluded.updated_at",
+            params![controller_id, scope, i64::from(enabled), now_ms()],
+        )?;
+        Ok(())
+    }
+
+    fn begin_controller_action(
+        &self,
+        controller_id: &str,
+        credential_hashes: &[ControllerCredentialHash],
+        action_id: &str,
+        request_hash: &[u8],
+        action_kind: &str,
+        scope: &str,
+        session_id: Option<&str>,
+        opens_new_session: bool,
+        now: i64,
+    ) -> Result<ControllerActionStart> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        let quotas = tx
+            .query_row(
+                "SELECT max_concurrent_sessions, max_actions_per_minute
+                 FROM controllers WHERE id = ?1 AND enabled = 1",
+                params![controller_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        let Some((max_concurrent_sessions, max_actions_per_minute)) = quotas else {
+            return Ok(ControllerActionStart::Denied(
+                ControllerActionDenial::Credential,
+            ));
+        };
+
+        let mut stmt = tx.prepare(
+            "SELECT token_hash, pepper_version
+             FROM controller_action_tokens
+             WHERE controller_id = ?1
+               AND revoked_at IS NULL
+               AND not_before <= ?2
+               AND (expires_at IS NULL OR expires_at > ?2)
+             ORDER BY id",
+        )?;
+        let active_tokens = stmt
+            .query_map(params![controller_id, now], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        let mut credential_matches = 0u8;
+        for (stored_hash, stored_version) in &active_tokens {
+            for candidate in credential_hashes {
+                let version_matches = u8::from(candidate.pepper_version == *stored_version);
+                let hash_matches = candidate.token_hash.ct_eq(stored_hash).unwrap_u8();
+                credential_matches =
+                    credential_matches.saturating_add(version_matches & hash_matches);
+            }
+        }
+        if credential_matches != 1 {
+            return Ok(ControllerActionStart::Denied(
+                ControllerActionDenial::Credential,
+            ));
+        }
+
+        let granted: bool = tx.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM controller_action_grants
+                WHERE controller_id = ?1 AND action_kind = ?2 AND granted = 1
+             )",
+            params![controller_id, action_kind],
+            |row| row.get(0),
+        )?;
+        if !granted {
+            return Ok(ControllerActionStart::Denied(ControllerActionDenial::Grant));
+        }
+        let scope_enabled: bool = tx.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM controller_bindings
+                WHERE controller_id = ?1 AND scope = ?2 AND enabled = 1
+             )",
+            params![controller_id, scope],
+            |row| row.get(0),
+        )?;
+        if !scope_enabled {
+            return Ok(ControllerActionStart::Denied(ControllerActionDenial::Scope));
+        }
+        if let Some(session_id) = session_id {
+            let owns_session: bool = tx.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM controller_sessions
+                    WHERE controller_id = ?1 AND scope = ?2 AND session_id = ?3
+                 )",
+                params![controller_id, scope, session_id],
+                |row| row.get(0),
+            )?;
+            if !owns_session {
+                return Ok(ControllerActionStart::Denied(
+                    ControllerActionDenial::SessionOwnership,
+                ));
+            }
+        }
+
+        let existing = tx
+            .query_row(
+                "SELECT request_hash, state, http_status, response_json, received_at
+                 FROM controller_action_idempotency
+                 WHERE controller_id = ?1 AND action_id = ?2",
+                params![controller_id, action_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if let Some((stored_hash, state, http_status, response_json, received_at)) = existing {
+            if stored_hash != request_hash {
+                return Ok(ControllerActionStart::RequestMismatch);
+            }
+            if state == "completed" {
+                return Ok(ControllerActionStart::Replay(ControllerActionReplay {
+                    request_hash: stored_hash,
+                    http_status: http_status
+                        .context("completed controller action missing status")?,
+                    response_json: response_json
+                        .context("completed controller action missing response")?,
+                }));
+            }
+            if state == "processing"
+                && now.saturating_sub(received_at) <= CONTROLLER_ACTION_LEASE_MS
+            {
+                return Ok(ControllerActionStart::InProgress);
+            }
+            if state == "processing" {
+                tx.execute(
+                    "UPDATE controller_action_idempotency
+                     SET state = 'indeterminate', completed_at = ?3
+                     WHERE controller_id = ?1 AND action_id = ?2 AND state = 'processing'",
+                    params![controller_id, action_id, now],
+                )?;
+                tx.commit()?;
+            }
+            return Ok(ControllerActionStart::OutcomeUnknown);
+        }
+
+        let window_start = now.saturating_sub(60_000);
+        let (accepted_in_window, oldest): (i64, Option<i64>) = tx.query_row(
+            "SELECT COUNT(*), MIN(received_at)
+             FROM controller_action_idempotency
+             WHERE controller_id = ?1 AND received_at > ?2",
+            params![controller_id, window_start],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if accepted_in_window >= max_actions_per_minute {
+            return Ok(ControllerActionStart::Denied(
+                ControllerActionDenial::RateQuota {
+                    limit: max_actions_per_minute,
+                    reset_at: oldest.unwrap_or(now).saturating_add(60_000),
+                },
+            ));
+        }
+
+        if opens_new_session {
+            let current: i64 = tx.query_row(
+                "SELECT COUNT(*)
+                 FROM controller_sessions cs
+                 JOIN sessions s ON s.id = cs.session_id
+                 WHERE cs.controller_id = ?1
+                   AND s.state NOT IN ('closed', 'aborted')",
+                params![controller_id],
+                |row| row.get(0),
+            )?;
+            if current >= max_concurrent_sessions {
+                return Ok(ControllerActionStart::Denied(
+                    ControllerActionDenial::ConcurrentSessionQuota {
+                        limit: max_concurrent_sessions,
+                        current,
+                    },
+                ));
+            }
+        }
+
+        tx.execute(
+            "INSERT INTO controller_action_idempotency
+                (controller_id, action_id, request_hash, action_kind, scope, state, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'processing', ?6)",
+            params![
+                controller_id,
+                action_id,
+                request_hash,
+                action_kind,
+                scope,
+                now
+            ],
+        )?;
+        tx.commit()?;
+        Ok(ControllerActionStart::Started)
+    }
+
+    fn finish_controller_action(
+        &self,
+        controller_id: &str,
+        action_id: &str,
+        http_status: i64,
+        response_json: &str,
+        session_binding: Option<&ControllerSessionBinding>,
+        completed_at: i64,
+    ) -> Result<()> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(binding) = session_binding {
+            if binding.controller_id != controller_id {
+                anyhow::bail!("controller session binding owner mismatch");
+            }
+            tx.execute(
+                "UPDATE controller_sessions SET current = 0
+                 WHERE controller_id = ?1 AND trigger_ref = ?2 AND current = 1",
+                params![binding.controller_id, binding.trigger_ref],
+            )?;
+            tx.execute(
+                "INSERT INTO controller_sessions
+                    (controller_id, scope, trigger_ref, trigger_fingerprint, session_id, current, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)",
+                params![
+                    binding.controller_id,
+                    binding.scope,
+                    binding.trigger_ref,
+                    binding.trigger_fingerprint,
+                    binding.session_id,
+                    completed_at
+                ],
+            )?;
+        }
+        let updated = tx.execute(
+            "UPDATE controller_action_idempotency
+             SET state = 'completed', http_status = ?3, response_json = ?4, completed_at = ?5
+             WHERE controller_id = ?1 AND action_id = ?2 AND state = 'processing'",
+            params![
+                controller_id,
+                action_id,
+                http_status,
+                response_json,
+                completed_at
+            ],
+        )?;
+        if updated != 1 {
+            anyhow::bail!("controller action is not in processing state");
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn controller_session_for_trigger(
+        &self,
+        controller_id: &str,
+        trigger_ref: &str,
+    ) -> Result<Option<ControllerSessionBinding>> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT controller_id, scope, trigger_ref, trigger_fingerprint, session_id
+             FROM controller_sessions
+             WHERE controller_id = ?1 AND trigger_ref = ?2 AND current = 1",
+            params![controller_id, trigger_ref],
+            |row| {
+                Ok(ControllerSessionBinding {
+                    controller_id: row.get(0)?,
+                    scope: row.get(1)?,
+                    trigger_ref: row.get(2)?,
+                    trigger_fingerprint: row.get(3)?,
+                    session_id: row.get(4)?,
+                })
+            },
+        )
+        .optional()?)
+    }
+
     fn register_bot(
         &self,
         name: &str,
@@ -2432,6 +3234,175 @@ mod tests {
         drop(c);
         drop(store);
         remove_db_files(&PathBuf::from(path));
+    }
+
+    #[test]
+    fn pre_p4_image_startup_ignores_additive_controller_schema() {
+        let path = temp_db_path("pre-p4-image-additive-controller-schema");
+        {
+            let store = SqliteStore::open(&path).unwrap();
+            store
+                .upsert_controller_installation("ctrl-compatible", 5, 60)
+                .unwrap();
+        }
+
+        // Everything before the P4 marker is the exact legacy startup schema.
+        // A pre-P4 image executes only this prefix plus the unchanged migrate()
+        // function; the new typed tables must neither break boot nor be dropped.
+        let legacy_schema = SCHEMA
+            .split("-- Provider-neutral external-controller boundary")
+            .next()
+            .unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(legacy_schema).unwrap();
+        migrate(&conn).unwrap();
+        let controller_id: String = conn
+            .query_row("SELECT id FROM controllers", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(controller_id, "ctrl-compatible");
+        drop(conn);
+        remove_db_files(&PathBuf::from(path));
+    }
+
+    #[test]
+    fn controller_provision_and_rotation_roll_back_as_single_transactions() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .upsert_controller_installation("ctrl-existing", 5, 60)
+            .unwrap();
+        store
+            .put_controller_action_token("tok-existing", "ctrl-existing", &[1; 32], 1, 1, None)
+            .unwrap();
+        store
+            .upsert_controller_installation("ctrl-rotate", 5, 60)
+            .unwrap();
+        store
+            .put_controller_action_token("tok-old", "ctrl-rotate", &[2; 32], 1, 1, None)
+            .unwrap();
+
+        let colliding_token = NewControllerActionToken {
+            id: "tok-existing".into(),
+            token_hash: vec![3; 32],
+            pepper_version: 1,
+            not_before: 10,
+        };
+        assert!(store
+            .provision_controller_installation(
+                "ctrl-partial",
+                5,
+                60,
+                &["open_session".into()],
+                &["scope:one".into()],
+                &colliding_token,
+            )
+            .is_err());
+        assert!(store
+            .controller_installation("ctrl-partial")
+            .unwrap()
+            .is_none());
+
+        assert!(store
+            .rotate_controller_action_token("ctrl-rotate", &colliding_token, 20)
+            .is_err());
+        let c = store.conn.lock().unwrap();
+        let old_expiry: Option<i64> = c
+            .query_row(
+                "SELECT expires_at FROM controller_action_tokens WHERE id = 'tok-old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            old_expiry, None,
+            "failed rotation must not expire old token"
+        );
+    }
+
+    #[test]
+    fn stale_controller_action_becomes_indeterminate_without_reexecution() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .upsert_controller_installation("ctrl-lease", 5, 60)
+            .unwrap();
+        store
+            .put_controller_action_token("tok-lease", "ctrl-lease", &[4; 32], 1, 1, None)
+            .unwrap();
+        store
+            .set_controller_action_grant("ctrl-lease", "open_session", true)
+            .unwrap();
+        store
+            .set_controller_scope_binding("ctrl-lease", "scope:lease", true)
+            .unwrap();
+        let credential_hashes = [ControllerCredentialHash {
+            pepper_version: 1,
+            token_hash: vec![4; 32],
+        }];
+        let request_hash = [8; 32];
+        let started_at = 1_000_000;
+        assert_eq!(
+            store
+                .begin_controller_action(
+                    "ctrl-lease",
+                    &credential_hashes,
+                    "act-lease",
+                    &request_hash,
+                    "open_session",
+                    "scope:lease",
+                    None,
+                    false,
+                    started_at,
+                )
+                .unwrap(),
+            ControllerActionStart::Started
+        );
+        assert_eq!(
+            store
+                .begin_controller_action(
+                    "ctrl-lease",
+                    &credential_hashes,
+                    "act-lease",
+                    &request_hash,
+                    "open_session",
+                    "scope:lease",
+                    None,
+                    false,
+                    started_at + CONTROLLER_ACTION_LEASE_MS,
+                )
+                .unwrap(),
+            ControllerActionStart::InProgress
+        );
+        for now in [
+            started_at + CONTROLLER_ACTION_LEASE_MS + 1,
+            started_at + CONTROLLER_ACTION_LEASE_MS + 2,
+        ] {
+            assert_eq!(
+                store
+                    .begin_controller_action(
+                        "ctrl-lease",
+                        &credential_hashes,
+                        "act-lease",
+                        &request_hash,
+                        "open_session",
+                        "scope:lease",
+                        None,
+                        false,
+                        now,
+                    )
+                    .unwrap(),
+                ControllerActionStart::OutcomeUnknown
+            );
+        }
+        let state: String = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT state FROM controller_action_idempotency WHERE controller_id = 'ctrl-lease' AND action_id = 'act-lease'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "indeterminate");
     }
 
     #[test]

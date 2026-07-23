@@ -108,6 +108,7 @@ Full install docs:
 - [docs/install-pat.md](docs/install-pat.md) for the PAT copied Action path.
 - [docs/install-github-app-quickstart.md](docs/install-github-app-quickstart.md) — 一頁 Quick Start（非技術用戶，繁中）.
 - [docs/install-github-app.md](docs/install-github-app.md) — 完整 SOP（`scripts/install-github-app.sh`）.
+- [docs/controller-action-api.md](docs/controller-action-api.md) — provider-neutral external controller installation and action API.
 
 ## Run A Review
 

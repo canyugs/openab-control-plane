@@ -32,6 +32,26 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/stats", get(stats))
         .route("/v1/compatibility-usage", get(compatibility_usage))
+        .route(
+            "/v1/controller/actions",
+            post(crate::controller_api::execute_action),
+        )
+        .route(
+            "/v1/controller-installations",
+            post(crate::controller_api::create_installation),
+        )
+        .route(
+            "/v1/controller-installations/:id",
+            patch(crate::controller_api::set_installation_state),
+        )
+        .route(
+            "/v1/controller-installations/:id/tokens",
+            post(crate::controller_api::rotate_installation_token),
+        )
+        .route(
+            "/v1/controller-installations/:id/tokens/:token_id",
+            axum::routing::delete(crate::controller_api::revoke_installation_token),
+        )
         .route("/v1/bots", get(list_bots).post(register_bot))
         .route("/v1/bots/discover", post(discover_bot))
         .route("/v1/bots/github-token", post(bot_github_token))
