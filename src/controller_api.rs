@@ -10,13 +10,13 @@ use crate::controller::{
 };
 use crate::state::AppState;
 use crate::store::{
-    new_id, now_ms, ControllerActionDenial, ControllerActionStart, ControllerSessionBinding,
-    NewControllerActionToken, SessionState,
+    new_id, now_ms, ControllerActionDenial, ControllerActionStart, ControllerCredentialHash,
+    ControllerSessionBinding, NewControllerActionToken, SessionState,
 };
 use anyhow::{Context, Result};
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -30,6 +30,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::error::Error as _;
 use std::sync::Arc;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -110,6 +111,21 @@ impl ControllerAuthConfig {
             .keys()
             .next_back()
             .expect("ControllerAuthConfig rejects empty maps")
+    }
+
+    fn credential_hashes(&self, token: &str) -> Vec<ControllerCredentialHash> {
+        self.peppers
+            .iter()
+            .map(|(pepper_version, pepper)| {
+                let mut mac =
+                    HmacSha256::new_from_slice(pepper).expect("HMAC accepts arbitrary key size");
+                mac.update(token.as_bytes());
+                ControllerCredentialHash {
+                    pepper_version: *pepper_version,
+                    token_hash: mac.finalize().into_bytes().to_vec(),
+                }
+            })
+            .collect()
     }
 }
 
@@ -353,10 +369,38 @@ fn generate_controller_token(
 
 pub async fn execute_action(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    body: Bytes,
+    request: Request<Body>,
 ) -> Response {
-    execute_action_request(&state, &headers, &body)
+    let (parts, body) = request.into_parts();
+    let body = match axum::body::to_bytes(body, MAX_ACTION_BODY_BYTES).await {
+        Ok(body) => body,
+        Err(error)
+            if error
+                .source()
+                .is_some_and(|source| source.is::<http_body_util::LengthLimitError>()) =>
+        {
+            return protocol_error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                header_text(&parts.headers, ACTION_ID_HEADER),
+                ErrorCode::InvalidRequest,
+                "controller action body exceeds 1 MiB",
+                false,
+                None,
+            )
+        }
+        Err(error) => {
+            tracing::warn!(%error, "read controller action body failed");
+            return protocol_error_response(
+                StatusCode::BAD_REQUEST,
+                header_text(&parts.headers, ACTION_ID_HEADER),
+                ErrorCode::InvalidRequest,
+                "controller action body could not be read",
+                false,
+                None,
+            );
+        }
+    };
+    execute_action_request(&state, &parts.headers, &body)
 }
 
 fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8]) -> Response {
@@ -475,6 +519,7 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
     // around interpreter execution. SQLite's IMMEDIATE transaction still owns
     // the durable admission decision and protects multi-threaded store callers.
     let _execution_guard = state.controller_action_lock.lock().unwrap();
+    let credential_hashes = auth.credential_hashes(token);
     let mut request_digest = Sha256::new();
     request_digest.update(scope.as_bytes());
     request_digest.update([0]);
@@ -509,32 +554,41 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
         _ => None,
     };
 
+    let existing_session_is_active = match external_open
+        .as_ref()
+        .and_then(|(_, _, existing)| existing.as_ref())
+    {
+        Some(binding) => match state.store.session(&binding.session_id) {
+            Ok(Some(session)) => !matches!(
+                SessionState::from_db_str(&session.state),
+                SessionState::Closed | SessionState::Aborted
+            ),
+            Ok(None) => false,
+            Err(error) => return internal_store_error(Some(action_id), error),
+        },
+        None => false,
+    };
     let deduped_session = external_open
         .as_ref()
         .and_then(|(_, fingerprint, existing)| {
             existing.as_ref().and_then(|binding| {
-                matches!(
-                    (binding.trigger_fingerprint.as_deref(), fingerprint.as_deref()),
-                    (Some(stored), Some(incoming)) if stored == incoming
-                )
+                (existing_session_is_active
+                    && matches!(
+                        (binding.trigger_fingerprint.as_deref(), fingerprint.as_deref()),
+                        (Some(stored), Some(incoming)) if stored == incoming
+                    ))
                 .then(|| binding.session_id.clone())
             })
         });
     let opens_new_session = match external_open.as_ref() {
         None => false,
         Some((_, _, None)) => true,
-        Some((_, _, Some(binding))) => match state.store.session(&binding.session_id) {
-            Ok(Some(session)) => matches!(
-                SessionState::from_db_str(&session.state),
-                SessionState::Closed | SessionState::Aborted
-            ),
-            Ok(None) => true,
-            Err(error) => return internal_store_error(Some(action_id), error),
-        },
+        Some((_, _, Some(_))) => !existing_session_is_active,
     };
     let session_id = action_session_id(&envelope.action);
     let started = match state.store.begin_controller_action(
         &controller_id,
+        &credential_hashes,
         &action_id,
         &request_hash,
         action_kind,
@@ -564,6 +618,14 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
                 None,
             )
         }
+        ControllerActionStart::OutcomeUnknown => return protocol_error_response(
+            StatusCode::CONFLICT,
+            Some(action_id),
+            ErrorCode::Conflict,
+            "previous action execution outcome is unknown; reconcile before using a new action_id",
+            false,
+            None,
+        ),
         ControllerActionStart::RequestMismatch => {
             return protocol_error_response(
                 StatusCode::CONFLICT,
@@ -787,6 +849,7 @@ fn denial_response(
     now: i64,
 ) -> Response {
     match denial {
+        ControllerActionDenial::Credential => unauthorized_response(),
         ControllerActionDenial::Grant => protocol_error_response(
             StatusCode::FORBIDDEN,
             action_id,
@@ -1009,7 +1072,7 @@ fn raw_json_response(status: StatusCode, body: String, retry_after: Option<i64>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::controller::{OpenSessionAction, PostMessageAction};
+    use crate::controller::{CloseSessionAction, OpenSessionAction, PostMessageAction};
     use crate::store::{SqliteStore, Store};
     use axum::body::to_bytes;
     use serde_json::Value;
@@ -1132,6 +1195,17 @@ mod tests {
         }
     }
 
+    fn close_action(action_id: &str, session_id: &str) -> ActionEnvelope {
+        ActionEnvelope {
+            version: CURRENT_VERSION,
+            action_id: action_id.into(),
+            action: ControllerAction::CloseSession(CloseSessionAction {
+                session_id: session_id.into(),
+                reason: "controller test close".into(),
+            }),
+        }
+    }
+
     fn headers(token: &str, action_id: &str, scope: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1237,6 +1311,36 @@ mod tests {
             )
             .status(),
             StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[test]
+    fn admission_revalidates_a_token_revoked_after_initial_authentication() {
+        let (state, store, auth, token) = setup(5, 60);
+        assert_eq!(
+            authenticate_controller(&state, &auth, &token).unwrap(),
+            Some("ctrl-a".into())
+        );
+        let credential_hashes = auth.credential_hashes(&token);
+        store
+            .revoke_controller_action_token("ctrl-a", "tok-a-1", now_ms())
+            .unwrap();
+        let admitted = store
+            .begin_controller_action(
+                "ctrl-a",
+                &credential_hashes,
+                "act-revocation-race",
+                &[7; 32],
+                "open_session",
+                SCOPE,
+                None,
+                true,
+                now_ms(),
+            )
+            .unwrap();
+        assert_eq!(
+            admitted,
+            ControllerActionStart::Denied(ControllerActionDenial::Credential)
         );
     }
 
@@ -1371,6 +1475,44 @@ mod tests {
             "action_id was already used with a different request"
         );
         assert_eq!(store.messages(&session_id).unwrap().len(), 2);
+
+        store
+            .set_controller_action_grant("ctrl-a", "post_message", false)
+            .unwrap();
+        let denied_replay = response(request(&state, &token, SCOPE, &post)).await;
+        assert_eq!(denied_replay.0, StatusCode::FORBIDDEN);
+        assert_eq!(
+            denied_replay.1["error"]["message"],
+            "controller action is not granted"
+        );
+        store
+            .set_controller_action_grant("ctrl-a", "post_message", true)
+            .unwrap();
+        store
+            .set_controller_scope_binding("ctrl-a", SCOPE, false)
+            .unwrap();
+        let denied_scope_replay = response(request(&state, &token, SCOPE, &post)).await;
+        assert_eq!(denied_scope_replay.0, StatusCode::FORBIDDEN);
+        assert_eq!(
+            denied_scope_replay.1["error"]["message"],
+            "controller scope is not granted"
+        );
+    }
+
+    #[tokio::test]
+    async fn action_route_rejects_oversized_body_before_full_buffering() {
+        let (state, _store, _auth, token) = setup(5, 60);
+        let request = Request::builder()
+            .method("POST")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(ACTION_ID_HEADER, "act-oversized")
+            .header(SCOPE_HEADER, SCOPE)
+            .body(Body::from(vec![b'x'; MAX_ACTION_BODY_BYTES + 1]))
+            .unwrap();
+        let (status, body, _) = response(execute_action(State(state), request).await).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(body["error"]["code"], "invalid_request");
+        assert_eq!(body["action_id"], "act-oversized");
     }
 
     #[tokio::test]
@@ -1454,6 +1596,21 @@ mod tests {
                 .session_id,
             second_a
         );
+
+        assert_eq!(
+            request(&state, &token_a, SCOPE, &close_action("act-a-4", second_a),).status(),
+            StatusCode::OK
+        );
+        let reopened = response(request(
+            &state,
+            &token_a,
+            SCOPE,
+            &open_action("act-a-5", "object:shared", "sha:2"),
+        ))
+        .await;
+        assert_eq!(reopened.0, StatusCode::OK);
+        assert_eq!(reopened.1["result"]["data"]["deduped"], false);
+        assert_ne!(reopened.1["result"]["data"]["session_id"], second_a);
     }
 
     #[tokio::test]

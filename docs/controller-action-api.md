@@ -91,7 +91,14 @@ Content-Type: application/json
 `X-OAB-Action-ID` must equal the envelope `action_id`. OCP stores the completed
 response under `(controller_id, action_id)`; an exact replay returns that same
 body without running the interpreter again. Reusing an action id with different
-body or scope returns `409 conflict`.
+body or scope returns `409 conflict`. Every admission, including a completed
+replay, rechecks the current token, action grant, scope, and session ownership.
+
+An action left in `processing` by a process crash has a five-minute lease. Once
+that lease expires, OCP marks the outcome indeterminate and returns a stable,
+non-retryable `409` for that action id. OCP does not automatically re-execute an
+action whose side effects may already have happened; the controller must first
+reconcile its domain state, then use a new action id if another action is safe.
 
 Every external `open_session` requires an opaque `trigger_ref`. Dedupe and
 fingerprint supersede are controller-scoped, so two installations may use the
@@ -100,4 +107,5 @@ sessions owned by the same installation and scope.
 
 Errors use the versioned `ErrorEnvelope` from `controller-protocol`. Rate quota
 responses return `429` and `Retry-After`; concurrent-session quota responses
-return `409`. Grant, scope, and session-ownership checks fail closed.
+return `409`. Grant, scope, and session-ownership checks fail closed. Action
+request bodies are bounded to 1 MiB before full buffering.

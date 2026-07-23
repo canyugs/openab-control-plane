@@ -12,6 +12,7 @@ resolver = "2"
 [dependencies]
 controller-protocol = { path = "crates/controller-protocol" }
 axum = { version = "0.7", features = ["ws"] }
+http-body-util = "0.1"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -33,6 +34,7 @@ base64 = "0.22"
 # Webhook signature verification (x-hub-signature-256). sha2 is already a dep.
 hmac = "0.12"
 rand = "0.8"
+subtle = "2"
 
 [dev-dependencies]
 tokio-tungstenite = "0.23"

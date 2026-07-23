@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use subtle::ConstantTimeEq;
+
+const CONTROLLER_ACTION_LEASE_MS: i64 = 5 * 60 * 1000;
 
 pub fn now_ms() -> i64 {
     SystemTime::now()
@@ -283,6 +286,14 @@ pub struct NewControllerActionToken {
     pub not_before: i64,
 }
 
+/// One deployment-keyed candidate hash for atomically revalidating a bearer
+/// credential inside the action admission transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerCredentialHash {
+    pub pepper_version: i64,
+    pub token_hash: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControllerActionReplay {
     pub request_hash: Vec<u8>,
@@ -292,6 +303,7 @@ pub struct ControllerActionReplay {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControllerActionDenial {
+    Credential,
     Grant,
     Scope,
     SessionOwnership,
@@ -304,6 +316,7 @@ pub enum ControllerActionStart {
     Started,
     Replay(ControllerActionReplay),
     InProgress,
+    OutcomeUnknown,
     RequestMismatch,
     Denied(ControllerActionDenial),
 }
@@ -392,6 +405,7 @@ pub trait Store: Send + Sync {
     fn begin_controller_action(
         &self,
         controller_id: &str,
+        credential_hashes: &[ControllerCredentialHash],
         action_id: &str,
         request_hash: &[u8],
         action_kind: &str,
@@ -1426,6 +1440,7 @@ impl Store for SqliteStore {
     fn begin_controller_action(
         &self,
         controller_id: &str,
+        credential_hashes: &[ControllerCredentialHash],
         action_id: &str,
         request_hash: &[u8],
         action_kind: &str,
@@ -1437,37 +1452,6 @@ impl Store for SqliteStore {
         let mut c = self.conn.lock().unwrap();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        let existing = tx
-            .query_row(
-                "SELECT request_hash, state, http_status, response_json
-                 FROM controller_action_idempotency
-                 WHERE controller_id = ?1 AND action_id = ?2",
-                params![controller_id, action_id],
-                |row| {
-                    Ok((
-                        row.get::<_, Vec<u8>>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<i64>>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                    ))
-                },
-            )
-            .optional()?;
-        if let Some((stored_hash, state, http_status, response_json)) = existing {
-            if stored_hash != request_hash {
-                return Ok(ControllerActionStart::RequestMismatch);
-            }
-            if state != "completed" {
-                return Ok(ControllerActionStart::InProgress);
-            }
-            return Ok(ControllerActionStart::Replay(ControllerActionReplay {
-                request_hash: stored_hash,
-                http_status: http_status.context("completed controller action missing status")?,
-                response_json: response_json
-                    .context("completed controller action missing response")?,
-            }));
-        }
-
         let quotas = tx
             .query_row(
                 "SELECT max_concurrent_sessions, max_actions_per_minute
@@ -1477,8 +1461,40 @@ impl Store for SqliteStore {
             )
             .optional()?;
         let Some((max_concurrent_sessions, max_actions_per_minute)) = quotas else {
-            return Ok(ControllerActionStart::Denied(ControllerActionDenial::Grant));
+            return Ok(ControllerActionStart::Denied(
+                ControllerActionDenial::Credential,
+            ));
         };
+
+        let mut stmt = tx.prepare(
+            "SELECT token_hash, pepper_version
+             FROM controller_action_tokens
+             WHERE controller_id = ?1
+               AND revoked_at IS NULL
+               AND not_before <= ?2
+               AND (expires_at IS NULL OR expires_at > ?2)
+             ORDER BY id",
+        )?;
+        let active_tokens = stmt
+            .query_map(params![controller_id, now], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        let mut credential_matches = 0u8;
+        for (stored_hash, stored_version) in &active_tokens {
+            for candidate in credential_hashes {
+                let version_matches = u8::from(candidate.pepper_version == *stored_version);
+                let hash_matches = candidate.token_hash.ct_eq(stored_hash).unwrap_u8();
+                credential_matches =
+                    credential_matches.saturating_add(version_matches & hash_matches);
+            }
+        }
+        if credential_matches != 1 {
+            return Ok(ControllerActionStart::Denied(
+                ControllerActionDenial::Credential,
+            ));
+        }
 
         let granted: bool = tx.query_row(
             "SELECT EXISTS(
@@ -1516,6 +1532,53 @@ impl Store for SqliteStore {
                     ControllerActionDenial::SessionOwnership,
                 ));
             }
+        }
+
+        let existing = tx
+            .query_row(
+                "SELECT request_hash, state, http_status, response_json, received_at
+                 FROM controller_action_idempotency
+                 WHERE controller_id = ?1 AND action_id = ?2",
+                params![controller_id, action_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if let Some((stored_hash, state, http_status, response_json, received_at)) = existing {
+            if stored_hash != request_hash {
+                return Ok(ControllerActionStart::RequestMismatch);
+            }
+            if state == "completed" {
+                return Ok(ControllerActionStart::Replay(ControllerActionReplay {
+                    request_hash: stored_hash,
+                    http_status: http_status
+                        .context("completed controller action missing status")?,
+                    response_json: response_json
+                        .context("completed controller action missing response")?,
+                }));
+            }
+            if state == "processing"
+                && now.saturating_sub(received_at) <= CONTROLLER_ACTION_LEASE_MS
+            {
+                return Ok(ControllerActionStart::InProgress);
+            }
+            if state == "processing" {
+                tx.execute(
+                    "UPDATE controller_action_idempotency
+                     SET state = 'indeterminate', completed_at = ?3
+                     WHERE controller_id = ?1 AND action_id = ?2 AND state = 'processing'",
+                    params![controller_id, action_id, now],
+                )?;
+                tx.commit()?;
+            }
+            return Ok(ControllerActionStart::OutcomeUnknown);
         }
 
         let window_start = now.saturating_sub(60_000);
@@ -3253,6 +3316,93 @@ mod tests {
             old_expiry, None,
             "failed rotation must not expire old token"
         );
+    }
+
+    #[test]
+    fn stale_controller_action_becomes_indeterminate_without_reexecution() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .upsert_controller_installation("ctrl-lease", 5, 60)
+            .unwrap();
+        store
+            .put_controller_action_token("tok-lease", "ctrl-lease", &[4; 32], 1, 1, None)
+            .unwrap();
+        store
+            .set_controller_action_grant("ctrl-lease", "open_session", true)
+            .unwrap();
+        store
+            .set_controller_scope_binding("ctrl-lease", "scope:lease", true)
+            .unwrap();
+        let credential_hashes = [ControllerCredentialHash {
+            pepper_version: 1,
+            token_hash: vec![4; 32],
+        }];
+        let request_hash = [8; 32];
+        let started_at = 1_000_000;
+        assert_eq!(
+            store
+                .begin_controller_action(
+                    "ctrl-lease",
+                    &credential_hashes,
+                    "act-lease",
+                    &request_hash,
+                    "open_session",
+                    "scope:lease",
+                    None,
+                    false,
+                    started_at,
+                )
+                .unwrap(),
+            ControllerActionStart::Started
+        );
+        assert_eq!(
+            store
+                .begin_controller_action(
+                    "ctrl-lease",
+                    &credential_hashes,
+                    "act-lease",
+                    &request_hash,
+                    "open_session",
+                    "scope:lease",
+                    None,
+                    false,
+                    started_at + CONTROLLER_ACTION_LEASE_MS,
+                )
+                .unwrap(),
+            ControllerActionStart::InProgress
+        );
+        for now in [
+            started_at + CONTROLLER_ACTION_LEASE_MS + 1,
+            started_at + CONTROLLER_ACTION_LEASE_MS + 2,
+        ] {
+            assert_eq!(
+                store
+                    .begin_controller_action(
+                        "ctrl-lease",
+                        &credential_hashes,
+                        "act-lease",
+                        &request_hash,
+                        "open_session",
+                        "scope:lease",
+                        None,
+                        false,
+                        now,
+                    )
+                    .unwrap(),
+                ControllerActionStart::OutcomeUnknown
+            );
+        }
+        let state: String = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT state FROM controller_action_idempotency WHERE controller_id = 'ctrl-lease' AND action_id = 'act-lease'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "indeterminate");
     }
 
     #[test]
