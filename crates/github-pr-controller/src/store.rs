@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -34,6 +35,23 @@ pub enum ShadowAdmission {
     New,
     Duplicate,
     Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeEventAdmission {
+    New,
+    Duplicate,
+    Conflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CanarySummary {
+    pub acted_deliveries: i64,
+    pub processing_deliveries: i64,
+    pub retryable_deliveries: i64,
+    pub runtime_events: i64,
+    pub runtime_event_types: BTreeMap<String, i64>,
+    pub latest_event_occurred_at: Option<i64>,
 }
 
 impl ProductStore {
@@ -70,7 +88,17 @@ impl ProductStore {
                created_at INTEGER NOT NULL
              );
              CREATE INDEX IF NOT EXISTS idx_shadow_comparisons_created
-               ON shadow_comparisons(created_at);",
+               ON shadow_comparisons(created_at);
+             CREATE TABLE IF NOT EXISTS runtime_event_receipts (
+               event_id TEXT PRIMARY KEY,
+               body_sha256 TEXT NOT NULL,
+               event_type TEXT NOT NULL,
+               session_id TEXT,
+               occurred_at INTEGER NOT NULL,
+               received_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_runtime_event_receipts_received
+               ON runtime_event_receipts(received_at);",
         )?;
         Ok(Self {
             connection: Mutex::new(connection),
@@ -123,6 +151,16 @@ impl ProductStore {
             Some((existing_hash, _, _, _)) if existing_hash != payload_sha256 => {
                 DeliveryAdmission::Conflict
             }
+            Some((_, state, _, _)) if state == "retryable" => {
+                transaction.execute(
+                    "UPDATE webhook_deliveries
+                        SET event_type = ?2, repository = ?3, state = 'processing',
+                            result_json = NULL, received_at = ?4, completed_at = NULL
+                      WHERE delivery_id = ?1",
+                    params![delivery_id, event_type, repository, now],
+                )?;
+                DeliveryAdmission::New
+            }
             Some((_, state, _, received_at))
                 if state == "processing"
                     && received_at <= now.saturating_sub(PROCESSING_LEASE_SECS) =>
@@ -162,6 +200,21 @@ impl ProductStore {
         self.finish_delivery_at(delivery_id, state, result, now_unix())
     }
 
+    pub fn release_delivery_for_retry(
+        &self,
+        delivery_id: &str,
+        result: &Value,
+    ) -> rusqlite::Result<()> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection.execute(
+            "UPDATE webhook_deliveries
+                SET state = 'retryable', result_json = ?2, completed_at = NULL
+              WHERE delivery_id = ?1 AND state = 'processing'",
+            params![delivery_id, result.to_string()],
+        )?;
+        Ok(())
+    }
+
     fn finish_delivery_at(
         &self,
         delivery_id: &str,
@@ -183,7 +236,8 @@ impl ProductStore {
         let now = now_unix();
         let deliveries = self.prune_completed_deliveries_at(now, COMPLETED_RETENTION_SECS)?;
         let comparisons = self.prune_shadow_comparisons_at(now, COMPLETED_RETENTION_SECS)?;
-        Ok(deliveries + comparisons)
+        let events = self.prune_runtime_events_at(now, COMPLETED_RETENTION_SECS)?;
+        Ok(deliveries + comparisons + events)
     }
 
     fn prune_completed_deliveries_at(
@@ -194,8 +248,8 @@ impl ProductStore {
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         connection.execute(
             "DELETE FROM webhook_deliveries
-              WHERE (state IN ('planned', 'ignored') AND completed_at < ?1)
-                 OR (state = 'processing' AND received_at < ?1)",
+              WHERE (state IN ('planned', 'ignored', 'acted') AND completed_at < ?1)
+                 OR (state IN ('processing', 'retryable') AND received_at < ?1)",
             [now.saturating_sub(retention_secs)],
         )
     }
@@ -261,6 +315,80 @@ impl ProductStore {
         )
     }
 
+    pub fn record_runtime_event(
+        &self,
+        body_sha256: &str,
+        event: &crate::runtime_events::RuntimeEventEnvelope,
+    ) -> rusqlite::Result<RuntimeEventAdmission> {
+        let mut connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = transaction
+            .query_row(
+                "SELECT body_sha256 FROM runtime_event_receipts WHERE event_id = ?1",
+                [&event.event_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let admission = match existing {
+            Some(existing) if existing == body_sha256 => RuntimeEventAdmission::Duplicate,
+            Some(_) => RuntimeEventAdmission::Conflict,
+            None => {
+                transaction.execute(
+                    "INSERT INTO runtime_event_receipts
+                       (event_id, body_sha256, event_type, session_id, occurred_at, received_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        event.event_id,
+                        body_sha256,
+                        event.event_type,
+                        event.session_id,
+                        event.occurred_at,
+                        now_unix(),
+                    ],
+                )?;
+                RuntimeEventAdmission::New
+            }
+        };
+        transaction.commit()?;
+        Ok(admission)
+    }
+
+    pub fn canary_summary(&self) -> rusqlite::Result<CanarySummary> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let (acted_deliveries, processing_deliveries, retryable_deliveries) = connection
+            .query_row(
+                "SELECT
+               COALESCE(SUM(CASE WHEN state = 'acted' THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN state = 'processing' THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN state = 'retryable' THEN 1 ELSE 0 END), 0)
+             FROM webhook_deliveries",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        let (runtime_events, latest_event_occurred_at) = connection.query_row(
+            "SELECT COUNT(*), MAX(occurred_at) FROM runtime_event_receipts",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let mut statement = connection.prepare(
+            "SELECT event_type, COUNT(*) FROM runtime_event_receipts
+             GROUP BY event_type ORDER BY event_type",
+        )?;
+        let runtime_event_types = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
+        Ok(CanarySummary {
+            acted_deliveries,
+            processing_deliveries,
+            retryable_deliveries,
+            runtime_events,
+            runtime_event_types,
+            latest_event_occurred_at,
+        })
+    }
+
     fn prune_shadow_comparisons_at(
         &self,
         now: i64,
@@ -269,6 +397,14 @@ impl ProductStore {
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         connection.execute(
             "DELETE FROM shadow_comparisons WHERE created_at < ?1",
+            [now.saturating_sub(retention_secs)],
+        )
+    }
+
+    fn prune_runtime_events_at(&self, now: i64, retention_secs: i64) -> rusqlite::Result<usize> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection.execute(
+            "DELETE FROM runtime_event_receipts WHERE received_at < ?1",
             [now.saturating_sub(retention_secs)],
         )
     }
@@ -348,6 +484,32 @@ mod tests {
     }
 
     #[test]
+    fn retryable_delivery_is_immediately_readmitted_with_the_same_body() {
+        let store = ProductStore::memory().unwrap();
+        assert_eq!(
+            store
+                .begin_delivery_at("delivery-1", "pull_request", None, "abc", 1_000)
+                .unwrap(),
+            DeliveryAdmission::New
+        );
+        store
+            .release_delivery_for_retry("delivery-1", &json!({"error": "outage"}))
+            .unwrap();
+        assert_eq!(
+            store
+                .begin_delivery_at("delivery-1", "pull_request", None, "abc", 1_001)
+                .unwrap(),
+            DeliveryAdmission::New
+        );
+        assert_eq!(
+            store
+                .begin_delivery_at("delivery-1", "pull_request", None, "changed", 1_002)
+                .unwrap(),
+            DeliveryAdmission::Conflict
+        );
+    }
+
+    #[test]
     fn delivery_retention_prunes_completed_and_abandoned_processing_rows() {
         let store = ProductStore::memory().unwrap();
         store
@@ -355,6 +517,12 @@ mod tests {
             .unwrap();
         store
             .finish_delivery_at("completed", "planned", &json!({"ok": true}), 1_000)
+            .unwrap();
+        store
+            .begin_delivery_at("acted", "pull_request", None, "acted-hash", 1_000)
+            .unwrap();
+        store
+            .finish_delivery_at("acted", "acted", &json!({"ok": true}), 1_000)
             .unwrap();
         store
             .begin_delivery_at("abandoned", "pull_request", None, "def", 1_000)
@@ -370,7 +538,7 @@ mod tests {
                     COMPLETED_RETENTION_SECS,
                 )
                 .unwrap(),
-            2
+            3
         );
         assert_eq!(
             store
@@ -434,5 +602,53 @@ mod tests {
                 .unwrap(),
             ShadowAdmission::Conflict
         );
+    }
+
+    #[test]
+    fn runtime_event_receipts_dedupe_and_expose_aggregate_canary_state() {
+        let store = ProductStore::memory().unwrap();
+        let event = crate::runtime_events::RuntimeEventEnvelope {
+            version: "1".into(),
+            event_id: "cev_1".into(),
+            controller_id: "github-canary".into(),
+            event_type: "session.timeout".into(),
+            session_id: Some("ses_1".into()),
+            occurred_at: 1_000,
+            payload: json!({"reason": "timeout", "private": "not persisted"}),
+        };
+        assert_eq!(
+            store.record_runtime_event("hash-1", &event).unwrap(),
+            RuntimeEventAdmission::New
+        );
+        assert_eq!(
+            store.record_runtime_event("hash-1", &event).unwrap(),
+            RuntimeEventAdmission::Duplicate
+        );
+        assert_eq!(
+            store.record_runtime_event("changed", &event).unwrap(),
+            RuntimeEventAdmission::Conflict
+        );
+        assert_eq!(
+            store.canary_summary().unwrap(),
+            CanarySummary {
+                acted_deliveries: 0,
+                processing_deliveries: 0,
+                retryable_deliveries: 0,
+                runtime_events: 1,
+                runtime_event_types: BTreeMap::from([("session.timeout".into(), 1)]),
+                latest_event_occurred_at: Some(1_000),
+            }
+        );
+
+        let connection = store.connection.lock().unwrap();
+        let schema: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'runtime_event_receipts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!schema.contains("payload"));
+        assert!(!schema.contains("body_json"));
     }
 }

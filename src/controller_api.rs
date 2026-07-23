@@ -1121,8 +1121,11 @@ mod tests {
     use crate::store::{SessionState, SqliteStore, Store};
     use axum::body::to_bytes;
     use futures::future::BoxFuture;
+    use github_pr_controller::ocp::{ActionFailure, ActionFuture, OcpActionClient};
+    use http_body_util::BodyExt;
     use serde_json::Value;
     use std::sync::Mutex;
+    use tower::ServiceExt;
 
     const SCOPE: &str = "tenant:alpha/resource:one";
 
@@ -1135,6 +1138,67 @@ mod tests {
         fn post(&self, request: ControllerEventRequest) -> BoxFuture<'static, Result<u16>> {
             self.requests.lock().unwrap().push(request);
             Box::pin(async { Ok(204) })
+        }
+    }
+
+    struct InProcessOcpActionClient {
+        state: Arc<AppState>,
+        token: String,
+        scope: String,
+    }
+
+    impl OcpActionClient for InProcessOcpActionClient {
+        fn open_session(&self, action_id: String, action: OpenSessionAction) -> ActionFuture {
+            let state = self.state.clone();
+            let token = self.token.clone();
+            let scope = self.scope.clone();
+            Box::pin(async move {
+                let envelope = ActionEnvelope {
+                    version: CURRENT_VERSION,
+                    action_id,
+                    action: ControllerAction::OpenSession(action),
+                };
+                let response = request(&state, &token, &scope, &envelope);
+                let status = response.status();
+                let body = response
+                    .into_body()
+                    .collect()
+                    .await
+                    .map_err(|_| ActionFailure::Unavailable)?
+                    .to_bytes();
+                if status.is_success() {
+                    serde_json::from_slice(&body).map_err(|_| ActionFailure::InvalidResponse)
+                } else {
+                    let error: ErrorEnvelope = serde_json::from_slice(&body)
+                        .map_err(|_| ActionFailure::InvalidResponse)?;
+                    Err(ActionFailure::Protocol {
+                        status: status.as_u16(),
+                        code: error.error.code,
+                        retryable: error.error.retryable,
+                    })
+                }
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct InProcessControllerEventTransport {
+        router: Mutex<Option<axum::Router>>,
+    }
+
+    impl ControllerEventTransport for InProcessControllerEventTransport {
+        fn post(&self, request: ControllerEventRequest) -> BoxFuture<'static, Result<u16>> {
+            let router = self.router.lock().unwrap().clone();
+            Box::pin(async move {
+                let app = router.context("external controller router not attached")?;
+                let target = crate::controller_events::request_target(&request.endpoint)?;
+                let mut builder = Request::post(target);
+                for (name, value) in request.headers {
+                    builder = builder.header(name, value);
+                }
+                let response = app.oneshot(builder.body(Body::from(request.body))?).await?;
+                Ok(response.status().as_u16())
+            })
         }
     }
 
@@ -1274,6 +1338,38 @@ mod tests {
         headers.insert(ACTION_ID_HEADER, HeaderValue::from_str(action_id).unwrap());
         headers.insert(SCOPE_HEADER, HeaderValue::from_str(scope).unwrap());
         headers
+    }
+
+    fn github_controller_webhook(
+        delivery_id: &str,
+        event_type: &str,
+        body: String,
+    ) -> Request<Body> {
+        let mut mac = HmacSha256::new_from_slice(b"fixture-secret").unwrap();
+        mac.update(body.as_bytes());
+        let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        Request::post("/api/v1/github/webhooks")
+            .header("x-github-delivery", delivery_id)
+            .header("x-github-event", event_type)
+            .header("x-hub-signature-256", signature)
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    fn bot_reply(session_id: &str, content: &str) -> crate::protocol::GatewayReply {
+        crate::protocol::GatewayReply {
+            schema: String::new(),
+            reply_to: String::new(),
+            platform: String::new(),
+            channel: crate::protocol::ReplyChannel {
+                id: session_id.into(),
+                thread_id: None,
+            },
+            content: crate::protocol::Content::text(content),
+            command: None,
+            request_id: None,
+            quote_message_id: None,
+        }
     }
 
     fn request(
@@ -1901,5 +1997,263 @@ mod tests {
             assert!(request.headers["X-OAB-Signature"].starts_with("sha256="));
             assert_eq!(request.headers["X-OAB-Controller-ID"], "ctrl-duplex");
         }
+    }
+
+    #[tokio::test]
+    async fn external_github_canary_runs_real_actions_and_receives_signed_terminal_events() {
+        const CONTROLLER_ID: &str = "github-canary";
+        const CANARY_SCOPE: &str = "tenant:dev/resource:github-canary";
+        const FIXTURE: &str = include_str!("../tests/fixtures/github/pull_request_opened.json");
+
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        seed_bots(&store);
+        let auth = auth_config();
+        let action_token = token(77);
+        install(
+            &store,
+            &auth,
+            CONTROLLER_ID,
+            "tok-github-canary",
+            &action_token,
+            1,
+            CANARY_SCOPE,
+            3,
+            60,
+        );
+        for forbidden in ["post_message", "add_roster", "close_session", "emit_status"] {
+            store
+                .set_controller_action_grant(CONTROLLER_ID, forbidden, false)
+                .unwrap();
+        }
+
+        let event_transport = Arc::new(InProcessControllerEventTransport::default());
+        let event_keys = ControllerEventKeys::new(BTreeMap::from([(1, vec![31; 32])])).unwrap();
+        let event_secret = event_keys.issued_secret(1, CONTROLLER_ID).unwrap();
+        let ocp_state = AppState::new_with_options_and_runtime_config(
+            store.clone(),
+            None,
+            None,
+            None,
+            None,
+            "http://control-plane.test".into(),
+            None,
+            0,
+            crate::plugins::pr_review::PrReviewConfig::default(),
+            Some(auth),
+            Some(Arc::new(ControllerEventRuntime::new(
+                event_keys,
+                event_transport.clone(),
+            ))),
+        );
+        store
+            .configure_controller_events(
+                CONTROLLER_ID,
+                "https://controller.example.test/api/v1/openab/events?version=1",
+                1,
+                &[
+                    "session.opened".into(),
+                    "session.progress".into(),
+                    "session.terminal".into(),
+                    "session.timeout".into(),
+                    "session.superseded".into(),
+                    "action.failed".into(),
+                ],
+                now_ms(),
+            )
+            .unwrap();
+
+        let controller_config = github_pr_controller::config::Config {
+            addr: "127.0.0.1:0".into(),
+            db_path: ":memory:".into(),
+            mode: github_pr_controller::config::OperatingMode::ExternalCanary,
+            webhook_secret: Some("fixture-secret".into()),
+            shadow_secret: None,
+            observer_secret: Some("observer-secret".into()),
+            canary_repository: Some("example/repo".into()),
+            allowed_repos: std::collections::BTreeSet::from(["example/repo".into()]),
+            bot_handle: Some("fixture-council".into()),
+            roster: vec!["chair".into(), "rev1".into(), "rev2".into()],
+            council_preset: None,
+            review_mode: "approve".into(),
+            ocp_action: github_pr_controller::config::OcpActionConfig {
+                base_url: Some("https://control-plane.test".into()),
+                action_token: Some(action_token.clone()),
+                scope: Some(CANARY_SCOPE.into()),
+                controller_id: Some(CONTROLLER_ID.into()),
+            },
+            event_signing_secret: Some(event_secret.clone()),
+            github_app: github_pr_controller::config::GitHubAppConfig {
+                app_id: None,
+                installation_id: None,
+                private_key: None,
+            },
+        };
+        let verifier = github_pr_controller::runtime_events::RuntimeEventVerifier::new(
+            CONTROLLER_ID,
+            &event_secret,
+        )
+        .unwrap();
+        let action_client = InProcessOcpActionClient {
+            state: ocp_state.clone(),
+            token: action_token.clone(),
+            scope: CANARY_SCOPE.into(),
+        };
+        let controller_state = Arc::new(github_pr_controller::AppState::with_components(
+            controller_config,
+            github_pr_controller::store::ProductStore::open(":memory:").unwrap(),
+            Some(Arc::new(action_client)),
+            Some(Arc::new(verifier)),
+        ));
+        let controller_router = github_pr_controller::router(controller_state.clone());
+        *event_transport.router.lock().unwrap() = Some(controller_router.clone());
+
+        let embedded_surface = format!(
+            "embedded_github_webhook_repo:{}",
+            hex::encode(Sha256::digest(b"example/repo"))
+        );
+        let embedded_count = || {
+            store
+                .compatibility_usage()
+                .unwrap()
+                .into_iter()
+                .find(|usage| usage.surface == embedded_surface)
+                .map(|usage| usage.uses)
+                .unwrap_or(0)
+        };
+        let embedded_baseline = embedded_count();
+
+        let first = controller_router
+            .clone()
+            .oneshot(github_controller_webhook(
+                "canary-e2e-1",
+                "pull_request",
+                FIXTURE.into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        let first: Value =
+            serde_json::from_slice(&first.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let first_session = first["action_result"]["result"]["data"]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let duplicate = controller_router
+            .clone()
+            .oneshot(github_controller_webhook(
+                "canary-e2e-1",
+                "pull_request",
+                FIXTURE.into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(duplicate.status(), StatusCode::OK);
+        assert_eq!(store.list_sessions(None, None, 20).unwrap().len(), 1);
+
+        while dispatch_once(&ocp_state, now_ms()).await.unwrap() > 0 {}
+        let opened_summary = controller_state
+            .store
+            .as_ref()
+            .unwrap()
+            .canary_summary()
+            .unwrap();
+        assert_eq!(opened_summary.runtime_event_types["session.opened"], 1);
+
+        let mut synchronize: Value = serde_json::from_str(FIXTURE).unwrap();
+        synchronize["action"] = serde_json::json!("synchronize");
+        synchronize["pull_request"]["head"]["sha"] = serde_json::json!("def456");
+        let superseded = controller_router
+            .clone()
+            .oneshot(github_controller_webhook(
+                "canary-e2e-2",
+                "pull_request",
+                synchronize.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(superseded.status(), StatusCode::ACCEPTED);
+        let superseded: Value =
+            serde_json::from_slice(&superseded.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(
+            superseded["action_result"]["result"]["data"]["old_id"],
+            first_session
+        );
+        let active_session = superseded["action_result"]["result"]["data"]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        while dispatch_once(&ocp_state, now_ms()).await.unwrap() > 0 {}
+
+        crate::orchestrator::handle_reply(
+            &ocp_state,
+            "rev1",
+            bot_reply(&active_session, "review one [done]"),
+        )
+        .unwrap();
+        crate::orchestrator::handle_reply(
+            &ocp_state,
+            "rev2",
+            bot_reply(&active_session, "review two [done]"),
+        )
+        .unwrap();
+        crate::orchestrator::handle_reply(
+            &ocp_state,
+            "chair",
+            bot_reply(&active_session, "final verdict [done]"),
+        )
+        .unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&active_session).unwrap().unwrap().state),
+            SessionState::Closed
+        );
+        while dispatch_once(&ocp_state, now_ms()).await.unwrap() > 0 {}
+
+        let mut timeout_payload: Value = serde_json::from_str(FIXTURE).unwrap();
+        timeout_payload["pull_request"]["head"]["sha"] = serde_json::json!("timeout789");
+        let timeout_open = controller_router
+            .clone()
+            .oneshot(github_controller_webhook(
+                "canary-e2e-3",
+                "pull_request",
+                timeout_payload.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(timeout_open.status(), StatusCode::ACCEPTED);
+        let timeout_open: Value =
+            serde_json::from_slice(&timeout_open.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let timeout_session = timeout_open["action_result"]["result"]["data"]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(crate::orchestrator::force_close_timeout(&ocp_state, &timeout_session).unwrap());
+        while dispatch_once(&ocp_state, now_ms()).await.unwrap() > 0 {}
+
+        let summary = controller_state
+            .store
+            .as_ref()
+            .unwrap()
+            .canary_summary()
+            .unwrap();
+        assert_eq!(summary.acted_deliveries, 3);
+        assert!(summary.runtime_event_types["session.superseded"] >= 1);
+        assert!(summary.runtime_event_types["session.terminal"] >= 1);
+        assert!(summary.runtime_event_types["session.timeout"] >= 1);
+        assert_eq!(embedded_count(), embedded_baseline);
+
+        let forbidden_follow_up = request(
+            &ocp_state,
+            &action_token,
+            CANARY_SCOPE,
+            &post_action(
+                "canary-forbidden-follow-up",
+                &timeout_session,
+                "not granted",
+            ),
+        );
+        assert_eq!(forbidden_follow_up.status(), StatusCode::FORBIDDEN);
     }
 }

@@ -1,15 +1,18 @@
-# GitHub PR controller (plan-only)
+# GitHub PR controller
 
 The GitHub PR controller is an independently deployable product adapter. It
 owns GitHub webhook authentication, delivery deduplication, repository and
 author admission, trigger parsing, and `SessionPlan` construction. It does not
-link to OCP, open OCP's database, call the controller action API, or perform
-GitHub writes.
+link to OCP internals, open OCP's database, or perform GitHub writes. In
+`external_canary` mode it can call only the versioned OCP action API with an
+installation-scoped token and receive signed provider-neutral runtime events.
 
-This is the P7 shadow state. A planned request is durable in the controller's
-own SQLite database and returned to the caller, but is not sent to OCP. The
-controller can compare a signed mirror reference with its own plan, but it has
-no OCP action client and no GitHub write client.
+The default `plan_only` mode is the P7 shadow state: requests are planned and
+stored but never sent to OCP. P8's `external_canary` mode owns raw ingress for
+exactly one configured repository and sends its `open_session` plan through the
+generic action API. There is no fallback to embedded ingress. Both modes keep
+the GitHub write client disabled; compatibility findings and write ownership
+remain with OCP until later migration phases.
 
 ## Run
 
@@ -32,8 +35,8 @@ The container listens on port 8091 and stores delivery records in
 
 - `GET /healthz` is process liveness and always returns the component report.
 - `GET /readyz` gates ingress on webhook HMAC configuration, product-store
-  availability, and the absence of GitHub App credentials. The OCP action
-  client must remain disabled.
+  availability, mode-specific ownership/action/event configuration, and the
+  absence of GitHub App credentials.
 - `POST /api/v1/github/webhooks` accepts at most 1 MiB and requires
   `x-hub-signature-256`, `x-github-delivery`, and `x-github-event`.
 - `POST /api/v1/shadow/compare` accepts a wrapper signed with
@@ -42,6 +45,13 @@ The container listens on port 8091 and stores delivery records in
 - `GET /api/v1/shadow/summary` requires a shadow HMAC over an empty body and
   returns aggregate exact, identity/ownership, and presentation mismatch report
   counts. It returns no payload or prompt text.
+- `POST /api/v1/openab/events` accepts signed provider-neutral v1 runtime
+  events. The signature covers the exact target, body, timestamp, controller
+  id, and event id. Receipts retain only identifiers, hashes, types, and
+  timestamps for seven days; raw payloads are not stored.
+- `GET /api/v1/canary/summary` requires an observer HMAC over an empty body in
+  `x-canary-signature-256`. It exposes aggregate acted, processing, retryable,
+  and runtime-event counts for promotion and rollback gates.
 
 Webhook HMAC covers the exact raw request body. A delivery ID is a durable
 idempotency key; replaying the same ID and body returns the stored result,
@@ -65,8 +75,15 @@ read-only GitHub App client.
 
 An accepted trigger returns `202` with a deterministic `SessionPlan`. The plan
 contains the exact generic `open_session` fields plus dedupe/supersede policy,
-terminal projection inputs, and proposed GitHub write intents. These are
-comparison data only: no session or GitHub object is created.
+terminal projection inputs, and proposed GitHub write intents. In `plan_only`
+these remain comparison data. In `external_canary`, the controller submits only
+the generic `open_session` action and records the action result; proposed
+GitHub writes remain data and are not executed by this binary.
+
+The OCP action id is deterministically derived from the GitHub delivery id.
+Replaying an accepted delivery therefore creates at most one OCP session. An
+action outage returns `503` and marks the delivery immediately retryable using
+the same action id. It never invokes the embedded webhook as a fallback.
 
 The six P0 fixtures run through both the embedded planner and the external
 planner in one test. Their trigger decision, identity, roster, chair, quorum,
@@ -105,17 +122,26 @@ read the authenticated aggregate gate.
 |----------|---------|-------------|
 | `GITHUB_CONTROLLER_ADDR` | `0.0.0.0:8091` | Listen address |
 | `GITHUB_CONTROLLER_DB` | `github-controller.db` | Controller-owned SQLite database |
+| `GITHUB_CONTROLLER_MODE` | `plan_only` | `plan_only` or `external_canary` |
 | `GITHUB_CONTROLLER_WEBHOOK_SECRET` | _(missing)_ | GitHub webhook HMAC secret; missing is not-ready and fail-closed |
 | `GITHUB_CONTROLLER_SHADOW_SECRET` | _(disabled)_ | HMAC secret for trusted shadow comparison wrappers; not an OCP action credential |
+| `GITHUB_CONTROLLER_OBSERVER_SECRET` | _(disabled)_ | Separate HMAC secret for the aggregate canary summary; required in `external_canary` |
+| `GITHUB_CONTROLLER_CANARY_REPOSITORY` | _(disabled)_ | Exact `owner/repo` whose raw ingress is owned in `external_canary` |
 | `GITHUB_CONTROLLER_ALLOWED_REPOS` | _(allow all)_ | Comma-separated `owner/repo` allowlist |
 | `GITHUB_CONTROLLER_BOT_HANDLE` | _(none)_ | Bot handle without `@`, used for mention commands |
 | `GITHUB_CONTROLLER_ROSTER` | `chair,rev1,rev2` | Planned council roster; first entry is chair |
 | `GITHUB_CONTROLLER_COUNCIL_PRESET` | `lite` | Default `lite`, `quick`, `standard`, or `full` plan preset; PR label wins |
 | `GITHUB_CONTROLLER_REVIEW_MODE` | `approve` | Proposed write parity: `status`, `approve`, or `enforce` |
-| `GITHUB_CONTROLLER_GITHUB_APP_ID` | _(must be absent)_ | Future GitHub App client configuration; setting any App credential makes plan-only readiness fail |
+| `GITHUB_CONTROLLER_OCP_URL` | _(disabled)_ | HTTPS OCP origin; required in `external_canary` |
+| `GITHUB_CONTROLLER_OCP_ACTION_TOKEN` | _(disabled)_ | Installation token granted only `open_session` for the exact canary scope |
+| `GITHUB_CONTROLLER_OCP_SCOPE` | _(disabled)_ | Exact controller scope sent with every action |
+| `GITHUB_CONTROLLER_ID` | _(disabled)_ | Installed controller id; must match signed runtime events |
+| `GITHUB_CONTROLLER_EVENT_SIGNING_SECRET` | _(disabled)_ | Base64url per-controller event secret issued by OCP; minimum 32 decoded bytes |
+| `GITHUB_CONTROLLER_GITHUB_APP_ID` | _(must be absent)_ | Future GitHub App client configuration; setting any App credential makes readiness fail |
 | `GITHUB_CONTROLLER_GITHUB_APP_INSTALLATION_ID` | _(disabled)_ | Future GitHub App installation |
 | `GITHUB_CONTROLLER_GITHUB_APP_PRIVATE_KEY` | _(must be absent)_ | Future GitHub App key; forbidden in the P7 shadow deployment |
 
 The controller deliberately ignores all `OABCP_*` variables. Run OCP and this
 controller with separate databases, environment groups, images, and health
-checks.
+checks. Follow the [external canary runbook](github-controller-canary-runbook.md)
+before changing raw webhook ownership.
