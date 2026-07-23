@@ -13,7 +13,9 @@ fn controller_has_no_ocp_runtime_or_configuration_dependency() {
         "config.rs",
         "lib.rs",
         "main.rs",
+        "ocp.rs",
         "planner.rs",
+        "runtime_events.rs",
         "shadow.rs",
         "store.rs",
     ]
@@ -33,10 +35,9 @@ fn controller_has_no_ocp_runtime_or_configuration_dependency() {
     assert!(!source.contains("openab_control_plane"));
     assert!(!source.contains("crate::state::AppState"));
     assert!(!source.contains("OABCP_"));
-    assert!(!source.contains("ControllerAction"));
     assert!(!source.contains("OABCP_CONTROLLER_ACTION"));
     assert!(!source.contains("GH_TOKEN"));
-    assert!(!manifest.contains("reqwest"));
+    assert!(manifest.contains("reqwest"));
 }
 
 #[test]

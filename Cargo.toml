@@ -40,3 +40,4 @@ subtle = "2"
 github-pr-controller = { path = "crates/github-pr-controller" }
 tokio-tungstenite = "0.23"
 futures-util = "0.3"
+tower = { version = "0.5", features = ["util"] }

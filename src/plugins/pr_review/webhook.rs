@@ -20,7 +20,7 @@ use axum::Json;
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -464,6 +464,9 @@ pub async fn handle_webhook(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     let payload: Value = serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if let Some(repository) = payload["repository"]["full_name"].as_str() {
+        state.record_compatibility_use(&embedded_repo_counter_surface(repository), 1);
+    }
 
     // 3. Decide. Non-triggers are acked and ignored (GitHub expects a 2xx).
     let Some(trigger) = parse_trigger_with_config(event, &payload, &state.pr_review_config) else {
@@ -710,6 +713,13 @@ pub async fn handle_webhook(
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+fn embedded_repo_counter_surface(repository: &str) -> String {
+    format!(
+        "embedded_github_webhook_repo:{}",
+        hex::encode(Sha256::digest(repository.as_bytes()))
+    )
 }
 
 #[derive(Deserialize)]
@@ -1107,6 +1117,7 @@ mod tests {
         assert_eq!(actual, expected);
 
         let usage = state.store.compatibility_usage().unwrap();
+        let repo_surface = embedded_repo_counter_surface("example/repo");
         assert_eq!(
             usage
                 .iter()
@@ -1114,6 +1125,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 ("embedded_github_webhook", 1),
+                (repo_surface.as_str(), 1),
                 ("legacy_review_council_dispatch", 1),
             ]
         );

@@ -1,4 +1,4 @@
-# Independent plan-only GitHub PR controller image. The build copies only the
+# Independent GitHub PR controller image. The build copies only the
 # controller packages and workspace manifests; no OCP implementation source or
 # runtime configuration enters the image.
 FROM rust:1.94-slim-bookworm AS build

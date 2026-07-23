@@ -175,6 +175,13 @@ that do not trigger a review and repositories rejected by the allowlist; this
 is intentionally conservative evidence that the embedded ingress is still in
 use.
 
+Signed embedded webhook deliveries also increment
+`embedded_github_webhook_repo:<sha256(owner/name)>`. Record the canary
+repository's digest and count before route promotion; P8 requires that count not
+increase during the external-canary window even while other repositories still
+use embedded ingress. The hash avoids exposing repository names in the
+compatibility telemetry surface.
+
 ## Provider Map
 
 The provider is selected by either:
