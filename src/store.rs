@@ -2046,7 +2046,7 @@ impl Store for SqliteStore {
                 "SELECT e.id FROM controller_events e
                  JOIN controllers c ON c.id = e.controller_id
                  WHERE e.state = 'pending' AND e.next_attempt_at <= ?1 AND c.enabled = 1
-                 ORDER BY e.next_attempt_at, e.created_at LIMIT ?2",
+                 ORDER BY e.next_attempt_at, e.created_at, e.rowid LIMIT ?2",
             )?;
             let rows = stmt
                 .query_map(params![now, limit as i64], |row| row.get::<_, String>(0))?

@@ -212,8 +212,9 @@ pub async fn dispatch_once(state: &Arc<AppState>, now: i64) -> Result<usize> {
     };
     let deliveries = state
         .store
-        // One claim per tick preserves durable event order and keeps the lease
-        // longer than the ten-second request timeout without batch-tail expiry.
+        // Claim one at a time to keep the lease longer than the ten-second
+        // request timeout without batch-tail expiry. The dispatcher drains all
+        // currently due rows before waiting for its next tick.
         .claim_controller_events(now, 1, DELIVERY_LEASE_MS)?;
     let count = deliveries.len();
     for delivery in deliveries {
@@ -264,8 +265,15 @@ pub fn spawn_dispatcher(state: Arc<AppState>) {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         loop {
             tick.tick().await;
-            if let Err(error) = dispatch_once(&state, now_ms()).await {
-                tracing::error!(%error, "controller event dispatch failed");
+            loop {
+                match dispatch_once(&state, now_ms()).await {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::error!(%error, "controller event dispatch failed");
+                        break;
+                    }
+                }
             }
         }
     });
