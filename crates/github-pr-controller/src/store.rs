@@ -194,8 +194,8 @@ impl ProductStore {
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         connection.execute(
             "DELETE FROM webhook_deliveries
-              WHERE state IN ('planned', 'ignored')
-                AND completed_at < ?1",
+              WHERE (state IN ('planned', 'ignored') AND completed_at < ?1)
+                 OR (state = 'processing' AND received_at < ?1)",
             [now.saturating_sub(retention_secs)],
         )
     }
@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_delivery_retention_is_bounded_without_pruning_processing() {
+    fn delivery_retention_prunes_completed_and_abandoned_processing_rows() {
         let store = ProductStore::memory().unwrap();
         store
             .begin_delivery_at("completed", "pull_request", None, "abc", 1_000)
@@ -357,7 +357,10 @@ mod tests {
             .finish_delivery_at("completed", "planned", &json!({"ok": true}), 1_000)
             .unwrap();
         store
-            .begin_delivery_at("processing", "pull_request", None, "def", 1_000)
+            .begin_delivery_at("abandoned", "pull_request", None, "def", 1_000)
+            .unwrap();
+        store
+            .begin_delivery_at("recent", "pull_request", None, "ghi", 1_002)
             .unwrap();
 
         assert_eq!(
@@ -367,14 +370,21 @@ mod tests {
                     COMPLETED_RETENTION_SECS,
                 )
                 .unwrap(),
-            1
+            2
         );
         assert_eq!(
             store
-                .begin_delivery_at("processing", "pull_request", None, "def", 2_000_000)
+                .begin_delivery_at("abandoned", "pull_request", None, "def", 2_000_000)
                 .unwrap(),
             DeliveryAdmission::New,
-            "processing rows are reclaimed, never pruned"
+            "processing rows older than retention are pruned"
+        );
+        assert_eq!(
+            store
+                .begin_delivery_at("recent", "pull_request", None, "changed", 1_003)
+                .unwrap(),
+            DeliveryAdmission::Conflict,
+            "processing rows inside retention remain available for lease recovery"
         );
     }
 

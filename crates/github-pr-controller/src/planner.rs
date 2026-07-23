@@ -290,10 +290,9 @@ fn parse_issue_comment(body: &Value, bot_handle: Option<&str>) -> Option<Trigger
             ("/review", None, None, false)
         } else if let Some(review) = parse_mention_review(trimmed, bot_handle) {
             ("/review", None, Some(review.notes), review.from_scratch)
-        } else if let Some(question) = parse_ask(trimmed, bot_handle) {
-            ("ask", Some(question), None, false)
         } else {
-            return None;
+            let question = parse_ask(trimmed, bot_handle)?;
+            ("ask", Some(question), None, false)
         };
     let comment_id = body["comment"]["id"].as_u64()?;
     Some(Trigger {
