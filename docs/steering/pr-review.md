@@ -179,6 +179,31 @@ finer-grained precision, …) is not a finding — unless the diff itself claims
 to provide it, or its absence causes a security or data-loss defect inside
 the changed surface. "The enterprise version would…" comments are noise.
 
+Over-implementation: the mirror check. The probes above ask what the diff is
+*missing*; also ask what it added that should not exist. When the diff's new
+surface exceeds its stated purpose, that is a real 🟡 with a concrete action
+(inline it / delete it) — not a style preference, so the severity gate's
+"drop style nits" rule does not cover it (a real miss: a ~10-line fix that
+shipped a one-use helper function plus a test asserting only that the wiring
+existed — a human reviewer had to request both be removed after the council
+LGTM'd). Flag, scoped to code THIS diff adds:
+- **One-use indirection:** a helper/function/interface extracted for a single
+  call site with no second consumer in the diff or a stated imminent one —
+  inline it.
+- **Tests that assert nothing:** a test that restates the implementation,
+  asserts only that configuration/wiring is what the source says it is, or
+  cannot fail while the code compiles — delete it. A test earns its place by
+  failing when behavior breaks.
+- **Speculative generality:** config knobs, parameters, or branches for cases
+  no current caller exercises and the PR does not claim to need.
+- **Scope creep:** changes (refactors, renames, drive-by cleanups) unrelated
+  to the PR's stated purpose — split them out.
+Proportion rule: judge against the smallest diff that honestly fixes the
+stated problem. Never 🔴 (extra code that works does not block merge on its
+own — unless it conceals a defect); one-use indirection in a large feature PR
+where the structure is plausibly load-bearing is 🟢 or nothing. This probe
+targets small fixes that arrive wearing framework-sized clothes.
+
 Declared boundaries: if the repo declares review boundaries (a
 `Review Boundaries` / `Design Boundaries` / `Non-Goals` section in AGENTS.md
 or CLAUDE.md, or a `docs/review-boundaries.md`), read it before expanding
