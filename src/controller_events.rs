@@ -212,7 +212,9 @@ pub async fn dispatch_once(state: &Arc<AppState>, now: i64) -> Result<usize> {
     };
     let deliveries = state
         .store
-        .claim_controller_events(now, 25, DELIVERY_LEASE_MS)?;
+        // One claim per tick preserves durable event order and keeps the lease
+        // longer than the ten-second request timeout without batch-tail expiry.
+        .claim_controller_events(now, 1, DELIVERY_LEASE_MS)?;
     let count = deliveries.len();
     for delivery in deliveries {
         let result = match signed_request(&runtime.keys, &delivery, now / 1000) {
