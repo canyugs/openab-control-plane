@@ -429,7 +429,7 @@ fn review_open_session_action_with_roster(
     )
 }
 
-fn review_open_session_action_with_roster_and_fingerprint(
+pub(super) fn review_open_session_action_with_roster_and_fingerprint(
     repo: &str,
     num: u64,
     label_preset: Option<String>,
@@ -517,7 +517,7 @@ pub async fn convene_ask(
     Ok(session_id(result))
 }
 
-fn ask_open_session_action_with_roster(
+pub(super) fn ask_open_session_action_with_roster(
     repo: &str,
     num: u64,
     question: &str,

@@ -556,6 +556,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "controller-protocol",
  "hex",
  "hmac",
  "http-body-util",
@@ -1061,6 +1062,7 @@ dependencies = [
  "controller-protocol",
  "futures",
  "futures-util",
+ "github-pr-controller",
  "hex",
  "hmac",
  "http-body-util",

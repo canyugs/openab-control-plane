@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod planner;
+pub mod shadow;
 pub mod store;
 
 use axum::body::Bytes;
@@ -17,7 +18,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Duration;
-use store::{DeliveryAdmission, ProductStore};
+use store::{DeliveryAdmission, ProductStore, ShadowAdmission};
 
 type HmacSha256 = Hmac<Sha256>;
 const MAX_WEBHOOK_BODY_BYTES: usize = 1024 * 1024;
@@ -65,14 +66,15 @@ impl AppState {
     fn readiness(&self) -> ReadinessReport {
         let ingress = self.config.ingress_readiness();
         let product_store = self.product_store_readiness();
-        let ready = ingress.ready && product_store.ready;
+        let github = self.config.github_app.readiness();
+        let ready = ingress.ready && product_store.ready && !github.enabled;
         ReadinessReport {
             status: if ready { "ready" } else { "not_ready" },
             mode: "plan_only",
             components: Components {
                 ingress,
                 ocp: ComponentReadiness::disabled("action client disabled in plan-only mode"),
-                github: self.config.github_app.readiness(),
+                github,
                 product_store,
             },
         }
@@ -99,6 +101,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(health))
         .route("/readyz", get(readiness))
         .route("/api/v1/github/webhooks", post(handle_webhook))
+        .route("/api/v1/shadow/compare", post(handle_shadow_compare))
+        .route("/api/v1/shadow/summary", get(shadow_summary))
         .layer(DefaultBodyLimit::max(MAX_WEBHOOK_BODY_BYTES))
         .with_state(state)
 }
@@ -262,27 +266,152 @@ async fn handle_webhook(
     response(status, result)
 }
 
+async fn handle_shadow_compare(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(secret) = state.config.shadow_secret.as_deref() else {
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "shadow_hmac_not_configured"}),
+        );
+    };
+    if !verify_signature(secret, &body, header(&headers, "x-shadow-signature-256")) {
+        return response(
+            StatusCode::FORBIDDEN,
+            json!({"ok": false, "error": "invalid_shadow_signature"}),
+        );
+    }
+    let request: shadow::ShadowCompareRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(_) => {
+            return response(
+                StatusCode::BAD_REQUEST,
+                json!({"ok": false, "error": "invalid_shadow_request"}),
+            )
+        }
+    };
+    if !valid_delivery_id(&request.comparison_id)
+        || !valid_delivery_id(&request.delivery_id)
+        || !valid_event_type(&request.event_type)
+    {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "invalid_shadow_identity"}),
+        );
+    }
+
+    let controller = match candidate_plan(
+        &state,
+        &request.delivery_id,
+        &request.event_type,
+        &request.payload,
+    ) {
+        Ok(plan) => shadow::ParityOutcome::Planned {
+            snapshot: Box::new(plan.parity_snapshot()),
+        },
+        Err(reason) => shadow::ParityOutcome::Ignored {
+            reason: reason.into(),
+        },
+    };
+    let repository = request.payload["repository"]["full_name"].as_str();
+    let report = shadow::compare(request.comparison_id, request.embedded, Some(controller));
+    let request_hash = hex::encode(Sha256::digest(&body));
+    let Some(store) = state.store.as_ref() else {
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "product_store_unavailable"}),
+        );
+    };
+    match store.record_shadow_comparison(&request_hash, repository, &report) {
+        Ok(ShadowAdmission::New) => response(
+            StatusCode::OK,
+            json!({"ok": true, "duplicate": false, "report": report}),
+        ),
+        Ok(ShadowAdmission::Duplicate) => response(
+            StatusCode::OK,
+            json!({"ok": true, "duplicate": true, "report": report}),
+        ),
+        Ok(ShadowAdmission::Conflict) => response(
+            StatusCode::CONFLICT,
+            json!({"ok": false, "error": "comparison_payload_conflict"}),
+        ),
+        Err(error) => {
+            tracing::error!(%error, "shadow comparison persistence failed");
+            response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"ok": false, "error": "shadow_store_failed"}),
+            )
+        }
+    }
+}
+
+async fn shadow_summary(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let Some(secret) = state.config.shadow_secret.as_deref() else {
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "shadow_hmac_not_configured"}),
+        );
+    };
+    if !verify_signature(secret, &[], header(&headers, "x-shadow-signature-256")) {
+        return response(
+            StatusCode::FORBIDDEN,
+            json!({"ok": false, "error": "invalid_shadow_signature"}),
+        );
+    }
+    let Some(store) = state.store.as_ref() else {
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "product_store_unavailable"}),
+        );
+    };
+    match store.shadow_summary() {
+        Ok(summary) => response(StatusCode::OK, json!({"ok": true, "summary": summary})),
+        Err(error) => {
+            tracing::error!(%error, "shadow summary failed");
+            response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"ok": false, "error": "shadow_store_failed"}),
+            )
+        }
+    }
+}
+
 fn decide(state: &AppState, delivery_id: &str, event_type: &str, payload: &Value) -> Value {
+    let plan = match candidate_plan(state, delivery_id, event_type, payload) {
+        Ok(plan) => plan,
+        Err(reason) => return json!({"ok": true, "planned": false, "reason": reason}),
+    };
+    json!({"ok": true, "planned": true, "plan": plan})
+}
+
+fn candidate_plan(
+    state: &AppState,
+    delivery_id: &str,
+    event_type: &str,
+    payload: &Value,
+) -> Result<planner::SessionPlan, &'static str> {
     let Some(trigger) =
         planner::parse_trigger(event_type, payload, state.config.bot_handle.as_deref())
     else {
-        return json!({"ok": true, "planned": false, "reason": "not_a_trigger"});
+        return Err("not_a_trigger");
     };
     if !state.config.allowed_repos.is_empty()
         && !state.config.allowed_repos.contains(&trigger.repository)
     {
-        return json!({"ok": true, "planned": false, "reason": "repository_not_allowed"});
+        return Err("repo_not_allowed");
     }
     if !trigger.author_trusted {
-        return json!({
-            "ok": true,
-            "planned": false,
-            "reason": "author_not_trusted",
-            "detail": "live GitHub permission checks are disabled in plan-only mode"
-        });
+        return Err("author_not_trusted");
     }
-    let plan = planner::build_plan(delivery_id, trigger, &state.config.roster);
-    json!({"ok": true, "planned": true, "plan": plan})
+    Ok(planner::build_plan(
+        delivery_id,
+        trigger,
+        &state.config.roster,
+        state.config.council_preset.as_deref(),
+        &state.config.review_mode,
+    ))
 }
 
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -338,9 +467,12 @@ mod tests {
             addr: "127.0.0.1:0".into(),
             db_path: ":memory:".into(),
             webhook_secret: Some("fixture-secret".into()),
+            shadow_secret: Some("shadow-secret".into()),
             allowed_repos: BTreeSet::from(["example/repo".into()]),
             bot_handle: Some("fixture-council".into()),
             roster: vec!["chair".into(), "rev1".into(), "rev2".into()],
+            council_preset: None,
+            review_mode: "approve".into(),
             github_app: config::GitHubAppConfig {
                 app_id: None,
                 installation_id: None,
@@ -358,6 +490,27 @@ mod tests {
             .header("x-github-delivery", delivery)
             .header("x-hub-signature-256", signature)
             .body(Body::from(body))
+            .unwrap()
+    }
+
+    fn signed_shadow_request(request: &shadow::ShadowCompareRequest) -> Request<Body> {
+        let body = serde_json::to_vec(request).unwrap();
+        let mut mac = HmacSha256::new_from_slice(b"shadow-secret").unwrap();
+        mac.update(&body);
+        let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        Request::post("/api/v1/shadow/compare")
+            .header("x-shadow-signature-256", signature)
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    fn signed_shadow_summary_request() -> Request<Body> {
+        let mut mac = HmacSha256::new_from_slice(b"shadow-secret").unwrap();
+        mac.update(&[]);
+        let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        Request::get("/api/v1/shadow/summary")
+            .header("x-shadow-signature-256", signature)
+            .body(Body::empty())
             .unwrap()
     }
 
@@ -399,6 +552,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plan_only_readiness_rejects_github_write_credentials() {
+        let mut config = test_config();
+        config.github_app.app_id = Some("1".into());
+        config.github_app.installation_id = Some("2".into());
+        config.github_app.private_key = Some("private".into());
+        let state = Arc::new(AppState::with_store(
+            config,
+            ProductStore::memory().unwrap(),
+        ));
+        let response = router(state)
+            .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn signed_shadow_comparison_records_exact_fixture_parity() {
+        const BODY: &str = include_str!("../../../tests/fixtures/github/pull_request_opened.json");
+        let state = Arc::new(AppState::with_store(
+            test_config(),
+            ProductStore::memory().unwrap(),
+        ));
+        let payload: Value = serde_json::from_str(BODY).unwrap();
+        let embedded = shadow::ParityOutcome::Planned {
+            snapshot: Box::new(
+                candidate_plan(&state, "delivery-shadow", "pull_request", &payload)
+                    .unwrap()
+                    .parity_snapshot(),
+            ),
+        };
+        let request = shadow::ShadowCompareRequest {
+            comparison_id: "comparison-1".into(),
+            delivery_id: "delivery-shadow".into(),
+            event_type: "pull_request".into(),
+            payload,
+            embedded: Some(embedded),
+        };
+        let app = router(state);
+        let response = app
+            .clone()
+            .oneshot(signed_shadow_request(&request))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["report"]["exact_match"], true);
+        assert_eq!(body["report"]["promotion_blocked"], false);
+
+        let duplicate = app
+            .clone()
+            .oneshot(signed_shadow_request(&request))
+            .await
+            .unwrap();
+        assert_eq!(duplicate.status(), StatusCode::OK);
+        let duplicate: Value =
+            serde_json::from_slice(&duplicate.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(duplicate["duplicate"], true);
+
+        let mut conflicting = request;
+        let shadow::ParityOutcome::Planned { snapshot } = conflicting.embedded.as_mut().unwrap()
+        else {
+            unreachable!();
+        };
+        snapshot.open_session.prompt = "drift".into();
+        let conflict = app
+            .clone()
+            .oneshot(signed_shadow_request(&conflicting))
+            .await
+            .unwrap();
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+
+        let unauthorized = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/shadow/summary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::FORBIDDEN);
+
+        let response = app.oneshot(signed_shadow_summary_request()).await.unwrap();
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["summary"]["total"], 1);
+        assert_eq!(body["summary"]["exact_matches"], 1);
+    }
+
+    #[tokio::test]
     async fn signed_fixture_produces_a_plan_and_dedupes_delivery() {
         const BODY: &str = include_str!("../../../tests/fixtures/github/pull_request_opened.json");
         let state = Arc::new(AppState::with_store(
@@ -415,7 +663,7 @@ mod tests {
         let body: Value =
             serde_json::from_slice(&first.into_body().collect().await.unwrap().to_bytes()).unwrap();
         assert_eq!(body["plan"]["source_delivery_id"], "delivery-1");
-        assert_eq!(body["plan"]["proposed_writes"], json!([]));
+        assert_eq!(body["plan"]["proposed_writes"].as_array().unwrap().len(), 3);
 
         let duplicate = app
             .oneshot(signed_request("delivery-1", BODY))

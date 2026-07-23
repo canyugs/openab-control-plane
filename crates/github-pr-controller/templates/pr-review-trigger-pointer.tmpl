@@ -1,0 +1,14 @@
+PR Review Council — {{REPO}} #{{NUM}} "{{TITLE}}"
+
+# Role protocol lives in pr-review-{chair,reviewer}-task.tmpl and is delivered by the mode=review_council recipient rewrite.
+
+Fetch and review the PR yourself — the diff is NOT inlined below (it may be large).
+Fetch menu:
+  - the diff:            gh pr diff {{NUM}} --repo {{REPO}}
+  - large PR? start narrow: gh pr diff {{NUM}} --repo {{REPO}} --name-only, then read only the files your angle touches
+  - surrounding context: gh pr checkout {{NUM}} (or read files directly) to judge the change in context, not in isolation
+
+OCP sends each participant a recipient-specific task derived from this trigger.
+Standing protocol and report style may be preloaded from docs/steering/pr-review.md.
+
+{{ANGLE_ASSIGNMENT}}

@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use serde::Serialize;
 use serde_json::Value;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,6 +18,21 @@ pub enum DeliveryAdmission {
         state: String,
         result: Option<Value>,
     },
+    Conflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ShadowSummary {
+    pub total: i64,
+    pub exact_matches: i64,
+    pub identity_or_ownership_mismatch_reports: i64,
+    pub presentation_mismatch_reports: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShadowAdmission {
+    New,
+    Duplicate,
     Conflict,
 }
 
@@ -43,7 +59,18 @@ impl ProductStore {
                result_json TEXT,
                received_at INTEGER NOT NULL,
                completed_at INTEGER
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS shadow_comparisons (
+               comparison_id TEXT PRIMARY KEY,
+               request_sha256 TEXT NOT NULL,
+               repository TEXT,
+               exact_match INTEGER NOT NULL,
+               identity_mismatches INTEGER NOT NULL,
+               presentation_mismatches INTEGER NOT NULL,
+               created_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_shadow_comparisons_created
+               ON shadow_comparisons(created_at);",
         )?;
         Ok(Self {
             connection: Mutex::new(connection),
@@ -153,7 +180,10 @@ impl ProductStore {
     }
 
     pub fn prune_completed_deliveries(&self) -> rusqlite::Result<usize> {
-        self.prune_completed_deliveries_at(now_unix(), COMPLETED_RETENTION_SECS)
+        let now = now_unix();
+        let deliveries = self.prune_completed_deliveries_at(now, COMPLETED_RETENTION_SECS)?;
+        let comparisons = self.prune_shadow_comparisons_at(now, COMPLETED_RETENTION_SECS)?;
+        Ok(deliveries + comparisons)
     }
 
     fn prune_completed_deliveries_at(
@@ -166,6 +196,79 @@ impl ProductStore {
             "DELETE FROM webhook_deliveries
               WHERE state IN ('planned', 'ignored')
                 AND completed_at < ?1",
+            [now.saturating_sub(retention_secs)],
+        )
+    }
+
+    pub fn record_shadow_comparison(
+        &self,
+        request_sha256: &str,
+        repository: Option<&str>,
+        report: &crate::shadow::ShadowReport,
+    ) -> rusqlite::Result<ShadowAdmission> {
+        let mut connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = transaction
+            .query_row(
+                "SELECT request_sha256 FROM shadow_comparisons WHERE comparison_id = ?1",
+                [&report.comparison_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let admission = match existing {
+            Some(existing) if existing == request_sha256 => ShadowAdmission::Duplicate,
+            Some(_) => ShadowAdmission::Conflict,
+            None => {
+                transaction.execute(
+                    "INSERT INTO shadow_comparisons
+               (comparison_id, request_sha256, repository, exact_match,
+                identity_mismatches, presentation_mismatches, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        report.comparison_id,
+                        request_sha256,
+                        repository,
+                        report.exact_match,
+                        report.identity_or_ownership_mismatches as i64,
+                        report.presentation_mismatches as i64,
+                        now_unix(),
+                    ],
+                )?;
+                ShadowAdmission::New
+            }
+        };
+        transaction.commit()?;
+        Ok(admission)
+    }
+
+    pub fn shadow_summary(&self) -> rusqlite::Result<ShadowSummary> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN exact_match = 1 THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN identity_mismatches > 0 THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN presentation_mismatches > 0 THEN 1 ELSE 0 END), 0)
+               FROM shadow_comparisons",
+            [],
+            |row| {
+                Ok(ShadowSummary {
+                    total: row.get(0)?,
+                    exact_matches: row.get(1)?,
+                    identity_or_ownership_mismatch_reports: row.get(2)?,
+                    presentation_mismatch_reports: row.get(3)?,
+                })
+            },
+        )
+    }
+
+    fn prune_shadow_comparisons_at(
+        &self,
+        now: i64,
+        retention_secs: i64,
+    ) -> rusqlite::Result<usize> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection.execute(
+            "DELETE FROM shadow_comparisons WHERE created_at < ?1",
             [now.saturating_sub(retention_secs)],
         )
     }
@@ -272,6 +375,54 @@ mod tests {
                 .unwrap(),
             DeliveryAdmission::New,
             "processing rows are reclaimed, never pruned"
+        );
+    }
+
+    #[test]
+    fn shadow_summary_records_counts_without_persisting_payloads() {
+        let store = ProductStore::memory().unwrap();
+        let exact = crate::shadow::ShadowReport {
+            comparison_id: "comparison-1".into(),
+            exact_match: true,
+            promotion_blocked: false,
+            identity_or_ownership_mismatches: 0,
+            presentation_mismatches: 0,
+            mismatches: Vec::new(),
+            controller: None,
+        };
+        let mut mismatch = exact.clone();
+        mismatch.comparison_id = "comparison-2".into();
+        mismatch.exact_match = false;
+        mismatch.promotion_blocked = true;
+        mismatch.identity_or_ownership_mismatches = 1;
+        store
+            .record_shadow_comparison("hash-1", Some("example/repo"), &exact)
+            .unwrap();
+        store
+            .record_shadow_comparison("hash-2", Some("example/repo"), &mismatch)
+            .unwrap();
+
+        assert_eq!(
+            store.shadow_summary().unwrap(),
+            ShadowSummary {
+                total: 2,
+                exact_matches: 1,
+                identity_or_ownership_mismatch_reports: 1,
+                presentation_mismatch_reports: 0,
+            }
+        );
+
+        assert_eq!(
+            store
+                .record_shadow_comparison("hash-1", Some("example/repo"), &exact)
+                .unwrap(),
+            ShadowAdmission::Duplicate
+        );
+        assert_eq!(
+            store
+                .record_shadow_comparison("changed", Some("example/repo"), &exact)
+                .unwrap(),
+            ShadowAdmission::Conflict
         );
     }
 }

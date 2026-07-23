@@ -9,25 +9,34 @@ fn package_root() -> PathBuf {
 fn controller_has_no_ocp_runtime_or_configuration_dependency() {
     let root = package_root();
     let manifest = fs::read_to_string(root.join("Cargo.toml")).unwrap();
-    let source = ["config.rs", "lib.rs", "main.rs", "planner.rs", "store.rs"]
-        .into_iter()
-        .map(|name| {
-            let source = fs::read_to_string(root.join("src").join(name)).unwrap();
-            source
-                .split("#[cfg(test)]")
-                .next()
-                .expect("source prefix")
-                .to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let source = [
+        "config.rs",
+        "lib.rs",
+        "main.rs",
+        "planner.rs",
+        "shadow.rs",
+        "store.rs",
+    ]
+    .into_iter()
+    .map(|name| {
+        let source = fs::read_to_string(root.join("src").join(name)).unwrap();
+        source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("source prefix")
+            .to_string()
+    })
+    .collect::<Vec<_>>()
+    .join("\n");
 
     assert!(!manifest.contains("openab-control-plane"));
     assert!(!source.contains("openab_control_plane"));
     assert!(!source.contains("crate::state::AppState"));
     assert!(!source.contains("OABCP_"));
     assert!(!source.contains("ControllerAction"));
+    assert!(!source.contains("OABCP_CONTROLLER_ACTION"));
     assert!(!source.contains("GH_TOKEN"));
+    assert!(!manifest.contains("reqwest"));
 }
 
 #[test]

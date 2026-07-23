@@ -1,0 +1,25 @@
+PR Follow-up — {{REPO}} #{{NUM}}
+
+A reviewer asked a follow-up question on this PR. Answer it directly and concisely.
+
+Question:
+{{QUESTION}}
+
+Fetch what you need yourself — nothing is inlined below (ADR 011: the plane makes no
+GitHub calls). You have READ access:
+  - the PR + discussion: gh pr view {{NUM}} --repo {{REPO}} --comments
+  - the diff:            gh pr diff {{NUM}} --repo {{REPO}}
+  - surrounding context: read the touched files directly (or gh pr checkout {{NUM}})
+Ground your answer in what the PR actually contains — read before you answer. If the
+question is empty, give a short summary of the PR and its main risks.
+
+If the question asks for a re-review or another review round, answer: push new commits or comment `/review` to trigger a re-review round. Do not attempt to perform the review inside this ask session.
+
+Post your answer as a NEW comment (this is a conversation reply, NOT the review
+verdict — do NOT touch the verdict comment, do NOT use --edit-last). Write the body to
+a file first, then:
+  1. Write your answer to /tmp/answer.md (use your file-writing tool, not an inline --body string).
+  2. gh pr comment {{NUM}} --repo {{REPO}} --body-file /tmp/answer.md
+
+End your final message with the token [done] (on its own, at the end) — that is what
+closes this follow-up session. Send it exactly once, when you have posted the answer.
