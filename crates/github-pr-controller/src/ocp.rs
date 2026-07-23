@@ -64,9 +64,10 @@ impl ReqwestOcpActionClient {
             || endpoint.password().is_some()
             || endpoint.fragment().is_some()
             || endpoint.query().is_some()
+            || endpoint.path() != "/"
         {
             anyhow::bail!(
-                "OCP action URL must be an HTTPS origin without userinfo, query, or fragment"
+                "OCP action URL must be an HTTPS root origin without path, userinfo, query, or fragment"
             );
         }
         endpoint.set_path("/v1/controller/actions");
@@ -155,7 +156,8 @@ mod tests {
             scope: Some("tenant:dev/resource:canary".into()),
             controller_id: Some("github-canary".into()),
         };
-        assert!(ReqwestOcpActionClient::new(&complete("https://ocp.example.test/base")).is_ok());
+        assert!(ReqwestOcpActionClient::new(&complete("https://ocp.example.test")).is_ok());
+        assert!(ReqwestOcpActionClient::new(&complete("https://ocp.example.test/base")).is_err());
         assert!(ReqwestOcpActionClient::new(&complete("http://ocp.example.test")).is_err());
         assert!(ReqwestOcpActionClient::new(&complete("https://user@ocp.example.test")).is_err());
         assert!(ReqwestOcpActionClient::new(&complete("https://ocp.example.test?q=1")).is_err());
