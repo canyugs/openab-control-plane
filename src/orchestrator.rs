@@ -238,7 +238,10 @@ pub fn close_session_by_controller(
     if state.store.session(session_id)?.is_none() {
         anyhow::bail!("unknown session {session_id}");
     }
-    if !state.store.close_if_active(session_id)? {
+    if !state
+        .store
+        .close_if_active(session_id, "session.terminal", reason)?
+    {
         return Ok(false);
     }
     purge_session_outbox_after_close(state, session_id);
@@ -315,7 +318,10 @@ fn chair_latest_settled(state: &Arc<AppState>, session_id: &str, bot: &str) -> O
 /// verdict. CAS once-only — returns true iff this call performed the close (a
 /// normal close racing in wins and this becomes a no-op).
 pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bool> {
-    if !state.store.close_if_active(session_id)? {
+    if !state
+        .store
+        .close_if_active(session_id, "session.timeout", "timeout")?
+    {
         return Ok(false); // already terminal
     }
     purge_session_outbox_after_close(state, session_id);
@@ -416,7 +422,10 @@ fn dispatch_coordinator(
         &session.id,
         json!({ "mode": session.mode.clone(), "reason": "unknown_mode" }),
     );
-    if state.store.close_if_active(&session.id)? {
+    if state
+        .store
+        .close_if_active(&session.id, "session.terminal", "unknown_mode")?
+    {
         purge_session_outbox_after_close(state, &session.id);
         if let Err(e) = crate::identity::revoke_session_github_tokens(
             state.store.as_ref(),

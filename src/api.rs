@@ -52,6 +52,14 @@ pub fn router() -> Router<Arc<AppState>> {
             "/v1/controller-installations/:id/tokens/:token_id",
             axum::routing::delete(crate::controller_api::revoke_installation_token),
         )
+        .route(
+            "/v1/controller-installations/:id/events",
+            post(crate::controller_api::configure_installation_events),
+        )
+        .route(
+            "/v1/controller-installations/:id/event-audit",
+            get(crate::controller_api::installation_event_audit),
+        )
         .route("/v1/bots", get(list_bots).post(register_bot))
         .route("/v1/bots/discover", post(discover_bot))
         .route("/v1/bots/github-token", post(bot_github_token))

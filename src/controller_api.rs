@@ -11,7 +11,8 @@ use crate::controller::{
 use crate::state::AppState;
 use crate::store::{
     new_id, now_ms, ControllerActionDenial, ControllerActionStart, ControllerCredentialHash,
-    ControllerSessionBinding, NewControllerActionToken, SessionState,
+    ControllerOpenDecision, ControllerOpenIntent, ControllerSessionBinding,
+    NewControllerActionToken,
 };
 use anyhow::{Context, Result};
 use axum::body::Body;
@@ -158,6 +159,24 @@ pub struct SetControllerState {
     pub enabled: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigureControllerEvents {
+    pub endpoint: String,
+    pub events: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IssuedControllerEventSecret {
+    pub controller_id: String,
+    pub endpoint: String,
+    pub events: Vec<String>,
+    pub key_version: i64,
+    /// Returned exactly once. The secret is derived from a deployment-held key;
+    /// SQLite stores only its version.
+    pub event_signing_secret: String,
+}
+
 fn default_max_concurrent_sessions() -> i64 {
     5
 }
@@ -281,6 +300,85 @@ pub async fn set_installation_state(
             None,
         ),
         Ok(false) => admin_error(StatusCode::NOT_FOUND, "unknown controller installation"),
+        Err(error) => admin_store_error(error),
+    }
+}
+
+pub async fn configure_installation_events(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(controller_id): Path<String>,
+    Json(request): Json<ConfigureControllerEvents>,
+) -> Response {
+    if let Err(error) = check_operator_auth(&state, &headers) {
+        return error.response();
+    }
+    let Some(runtime) = state.controller_events.as_ref() else {
+        return admin_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "controller event signing keys are not configured",
+        );
+    };
+    if let Err(error) = crate::controller_events::validate_https_endpoint(&request.endpoint) {
+        return admin_error(StatusCode::BAD_REQUEST, &error.to_string());
+    }
+    let events = normalized_unique(&request.events);
+    let allowed = [
+        "session.opened",
+        "session.progress",
+        "session.terminal",
+        "session.timeout",
+        "session.superseded",
+        "action.failed",
+    ];
+    if events.is_empty()
+        || events
+            .iter()
+            .any(|event_type| !allowed.contains(&event_type.as_str()))
+    {
+        return admin_error(
+            StatusCode::BAD_REQUEST,
+            "events must contain only supported provider-neutral v1 event names",
+        );
+    }
+    let key_version = runtime.keys.latest_version();
+    let event_signing_secret = match runtime.keys.issued_secret(key_version, &controller_id) {
+        Ok(secret) => secret,
+        Err(error) => return admin_store_error(error),
+    };
+    match state.store.configure_controller_events(
+        &controller_id,
+        &request.endpoint,
+        key_version,
+        &events,
+        now_ms(),
+    ) {
+        Ok(true) => json_response(
+            StatusCode::OK,
+            &IssuedControllerEventSecret {
+                controller_id,
+                endpoint: request.endpoint,
+                events,
+                key_version,
+                event_signing_secret,
+            },
+            None,
+        ),
+        Ok(false) => admin_error(StatusCode::NOT_FOUND, "unknown controller installation"),
+        Err(error) => admin_store_error(error),
+    }
+}
+
+pub async fn installation_event_audit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(controller_id): Path<String>,
+) -> Response {
+    if let Err(error) = check_operator_auth(&state, &headers) {
+        return error.response();
+    }
+    match state.store.controller_event_audit(&controller_id) {
+        Ok(entries) => json_response(StatusCode::OK, &entries, None),
         Err(error) => admin_store_error(error),
     }
 }
@@ -526,7 +624,7 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
     request_digest.update(body);
     let request_hash = request_digest.finalize().to_vec();
     let action_kind = action_kind(&envelope.action);
-    let external_open = match &envelope.action {
+    let open_intent = match &envelope.action {
         ControllerAction::OpenSession(action) => {
             let Some(trigger_ref) = action.trigger_ref.as_deref() else {
                 return protocol_error_response(
@@ -538,52 +636,12 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
                     None,
                 );
             };
-            let existing = match state
-                .store
-                .controller_session_for_trigger(&controller_id, trigger_ref)
-            {
-                Ok(existing) => existing,
-                Err(error) => return internal_store_error(Some(action_id), error),
-            };
-            Some((
-                trigger_ref.to_string(),
-                action.trigger_fingerprint.clone(),
-                existing,
-            ))
+            Some(ControllerOpenIntent {
+                trigger_ref: trigger_ref.to_string(),
+                trigger_fingerprint: action.trigger_fingerprint.clone(),
+            })
         }
         _ => None,
-    };
-
-    let existing_session_is_active = match external_open
-        .as_ref()
-        .and_then(|(_, _, existing)| existing.as_ref())
-    {
-        Some(binding) => match state.store.session(&binding.session_id) {
-            Ok(Some(session)) => !matches!(
-                SessionState::from_db_str(&session.state),
-                SessionState::Closed | SessionState::Aborted
-            ),
-            Ok(None) => false,
-            Err(error) => return internal_store_error(Some(action_id), error),
-        },
-        None => false,
-    };
-    let deduped_session = external_open
-        .as_ref()
-        .and_then(|(_, fingerprint, existing)| {
-            existing.as_ref().and_then(|binding| {
-                (existing_session_is_active
-                    && matches!(
-                        (binding.trigger_fingerprint.as_deref(), fingerprint.as_deref()),
-                        (Some(stored), Some(incoming)) if stored == incoming
-                    ))
-                .then(|| binding.session_id.clone())
-            })
-        });
-    let opens_new_session = match external_open.as_ref() {
-        None => false,
-        Some((_, _, None)) => true,
-        Some((_, _, Some(_))) => !existing_session_is_active,
     };
     let session_id = action_session_id(&envelope.action);
     let started = match state.store.begin_controller_action(
@@ -594,13 +652,13 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
         action_kind,
         &scope,
         session_id,
-        opens_new_session,
+        open_intent.as_ref(),
         now_ms(),
     ) {
         Ok(started) => started,
         Err(error) => return internal_store_error(Some(action_id), error),
     };
-    match started {
+    let open_decision = match started {
         ControllerActionStart::Replay(replay) => {
             let status = u16::try_from(replay.http_status)
                 .ok()
@@ -639,43 +697,17 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
         ControllerActionStart::Denied(denial) => {
             return denial_response(Some(action_id), denial, now_ms())
         }
-        ControllerActionStart::Started => {}
-    }
+        ControllerActionStart::Started { open_decision } => open_decision,
+    };
 
-    if external_open
-        .as_ref()
-        .and_then(|(_, _, existing)| existing.as_ref())
-        .is_some_and(|binding| binding.scope != scope)
+    let (status, body, binding) = if let Some(ControllerOpenDecision::Deduplicate(existing)) =
+        open_decision.as_ref()
     {
-        let error = ErrorEnvelope {
-            version: CURRENT_VERSION,
-            action_id: Some(action_id.clone()),
-            error: ProtocolError {
-                code: ErrorCode::Forbidden,
-                message: "controller trigger is bound to another scope".into(),
-                retryable: false,
-            },
-        };
-        let body = serde_json::to_string(&error).expect("protocol error serializes");
-        if let Err(error) = state.store.finish_controller_action(
-            &controller_id,
-            &action_id,
-            i64::from(StatusCode::FORBIDDEN.as_u16()),
-            &body,
-            None,
-            now_ms(),
-        ) {
-            return internal_store_error(Some(action_id), error);
-        }
-        return raw_json_response(StatusCode::FORBIDDEN, body, None);
-    }
-
-    let (status, body, binding) = if let Some(session_id) = deduped_session {
         let result = ActionResultEnvelope {
             version: CURRENT_VERSION,
             action_id: action_id.clone(),
             result: ControllerActionResult::SessionOpened {
-                session_id,
+                session_id: existing.session_id.clone(),
                 deduped: true,
             },
         };
@@ -686,15 +718,14 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
         )
     } else {
         let mut action = envelope.action;
-        let binding_input =
-            if let (ControllerAction::OpenSession(open), Some((trigger_ref, fingerprint, _))) =
-                (&mut action, external_open)
-            {
-                open.trigger_ref = Some(controller_trigger_ref(&controller_id, &trigger_ref));
-                Some((trigger_ref, fingerprint))
-            } else {
-                None
-            };
+        let binding_input = if let (ControllerAction::OpenSession(open), Some(intent)) =
+            (&mut action, open_intent)
+        {
+            open.trigger_ref = Some(controller_trigger_ref(&controller_id, &intent.trigger_ref));
+            Some((intent.trigger_ref, intent.trigger_fingerprint))
+        } else {
+            None
+        };
         match execute_interpreted_action(state, action) {
             Ok(result) => {
                 let binding = binding_input.and_then(|(trigger_ref, fingerprint)| {
@@ -871,6 +902,14 @@ fn denial_response(
             action_id,
             ErrorCode::Forbidden,
             "session is not owned by this controller scope",
+            false,
+            None,
+        ),
+        ControllerActionDenial::TriggerScope => protocol_error_response(
+            StatusCode::FORBIDDEN,
+            action_id,
+            ErrorCode::Forbidden,
+            "controller trigger is bound to another scope",
             false,
             None,
         ),
@@ -1072,12 +1111,32 @@ fn raw_json_response(status: StatusCode, body: String, retry_after: Option<i64>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::controller::{CloseSessionAction, OpenSessionAction, PostMessageAction};
-    use crate::store::{SqliteStore, Store};
+    use crate::controller::{
+        AddRosterAction, CloseSessionAction, OpenSessionAction, PostMessageAction,
+    };
+    use crate::controller_events::{
+        dispatch_once, ControllerEventKeys, ControllerEventRequest, ControllerEventRuntime,
+        ControllerEventTransport,
+    };
+    use crate::store::{SessionState, SqliteStore, Store};
     use axum::body::to_bytes;
+    use futures::future::BoxFuture;
     use serde_json::Value;
+    use std::sync::Mutex;
 
     const SCOPE: &str = "tenant:alpha/resource:one";
+
+    #[derive(Default)]
+    struct RecordingEventTransport {
+        requests: Mutex<Vec<ControllerEventRequest>>,
+    }
+
+    impl ControllerEventTransport for RecordingEventTransport {
+        fn post(&self, request: ControllerEventRequest) -> BoxFuture<'static, Result<u16>> {
+            self.requests.lock().unwrap().push(request);
+            Box::pin(async { Ok(204) })
+        }
+    }
 
     fn auth_config() -> ControllerAuthConfig {
         ControllerAuthConfig::new(BTreeMap::from([(1, vec![7; 32]), (2, vec![9; 32])])).unwrap()
@@ -1334,7 +1393,7 @@ mod tests {
                 "open_session",
                 SCOPE,
                 None,
-                true,
+                None,
                 now_ms(),
             )
             .unwrap();
@@ -1629,6 +1688,7 @@ mod tests {
             0,
             crate::plugins::pr_review::PrReviewConfig::default(),
             Some(auth),
+            None,
         );
         let mut operator_headers = HeaderMap::new();
         operator_headers.insert(
@@ -1731,5 +1791,115 @@ mod tests {
             .status(),
             StatusCode::UNAUTHORIZED
         );
+    }
+
+    #[tokio::test]
+    async fn controller_actions_and_signed_runtime_events_form_a_bidirectional_flow() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        seed_bots(&store);
+        let auth = auth_config();
+        let action_token = token(42);
+        install(
+            &store,
+            &auth,
+            "ctrl-duplex",
+            "tok-duplex",
+            &action_token,
+            1,
+            SCOPE,
+            5,
+            60,
+        );
+        let transport = Arc::new(RecordingEventTransport::default());
+        let event_keys = ControllerEventKeys::new(BTreeMap::from([(1, vec![13; 32])])).unwrap();
+        let state = AppState::new_with_options_and_runtime_config(
+            store.clone(),
+            None,
+            None,
+            None,
+            None,
+            "http://control-plane.test".into(),
+            None,
+            0,
+            crate::plugins::pr_review::PrReviewConfig::default(),
+            Some(auth),
+            Some(Arc::new(ControllerEventRuntime::new(
+                event_keys,
+                transport.clone(),
+            ))),
+        );
+        store
+            .configure_controller_events(
+                "ctrl-duplex",
+                "https://controller.example.test/runtime-events?version=1",
+                1,
+                &[
+                    "session.opened".into(),
+                    "session.progress".into(),
+                    "session.terminal".into(),
+                ],
+                now_ms(),
+            )
+            .unwrap();
+
+        let opened = request(
+            &state,
+            &action_token,
+            SCOPE,
+            &open_action("act-duplex-open", "object:duplex", "v1"),
+        );
+        let session_id = opened_session_id(opened).await;
+        assert_eq!(dispatch_once(&state, now_ms()).await.unwrap(), 1);
+        let opened_event: Value =
+            serde_json::from_str(&transport.requests.lock().unwrap()[0].body).unwrap();
+        assert_eq!(opened_event["event_type"], "session.opened");
+        assert_eq!(opened_event["session_id"], session_id);
+
+        let follow_up = request(
+            &state,
+            &action_token,
+            SCOPE,
+            &post_action(
+                "act-duplex-follow-up",
+                &session_id,
+                "continue from opened event",
+            ),
+        );
+        assert_eq!(follow_up.status(), StatusCode::OK);
+        assert_eq!(dispatch_once(&state, now_ms()).await.unwrap(), 1);
+        let progress_event: Value =
+            serde_json::from_str(&transport.requests.lock().unwrap()[1].body).unwrap();
+        assert_eq!(progress_event["event_type"], "session.progress");
+        assert_eq!(progress_event["session_id"], session_id);
+
+        let add_roster = ActionEnvelope {
+            version: CURRENT_VERSION,
+            action_id: "act-duplex-add-roster".into(),
+            action: ControllerAction::AddRoster(AddRosterAction {
+                session_id: session_id.clone(),
+                bots: vec!["rev2".into()],
+                recipient_inputs: Default::default(),
+            }),
+        };
+        let added = request(&state, &action_token, SCOPE, &add_roster);
+        assert_eq!(added.status(), StatusCode::OK);
+        assert!(store.roster(&session_id).unwrap().contains(&"rev2".into()));
+
+        let closed = request(
+            &state,
+            &action_token,
+            SCOPE,
+            &close_action("act-duplex-close", &session_id),
+        );
+        assert_eq!(closed.status(), StatusCode::OK);
+        assert_eq!(dispatch_once(&state, now_ms()).await.unwrap(), 1);
+        let requests = transport.requests.lock().unwrap();
+        let terminal_event: Value = serde_json::from_str(&requests[2].body).unwrap();
+        assert_eq!(terminal_event["event_type"], "session.terminal");
+        assert_eq!(terminal_event["session_id"], session_id);
+        for request in requests.iter() {
+            assert!(request.headers["X-OAB-Signature"].starts_with("sha256="));
+            assert_eq!(request.headers["X-OAB-Controller-ID"], "ctrl-duplex");
+        }
     }
 }

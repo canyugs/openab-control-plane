@@ -30,6 +30,16 @@ fn controller_auth_from_env() -> Option<crate::controller_api::ControllerAuthCon
     }
 }
 
+fn controller_events_from_env() -> Option<Arc<crate::controller_events::ControllerEventRuntime>> {
+    match crate::controller_events::ControllerEventRuntime::from_env() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            tracing::error!(%error, "controller event configuration rejected; delivery disabled");
+            None
+        }
+    }
+}
+
 /// One live south connection: its generation + the outbound frame sender.
 type Conn = (u64, mpsc::UnboundedSender<String>);
 
@@ -58,6 +68,9 @@ pub struct AppState {
     /// Versioned deployment-held HMAC peppers for external controller action
     /// tokens. None disables the external action endpoint fail-closed.
     pub controller_auth: Option<crate::controller_api::ControllerAuthConfig>,
+    /// Versioned signing keys plus an HTTPS transport for durable controller
+    /// runtime events. None keeps event configuration and dispatch fail-closed.
+    pub controller_events: Option<Arc<crate::controller_events::ControllerEventRuntime>>,
     /// Serializes action execution after durable admission so concurrent replay
     /// cannot execute the interpreter twice in this single-process SQLite runtime.
     pub controller_action_lock: std::sync::Mutex<()>,
@@ -127,6 +140,7 @@ impl AppState {
             ws_ping_secs_from_env(),
             pr_review_config_from_env(),
             controller_auth_from_env(),
+            controller_events_from_env(),
         )
     }
 
@@ -173,6 +187,7 @@ impl AppState {
             ws_ping_secs,
             crate::plugins::pr_review::PrReviewConfig::default(),
             None,
+            None,
         )
     }
 
@@ -192,6 +207,7 @@ impl AppState {
             0,
             crate::plugins::pr_review::PrReviewConfig::default(),
             Some(controller_auth),
+            None,
         )
     }
 
@@ -207,6 +223,7 @@ impl AppState {
         ws_ping_secs: u64,
         pr_review_config: crate::plugins::pr_review::PrReviewConfig,
         controller_auth: Option<crate::controller_api::ControllerAuthConfig>,
+        controller_events: Option<Arc<crate::controller_events::ControllerEventRuntime>>,
     ) -> Arc<AppState> {
         let (north_tx, _) = broadcast::channel(1024);
         Arc::new(AppState {
@@ -219,6 +236,7 @@ impl AppState {
             platform: "feishu".into(),
             api_key,
             controller_auth,
+            controller_events,
             controller_action_lock: std::sync::Mutex::new(()),
             github_app,
             github_webhook_secret,

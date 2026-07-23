@@ -836,6 +836,7 @@ mod tests {
             20,
             config,
             None,
+            None,
         )
     }
 
