@@ -115,7 +115,7 @@ spec:
       domainKey: PUBLIC_DOMAIN
       spec:
         source:
-          image: ghcr.io/canyugs/openab-control-plane:0.1.38
+          image: ghcr.io/canyugs/openab-control-plane:0.1.39
         ports:
           - id: web
             port: 8090
