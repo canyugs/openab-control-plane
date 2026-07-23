@@ -39,7 +39,10 @@ The container listens on port 8091 and stores delivery records in
 
 Webhook HMAC covers the exact raw request body. A delivery ID is a durable
 idempotency key; replaying the same ID and body returns the stored result,
-while reusing an ID with a different body returns `409`.
+while reusing an ID with a different body returns `409`. An in-progress replay
+returns a retryable `503`; a five-minute-old processing lease is reclaimed after
+a crash. Completed delivery records are retained for seven days and pruned
+hourly.
 
 ## Admission and output
 

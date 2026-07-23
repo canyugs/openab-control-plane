@@ -1,5 +1,5 @@
 use anyhow::Context;
-use github_pr_controller::{config::Config, router, AppState};
+use github_pr_controller::{config::Config, router, spawn_maintenance, AppState};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -17,6 +17,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(error) = state.store_error.as_deref() {
         tracing::error!(%error, "controller product store unavailable; starting not-ready");
     }
+    spawn_maintenance(&state);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("bind GitHub controller to {addr}"))?;

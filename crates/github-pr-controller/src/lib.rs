@@ -16,10 +16,12 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use std::time::Duration;
 use store::{DeliveryAdmission, ProductStore};
 
 type HmacSha256 = Hmac<Sha256>;
 const MAX_WEBHOOK_BODY_BYTES: usize = 1024 * 1024;
+const DELIVERY_PRUNE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 pub struct AppState {
     pub config: Config,
@@ -56,10 +58,7 @@ impl AppState {
         if self.store.is_some() {
             ComponentReadiness::ready("controller product store available")
         } else {
-            ComponentReadiness::not_ready(format!(
-                "controller product store unavailable: {}",
-                self.store_error.as_deref().unwrap_or("unknown error")
-            ))
+            ComponentReadiness::not_ready("controller product store unavailable")
         }
     }
 
@@ -102,6 +101,26 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/github/webhooks", post(handle_webhook))
         .layer(DefaultBodyLimit::max(MAX_WEBHOOK_BODY_BYTES))
         .with_state(state)
+}
+
+pub fn spawn_maintenance(state: &Arc<AppState>) {
+    let Some(store) = state.store.clone() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(DELIVERY_PRUNE_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            match store.prune_completed_deliveries() {
+                Ok(pruned) if pruned > 0 => {
+                    tracing::info!(pruned, "pruned expired webhook deliveries")
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "webhook delivery pruning failed"),
+            }
+        }
+    });
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
@@ -185,6 +204,16 @@ async fn handle_webhook(
     let payload_hash = hex::encode(Sha256::digest(&body));
     match store.begin_delivery(delivery_id, event_type, repository, &payload_hash) {
         Ok(DeliveryAdmission::New) => {}
+        Ok(DeliveryAdmission::Duplicate { state, .. }) if state == "processing" => {
+            return response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({
+                    "ok": false,
+                    "duplicate": true,
+                    "error": "delivery_in_progress"
+                }),
+            )
+        }
         Ok(DeliveryAdmission::Duplicate { state, result }) => {
             return response(
                 StatusCode::OK,
@@ -352,6 +381,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn readiness_does_not_disclose_product_store_errors() {
+        let state = Arc::new(AppState {
+            config: test_config(),
+            store: None,
+            store_error: Some("unable to open /private/secret/controller.db".into()),
+        });
+        let response = router(state)
+            .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("controller product store unavailable"));
+        assert!(!body.contains("/private/secret"));
+    }
+
+    #[tokio::test]
     async fn signed_fixture_produces_a_plan_and_dedupes_delivery() {
         const BODY: &str = include_str!("../../../tests/fixtures/github/pull_request_opened.json");
         let state = Arc::new(AppState::with_store(
@@ -380,6 +427,37 @@ mod tests {
                 .unwrap();
         assert_eq!(body["duplicate"], true);
         assert_eq!(body["state"], "planned");
+    }
+
+    #[tokio::test]
+    async fn in_progress_duplicate_returns_retryable_status() {
+        const BODY: &str = include_str!("../../../tests/fixtures/github/pull_request_opened.json");
+        let state = Arc::new(AppState::with_store(
+            test_config(),
+            ProductStore::memory().unwrap(),
+        ));
+        let payload_hash = hex::encode(Sha256::digest(BODY.as_bytes()));
+        state
+            .store
+            .as_ref()
+            .unwrap()
+            .begin_delivery(
+                "delivery-processing",
+                "pull_request",
+                Some("example/repo"),
+                &payload_hash,
+            )
+            .unwrap();
+
+        let response = router(state)
+            .oneshot(signed_request("delivery-processing", BODY))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["error"], "delivery_in_progress");
     }
 
     #[tokio::test]
