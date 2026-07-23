@@ -197,7 +197,9 @@ LGTM'd). Flag, scoped to code THIS diff adds:
 - **Speculative generality:** config knobs, parameters, or branches for cases
   no current caller exercises and the PR does not claim to need.
 - **Scope creep:** changes (refactors, renames, drive-by cleanups) unrelated
-  to the PR's stated purpose — split them out.
+  to the PR's stated purpose — split them out. The finding is the unrelated
+  churn riding along, never the naming choice itself — suggesting *better*
+  names stays a style preference under the severity gate.
 Proportion rule: judge against the smallest diff that honestly fixes the
 stated problem. Never 🔴 (extra code that works does not block merge on its
 own — unless it conceals a defect); one-use indirection in a large feature PR
