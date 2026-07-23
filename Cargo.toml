@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [workspace]
-members = ["crates/controller-protocol"]
+members = ["crates/controller-protocol", "crates/github-pr-controller"]
 default-members = [".", "crates/controller-protocol"]
 resolver = "2"
 

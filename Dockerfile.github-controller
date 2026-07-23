@@ -1,0 +1,22 @@
+# Independent plan-only GitHub PR controller image. The build copies only the
+# controller packages and workspace manifests; no OCP implementation source or
+# runtime configuration enters the image.
+FROM rust:1.94-slim-bookworm AS build
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+# Keep the repository lockfile authoritative without copying OCP implementation
+# code. Cargo needs every workspace package manifest and a root target while it
+# validates the lock, even though only github-pr-controller is built.
+COPY Cargo.toml Cargo.lock ./
+COPY crates/controller-protocol ./crates/controller-protocol
+COPY crates/github-pr-controller ./crates/github-pr-controller
+COPY crates/github-pr-controller/docker/workspace-placeholder.rs ./src/lib.rs
+RUN cargo build --release --locked -p github-pr-controller
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=build /app/target/release/github-pr-controller /usr/local/bin/github-pr-controller
+VOLUME /data
+ENV GITHUB_CONTROLLER_ADDR=0.0.0.0:8091 GITHUB_CONTROLLER_DB=/data/github-controller.db
+EXPOSE 8091
+CMD ["github-pr-controller"]
