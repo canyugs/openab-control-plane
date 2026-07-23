@@ -19,6 +19,8 @@ const SIGNING_KEYS_ENV: &str = "OABCP_CONTROLLER_EVENT_SIGNING_KEYS";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DELIVERY_LEASE_MS: i64 = 30_000;
 const DELIVERY_WINDOW_MS: i64 = 5 * 60 * 1000;
+const DELIVERED_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const PRUNE_INTERVAL_MS: i64 = 60 * 60 * 1000;
 const RETRY_DELAYS_MS: [i64; 3] = [10_000, 30_000, 90_000];
 
 #[derive(Debug, Clone)]
@@ -263,8 +265,26 @@ pub fn spawn_dispatcher(state: Arc<AppState>) {
     }
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last_prune_at = 0;
         loop {
             tick.tick().await;
+            let now = now_ms();
+            if now.saturating_sub(last_prune_at) >= PRUNE_INTERVAL_MS {
+                match state
+                    .store
+                    .prune_delivered_controller_events(now.saturating_sub(DELIVERED_RETENTION_MS))
+                {
+                    Ok(pruned) if pruned > 0 => {
+                        tracing::info!(pruned, "pruned delivered controller events");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, "controller event pruning failed");
+                    }
+                }
+                last_prune_at = now;
+            }
             loop {
                 match dispatch_once(&state, now_ms()).await {
                     Ok(0) => break,
@@ -594,5 +614,31 @@ mod tests {
         assert_eq!(reclaimed.len(), 1);
         assert_eq!(reclaimed[0].id, first[0].id);
         assert_eq!(reclaimed[0].attempts, 2);
+    }
+
+    #[test]
+    fn delivered_events_are_pruned_after_retention_without_deleting_audit() {
+        let store = SqliteStore::memory().unwrap();
+        let start = 3_000_000;
+        seed_opened_event(&store, start);
+        let delivery = store
+            .claim_controller_events(start, 1, 30_000)
+            .unwrap()
+            .pop()
+            .unwrap();
+        store
+            .complete_controller_event(&delivery.id, start + 1)
+            .unwrap();
+        assert_eq!(store.prune_delivered_controller_events(start).unwrap(), 0);
+        assert_eq!(
+            store
+                .prune_delivered_controller_events(start + DELIVERED_RETENTION_MS)
+                .unwrap(),
+            1
+        );
+        assert!(store
+            .controller_event_audit("ctrl-events")
+            .unwrap()
+            .is_empty());
     }
 }

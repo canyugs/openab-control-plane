@@ -122,6 +122,13 @@ GET /v1/controller-installations/<controller_id>/event-audit
 Authorization: Bearer <OABCP_API_KEY>
 ```
 
+Delivery is at-least-once. A crash after the receiver accepts an event but
+before OCP records success can produce a duplicate, and a retried event can
+arrive after a later event. Receivers must dedupe by `event_id` and use
+`occurred_at` when they need domain ordering. Successfully delivered outbox
+rows are retained for seven days; dead-letter audit entries remain available
+through the operator endpoint.
+
 ## Execute an action
 
 ```http

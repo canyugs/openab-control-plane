@@ -493,6 +493,7 @@ pub trait Store: Send + Sync {
         next_attempt_at: Option<i64>,
         now: i64,
     ) -> Result<bool>;
+    fn prune_delivered_controller_events(&self, before: i64) -> Result<usize>;
     fn controller_event_audit(&self, controller_id: &str) -> Result<Vec<ControllerEventAudit>>;
 
     fn register_bot(
@@ -2136,6 +2137,15 @@ impl Store for SqliteStore {
         };
         tx.commit()?;
         Ok(updated == 1)
+    }
+
+    fn prune_delivered_controller_events(&self, before: i64) -> Result<usize> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.execute(
+            "DELETE FROM controller_events
+             WHERE state = 'delivered' AND delivered_at < ?1",
+            params![before],
+        )?)
     }
 
     fn controller_event_audit(&self, controller_id: &str) -> Result<Vec<ControllerEventAudit>> {
