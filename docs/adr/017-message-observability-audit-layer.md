@@ -1,6 +1,6 @@
 # ADR 017 — Message observability / audit layer
 
-Status: proposed · 2026-07-05
+Status: proposed · 2026-07-05 (updated 2026-07-24: scope ceiling + audit-vs-sink contracts)
 
 ## Context
 
@@ -73,11 +73,33 @@ external append/columnar sink genuinely differs. For the stated scope
 (record-from-adoption, message + lifecycle, API-first) SQLite is sufficient —
 **this is a future knee, not a now-blocker.** Extending OCP is the right path.
 
+### Audit log vs message sink — one pipeline, two views
+
+A parallel ask surfaced (Discord thread): a **message sink** users can point at
+their own S3 / webhook / file to reprocess conversation content (KM, summaries,
+RAG). It reads like a second feature, but the **intercept point is identical** to
+the audit path — a message/event arrives, gets persisted, optionally fans out to
+a sink. They differ only in consumer and filter:
+
+|         | Audit log                          | Message sink                          |
+| ------- | ---------------------------------- | ------------------------------------- |
+| Purpose | compliance / trace "who did what"  | user reprocessing (KM, summary, RAG)  |
+| Content | full event stream + agent ops      | inbound message content + metadata    |
+| Reader  | admin / auditor (north API)        | the user's own pipeline (export)      |
+| Filter  | everything                         | defaults to `author_kind="client"`; configurable by `author_kind` / `kind` |
+
+**Decision: do not build two subsystems.** The persisted event/message store is
+the single source; the "message sink" is a **filtered export** off that store to
+a configurable target. Filtering belongs to a projection/export layer above
+the `Store` trait: the store returns durable records, while the projection
+applies a validated `author_kind` / `kind` filter. The default message-sink
+projection exports only `author_kind="client"` messages.
+
 ## Decision
 
 Extend OCP. Close the audit gap and platform-independence goal with three core
-pieces plus two the original scoping missed, and hold tool-trace at a
-deliberately coarse altitude.
+pieces plus two the original scoping missed, fold in the message-sink ask as a
+filtered export, and hold tool-trace at a deliberately coarse altitude.
 
 1. **(a) Discord/OAB ingest adapter** — a new `src/discord_webhook.rs`,
    symmetric to `github_webhook.rs`: verify → parse → `create_session` /
@@ -102,6 +124,55 @@ deliberately coarse altitude.
    `author_association`. The Discord/OAB adapter needs an equivalent
    (signature/verification, token-independent inbound auth) or it becomes an
    unauthenticated ingest hole.
+6. **(f) Configurable export sink** *(folds in the "message sink" ask)* — a
+   filtered fan-out off the persisted store to an operator-configured target
+   (S3 / webhook / file), selected by a projection-layer `author_kind` / `kind`
+   filter. This is the "set location" capability and it satisfies the
+   message-sink use case without a second pipeline. Ship the **sink interface**
+   now — one target impl is enough; more targets are added behind the seam, not
+   by rewrite. Delivery is always asynchronous: write the durable-outbox entry
+   atomically with the source record, then process it only after that transaction
+   commits. Sink latency or failure must never extend the inbound request path.
+   Delivery is at-least-once, so every export carries a stable event/message id
+   for receiver-side idempotency.
+
+### Pre-gate durability contract
+
+Adapter authentication and the gateway content trust-gate are separate
+boundaries:
+
+1. Verify the platform signature / inbound credential first. Invalid or
+   unverifiable payloads never enter the store.
+2. Synchronously persist the authenticated inbound record and its pending gate
+   outcome before evaluating the content trust-gate.
+3. Persist the final gate outcome before dispatching accepted content to agents.
+
+If either required store write fails, fail closed: do not dispatch the message
+and return a retryable adapter error. This gives authenticated denied traffic a
+durable audit record without letting unauthenticated traffic consume storage or
+letting a fire-and-forget write disappear on crash.
+
+### Sink security boundary
+
+Sink configuration is operator/admin-controlled configuration, never derived
+from message content or writable by an agent. The first target implementation
+must define and test its destination boundary before it ships:
+
+- webhook targets require HTTPS and an explicit destination allowlist; resolve
+  and validate the destination and redirects at connection time, rejecting
+  loopback, link-local, metadata, and private-network addresses unless the
+  operator explicitly allows that exact destination;
+- file targets, if enabled, are confined to a configured export root and reject
+  traversal or symlink escape; hosted mode may disable them entirely;
+- S3 targets use an explicit bucket/prefix envelope and least-privilege
+  credentials;
+- credentials come from secret references rather than returned configuration,
+  are redacted from logs/API responses, and are never included in audit payloads;
+- every sink configuration change is itself an authenticated audit event.
+
+These are interface invariants, not optional hardening notes. Additional target
+implementations inherit the same operator-authz, validation, secret-handling,
+and audit requirements.
 
 ## Scope Rules
 
@@ -111,6 +182,13 @@ deliberately coarse altitude.
   parity — (a)+(e).
 - **Do** keep tool-trace at the coarse "a tool round happened + outcome/error"
   altitude, reusing the persisted-event channel — no new transport, no new table.
+- **Do** authenticate at the adapter, then synchronously persist **before** the
+  gateway content trust-gate and persist the final gate outcome before dispatch
+  — an audit that silently drops @mention-gated / denied authenticated inbound
+  messages is exactly the one an auditor most needs.
+- **Do** treat the message sink as a *filtered view/export* of the persisted
+  store (f), never as a separate capture path. Apply filters in the projection
+  layer, and deliver only through the post-commit durable export outbox.
 - **Do not** build a general pod→plane distributed-tracing system, capture full
   tool arg/response payloads on the plane, or add a dashboard/frontend — all are
   out of scope and the payload path is where complexity and PII/secret surface
@@ -118,6 +196,31 @@ deliberately coarse altitude.
 - **Do not** move OCP off SQLite for this work. Revisit only if a concrete
   driver hits the write-throughput / retention / analytical ceiling.
 - **Do not** backfill Discord history — record from adoption onward only.
+
+## Horizon — the 1-2 year ceiling
+
+This ADR is also the **scope ceiling** for the observability/audit layer: the
+line we deliberately stop at, expected to hold ~1-2 years. The ceiling is set by
+**seam-completeness, not feature count** — at council message volume, SQLite on
+the `/data` PVC lasts years; what forces an early rewrite is a *missing seam*,
+not scale. So: **seams complete, implementation thin.**
+
+- **In (build now):** persisted `events` table (b) + events query API (d); the
+  existing `messages` store kept as-is; one configurable filtered export sink
+  (f); coarse per-turn tool-trace (c); Discord/OAB ingest adapter with auth
+  parity (a)+(e).
+- **Seam only (interface now, one impl):** the `store.rs` Store trait (SQLite →
+  external append/columnar store later is an impl swap, per "why not greenfield")
+  and the projection + asynchronous sink interface (add targets behind it).
+  Building these seams is what buys the 1-2 years.
+- **Out (beyond the ceiling — revisit only on a concrete driver):** tamper-proof
+  / WORM / signed compliance-grade audit; a high-throughput columnar analytics
+  store (the SQLite "future knee"); full pod→plane tool-call *payload* tracing;
+  dashboard/frontend; multi-tenancy (ADR 002).
+
+The only rewrite triggers are **scale** (years out at council volume) or a
+**hard compliance requirement** (none today) — both absent within the horizon,
+so the ceiling is stable.
 
 ## Consequences
 
@@ -140,6 +243,8 @@ deliberately coarse altitude.
   — a specific deep debug still requires the pod's own logs. This is the
   deliberate trade against over-engineering (c).
 - SQLite remains the store; the scale ceiling above is accepted, not solved.
+- At-least-once sink delivery requires idempotent consumers and durable-outbox
+  retry/retention operations.
 
 ### Neutral
 
@@ -159,6 +264,9 @@ deliberately coarse altitude.
    directly or via a relay.
 3. **Retention** — is any prune needed within the initial horizon, or defer to a
    later ADR once volume is observed?
+4. **Message-sink prior art** — the LINE-webhook self-store experience (Can) may
+   inform the sink output format and first target implementation; it does not
+   change the ordering, filtering, or security contracts above.
 
 ## References
 
