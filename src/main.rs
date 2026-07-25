@@ -41,9 +41,10 @@ async fn main() -> anyhow::Result<()> {
 /// Liveness watchdog: periodically force-close sessions stuck past the deadline,
 /// so a silent/dead reviewer can't hang a council forever (the one guarantee
 /// prose can't make — see design "what OCP actually guarantees").
-/// ponytail: deadline is anchored on `created_at`, no last-activity reset — bump
-/// `OABCP_SESSION_TIMEOUT_SECS` or add activity tracking if long councils are
-/// legitimate. Default 600s (10 min); scan every 30s.
+/// Deadline is anchored on the session's last message, so "stuck" means silent
+/// rather than merely old — a long-lived `solo` ticket session that keeps being
+/// reopened stays alive as long as it keeps talking. Default 600s (10 min) of
+/// silence; scan every 30s. Bump `OABCP_SESSION_TIMEOUT_SECS` for slower bots.
 fn spawn_watchdog(state: Arc<AppState>) {
     let timeout_secs: i64 = std::env::var("OABCP_SESSION_TIMEOUT_SECS")
         .ok()

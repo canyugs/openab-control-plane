@@ -144,7 +144,7 @@ landed PRs must not be invalidated by re-litigating the governing ADRs.
 | ADR 013 vocabulary on wire surfaces | sessions JSON, verdict SSE, close webhook, /v1/stats | M4 ADR owns evolution (snapshot-pinned meanwhile) |
 | `StructuredVerdict` fields in a kernel trait | coordinator.rs | moves with the columns at M4 |
 | Role→write/read scope map | github_app.rs | second GitHub-writing plugin → explicit requested-scope input on the token route, validated against coordinator policy |
-| Watchdog `created_at`-anchored reopen trap (reopened session force-closes in ~30s) | orchestrator watchdog | forum dogfood shows session-per-turn churn cost → chat-mode coordinator arm; until then the forum contract is **fresh session after close** (S13 pins the trap with a regression test) |
+| ~~Watchdog `created_at`-anchored reopen trap~~ | orchestrator watchdog | **resolved** — forum prod dogfood fired the trigger; the deadline now anchors on the session's last message (`active_sessions_before`), so silence rather than age marks a session stuck. No coordinator arm was needed; S13's regression test now pins the fixed behaviour |
 | Plugin config via process-global env | plugins/* | precondition for any crate split: config injection first |
 | Single shared `OABCP_API_KEY` north auth (forum proxy can touch every session) | api.rs | first non-first-party north client, or forum leaving the owned lanes → scoped second bearer |
 | B2 demotion execution (template config) | Zeabur templates | **executed 2026-07-09** — pod-owned config.toml mounts (ADR 010 amendment; templates externalized since #80 satisfied the D1 coupling on this path). Endpoint removal stays S17-evidence-gated |

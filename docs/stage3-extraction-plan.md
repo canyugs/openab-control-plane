@@ -413,13 +413,18 @@ silent.
   has a concrete door: `POST /v1/sessions/:id/github-token` gains an explicit
   requested-scope input validated against coordinator policy; trigger = second
   GitHub-writing plugin.
-- **Watchdog created_at-anchored reopen trap**: a reopened session
-  force-closes within ~30s of the stale timeout. Not fixed this stage (belongs
-  to the chat-mode coordinator arm), but no longer a footnote: S13 pins it
-  with a regression test, and S1 writes the **hard forum-v1 contract** into
-  the forum plan — fresh session after close, follow-ups only within the
-  timeout window. Fix trigger: forum dogfood shows session-per-turn churn cost
-  (boundary review's chat-mode ruling).
+- **Watchdog created_at-anchored reopen trap**: ~~a reopened session
+  force-closes within ~30s of the stale timeout~~ — **resolved**. The fix
+  trigger fired: forum dogfood on prod showed the churn cost directly (14
+  `watchdog force-closed stale session` lines in one log window, the same
+  ticket session cut three times in 90 minutes, staff-visible as truncated
+  replies). The fix landed in the kernel, not the chat-mode coordinator arm:
+  the deadline now anchors on the session's last message, so "stuck" means
+  silent rather than merely old. One query in `active_sessions_before`, no
+  mode branch, no schema change — a council that stops producing messages
+  still trips the deadline exactly as before. The hard forum-v1 contract
+  (fresh session after close) is no longer load-bearing for correctness; it
+  stands only as the escape hatch for a degraded agent thread.
 - **Plugin config is process-global env** (OABCP_ALLOWED_REPOS,
   OABCP_BOT_HANDLE, review caps), with test correctness resting on same-crate
   env locks. Recorded in ADR 018 as a **named precondition for any future
@@ -457,8 +462,8 @@ silent.
 - **Moving scripts/*.tmpl out of scripts/** — prompt-identity contract.
 - **Roster mutation via the interpreter** — reserved AddRoster verb; direct
   orchestrator calls stay until a reconciler needs them.
-- **Forum chat-mode coordinator and the watchdog anchor fix** — trigger named
-  in §7.
+- **Forum chat-mode coordinator** — trigger named in §7. (The watchdog anchor
+  fix shipped separately in §7; it needed no coordinator arm.)
 - **Multi-installation GitHub App support** — documented Phase-2 gap.
 - **Building any forum client code in this repo** — forum is a pure external
   consumer; Stage 3 guarantees its ingress exists and is proven (S16).
