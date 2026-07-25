@@ -3245,8 +3245,11 @@ impl Store for SqliteStore {
         // Anchor on last activity, not on created_at. A `solo` ticket session is
         // reopened by every staff follow-up (`reopen_on_client_message`) and lives
         // for days; anchored on creation it was force-closed within one tick of
-        // every reopen, cutting the bot off mid-turn. A genuinely stuck session
-        // stops producing messages, so it still trips the deadline. Covered by
+        // every reopen, cutting the bot off mid-turn.
+        //
+        // Activity is session-wide: any author's message defers the deadline. So
+        // this catches a session nobody is driving, not a single absent member —
+        // that is `sweep_liveness`'s trim/replace job. Covered by
         // idx_messages_session(session_id, created_at).
         let mut stmt = c.prepare(
             "SELECT s.id FROM sessions s
@@ -5364,10 +5367,12 @@ mod tests {
             "recent activity keeps a long-lived ticket session alive"
         );
 
-        // ...and it goes silent again after that message.
+        // ...and it goes silent again after that message. Read the clock now, not
+        // before `add_message`: on a slow runner the message lands a millisecond
+        // later and a stale `now` puts the cutoff behind it.
         assert!(
             store
-                .active_sessions_before(now + 1)
+                .active_sessions_before(now_ms() + 1)
                 .unwrap()
                 .contains(&session.id),
             "silence past the deadline still trips the watchdog"

@@ -41,10 +41,20 @@ async fn main() -> anyhow::Result<()> {
 /// Liveness watchdog: periodically force-close sessions stuck past the deadline,
 /// so a silent/dead reviewer can't hang a council forever (the one guarantee
 /// prose can't make — see design "what OCP actually guarantees").
-/// Deadline is anchored on the session's last message, so "stuck" means silent
-/// rather than merely old — a long-lived `solo` ticket session that keeps being
-/// reopened stays alive as long as it keeps talking. Default 600s (10 min) of
-/// silence; scan every 30s. Bump `OABCP_SESSION_TIMEOUT_SECS` for slower bots.
+///
+/// The deadline is anchored on the session's last message, so "stuck" means the
+/// **session** produced nothing — not that a particular bot went quiet. A dead
+/// reviewer whose peers keep posting does not trip this; detecting one absent
+/// member is `sweep_liveness`'s job (trim/replace), and the watchdog is only the
+/// whole-session backstop behind it. The trade this anchor buys: a long-lived
+/// `solo` ticket session, reopened by every staff follow-up, is no longer cut
+/// off mid-turn merely for being old. The cost: a session that chatters forever
+/// without converging is never force-closed, where a creation anchor would have
+/// capped it — accepted because no such session has been observed and the old
+/// anchor broke a live one every day.
+///
+/// Default 600s (10 min) of silence; scan every 30s. Bump
+/// `OABCP_SESSION_TIMEOUT_SECS` for slower bots.
 fn spawn_watchdog(state: Arc<AppState>) {
     let timeout_secs: i64 = std::env::var("OABCP_SESSION_TIMEOUT_SECS")
         .ok()
