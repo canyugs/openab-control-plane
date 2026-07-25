@@ -4352,7 +4352,7 @@ mod tests {
     }
 
     #[test]
-    fn watchdog_still_sees_reopened_solo_session_by_original_created_at() {
+    fn watchdog_spares_reopened_solo_session_that_just_spoke() {
         let store = Arc::new(SqliteStore::memory().unwrap());
         let state = AppState::new(store.clone());
         let bot = store.register_bot("allen", "allen", "h1", "t1").unwrap();
@@ -4374,20 +4374,22 @@ mod tests {
             SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
             SessionState::Deliberating,
         );
-        // FIXME: fix belongs to the chat-mode coordinator arm; trigger = forum
-        // dogfood showing session-per-turn churn cost (plan section 7).
+        // The reopening message is itself activity, so a real deadline (10 min of
+        // silence) spares the session instead of cutting the turn short.
+        assert!(!store
+            .active_sessions_before(crate::store::now_ms() - 600_000)
+            .unwrap()
+            .contains(&session.id));
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Deliberating,
+        );
+        // Going silent past the deadline still trips the watchdog.
         assert!(store
             .active_sessions_before(crate::store::now_ms() + 1)
             .unwrap()
             .contains(&session.id));
-        assert!(
-            force_close_timeout(&state, &session.id).unwrap(),
-            "reopened session is still closed by the stale watchdog anchor"
-        );
-        assert_eq!(
-            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
-            SessionState::Closed,
-        );
+        assert!(force_close_timeout(&state, &session.id).unwrap());
     }
 
     #[test]

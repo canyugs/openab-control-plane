@@ -705,7 +705,9 @@ pub trait Store: Send + Sync {
     fn delete_pending_review(&self, trigger_ref: &str) -> Result<()>;
     /// Newest session created_at for this trigger_ref (any state), if any.
     fn latest_session_created_at(&self, trigger_ref: &str) -> Result<Option<i64>>;
-    /// Non-terminal session ids created before `cutoff_ms` — watchdog candidates.
+    /// Non-terminal session ids whose last activity predates `cutoff_ms` —
+    /// watchdog candidates. Activity, not age: a session that keeps producing
+    /// messages is making progress, however old it is.
     fn active_sessions_before(&self, cutoff_ms: i64) -> Result<Vec<String>>;
     fn roster(&self, session_id: &str) -> Result<Vec<String>>;
     /// A non-terminal session carrying this `trigger_ref`, if any. Makes
@@ -3240,9 +3242,22 @@ impl Store for SqliteStore {
 
     fn active_sessions_before(&self, cutoff_ms: i64) -> Result<Vec<String>> {
         let c = self.conn.lock().unwrap();
+        // Anchor on last activity, not on created_at. A `solo` ticket session is
+        // reopened by every staff follow-up (`reopen_on_client_message`) and lives
+        // for days; anchored on creation it was force-closed within one tick of
+        // every reopen, cutting the bot off mid-turn.
+        //
+        // Activity is session-wide: any author's message defers the deadline. So
+        // this catches a session nobody is driving, not a single absent member —
+        // that is `sweep_liveness`'s trim/replace job. Covered by
+        // idx_messages_session(session_id, created_at).
         let mut stmt = c.prepare(
-            "SELECT id FROM sessions
-             WHERE created_at < ?1 AND state NOT IN ('closed', 'aborted')",
+            "SELECT s.id FROM sessions s
+             WHERE s.state NOT IN ('closed', 'aborted')
+               AND COALESCE(
+                     (SELECT MAX(m.created_at) FROM messages m WHERE m.session_id = s.id),
+                     s.created_at
+                   ) < ?1",
         )?;
         let rows = stmt.query_map(params![cutoff_ms], |r| r.get::<_, String>(0))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -5295,5 +5310,72 @@ mod tests {
                 open_decision: Some(ControllerOpenDecision::Create)
             }
         ));
+    }
+
+    /// The watchdog deadline is anchored on the last message, not on
+    /// `created_at`. A `solo` ticket session is reopened by every staff
+    /// follow-up and lives for days; anchored on creation it was force-closed
+    /// within one scan of every reopen, cutting the bot off mid-turn.
+    #[test]
+    fn active_sessions_before_anchors_on_last_activity_not_creation() {
+        let store = SqliteStore::memory().unwrap();
+        let bot = store.register_bot("allen", "allen", "h1", "t1").unwrap();
+        let session = store
+            .create_session(
+                "forum-support",
+                Some("forum:ticket:SUP-1"),
+                0,
+                Some(&bot.id),
+                std::slice::from_ref(&bot.id),
+                "solo",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+
+        let now = now_ms();
+        let day_ms = 24 * 60 * 60 * 1000;
+        let cutoff = now - 600_000; // 10 min of silence, the watchdog default
+        // Old session, no messages yet: creation is the only anchor available.
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET created_at = ?2 WHERE id = ?1",
+                params![session.id, now - day_ms],
+            )
+            .unwrap();
+        assert!(
+            store
+                .active_sessions_before(cutoff)
+                .unwrap()
+                .contains(&session.id),
+            "a day-old session that never spoke is stuck"
+        );
+
+        // A follow-up arrives: the session is a day old but talking right now.
+        store
+            .add_message(&session.id, None, "client", None, None, "any update?", None)
+            .unwrap();
+        assert!(
+            !store
+                .active_sessions_before(cutoff)
+                .unwrap()
+                .contains(&session.id),
+            "recent activity keeps a long-lived ticket session alive"
+        );
+
+        // ...and it goes silent again after that message. Read the clock now, not
+        // before `add_message`: on a slow runner the message lands a millisecond
+        // later and a stale `now` puts the cutoff behind it.
+        assert!(
+            store
+                .active_sessions_before(now_ms() + 1)
+                .unwrap()
+                .contains(&session.id),
+            "silence past the deadline still trips the watchdog"
+        );
     }
 }
