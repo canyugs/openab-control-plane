@@ -1341,8 +1341,10 @@ async fn council_closes_on_text_done_signal() {
         "council must close on text [done] (no reactions sent): {last}"
     );
     // ADR 013: the [[verdict:…]] trailer in the chair final lands as columns.
+    // The chair said `approve` next to an open 🟡; counts decide, so the stored
+    // decision is request_changes.
     assert_eq!(
-        last["session"]["decision"], "approve",
+        last["session"]["decision"], "request_changes",
         "structured decision: {last}"
     );
     assert_eq!(last["session"]["findings_red"], 0);
