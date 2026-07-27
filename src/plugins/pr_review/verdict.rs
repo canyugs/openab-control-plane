@@ -33,21 +33,32 @@ pub(crate) fn parse_verdict_trailer_line(line: &str) -> Option<VerdictTrailer> {
     // blocks), but nothing stopped a chair from stamping `approve` next to open
     // actionable findings — an advisory rule that silently drifts. When the
     // chair reports counts, derive the decision from them and log the override
-    // so the drift is visible instead of shipped. Countless trailers (no r/y
-    // given) keep the chair's word — there is nothing to derive from.
+    // so the drift is visible instead of shipped.
+    //
+    // Partial counts derive in ONE direction only (F1, council review of #297).
+    // A lone `r=3` is unambiguous — three blockers block, whether or not the
+    // chair also reported yellows — so any positive count that IS present
+    // escalates. The reverse is not safe: `r=0` alone says nothing about
+    // yellows, so it must never downgrade a chair's request_changes to approve.
+    // Downgrading requires the full picture; escalating never does. A trailer
+    // with no r/y at all keeps the chair's word — there is nothing to derive.
     let mut decision = decision.to_string();
-    if let (Some(r), Some(y)) = (red, yellow) {
-        let derived = if r > 0 || y > 0 {
-            "request_changes"
-        } else {
-            "approve"
-        };
+    let blocking = red.unwrap_or(0) > 0 || yellow.unwrap_or(0) > 0;
+    let complete = red.is_some() && yellow.is_some();
+    let derived = if blocking {
+        Some("request_changes")
+    } else if complete {
+        Some("approve")
+    } else {
+        None // partial and non-blocking: not enough to clear the verdict
+    };
+    if let Some(derived) = derived {
         if derived != decision {
             tracing::warn!(
                 chair_decision = %decision,
                 derived = %derived,
-                red = r,
-                yellow = y,
+                red = ?red,
+                yellow = ?yellow,
                 "verdict trailer disagrees with its own counts; using the counts"
             );
             decision = derived.to_string();
@@ -99,18 +110,38 @@ mod tests {
                 "trailer {trailer}"
             );
         }
-        // Partial or absent counts have nothing to derive from: chair's word stands.
+        // No counts at all: nothing to derive, the chair's word stands.
         assert_eq!(
             parse_verdict_trailer("[[verdict:approve]] [done]")
                 .unwrap()
                 .decision,
             "approve"
         );
+        // F1: a partial count still ESCALATES when it is positive — a lone r=3
+        // is unambiguous, and a truncated trailer must not bypass the gate.
+        for trailer in [
+            "[[verdict:approve r=3]] [done]",
+            "[[verdict:approve y=1]] [done]",
+            "[[verdict:approve r=3 g=2]] [done]",
+        ] {
+            assert_eq!(
+                parse_verdict_trailer(trailer).unwrap().decision,
+                "request_changes",
+                "trailer {trailer}"
+            );
+        }
+        // ...but a partial ZERO never downgrades: r=0 says nothing about yellows.
         assert_eq!(
-            parse_verdict_trailer("[[verdict:approve r=3]] [done]")
+            parse_verdict_trailer("[[verdict:request_changes r=0]] [done]")
                 .unwrap()
                 .decision,
-            "approve"
+            "request_changes"
+        );
+        assert_eq!(
+            parse_verdict_trailer("[[verdict:request_changes g=9]] [done]")
+                .unwrap()
+                .decision,
+            "request_changes"
         );
     }
 
