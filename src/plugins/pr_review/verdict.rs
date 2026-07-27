@@ -29,8 +29,32 @@ pub(crate) fn parse_verdict_trailer_line(line: &str) -> Option<VerdictTrailer> {
             _ => return None,
         }
     }
+    // The counts are the decision. Steering says LGTM only at r=0 y=0 (🟢 never
+    // blocks), but nothing stopped a chair from stamping `approve` next to open
+    // actionable findings — an advisory rule that silently drifts. When the
+    // chair reports counts, derive the decision from them and log the override
+    // so the drift is visible instead of shipped. Countless trailers (no r/y
+    // given) keep the chair's word — there is nothing to derive from.
+    let mut decision = decision.to_string();
+    if let (Some(r), Some(y)) = (red, yellow) {
+        let derived = if r > 0 || y > 0 {
+            "request_changes"
+        } else {
+            "approve"
+        };
+        if derived != decision {
+            tracing::warn!(
+                chair_decision = %decision,
+                derived = %derived,
+                red = r,
+                yellow = y,
+                "verdict trailer disagrees with its own counts; using the counts"
+            );
+            decision = derived.to_string();
+        }
+    }
     Some(VerdictTrailer {
-        decision: decision.to_string(),
+        decision,
         red,
         yellow,
         green,
@@ -57,6 +81,40 @@ mod tests {
     use crate::store::Store as _;
 
     #[test]
+    fn counts_decide_the_verdict() {
+        // Any open actionable finding blocks — 🟡 alone is enough.
+        for (trailer, want) in [
+            ("[[verdict:approve r=0 y=0 g=4]] [done]", "approve"),
+            ("[[verdict:approve r=0 y=2 g=1]] [done]", "request_changes"),
+            ("[[verdict:approve r=1 y=0 g=0]] [done]", "request_changes"),
+            ("[[verdict:request_changes r=0 y=0 g=3]] [done]", "approve"),
+            (
+                "[[verdict:request_changes r=2 y=1 g=0]] [done]",
+                "request_changes",
+            ),
+        ] {
+            assert_eq!(
+                parse_verdict_trailer(trailer).unwrap().decision,
+                want,
+                "trailer {trailer}"
+            );
+        }
+        // Partial or absent counts have nothing to derive from: chair's word stands.
+        assert_eq!(
+            parse_verdict_trailer("[[verdict:approve]] [done]")
+                .unwrap()
+                .decision,
+            "approve"
+        );
+        assert_eq!(
+            parse_verdict_trailer("[[verdict:approve r=3]] [done]")
+                .unwrap()
+                .decision,
+            "approve"
+        );
+    }
+
+    #[test]
     fn verdict_trailer_parsing() {
         // Full form, embedded in a real chair final.
         let t = parse_verdict_trailer(
@@ -77,11 +135,13 @@ mod tests {
         assert_eq!(t.decision, "request_changes");
         assert_eq!(t.red, Some(2));
 
+        // Fenced/quoted drafts are ignored; the real trailer's counts decide —
+        // an open 🟡 blocks, so the chair's `approve` is overridden here.
         let t = parse_verdict_trailer(
             "quoted bad draft:\n> [[verdict:maybe r=1]]\n\n[[verdict:approve r=0 y=1 g=2]] [done]",
         )
         .unwrap();
-        assert_eq!(t.decision, "approve");
+        assert_eq!(t.decision, "request_changes");
         assert_eq!((t.red, t.yellow, t.green), (Some(0), Some(1), Some(2)));
 
         assert!(parse_verdict_trailer("[[verdict:approve]]\nfinal prose after trailer").is_none());
@@ -140,7 +200,7 @@ mod tests {
             &chair.id,
             crate::orchestrator::test_support::msg_reply(
                 &session.id,
-                "VERDICT: approve [[verdict:approve r=1 y=0 g=2]] [done]",
+                "VERDICT: changes requested [[verdict:request_changes r=1 y=0 g=2]] [done]",
             ),
         )
         .unwrap();
@@ -149,7 +209,7 @@ mod tests {
             .await
             .expect("timed out waiting for close webhook")
             .expect("close webhook listener stopped");
-        assert_eq!(payload["decision"], "approve");
+        assert_eq!(payload["decision"], "request_changes");
         assert_eq!(payload["findings_red"], 1);
         assert_eq!(payload["findings_yellow"], 0);
         assert_eq!(payload["findings_green"], 2);

@@ -296,9 +296,18 @@ missed nit does:**
 - **`🔴` = a verified blocker only.** A correctness, security, data-loss, or
   broken-workflow defect you have actually confirmed. Never raise a `🔴` you have
   not verified — a false `🔴` wrongly blocks merge; an unconfirmed blocker goes
-  under `Not checked`. `🟡` = a real, in-scope, actionable non-blocker. `🟢` = a
-  useful positive, confirmation, or context. Never raise a finding just to have
-  something to report.
+  under `Not checked`. `🟡` = a real, in-scope, actionable finding that is not a
+  verified blocker — lower severity than `🔴`, but **still gates the verdict**:
+  any open `🟡` yields CHANGES REQUESTED. `🟢` = a useful positive,
+  confirmation, or context, and carries no merge cost. Never raise a finding
+  just to have something to report.
+
+  Because `🟡` now blocks, the severity gate above is load-bearing, not
+  etiquette: a `🟡` that needs no concrete action in THIS PR costs the author a
+  round trip they cannot skip. When a finding is real but you cannot name the
+  edit it demands, it is `🟢`. Do not answer the higher bar by hiding real
+  findings in `🟢` either — the fix for "this would block" is to make the
+  finding precise enough to act on, or to drop it, never to relabel it.
 
 ## Chair
 
@@ -441,8 +450,10 @@ When synthesizing, apply the same severity + scope gate to the reviewers' findin
 drop or green-downgrade any that speculate beyond the diff, require no concrete
 action, or restate a documented limitation, and downgrade any `🔴` a reviewer did
 not actually verify. The verdict's value is its signal-to-noise, not its finding
-count — do not carry noise forward to look thorough. If reviewer findings are minor
-but real, clearly mark them non-blocking. If a later session message says a finding
+count — do not carry noise forward to look thorough. This gate is where the cost of
+a blocking `🟡` is paid: a reviewer `🟡` you cannot restate as a concrete edit to
+this PR must be green-downgraded or dropped, because carrying it forward now
+withholds the merge. If a later session message says a finding
 was fixed in a newer head, include that in the final report instead of repeating
 the stale finding as current.
 
@@ -544,5 +555,7 @@ Merged explanation from reviewers. Preserve disagreement when it matters.
 🔴×1 🟡×3 🟢×5 · 💬 Comment `<bot handle shown in the task> <question>` for a follow-up · 🔁 Push new commits or comment `<bot handle shown in the task> review <fix notes>` to re-run the council
 ```
 
-Use `LGTM ✅` when there are no critical findings. Use
-`CHANGES REQUESTED ⚠️` when any `🔴` finding remains.
+Use `LGTM ✅` only when no actionable finding remains — that is, `🔴×0 🟡×0`
+(`🟢` never blocks). Use `CHANGES REQUESTED ⚠️` when any `🔴` **or** `🟡`
+finding is open. The verdict trailer must match: `r=0 y=0` → `approve`,
+anything else → `request_changes`.
