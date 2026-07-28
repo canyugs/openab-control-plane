@@ -53,6 +53,22 @@ The controller installation management endpoints additionally require
 `OABCP_API_KEY` to be set; unlike the legacy north API, they never run open in
 development. See [Controller Action API](controller-action-api.md).
 
+### Verdict decision is derived, not trusted (0.1.41)
+
+The chair's `[[verdict:…]]` trailer reports both a decision and 🔴/🟡/🟢 counts.
+Since 0.1.41 the plane derives the decision from those counts and `WARN`s when
+the chair's own word disagrees, because steering said "LGTM only at r=0 y=0"
+while nothing enforced it:
+
+* any reported blocking count that is positive → `request_changes`, even if only
+  one of `r`/`y` was given (a lone `r=3` is unambiguous, and a truncated trailer
+  must not bypass the gate);
+* only a **complete** `r`+`y` pair may clear a verdict to `approve` — `r=0` alone
+  says nothing about yellows;
+* a trailer with no counts at all keeps the chair's word.
+
+Escalating never needs the full picture; clearing always does.
+
 ## Plane-minted GitHub App tokens (optional)
 
 Optional operator capability — lets the **plane** mint per-role scoped installation
