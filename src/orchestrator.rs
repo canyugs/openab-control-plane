@@ -1962,6 +1962,18 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                 let span = settled_result_span(&messages, &author);
                 let ids_json = (!span.is_empty())
                     .then(|| serde_json::to_string(&span).expect("Vec<String> serializes to JSON"));
+                // The span bodies ride the terminal event (ADR 031:159) so an
+                // external controller can parse verdict + findings from the
+                // same text the kernel parses. Empty span → the closing text.
+                let final_messages: Vec<String> = if span.is_empty() {
+                    vec![verdict.clone()]
+                } else {
+                    messages
+                        .iter()
+                        .filter(|m| span.contains(&m.id))
+                        .map(|m| m.content.clone())
+                        .collect()
+                };
                 // One transaction: close CAS + verdict columns + result
                 // identity. On error nothing landed — the session stays open
                 // and the watchdog timeout path remains the termination
@@ -1975,6 +1987,7 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     structured_verdict.as_ref().and_then(|t| t.green),
                     ids_json.as_ref().map(|_| author.as_str()),
                     ids_json.as_deref(),
+                    &final_messages,
                 ) {
                     Ok(won) => won,
                     Err(e) => {

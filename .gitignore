@@ -1,3 +1,9 @@
 /target
 *.db
 *.db-journal
+.DS_Store
+__pycache__/
+*.pyc
+.phase0/
+*.env
+!*.env.example
