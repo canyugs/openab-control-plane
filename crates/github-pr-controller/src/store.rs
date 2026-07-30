@@ -7,6 +7,103 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const PROCESSING_LEASE_SECS: i64 = 5 * 60;
 const COMPLETED_RETENTION_SECS: i64 = 7 * 24 * 60 * 60;
+/// A write that keeps failing stops being retried. The drain is not the place
+/// to decide a GitHub outage is permanent; a human reading `last_error` is.
+const WRITE_MAX_ATTEMPTS: i64 = 5;
+
+/// Schema versions, applied in order, `PRAGMA user_version` holding the count
+/// already applied. Migration 0 is the original `IF NOT EXISTS` batch, so a
+/// database written before this framework existed migrates by re-running it as
+/// a no-op and then taking 1.
+const MIGRATIONS: &[&str] = &[
+    // 0 — delivery-side tables (pre-existing)
+    "CREATE TABLE IF NOT EXISTS webhook_deliveries (
+       delivery_id TEXT PRIMARY KEY,
+       event_type TEXT NOT NULL,
+       repository TEXT,
+       payload_sha256 TEXT NOT NULL,
+       state TEXT NOT NULL,
+       result_json TEXT,
+       received_at INTEGER NOT NULL,
+       completed_at INTEGER
+     );
+     CREATE TABLE IF NOT EXISTS shadow_comparisons (
+       comparison_id TEXT PRIMARY KEY,
+       request_sha256 TEXT NOT NULL,
+       repository TEXT,
+       exact_match INTEGER NOT NULL,
+       identity_mismatches INTEGER NOT NULL,
+       presentation_mismatches INTEGER NOT NULL,
+       created_at INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_shadow_comparisons_created
+       ON shadow_comparisons(created_at);
+     CREATE TABLE IF NOT EXISTS runtime_event_receipts (
+       event_id TEXT PRIMARY KEY,
+       body_sha256 TEXT NOT NULL,
+       event_type TEXT NOT NULL,
+       session_id TEXT,
+       occurred_at INTEGER NOT NULL,
+       received_at INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_runtime_event_receipts_received
+       ON runtime_event_receipts(received_at);",
+    // 1 — product tables for the closing half (SEI-852 step 3)
+    "CREATE TABLE IF NOT EXISTS review_rounds (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       repo TEXT NOT NULL,
+       pr_number INTEGER NOT NULL,
+       round INTEGER NOT NULL,
+       -- one round per session: at-least-once terminal events reprocess, and
+       -- this is what makes the second delivery a no-op instead of a round 2.
+       session_id TEXT NOT NULL UNIQUE,
+       head_sha TEXT,
+       -- the upsert anchor for the verdict comment, learned after the first
+       -- write; NULL until then.
+       comment_id INTEGER,
+       decision TEXT NOT NULL,
+       red INTEGER NOT NULL,
+       yellow INTEGER NOT NULL,
+       green INTEGER NOT NULL,
+       created_at INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_review_rounds_pr
+       ON review_rounds(repo, pr_number, round);
+     -- Port of the kernel's pr_review_findings, same columns. Append-only.
+     CREATE TABLE IF NOT EXISTS review_findings (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       session_id TEXT NOT NULL,
+       repo TEXT, pr_number INTEGER,
+       stable_id TEXT NOT NULL,
+       severity TEXT NOT NULL,
+       status TEXT NOT NULL,
+       title TEXT NOT NULL,
+       path TEXT, line INTEGER,
+       raised_by TEXT, angle TEXT,
+       head_sha TEXT,
+       created_at INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_review_findings_pr
+       ON review_findings(repo, pr_number, id);
+     CREATE INDEX IF NOT EXISTS idx_review_findings_session
+       ON review_findings(session_id);
+     -- Idempotent outbox. One row per (session, kind): re-enqueueing the same
+     -- write after a redelivery is ignored, so a verdict is posted once.
+     CREATE TABLE IF NOT EXISTS github_writes (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       session_id TEXT NOT NULL,
+       kind TEXT NOT NULL,
+       payload_json TEXT NOT NULL,
+       state TEXT NOT NULL,
+       attempts INTEGER NOT NULL,
+       last_error TEXT,
+       created_at INTEGER NOT NULL,
+       done_at INTEGER,
+       UNIQUE(session_id, kind)
+     );
+     CREATE INDEX IF NOT EXISTS idx_github_writes_pending
+       ON github_writes(state, id);",
+];
 
 pub struct ProductStore {
     connection: Mutex<Connection>,
@@ -54,6 +151,51 @@ pub struct CanarySummary {
     pub latest_event_occurred_at: Option<i64>,
 }
 
+/// One council round as the controller knows it: the verdict it parsed out of
+/// a terminal event, keyed to the session that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewRound {
+    pub repo: String,
+    pub pr_number: i64,
+    pub session_id: String,
+    pub head_sha: Option<String>,
+    pub decision: String,
+    pub red: i64,
+    pub yellow: i64,
+    pub green: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordedRound {
+    pub id: i64,
+    pub round: i64,
+    /// False when a redelivered terminal event found the round already there —
+    /// the caller must not re-enqueue side effects on the strength of it.
+    pub first_time: bool,
+}
+
+/// Port of the kernel's `pr_review_findings` row, same columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewFinding {
+    pub stable_id: String,
+    pub severity: String,
+    pub status: String,
+    pub title: String,
+    pub path: Option<String>,
+    pub line: Option<i64>,
+    pub raised_by: Option<String>,
+    pub angle: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingWrite {
+    pub id: i64,
+    pub session_id: String,
+    pub kind: String,
+    pub payload: Value,
+    pub attempts: i64,
+}
+
 impl ProductStore {
     pub fn open(path: &str) -> rusqlite::Result<Self> {
         Self::from_connection(Connection::open(path)?)
@@ -67,39 +209,9 @@ impl ProductStore {
     fn from_connection(connection: Connection) -> rusqlite::Result<Self> {
         connection.execute_batch(
             "PRAGMA journal_mode = WAL;
-             PRAGMA busy_timeout = 5000;
-             CREATE TABLE IF NOT EXISTS webhook_deliveries (
-               delivery_id TEXT PRIMARY KEY,
-               event_type TEXT NOT NULL,
-               repository TEXT,
-               payload_sha256 TEXT NOT NULL,
-               state TEXT NOT NULL,
-               result_json TEXT,
-               received_at INTEGER NOT NULL,
-               completed_at INTEGER
-             );
-             CREATE TABLE IF NOT EXISTS shadow_comparisons (
-               comparison_id TEXT PRIMARY KEY,
-               request_sha256 TEXT NOT NULL,
-               repository TEXT,
-               exact_match INTEGER NOT NULL,
-               identity_mismatches INTEGER NOT NULL,
-               presentation_mismatches INTEGER NOT NULL,
-               created_at INTEGER NOT NULL
-             );
-             CREATE INDEX IF NOT EXISTS idx_shadow_comparisons_created
-               ON shadow_comparisons(created_at);
-             CREATE TABLE IF NOT EXISTS runtime_event_receipts (
-               event_id TEXT PRIMARY KEY,
-               body_sha256 TEXT NOT NULL,
-               event_type TEXT NOT NULL,
-               session_id TEXT,
-               occurred_at INTEGER NOT NULL,
-               received_at INTEGER NOT NULL
-             );
-             CREATE INDEX IF NOT EXISTS idx_runtime_event_receipts_received
-               ON runtime_event_receipts(received_at);",
+             PRAGMA busy_timeout = 5000;",
         )?;
+        migrate(&connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -389,6 +501,197 @@ impl ProductStore {
         })
     }
 
+    /// Open (or recover) the round for a closed session. Idempotent: a
+    /// redelivered terminal event returns the round already recorded rather
+    /// than opening a second one.
+    pub fn record_review_round(&self, round: &ReviewRound) -> rusqlite::Result<RecordedRound> {
+        let mut connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = transaction
+            .query_row(
+                "SELECT id, round FROM review_rounds WHERE session_id = ?1",
+                [&round.session_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        let recorded = match existing {
+            Some((id, number)) => RecordedRound {
+                id,
+                round: number,
+                first_time: false,
+            },
+            None => {
+                let number: i64 = transaction.query_row(
+                    "SELECT COALESCE(MAX(round), 0) + 1 FROM review_rounds
+                      WHERE repo = ?1 AND pr_number = ?2",
+                    params![round.repo, round.pr_number],
+                    |row| row.get(0),
+                )?;
+                transaction.execute(
+                    "INSERT INTO review_rounds
+                       (repo, pr_number, round, session_id, head_sha, decision,
+                        red, yellow, green, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![
+                        round.repo,
+                        round.pr_number,
+                        number,
+                        round.session_id,
+                        round.head_sha,
+                        round.decision,
+                        round.red,
+                        round.yellow,
+                        round.green,
+                        now_unix(),
+                    ],
+                )?;
+                RecordedRound {
+                    id: transaction.last_insert_rowid(),
+                    round: number,
+                    first_time: true,
+                }
+            }
+        };
+        transaction.commit()?;
+        Ok(recorded)
+    }
+
+    /// The comment id to PATCH on the next round of the same pull request.
+    /// Carried forward from the newest round that has one.
+    pub fn last_comment_id(&self, repo: &str, pr_number: i64) -> rusqlite::Result<Option<i64>> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection
+            .query_row(
+                "SELECT comment_id FROM review_rounds
+                  WHERE repo = ?1 AND pr_number = ?2 AND comment_id IS NOT NULL
+                  ORDER BY round DESC LIMIT 1",
+                params![repo, pr_number],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    pub fn set_round_comment_id(&self, session_id: &str, comment_id: i64) -> rusqlite::Result<()> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection.execute(
+            "UPDATE review_rounds SET comment_id = ?2 WHERE session_id = ?1",
+            params![session_id, comment_id],
+        )?;
+        Ok(())
+    }
+
+    /// Append a session's findings. Idempotent by session: a redelivery adds
+    /// nothing, since the ledger is append-only and would otherwise double.
+    pub fn record_review_findings(
+        &self,
+        session_id: &str,
+        repo: &str,
+        pr_number: i64,
+        head_sha: Option<&str>,
+        findings: &[ReviewFinding],
+    ) -> rusqlite::Result<usize> {
+        let mut connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let already: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM review_findings WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        if already > 0 {
+            return Ok(0);
+        }
+        let now = now_unix();
+        for finding in findings {
+            transaction.execute(
+                "INSERT INTO review_findings
+                   (session_id, repo, pr_number, stable_id, severity, status,
+                    title, path, line, raised_by, angle, head_sha, created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                params![
+                    session_id,
+                    repo,
+                    pr_number,
+                    finding.stable_id,
+                    finding.severity,
+                    finding.status,
+                    finding.title,
+                    finding.path,
+                    finding.line,
+                    finding.raised_by,
+                    finding.angle,
+                    head_sha,
+                    now,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(findings.len())
+    }
+
+    /// Queue a GitHub write. Returns false when this (session, kind) is
+    /// already queued — the guarantee that at-least-once delivery cannot
+    /// produce a second comment, status or review.
+    pub fn enqueue_write(
+        &self,
+        session_id: &str,
+        kind: &str,
+        payload: &Value,
+    ) -> rusqlite::Result<bool> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let inserted = connection.execute(
+            "INSERT OR IGNORE INTO github_writes
+               (session_id, kind, payload_json, state, attempts, created_at)
+             VALUES (?1, ?2, ?3, 'pending', 0, ?4)",
+            params![session_id, kind, payload.to_string(), now_unix()],
+        )?;
+        Ok(inserted == 1)
+    }
+
+    pub fn pending_writes(&self, limit: i64) -> rusqlite::Result<Vec<PendingWrite>> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let mut statement = connection.prepare(
+            "SELECT id, session_id, kind, payload_json, attempts
+               FROM github_writes WHERE state = 'pending' ORDER BY id LIMIT ?1",
+        )?;
+        let rows = statement
+            .query_map([limit], |row| {
+                Ok(PendingWrite {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    kind: row.get(2)?,
+                    payload: serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or(Value::Null),
+                    attempts: row.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn mark_write_done(&self, id: i64) -> rusqlite::Result<()> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection.execute(
+            "UPDATE github_writes SET state = 'done', last_error = NULL, done_at = ?2
+              WHERE id = ?1",
+            params![id, now_unix()],
+        )?;
+        Ok(())
+    }
+
+    /// Count the attempt and keep the row retryable until it has burned
+    /// through `WRITE_MAX_ATTEMPTS`, then park it as `failed`.
+    pub fn mark_write_failed(&self, id: i64, error: &str) -> rusqlite::Result<()> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection.execute(
+            "UPDATE github_writes
+                SET attempts = attempts + 1,
+                    last_error = ?2,
+                    state = CASE WHEN attempts + 1 >= ?3 THEN 'failed' ELSE 'pending' END
+              WHERE id = ?1",
+            params![id, error, WRITE_MAX_ATTEMPTS],
+        )?;
+        Ok(())
+    }
+
     fn prune_shadow_comparisons_at(
         &self,
         now: i64,
@@ -408,6 +711,19 @@ impl ProductStore {
             [now.saturating_sub(retention_secs)],
         )
     }
+}
+
+fn migrate(connection: &Connection) -> rusqlite::Result<()> {
+    let applied: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    for (index, sql) in MIGRATIONS.iter().enumerate().skip(applied.max(0) as usize) {
+        // user_version cannot be bound, hence the format!; `index` is an
+        // enumerate counter, never user input.
+        connection.execute_batch(&format!(
+            "BEGIN; {sql} PRAGMA user_version = {}; COMMIT;",
+            index + 1
+        ))?;
+    }
+    Ok(())
 }
 
 fn now_unix() -> i64 {
@@ -650,5 +966,163 @@ mod tests {
             .unwrap();
         assert!(!schema.contains("payload"));
         assert!(!schema.contains("body_json"));
+    }
+
+    fn round(session: &str, decision: &str) -> ReviewRound {
+        ReviewRound {
+            repo: "example/repo".into(),
+            pr_number: 7,
+            session_id: session.into(),
+            head_sha: Some("deadbeef".into()),
+            decision: decision.into(),
+            red: 0,
+            yellow: 0,
+            green: 2,
+        }
+    }
+
+    #[test]
+    fn migrations_are_idempotent_and_adopt_a_pre_framework_database() {
+        // A database written before `user_version` existed: the delivery tables
+        // are there, the counter is 0. Migrating must not fail on the existing
+        // tables, and must still apply everything after migration 0.
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        migrate(&connection).unwrap();
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
+                   AND name IN ('review_rounds', 'review_findings', 'github_writes')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 3);
+
+        // Re-running is a no-op, not a re-apply.
+        migrate(&connection).unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn rounds_number_per_pull_request_and_redelivery_is_a_no_op() {
+        let store = ProductStore::memory().unwrap();
+        let first = store
+            .record_review_round(&round("ses_1", "request_changes"))
+            .unwrap();
+        assert_eq!((first.round, first.first_time), (1, true));
+
+        // Same session again — an at-least-once terminal event redelivered.
+        let again = store
+            .record_review_round(&round("ses_1", "request_changes"))
+            .unwrap();
+        assert_eq!(
+            (again.id, again.round, again.first_time),
+            (first.id, 1, false)
+        );
+
+        let second = store
+            .record_review_round(&round("ses_2", "approve"))
+            .unwrap();
+        assert_eq!((second.round, second.first_time), (2, true));
+
+        // A different pull request starts its own numbering.
+        let mut other = round("ses_3", "approve");
+        other.pr_number = 8;
+        assert_eq!(store.record_review_round(&other).unwrap().round, 1);
+    }
+
+    #[test]
+    fn the_comment_anchor_carries_to_the_next_round() {
+        let store = ProductStore::memory().unwrap();
+        store
+            .record_review_round(&round("ses_1", "request_changes"))
+            .unwrap();
+        assert_eq!(store.last_comment_id("example/repo", 7).unwrap(), None);
+        store.set_round_comment_id("ses_1", 9_001).unwrap();
+        store
+            .record_review_round(&round("ses_2", "approve"))
+            .unwrap();
+        assert_eq!(
+            store.last_comment_id("example/repo", 7).unwrap(),
+            Some(9_001),
+            "round 2 patches round 1's comment instead of posting a new one"
+        );
+        assert_eq!(store.last_comment_id("example/repo", 8).unwrap(), None);
+    }
+
+    #[test]
+    fn findings_are_written_once_per_session() {
+        let store = ProductStore::memory().unwrap();
+        let findings = vec![ReviewFinding {
+            stable_id: "f1".into(),
+            severity: "red".into(),
+            status: "open".into(),
+            title: "unbounded read".into(),
+            path: Some("src/lib.rs".into()),
+            line: Some(12),
+            raised_by: Some("rev-claude".into()),
+            angle: Some("correctness".into()),
+        }];
+        assert_eq!(
+            store
+                .record_review_findings("ses_1", "example/repo", 7, Some("deadbeef"), &findings)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .record_review_findings("ses_1", "example/repo", 7, Some("deadbeef"), &findings)
+                .unwrap(),
+            0,
+            "a redelivery must not double the ledger"
+        );
+        let connection = store.connection.lock().unwrap();
+        let rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM review_findings", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn the_outbox_queues_once_and_parks_a_write_that_keeps_failing() {
+        let store = ProductStore::memory().unwrap();
+        assert!(store
+            .enqueue_write("ses_1", "review", &json!({"event": "APPROVE"}))
+            .unwrap());
+        assert!(
+            !store
+                .enqueue_write("ses_1", "review", &json!({"event": "APPROVE"}))
+                .unwrap(),
+            "the same write must never be queued twice"
+        );
+        assert!(store
+            .enqueue_write("ses_1", "status", &json!({"state": "success"}))
+            .unwrap());
+
+        let pending = store.pending_writes(10).unwrap();
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].kind, "review");
+        assert_eq!(pending[0].payload, json!({"event": "APPROVE"}));
+
+        store.mark_write_done(pending[1].id).unwrap();
+        let review = pending[0].id;
+        for attempt in 1..WRITE_MAX_ATTEMPTS {
+            store.mark_write_failed(review, "502").unwrap();
+            assert_eq!(
+                store.pending_writes(10).unwrap()[0].attempts,
+                attempt,
+                "still retryable"
+            );
+        }
+        store.mark_write_failed(review, "502").unwrap();
+        assert!(
+            store.pending_writes(10).unwrap().is_empty(),
+            "a write out of attempts is parked, not retried forever"
+        );
     }
 }
