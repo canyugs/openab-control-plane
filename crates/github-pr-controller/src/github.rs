@@ -23,6 +23,11 @@ use crate::config::Config;
 /// call with a token about to die. Installation tokens live an hour.
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
 const USER_AGENT: &str = "openab-github-controller";
+/// Reconcile reads page until exhausted, capped here. GitHub's reviews list is
+/// oldest-first with no sort parameter, so "read one newest page" is not a
+/// thing (council F2, #307) — scan everything, bounded: a thousand entries on
+/// one pull request is beyond any real council history.
+const RECONCILE_MAX_PAGES: usize = 10;
 
 /// The only two formal reviews this controller submits. A closed enum, so a
 /// parsed decision string can never reach GitHub as, say, `COMMENT` or
@@ -70,6 +75,12 @@ impl StatusState {
 
 pub struct GitHubClient {
     repository: String,
+    /// The App's numeric id and its bot login (`<slug>[bot]`), used to verify
+    /// that an object the reconcile found is OURS. The marker alone proves
+    /// nothing: it is published in every comment we post, so anyone can copy
+    /// it into a decoy (council F1, #307). No identity → never adopt.
+    app_numeric_id: Option<i64>,
+    expected_login: Option<String>,
     api_base: String,
     app_id: String,
     installation_id: String,
@@ -98,6 +109,11 @@ impl GitHubClient {
             // reach every repo the App is installed on; a mis-parsed
             // `trigger_ref` must not be able to write to one of them.
             repository: config.canary_repository.clone()?,
+            app_numeric_id: app.app_id.as_deref().and_then(|id| id.parse().ok()),
+            expected_login: config
+                .bot_handle
+                .as_deref()
+                .map(|handle| format!("{handle}[bot]")),
             api_base: config.github_api_base.trim_end_matches('/').to_string(),
             app_id: app.app_id.clone()?,
             installation_id: app.installation_id.clone()?,
@@ -186,6 +202,91 @@ impl GitHubClient {
             );
         }
         response["id"].as_i64().context("review carried no id")
+    }
+
+    /// Find our own earlier comment carrying `marker` on an issue. The
+    /// pre-send reconcile: a create retried after a crash must adopt the
+    /// comment that already exists instead of posting a second one.
+    pub async fn find_marked_comment(
+        &self,
+        repo: &str,
+        issue: i64,
+        marker: &str,
+    ) -> Result<Option<i64>> {
+        self.check_repository(repo)?;
+        self.find_marked(&format!("repos/{repo}/issues/{issue}/comments"), marker)
+            .await
+    }
+
+    /// Same reconcile for formal reviews: `submit_review` retried after a
+    /// crash must find the review it already submitted.
+    pub async fn find_marked_review(
+        &self,
+        repo: &str,
+        pr_number: i64,
+        marker: &str,
+    ) -> Result<Option<i64>> {
+        self.check_repository(repo)?;
+        self.find_marked(&format!("repos/{repo}/pulls/{pr_number}/reviews"), marker)
+            .await
+    }
+
+    /// Scan a listing endpoint page by page until the marker is found or the
+    /// listing ends. Ordering is deliberately not relied on: the reviews
+    /// endpoint is oldest-first with no sort parameter (council F2, #307), so
+    /// "read the newest page" is not a thing there.
+    async fn find_marked(&self, path: &str, marker: &str) -> Result<Option<i64>> {
+        for page in 1..=RECONCILE_MAX_PAGES {
+            let entries = self
+                .send(
+                    reqwest::Method::GET,
+                    &format!("{path}?per_page=100&page={page}"),
+                    None,
+                )
+                .await?;
+            if let Some(id) = self.scan_for_our_marker(&entries, marker) {
+                return Ok(Some(id));
+            }
+            if entries.as_array().map(Vec::len).unwrap_or(0) < 100 {
+                return Ok(None);
+            }
+        }
+        // The cap is a backstop, not an expected path. Say so rather than
+        // silently reporting "not found" and risking the very duplicate this
+        // reconcile exists to prevent.
+        bail!("reconcile scanned {RECONCILE_MAX_PAGES} pages of {path} without exhausting it")
+    }
+
+    /// The id of the first entry that carries `marker` AND is provably ours —
+    /// authored by the App's bot login, or created via this App id. The marker
+    /// is public the moment we post it, so a body match alone would let any
+    /// repo participant plant a decoy: a comment we then fail to PATCH forever,
+    /// or a fake review whose presence suppresses the real one (F1, #307).
+    /// With no identity configured, nothing is ever adopted — the rare crash
+    /// replay then risks a duplicate, which is strictly better than adopting
+    /// an object we do not own.
+    fn scan_for_our_marker(&self, entries: &Value, marker: &str) -> Option<i64> {
+        entries.as_array()?.iter().find_map(|entry| {
+            let marked = entry["body"]
+                .as_str()
+                .is_some_and(|body| body.contains(marker));
+            if !marked || !self.is_ours(entry) {
+                return None;
+            }
+            entry["id"].as_i64()
+        })
+    }
+
+    fn is_ours(&self, entry: &Value) -> bool {
+        let login_matches = match self.expected_login.as_deref() {
+            Some(expected) => entry["user"]["login"].as_str() == Some(expected),
+            None => false,
+        };
+        let app_matches = match self.app_numeric_id {
+            Some(app_id) => entry["performed_via_github_app"]["id"].as_i64() == Some(app_id),
+            None => false,
+        };
+        login_matches || app_matches
     }
 
     /// Every write names a repository; this is the one place that checks it is
