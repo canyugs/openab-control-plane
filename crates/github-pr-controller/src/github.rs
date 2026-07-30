@@ -70,6 +70,12 @@ impl StatusState {
 
 pub struct GitHubClient {
     repository: String,
+    /// The App's numeric id and its bot login (`<slug>[bot]`), used to verify
+    /// that an object the reconcile found is OURS. The marker alone proves
+    /// nothing: it is published in every comment we post, so anyone can copy
+    /// it into a decoy (council F1, #307). No identity → never adopt.
+    app_numeric_id: Option<i64>,
+    expected_login: Option<String>,
     api_base: String,
     app_id: String,
     installation_id: String,
@@ -98,6 +104,11 @@ impl GitHubClient {
             // reach every repo the App is installed on; a mis-parsed
             // `trigger_ref` must not be able to write to one of them.
             repository: config.canary_repository.clone()?,
+            app_numeric_id: app.app_id.as_deref().and_then(|id| id.parse().ok()),
+            expected_login: config
+                .bot_handle
+                .as_deref()
+                .map(|handle| format!("{handle}[bot]")),
             api_base: config.github_api_base.trim_end_matches('/').to_string(),
             app_id: app.app_id.clone()?,
             installation_id: app.installation_id.clone()?,
@@ -211,7 +222,7 @@ impl GitHubClient {
                 None,
             )
             .await?;
-        Ok(scan_for_marker(&comments, marker))
+        Ok(self.scan_for_our_marker(&comments, marker))
     }
 
     /// Same reconcile for formal reviews: `submit_review` retried after a
@@ -230,7 +241,39 @@ impl GitHubClient {
                 None,
             )
             .await?;
-        Ok(scan_for_marker(&reviews, marker))
+        Ok(self.scan_for_our_marker(&reviews, marker))
+    }
+
+    /// The id of the first entry that carries `marker` AND is provably ours —
+    /// authored by the App's bot login, or created via this App id. The marker
+    /// is public the moment we post it, so a body match alone would let any
+    /// repo participant plant a decoy: a comment we then fail to PATCH forever,
+    /// or a fake review whose presence suppresses the real one (F1, #307).
+    /// With no identity configured, nothing is ever adopted — the rare crash
+    /// replay then risks a duplicate, which is strictly better than adopting
+    /// an object we do not own.
+    fn scan_for_our_marker(&self, entries: &Value, marker: &str) -> Option<i64> {
+        entries.as_array()?.iter().find_map(|entry| {
+            let marked = entry["body"]
+                .as_str()
+                .is_some_and(|body| body.contains(marker));
+            if !marked || !self.is_ours(entry) {
+                return None;
+            }
+            entry["id"].as_i64()
+        })
+    }
+
+    fn is_ours(&self, entry: &Value) -> bool {
+        let login_matches = match self.expected_login.as_deref() {
+            Some(expected) => entry["user"]["login"].as_str() == Some(expected),
+            None => false,
+        };
+        let app_matches = match self.app_numeric_id {
+            Some(app_id) => entry["performed_via_github_app"]["id"].as_i64() == Some(app_id),
+            None => false,
+        };
+        login_matches || app_matches
     }
 
     /// Every write names a repository; this is the one place that checks it is
@@ -349,18 +392,6 @@ impl GitHubClient {
             .context("GitHub App private key is not an RSA PEM")?;
         encode(&Header::new(Algorithm::RS256), &claims, &key).context("sign app JWT")
     }
-}
-
-/// The id of the first entry whose body carries `marker`, in an array of
-/// GitHub comment/review objects.
-fn scan_for_marker(entries: &Value, marker: &str) -> Option<i64> {
-    entries.as_array()?.iter().find_map(|entry| {
-        entry["body"]
-            .as_str()
-            .is_some_and(|body| body.contains(marker))
-            .then(|| entry["id"].as_i64())
-            .flatten()
-    })
 }
 
 fn truncate(value: &str, max: usize) -> String {

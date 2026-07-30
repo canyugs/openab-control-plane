@@ -1361,8 +1361,8 @@ mod tests {
 
         #[derive(Clone, Default)]
         struct Github {
-            comments: Arc<std::sync::Mutex<Vec<(i64, String)>>>,
-            reviews: Arc<std::sync::Mutex<Vec<(i64, String)>>>,
+            comments: Arc<std::sync::Mutex<Vec<(i64, String, String)>>>,
+            reviews: Arc<std::sync::Mutex<Vec<(i64, String, String)>>>,
         }
         let gh = Github::default();
         let app = Router::new()
@@ -1382,7 +1382,10 @@ mod tests {
                                 .lock()
                                 .unwrap()
                                 .iter()
-                                .map(|(id, body)| json!({"id": id, "body": body}))
+                                .rev() // newest first, like the real API sorted desc
+                                .map(|(id, body, login)| {
+                                    json!({"id": id, "body": body, "user": {"login": login}})
+                                })
                                 .collect();
                             Json(Value::Array(list))
                         }
@@ -1395,7 +1398,11 @@ mod tests {
                         async move {
                             let mut comments = gh.comments.lock().unwrap();
                             let id = 1000 + comments.len() as i64;
-                            comments.push((id, body["body"].as_str().unwrap_or_default().into()));
+                            comments.push((
+                                id,
+                                body["body"].as_str().unwrap_or_default().into(),
+                                "fixture-council[bot]".into(),
+                            ));
                             Json(json!({"id": id}))
                         }
                     }
@@ -1425,7 +1432,10 @@ mod tests {
                                 .lock()
                                 .unwrap()
                                 .iter()
-                                .map(|(id, body)| json!({"id": id, "body": body}))
+                                .rev()
+                                .map(|(id, body, login)| {
+                                    json!({"id": id, "body": body, "user": {"login": login}})
+                                })
                                 .collect();
                             Json(Value::Array(list))
                         }
@@ -1438,7 +1448,11 @@ mod tests {
                         async move {
                             let mut reviews = gh.reviews.lock().unwrap();
                             let id = 2000 + reviews.len() as i64;
-                            reviews.push((id, body["body"].as_str().unwrap_or_default().into()));
+                            reviews.push((
+                                id,
+                                body["body"].as_str().unwrap_or_default().into(),
+                                "fixture-council[bot]".into(),
+                            ));
                             Json(json!({"id": id, "state": "CHANGES_REQUESTED"}))
                         }
                     }
@@ -1455,6 +1469,7 @@ mod tests {
         config.enable_writes = true;
         config.canary_repository = Some("example/repo".into());
         config.github_api_base = format!("http://{addr}");
+        config.bot_handle = Some("fixture-council".into());
         config.github_app = config::GitHubAppConfig {
             app_id: Some("1".into()),
             installation_id: Some("2".into()),
@@ -1467,6 +1482,28 @@ mod tests {
 
         // The round's writes, as dispatch would queue them.
         let marker = closing::round_marker("ses_1");
+        // A hostile participant has already planted decoys carrying the same
+        // marker — the id is public the moment any council comment exists.
+        // Neither may be adopted: the comment is not PATCHable by us, and the
+        // decoy review must not suppress the real one (council F1, #307).
+        gh.comments.lock().unwrap().push((
+            900,
+            format!(
+                "decoy
+
+{marker}"
+            ),
+            "attacker".into(),
+        ));
+        gh.reviews.lock().unwrap().push((
+            901,
+            format!(
+                "decoy
+
+{marker}"
+            ),
+            "attacker".into(),
+        ));
         store
             .enqueue_write(
                 "ses_1",
@@ -1490,8 +1527,12 @@ mod tests {
             // Deliberately NOT marking done — this is the crash. The rows keep
             // their claim; GitHub has the comment and the review.
         }
-        assert_eq!(gh.comments.lock().unwrap().len(), 1);
-        assert_eq!(gh.reviews.lock().unwrap().len(), 1);
+        assert_eq!(
+            gh.comments.lock().unwrap().len(),
+            2,
+            "decoy + the real comment: the create ignored the attacker's marker"
+        );
+        assert_eq!(gh.reviews.lock().unwrap().len(), 2);
 
         // The lease lapses and another drain claims the same rows. Without the
         // reconcile this second pass double-posts.
@@ -1504,13 +1545,13 @@ mod tests {
         }
         assert_eq!(
             gh.comments.lock().unwrap().len(),
-            1,
-            "the replayed create adopted the marked comment"
+            2,
+            "the replayed create adopted OUR marked comment, not the decoy"
         );
         assert_eq!(
             gh.reviews.lock().unwrap().len(),
-            1,
-            "the replayed submit found the marked review"
+            2,
+            "the replayed submit found OUR marked review, not the decoy"
         );
         // And the adopted comment id is now the round's anchor.
         assert_eq!(
