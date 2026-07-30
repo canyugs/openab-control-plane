@@ -1298,6 +1298,26 @@ impl SqliteStore {
         })
     }
 
+    /// Bind a session to a controller without replaying a whole action round —
+    /// tests that only need "this session is controller-owned" (so runtime
+    /// events get enqueued) would otherwise have to drive
+    /// `finish_controller_action`.
+    #[cfg(test)]
+    pub(crate) fn bind_test_controller_session(
+        &self,
+        controller_id: &str,
+        session_id: &str,
+    ) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO controller_sessions
+                (controller_id, scope, trigger_ref, trigger_fingerprint, session_id, current, created_at)
+             VALUES (?1, 'tenant:test', ?2, NULL, ?2, 1, 0)",
+            params![controller_id, session_id],
+        )?;
+        Ok(())
+    }
+
     pub fn memory() -> Result<SqliteStore> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
@@ -3080,12 +3100,26 @@ impl Store for SqliteStore {
             // projection (verdict, findings) without a read-back API. Capped;
             // truncation drops the OLDEST parts, because the verdict trailer
             // and findings block sit at the end of the span.
-            let mut kept: Vec<&String> = final_messages.iter().collect();
+            let mut kept: Vec<&str> = final_messages.iter().map(String::as_str).collect();
             let mut total: usize = kept.iter().map(|m| m.len()).sum();
             let mut truncated = false;
-            while total > FINAL_MESSAGES_MAX_BYTES && !kept.is_empty() {
+            // Never drop the last part: an empty array would tell the consumer
+            // nothing at all, which is worse than a clipped tail.
+            while total > FINAL_MESSAGES_MAX_BYTES && kept.len() > 1 {
                 total -= kept.remove(0).len();
                 truncated = true;
+            }
+            // One part can still exceed the cap alone. Keep its END, on a char
+            // boundary — that is where the trailer and findings block are.
+            if let Some(last) = kept.last_mut() {
+                if last.len() > FINAL_MESSAGES_MAX_BYTES {
+                    let want = last.len() - FINAL_MESSAGES_MAX_BYTES;
+                    let cut = (want..=last.len())
+                        .find(|i| last.is_char_boundary(*i))
+                        .unwrap_or(last.len());
+                    *last = &last[cut..];
+                    truncated = true;
+                }
             }
             let mut payload = json!({
                 "state": "closed",
@@ -4412,6 +4446,74 @@ mod tests {
             json!(["middle", "tail [[verdict:approve r=0 y=0 g=1]]"]),
             "oldest part dropped, newest kept"
         );
+        assert_eq!(body["payload"]["final_messages_truncated"], json!(true));
+    }
+
+    /// One message can exceed the cap by itself. Sending `[]` would leave the
+    /// consumer with nothing to parse, so the tail survives instead — clipped
+    /// on a char boundary, because the trailer and findings block are there.
+    #[test]
+    fn terminal_event_keeps_the_tail_when_one_message_exceeds_the_cap() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .upsert_controller_installation("ctrl-x", 4, 60)
+            .unwrap();
+        assert!(store
+            .configure_controller_events(
+                "ctrl-x",
+                "https://ctrl.example/events",
+                1,
+                &["session.terminal".into()],
+                now_ms(),
+            )
+            .unwrap());
+        let s = store
+            .create_session("t", None, 0, None, &[], "review_council")
+            .unwrap();
+        {
+            let c = store.conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO controller_sessions
+                    (controller_id, scope, trigger_ref, trigger_fingerprint, session_id, current, created_at)
+                 VALUES ('ctrl-x', 'tenant:dev', 'github:pr/o/r#1', NULL, ?1, 1, 0)",
+                params![s.id],
+            )
+            .unwrap();
+        }
+        store.set_state(&s.id, SessionState::Deliberating).unwrap();
+
+        // Multi-byte padding so a naive byte cut would split a character.
+        let trailer = "[[verdict:approve r=0 y=0 g=1]]";
+        let single = format!("界{}{}", "界".repeat(FINAL_MESSAGES_MAX_BYTES / 3), trailer);
+        assert!(single.len() > FINAL_MESSAGES_MAX_BYTES);
+        assert!(store
+            .close_session_with_result(
+                &s.id,
+                SessionState::Deliberating,
+                Some("approve"),
+                Some(0),
+                Some(0),
+                Some(1),
+                Some("chair"),
+                Some(r#"["m1"]"#),
+                std::slice::from_ref(&single),
+            )
+            .unwrap());
+
+        let events = store.claim_controller_events(now_ms(), 10, 1_000).unwrap();
+        let terminal = events
+            .iter()
+            .find(|e| e.event_type == "session.terminal")
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&terminal.body_json).unwrap();
+        let kept = body["payload"]["final_messages"].as_array().unwrap();
+        assert_eq!(kept.len(), 1, "the only part is kept, never dropped");
+        let text = kept[0].as_str().unwrap();
+        assert!(
+            text.ends_with(trailer),
+            "the trailer at the end must survive"
+        );
+        assert!(text.len() <= FINAL_MESSAGES_MAX_BYTES);
         assert_eq!(body["payload"]["final_messages_truncated"], json!(true));
     }
 

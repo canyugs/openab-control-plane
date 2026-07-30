@@ -4405,6 +4405,67 @@ mod tests {
         assert!(force_close_timeout(&state, &session.id).unwrap());
     }
 
+    /// The store tests inject a synthetic span; this one drives a real close and
+    /// asserts the span→body mapping the orchestrator performs — including that
+    /// the chair's own text (trailer and all) reaches the controller.
+    #[test]
+    fn terminal_event_final_messages_carry_the_real_chair_text() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        store
+            .upsert_controller_installation("ctrl-x", 4, 60)
+            .unwrap();
+        assert!(store
+            .configure_controller_events(
+                "ctrl-x",
+                "https://ctrl.example/events",
+                1,
+                &["session.terminal".into()],
+                crate::store::now_ms(),
+            )
+            .unwrap());
+        let bot = store.register_bot("allen", "allen", "h1", "t1").unwrap();
+        let session = store
+            .create_session(
+                "controller-owned",
+                Some("github:pr/o/r#7"),
+                0,
+                Some(&bot.id),
+                std::slice::from_ref(&bot.id),
+                "solo",
+            )
+            .unwrap();
+        store
+            .bind_test_controller_session("ctrl-x", &session.id)
+            .unwrap();
+
+        post_client_message(&state, &session.id, "review this").unwrap();
+        let verdict = "verdict body\n[[verdict:approve r=0 y=0 g=2]] [done]";
+        handle_reply(&state, &bot.id, msg_reply(&session.id, verdict)).unwrap();
+        assert_eq!(store.session(&session.id).unwrap().unwrap().state, "closed");
+
+        let events = store
+            .claim_controller_events(crate::store::now_ms(), 10, 1_000)
+            .unwrap();
+        let terminal = events
+            .iter()
+            .find(|e| e.event_type == "session.terminal")
+            .expect("terminal event enqueued");
+        let body: serde_json::Value = serde_json::from_str(&terminal.body_json).unwrap();
+        let kept = body["payload"]["final_messages"].as_array().unwrap();
+        assert!(!kept.is_empty(), "the chair's text must ride along");
+        let joined = kept
+            .iter()
+            .map(|m| m.as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains("[[verdict:approve r=0 y=0 g=2]]"),
+            "the trailer must survive the span mapping: {joined}"
+        );
+        assert!(joined.contains("verdict body"));
+    }
+
     #[test]
     fn post_client_message_reopens_closed_session_for_staff_followup() {
         let store = Arc::new(SqliteStore::memory().unwrap());
