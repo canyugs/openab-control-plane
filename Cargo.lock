@@ -561,6 +561,7 @@ dependencies = [
  "hex",
  "hmac",
  "http-body-util",
+ "jsonwebtoken",
  "reqwest",
  "rusqlite",
  "serde",

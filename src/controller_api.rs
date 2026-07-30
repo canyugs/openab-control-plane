@@ -2087,6 +2087,10 @@ mod tests {
                 installation_id: None,
                 private_key: None,
             },
+            // This e2e drives the controller against an in-process plane, not
+            // GitHub — the write client stays off.
+            enable_writes: false,
+            github_api_base: "https://api.github.com".into(),
         };
         let verifier = github_pr_controller::runtime_events::RuntimeEventVerifier::new(
             CONTROLLER_ID,

@@ -1,0 +1,570 @@
+//! The controller's own hands on GitHub.
+//!
+//! Four calls, no more: create a comment, patch that comment, set the
+//! `openab/council` commit status, and submit a **formal pull-request review**
+//! (APPROVE or REQUEST_CHANGES). The last one is the whole reason this module
+//! exists — org branch protection asks for review approvals, and nothing has
+//! produced one since the chair stopped being able to run `gh` (see
+//! `docs/HANDOFF-adr031-closing-half.md` in the ops repo).
+//!
+//! Everything fails closed. A write is only successful when GitHub says so in
+//! the exact shape we asked for; anything else is an error the outbox retries.
+//! Constructing this client at all requires `external_canary` **and**
+//! `GITHUB_CONTROLLER_ENABLE_WRITES=1` (invariant #4 — one side-effect owner).
+
+use anyhow::{bail, Context, Result};
+use serde_json::{json, Value};
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use crate::config::Config;
+
+/// Re-mint this long before GitHub's stated expiry so a drain never starts a
+/// call with a token about to die. Installation tokens live an hour.
+const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
+const USER_AGENT: &str = "openab-github-controller";
+
+/// The only two formal reviews this controller submits. A closed enum, so a
+/// parsed decision string can never reach GitHub as, say, `COMMENT` or
+/// `DISMISS` — the API accepts more values than we ever want to send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewEvent {
+    Approve,
+    RequestChanges,
+}
+
+impl ReviewEvent {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approve => "APPROVE",
+            Self::RequestChanges => "REQUEST_CHANGES",
+        }
+    }
+
+    /// The review state GitHub reports back once it has recorded the event.
+    fn expected_state(self) -> &'static str {
+        match self {
+            Self::Approve => "APPROVED",
+            Self::RequestChanges => "CHANGES_REQUESTED",
+        }
+    }
+}
+
+/// Commit-status state. Same reasoning as `ReviewEvent`: closed on purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusState {
+    Success,
+    Failure,
+    Error,
+}
+
+impl StatusState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+            Self::Error => "error",
+        }
+    }
+}
+
+pub struct GitHubClient {
+    api_base: String,
+    app_id: String,
+    installation_id: String,
+    private_key: String,
+    http: reqwest::Client,
+    token: Mutex<Option<CachedToken>>,
+}
+
+#[derive(Clone)]
+struct CachedToken {
+    value: String,
+    expires_at: SystemTime,
+}
+
+impl GitHubClient {
+    /// Build the client, or `None` when this runtime is not allowed to write.
+    /// The gate lives in config so `/readyz` and this constructor cannot drift.
+    pub fn from_config(config: &Config) -> Option<Self> {
+        if !config.github_readiness().ready {
+            return None;
+        }
+        let app = &config.github_app;
+        Some(Self {
+            api_base: config.github_api_base.trim_end_matches('/').to_string(),
+            app_id: app.app_id.clone()?,
+            installation_id: app.installation_id.clone()?,
+            private_key: app.private_key.clone()?,
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .ok()?,
+            token: Mutex::new(None),
+        })
+    }
+
+    /// Post the round's verdict comment. Returns its id, which the next round
+    /// patches instead of posting again.
+    pub async fn create_comment(&self, repo: &str, issue: i64, body: &str) -> Result<i64> {
+        let response = self
+            .send(
+                reqwest::Method::POST,
+                &format!("repos/{repo}/issues/{issue}/comments"),
+                Some(json!({ "body": body })),
+            )
+            .await?;
+        response["id"]
+            .as_i64()
+            .context("comment response carried no id")
+    }
+
+    pub async fn update_comment(&self, repo: &str, comment_id: i64, body: &str) -> Result<()> {
+        self.send(
+            reqwest::Method::PATCH,
+            &format!("repos/{repo}/issues/comments/{comment_id}"),
+            Some(json!({ "body": body })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn set_status(
+        &self,
+        repo: &str,
+        sha: &str,
+        state: StatusState,
+        context: &str,
+        description: &str,
+    ) -> Result<()> {
+        self.send(
+            reqwest::Method::POST,
+            &format!("repos/{repo}/statuses/{sha}"),
+            Some(json!({
+                "state": state.as_str(),
+                "context": context,
+                // GitHub truncates past 140 and we would rather choose where.
+                "description": truncate(description, 140),
+            })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Submit the formal review. Success is GitHub echoing the state we asked
+    /// for — a 2xx with anything else means the review did not land as an
+    /// approval or a block, and we must not report it as one.
+    pub async fn submit_review(
+        &self,
+        repo: &str,
+        pr_number: i64,
+        event: ReviewEvent,
+        body: &str,
+    ) -> Result<i64> {
+        let response = self
+            .send(
+                reqwest::Method::POST,
+                &format!("repos/{repo}/pulls/{pr_number}/reviews"),
+                Some(json!({ "event": event.as_str(), "body": body })),
+            )
+            .await?;
+        let state = response["state"].as_str().unwrap_or_default();
+        if state != event.expected_state() {
+            bail!(
+                "review submitted as {state:?}, expected {:?}",
+                event.expected_state()
+            );
+        }
+        response["id"].as_i64().context("review carried no id")
+    }
+
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value> {
+        let token = self.installation_token().await?;
+        let mut request = self
+            .http
+            .request(method, format!("{}/{path}", self.api_base))
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", USER_AGENT);
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request.send().await.context("github request failed")?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            // The body can carry the App's own identifiers; keep the head only.
+            bail!("github {path} returned {status}: {}", truncate(&text, 300));
+        }
+        Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+    }
+
+    async fn installation_token(&self) -> Result<String> {
+        if let Some(cached) = self.cached_token() {
+            return Ok(cached);
+        }
+        let jwt = self.app_jwt()?;
+        let url = format!(
+            "{}/app/installations/{}/access_tokens",
+            self.api_base, self.installation_id
+        );
+        let response = self
+            .http
+            .post(url)
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await
+            .context("installation access_tokens request failed")?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("installation token request returned {status}");
+        }
+        let body: Value = serde_json::from_str(&text).context("access_tokens response not JSON")?;
+        let value = body["token"]
+            .as_str()
+            .context("access_tokens response carried no token")?
+            .to_string();
+        // Trust the stated expiry when we can read it, otherwise assume the
+        // documented hour. Either way the margin is subtracted.
+        let ttl = body["expires_at"]
+            .as_str()
+            .and_then(parse_rfc3339_secs)
+            .and_then(|at| at.duration_since(SystemTime::now()).ok())
+            .unwrap_or(Duration::from_secs(3600));
+        *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(CachedToken {
+            value: value.clone(),
+            expires_at: SystemTime::now() + ttl.saturating_sub(TOKEN_REFRESH_MARGIN),
+        });
+        Ok(value)
+    }
+
+    /// Seed the token cache so tests can exercise the four calls without a
+    /// private key. No PEM belongs in this repository, test-only or not.
+    #[cfg(test)]
+    fn seed_token(&self, value: &str) {
+        *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(CachedToken {
+            value: value.to_string(),
+            expires_at: SystemTime::now() + Duration::from_secs(3600),
+        });
+    }
+
+    fn cached_token(&self) -> Option<String> {
+        let guard = self.token.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_ref()
+            .filter(|token| token.expires_at > SystemTime::now())
+            .map(|token| token.value.clone())
+    }
+
+    /// App JWT, `iat` backdated 60s so a slightly fast clock cannot make GitHub
+    /// reject it as issued in the future.
+    fn app_jwt(&self) -> Result<String> {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let claims = json!({
+            "iat": now.saturating_sub(60),
+            "exp": now + 9 * 60,
+            "iss": self.app_id,
+        });
+        let key = EncodingKey::from_rsa_pem(self.private_key.as_bytes())
+            .context("GitHub App private key is not an RSA PEM")?;
+        encode(&Header::new(Algorithm::RS256), &claims, &key).context("sign app JWT")
+    }
+}
+
+fn truncate(value: &str, max: usize) -> String {
+    if value.len() <= max {
+        return value.to_string();
+    }
+    let cut = (0..=max)
+        .rev()
+        .find(|i| value.is_char_boundary(*i))
+        .unwrap_or(0);
+    format!("{}…", &value[..cut])
+}
+
+/// Minimal RFC 3339 reader for GitHub's `expires_at` (`2026-07-30T12:34:56Z`).
+/// A full date-time crate is not worth carrying for one field, and an
+/// unparseable value simply falls back to the documented one-hour TTL.
+fn parse_rfc3339_secs(value: &str) -> Option<SystemTime> {
+    let (date, rest) = value.split_once('T')?;
+    let time = rest.trim_end_matches('Z');
+    let mut date = date.split('-');
+    let (y, m, d): (i64, i64, i64) = (
+        date.next()?.parse().ok()?,
+        date.next()?.parse().ok()?,
+        date.next()?.parse().ok()?,
+    );
+    let mut time = time.split(':');
+    let (hh, mm, ss): (i64, i64, f64) = (
+        time.next()?.parse().ok()?,
+        time.next()?.parse().ok()?,
+        time.next()?.parse().ok()?,
+    );
+    // Days from civil (Howard Hinnant's algorithm), proleptic Gregorian.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let secs = days * 86_400 + hh * 3_600 + mm * 60 + ss as i64;
+    (secs >= 0).then(|| UNIX_EPOCH + Duration::from_secs(secs as u64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{GitHubAppConfig, OperatingMode};
+    use axum::extract::{Path, State};
+    use axum::routing::{patch, post};
+    use axum::{Json, Router};
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    // Deliberately not a real PEM: no private key belongs in this repository,
+    // test-only or not (ops `AGENTS.md`). Tests seed the token cache instead,
+    // so the JWT exchange is the one leg proven at the P7 canary rather than
+    // here — everything downstream of the token is covered below.
+    const NOT_A_PEM: &str = "test-placeholder-not-a-key";
+
+    #[derive(Clone)]
+    struct Recorder {
+        tx: mpsc::UnboundedSender<(String, Value)>,
+        review_state: Arc<Mutex<String>>,
+    }
+
+    /// A GitHub-shaped server on localhost. Real HTTP, real JSON, so the client
+    /// is exercised end to end rather than against a mock of itself.
+    async fn fake_github(review_state: &str) -> (String, mpsc::UnboundedReceiver<(String, Value)>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let recorder = Recorder {
+            tx,
+            review_state: Arc::new(Mutex::new(review_state.to_string())),
+        };
+        let app = Router::new()
+            .route(
+                "/app/installations/:id/access_tokens",
+                post(|| async {
+                    Json(json!({"token": "ghs_installation", "expires_at": "2999-01-01T00:00:00Z"}))
+                }),
+            )
+            .route(
+                "/repos/:owner/:name/issues/:number/comments",
+                post(
+                    |State(r): State<Recorder>, Json(body): Json<Value>| async move {
+                        let _ = r.tx.send(("create_comment".into(), body));
+                        Json(json!({"id": 4242}))
+                    },
+                ),
+            )
+            .route(
+                "/repos/:owner/:name/issues/comments/:id",
+                patch(
+                    |State(r): State<Recorder>,
+                     Path((_, _, id)): Path<(String, String, i64)>,
+                     Json(body): Json<Value>| async move {
+                        let _ = r.tx.send((format!("update_comment:{id}"), body));
+                        Json(json!({"id": id}))
+                    },
+                ),
+            )
+            .route(
+                "/repos/:owner/:name/statuses/:sha",
+                post(
+                    |State(r): State<Recorder>,
+                     Path((_, _, sha)): Path<(String, String, String)>,
+                     Json(body): Json<Value>| async move {
+                        let _ = r.tx.send((format!("status:{sha}"), body));
+                        Json(json!({"id": 1}))
+                    },
+                ),
+            )
+            .route(
+                "/repos/:owner/:name/pulls/:number/reviews",
+                post(
+                    |State(r): State<Recorder>, Json(body): Json<Value>| async move {
+                        let state = r.review_state.lock().unwrap().clone();
+                        let _ = r.tx.send(("review".into(), body));
+                        Json(json!({"id": 77, "state": state}))
+                    },
+                ),
+            )
+            .with_state(recorder);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    fn client(api_base: &str) -> GitHubClient {
+        let mut config = Config::from_values(|_| None);
+        config.mode = OperatingMode::ExternalCanary;
+        config.enable_writes = true;
+        config.github_api_base = api_base.to_string();
+        config.github_app = GitHubAppConfig {
+            app_id: Some("4235962".into()),
+            installation_id: Some("144934354".into()),
+            private_key: Some(NOT_A_PEM.to_string()),
+        };
+        let client = GitHubClient::from_config(&config)
+            .expect("canary + switch + credentials builds a client");
+        client.seed_token("ghs_installation");
+        client
+    }
+
+    #[test]
+    fn the_client_refuses_to_exist_without_the_write_switch() {
+        let mut config = Config::from_values(|_| None);
+        config.mode = OperatingMode::ExternalCanary;
+        config.github_app = GitHubAppConfig {
+            app_id: Some("1".into()),
+            installation_id: Some("2".into()),
+            private_key: Some(NOT_A_PEM.to_string()),
+        };
+        assert!(
+            GitHubClient::from_config(&config).is_none(),
+            "credentials alone must not produce a writer"
+        );
+        config.enable_writes = true;
+        config.mode = OperatingMode::PlanOnly;
+        assert!(
+            GitHubClient::from_config(&config).is_none(),
+            "plan_only must not produce a writer"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_four_calls_go_out_in_github_shape() {
+        let (base, mut rx) = fake_github("APPROVED").await;
+        let client = client(&base);
+
+        assert_eq!(
+            client
+                .create_comment("example/repo", 7, "round 1 verdict")
+                .await
+                .unwrap(),
+            4242
+        );
+        client
+            .update_comment("example/repo", 4242, "round 2 verdict")
+            .await
+            .unwrap();
+        client
+            .set_status(
+                "example/repo",
+                "deadbeef",
+                StatusState::Success,
+                "openab/council",
+                "approve r=0 y=0 g=3",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            client
+                .submit_review("example/repo", 7, ReviewEvent::Approve, "LGTM")
+                .await
+                .unwrap(),
+            77
+        );
+
+        let (kind, body) = rx.recv().await.unwrap();
+        assert_eq!(
+            (kind.as_str(), body["body"].as_str()),
+            ("create_comment", Some("round 1 verdict"))
+        );
+        let (kind, body) = rx.recv().await.unwrap();
+        assert_eq!(kind, "update_comment:4242");
+        assert_eq!(body["body"], "round 2 verdict");
+        let (kind, body) = rx.recv().await.unwrap();
+        assert_eq!(kind, "status:deadbeef");
+        assert_eq!(body["state"], "success");
+        assert_eq!(body["context"], "openab/council");
+        let (kind, body) = rx.recv().await.unwrap();
+        assert_eq!(kind, "review");
+        assert_eq!(body["event"], "APPROVE");
+    }
+
+    #[tokio::test]
+    async fn a_review_that_did_not_land_as_asked_is_an_error() {
+        // GitHub answered 200 but recorded a plain comment, not an approval.
+        // Reporting that as success would tell the outbox the branch is
+        // unblocked when it is not.
+        let (base, _rx) = fake_github("COMMENTED").await;
+        let error = client(&base)
+            .submit_review("example/repo", 7, ReviewEvent::Approve, "LGTM")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("COMMENTED"), "{error}");
+
+        let (base, _rx) = fake_github("APPROVED").await;
+        let error = client(&base)
+            .submit_review("example/repo", 7, ReviewEvent::RequestChanges, "blocked")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("CHANGES_REQUESTED"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_failing_endpoint_is_an_error_not_a_silent_success() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route(
+                "/app/installations/:id/access_tokens",
+                post(|| async { Json(json!({"token": "ghs_x"})) }),
+            )
+            .route(
+                "/repos/:owner/:name/issues/:number/comments",
+                post(|| async { (axum::http::StatusCode::FORBIDDEN, "no permission") }),
+            );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let error = client(&format!("http://{addr}"))
+            .create_comment("example/repo", 7, "body")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("403"), "{error}");
+    }
+
+    #[test]
+    fn expiry_parsing_falls_back_rather_than_trusting_a_bad_value() {
+        assert_eq!(
+            parse_rfc3339_secs("1970-01-02T00:00:00Z"),
+            Some(UNIX_EPOCH + Duration::from_secs(86_400))
+        );
+        assert_eq!(
+            parse_rfc3339_secs("2026-07-30T12:00:00Z"),
+            Some(UNIX_EPOCH + Duration::from_secs(1_785_412_800))
+        );
+        assert!(parse_rfc3339_secs("not a timestamp").is_none());
+        assert!(parse_rfc3339_secs("2026-07-30").is_none());
+    }
+
+    #[test]
+    fn descriptions_are_clipped_on_a_char_boundary() {
+        let wide = "界".repeat(100); // 300 bytes
+        let clipped = truncate(&wide, 140);
+        assert!(clipped.len() <= 141 + 3);
+        assert!(clipped.ends_with('…'));
+        assert_eq!(truncate("short", 140), "short");
+    }
+}
