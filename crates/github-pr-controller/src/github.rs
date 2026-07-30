@@ -204,9 +204,9 @@ impl GitHubClient {
         response["id"].as_i64().context("review carried no id")
     }
 
-    /// Find our own earlier comment carrying `marker` on an issue, newest
-    /// first. The pre-send reconcile: a create retried after a crash must adopt
-    /// the comment that already exists instead of posting a second one.
+    /// Find our own earlier comment carrying `marker` on an issue. The
+    /// pre-send reconcile: a create retried after a crash must adopt the
+    /// comment that already exists instead of posting a second one.
     pub async fn find_marked_comment(
         &self,
         repo: &str,
@@ -214,20 +214,8 @@ impl GitHubClient {
         marker: &str,
     ) -> Result<Option<i64>> {
         self.check_repository(repo)?;
-        // One page of the newest 100. The write being reconciled is at most a
-        // lease-lapse old, so it is on this page or it does not exist; paging
-        // the whole history would only widen the failure surface of a read
-        // whose job is to make a retry safe.
-        let comments = self
-            .send(
-                reqwest::Method::GET,
-                &format!(
-                    "repos/{repo}/issues/{issue}/comments?per_page=100&sort=created&direction=desc"
-                ),
-                None,
-            )
-            .await?;
-        Ok(self.scan_for_our_marker(&comments, marker))
+        self.find_marked(&format!("repos/{repo}/issues/{issue}/comments"), marker)
+            .await
     }
 
     /// Same reconcile for formal reviews: `submit_review` retried after a
@@ -239,14 +227,34 @@ impl GitHubClient {
         marker: &str,
     ) -> Result<Option<i64>> {
         self.check_repository(repo)?;
-        let reviews = self
-            .send(
-                reqwest::Method::GET,
-                &format!("repos/{repo}/pulls/{pr_number}/reviews?per_page=100"),
-                None,
-            )
-            .await?;
-        Ok(self.scan_for_our_marker(&reviews, marker))
+        self.find_marked(&format!("repos/{repo}/pulls/{pr_number}/reviews"), marker)
+            .await
+    }
+
+    /// Scan a listing endpoint page by page until the marker is found or the
+    /// listing ends. Ordering is deliberately not relied on: the reviews
+    /// endpoint is oldest-first with no sort parameter (council F2, #307), so
+    /// "read the newest page" is not a thing there.
+    async fn find_marked(&self, path: &str, marker: &str) -> Result<Option<i64>> {
+        for page in 1..=RECONCILE_MAX_PAGES {
+            let entries = self
+                .send(
+                    reqwest::Method::GET,
+                    &format!("{path}?per_page=100&page={page}"),
+                    None,
+                )
+                .await?;
+            if let Some(id) = self.scan_for_our_marker(&entries, marker) {
+                return Ok(Some(id));
+            }
+            if entries.as_array().map(Vec::len).unwrap_or(0) < 100 {
+                return Ok(None);
+            }
+        }
+        // The cap is a backstop, not an expected path. Say so rather than
+        // silently reporting "not found" and risking the very duplicate this
+        // reconcile exists to prevent.
+        bail!("reconcile scanned {RECONCILE_MAX_PAGES} pages of {path} without exhausting it")
     }
 
     /// The id of the first entry that carries `marker` AND is provably ours —
