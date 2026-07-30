@@ -552,9 +552,16 @@ fn dispatch_terminal(
         })
         .unwrap_or_default();
     let parsed = verdict::parse_final_messages(&final_messages);
-    let comment_id = store
-        .last_comment_id(&target.repo, target.pr_number)
-        .unwrap_or_default();
+    // A read failure here is not fatal — but it must not silently turn into
+    // "no previous comment", which would post a second verdict comment instead
+    // of editing the first (council F3, #305).
+    let comment_id = match store.last_comment_id(&target.repo, target.pr_number) {
+        Ok(comment_id) => comment_id,
+        Err(error) => {
+            tracing::error!(%error, session_id, "comment anchor lookup failed; posting fresh");
+            None
+        }
+    };
     let plan = closing::plan_close(&target, &parsed, comment_id);
 
     let round = match store.record_review_round(&store::ReviewRound {
@@ -616,7 +623,7 @@ fn spawn_write_drain(state: &Arc<AppState>) {
         return;
     };
     tokio::spawn(async move {
-        let pending = match store.pending_writes(WRITE_DRAIN_BATCH) {
+        let pending = match store.claim_writes(WRITE_DRAIN_BATCH) {
             Ok(pending) => pending,
             Err(error) => {
                 tracing::error!(%error, "outbox read failed");
@@ -1273,7 +1280,10 @@ mod tests {
             ["comment", "status", "review"]
         );
         let status = pending.iter().find(|w| w.kind == "status").unwrap();
-        assert_eq!(status.payload["sha"], "reviewedsha");
+        assert_eq!(
+            status.payload["sha"], "openingsha",
+            "the status is pinned to the webhook sha, not the chair's claim"
+        );
         assert_eq!(status.payload["state"], "failure");
         let review = pending.iter().find(|w| w.kind == "review").unwrap();
         assert_eq!(review.payload["event"], "REQUEST_CHANGES");

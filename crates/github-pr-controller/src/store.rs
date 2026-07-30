@@ -10,6 +10,10 @@ const COMPLETED_RETENTION_SECS: i64 = 7 * 24 * 60 * 60;
 /// A write that keeps failing stops being retried. The drain is not the place
 /// to decide a GitHub outage is permanent; a human reading `last_error` is.
 const WRITE_MAX_ATTEMPTS: i64 = 5;
+/// How long a claimed write may stay in flight before another drain may take
+/// it. Only reached when the process dies mid-send; the same lease idiom the
+/// delivery table already uses.
+const WRITE_CLAIM_LEASE_SECS: i64 = 5 * 60;
 
 /// Schema versions, applied in order, `PRAGMA user_version` holding the count
 /// already applied. Migration 0 is the original `IF NOT EXISTS` batch, so a
@@ -115,6 +119,9 @@ const MIGRATIONS: &[&str] = &[
        head_sha TEXT,
        created_at INTEGER NOT NULL
      );",
+    // 3 — when a drain took ownership of a write. Two drains that both read
+    // the same pending row would both post, and a comment is not idempotent.
+    "ALTER TABLE github_writes ADD COLUMN claimed_at INTEGER;",
 ];
 
 pub struct ProductStore {
@@ -709,11 +716,64 @@ impl ProductStore {
         Ok(inserted == 1)
     }
 
+    /// Take ownership of up to `limit` queued writes.
+    ///
+    /// Claiming is what stops two concurrent drains from both sending the same
+    /// comment — `create_comment` and `submit_review` are not idempotent, so a
+    /// double send is a double post. The read and the state change happen in
+    /// one IMMEDIATE transaction; a claim abandoned by a dying process becomes
+    /// available again after `WRITE_CLAIM_LEASE_SECS`, the same lease idiom the
+    /// delivery table already uses.
+    pub fn claim_writes(&self, limit: i64) -> rusqlite::Result<Vec<PendingWrite>> {
+        self.claim_writes_at(limit, now_unix())
+    }
+
+    fn claim_writes_at(&self, limit: i64, now: i64) -> rusqlite::Result<Vec<PendingWrite>> {
+        let mut connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let claimed: Vec<PendingWrite>;
+        {
+            let mut statement = transaction.prepare(
+                "SELECT id, session_id, kind, payload_json, attempts
+                   FROM github_writes
+                  WHERE state = 'pending'
+                     OR (state = 'in_flight' AND claimed_at <= ?2)
+                  ORDER BY id LIMIT ?1",
+            )?;
+            claimed = statement
+                .query_map(
+                    params![limit, now.saturating_sub(WRITE_CLAIM_LEASE_SECS)],
+                    |row| {
+                        Ok(PendingWrite {
+                            id: row.get(0)?,
+                            session_id: row.get(1)?,
+                            kind: row.get(2)?,
+                            payload: serde_json::from_str(&row.get::<_, String>(3)?)
+                                .unwrap_or(Value::Null),
+                            attempts: row.get(4)?,
+                        })
+                    },
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+        }
+        for write in &claimed {
+            transaction.execute(
+                "UPDATE github_writes SET state = 'in_flight', claimed_at = ?2 WHERE id = ?1",
+                params![write.id, now],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(claimed)
+    }
+
+    /// Queued-but-unsent writes, claimed or not. For inspection and tests —
+    /// sending goes through `claim_writes`.
     pub fn pending_writes(&self, limit: i64) -> rusqlite::Result<Vec<PendingWrite>> {
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         let mut statement = connection.prepare(
             "SELECT id, session_id, kind, payload_json, attempts
-               FROM github_writes WHERE state = 'pending' ORDER BY id LIMIT ?1",
+               FROM github_writes WHERE state IN ('pending', 'in_flight')
+               ORDER BY id LIMIT ?1",
         )?;
         let rows = statement
             .query_map([limit], |row| {
@@ -732,7 +792,8 @@ impl ProductStore {
     pub fn mark_write_done(&self, id: i64) -> rusqlite::Result<()> {
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         connection.execute(
-            "UPDATE github_writes SET state = 'done', last_error = NULL, done_at = ?2
+            "UPDATE github_writes
+                SET state = 'done', last_error = NULL, claimed_at = NULL, done_at = ?2
               WHERE id = ?1",
             params![id, now_unix()],
         )?;
@@ -747,6 +808,7 @@ impl ProductStore {
             "UPDATE github_writes
                 SET attempts = attempts + 1,
                     last_error = ?2,
+                    claimed_at = NULL,
                     state = CASE WHEN attempts + 1 >= ?3 THEN 'failed' ELSE 'pending' END
               WHERE id = ?1",
             params![id, error, WRITE_MAX_ATTEMPTS],
@@ -1148,6 +1210,40 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM review_findings", [], |row| row.get(0))
             .unwrap();
         assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn a_claimed_write_is_invisible_to_a_second_drain_until_its_lease_lapses() {
+        // Two terminal events closing in the same window spawn two drains.
+        // Without claiming, both would read the same row and both would POST —
+        // and a comment is not idempotent (council F2, #305).
+        let store = ProductStore::memory().unwrap();
+        store
+            .enqueue_write("ses_1", "comment", &json!({"body": "verdict"}))
+            .unwrap();
+
+        let first = store.claim_writes_at(10, 1_000).unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(
+            store.claim_writes_at(10, 1_010).unwrap().is_empty(),
+            "a concurrent drain must not take a claimed write"
+        );
+
+        // A process that died mid-send leaves the claim behind; the lease is
+        // what stops the write being stranded forever.
+        assert_eq!(
+            store
+                .claim_writes_at(10, 1_000 + WRITE_CLAIM_LEASE_SECS)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Finishing releases it either way.
+        store.mark_write_failed(first[0].id, "502").unwrap();
+        assert_eq!(store.claim_writes_at(10, 1_020).unwrap().len(), 1);
+        store.mark_write_done(first[0].id).unwrap();
+        assert!(store.claim_writes_at(10, 1_030).unwrap().is_empty());
     }
 
     #[test]

@@ -30,6 +30,8 @@ pub struct ClosingPlan {
     pub red: i64,
     pub yellow: i64,
     pub green: i64,
+    /// What the council says it read — recorded with the round and its
+    /// findings. NOT what the commit status is posted against; see `plan_close`.
     pub head_sha: Option<String>,
     pub findings: Vec<ReviewFinding>,
     pub writes: Vec<(&'static str, Value)>,
@@ -60,9 +62,22 @@ pub fn plan_close(
     let decision = trailer
         .map(|t| t.decision.clone())
         .unwrap_or_else(|| "unknown".to_string());
-    // The chair's own block wins on head sha: it names the commit the council
-    // actually read, which may be newer than the one that opened the session.
-    let head_sha = parsed
+    // Two head shas, two different levels of trust.
+    //
+    // `target.head_sha` came from the webhook GitHub signed: it is the commit
+    // this session was opened for. The chair's findings block carries a sha it
+    // *claims* to have reviewed — useful provenance, but agent output, and an
+    // agent that named someone else's commit could park a green
+    // `openab/council` status on code no one reviewed and satisfy branch
+    // protection with it (council F1, #305).
+    //
+    // So the status — the write with authority — is pinned to the webhook sha.
+    // The claimed sha is recorded with the findings, where it describes what
+    // was read without granting anything. A council that reviewed a newer
+    // commit than the one it was convened for is a supersede, and supersede
+    // opens a new session with its own webhook sha.
+    let status_sha = target.head_sha.clone();
+    let reviewed_sha = parsed
         .findings
         .as_ref()
         .and_then(|block| block.head_sha.clone())
@@ -100,7 +115,7 @@ pub fn plan_close(
             "body": comment_body(parsed, trailer),
         }),
     )];
-    if let Some(sha) = head_sha.as_deref() {
+    if let Some(sha) = status_sha.as_deref() {
         writes.push((
             KIND_STATUS,
             json!({
@@ -135,7 +150,7 @@ pub fn plan_close(
         red,
         yellow,
         green,
-        head_sha,
+        head_sha: reviewed_sha,
         findings,
         writes,
     }
@@ -260,8 +275,10 @@ mod tests {
     }
 
     #[test]
-    fn the_chairs_head_sha_outranks_the_one_that_opened_the_session() {
-        // The council may have read a newer commit than the webhook carried.
+    fn the_status_is_pinned_to_the_webhook_sha_not_the_one_the_chair_claims() {
+        // An agent-named sha must never decide where a green status lands: it
+        // could park one on a commit nobody reviewed (council F1, #305). The
+        // claimed sha is still recorded — it describes what was read.
         let parsed = parse_final_messages(&[concat!(
             "report\n",
             "<!-- openab-findings\n",
@@ -272,7 +289,11 @@ mod tests {
         .into()]);
         let plan = plan_close(&target(), &parsed, None);
         assert_eq!(plan.head_sha.as_deref(), Some("reviewedsha"));
-        assert_eq!(write(&plan, KIND_STATUS)["sha"], "reviewedsha");
+        assert_eq!(
+            write(&plan, KIND_STATUS)["sha"],
+            "openingsha",
+            "the status goes to the commit GitHub told us about"
+        );
         assert_eq!(plan.findings.len(), 1);
         assert_eq!(plan.findings[0].stable_id, "F1");
     }
