@@ -6,6 +6,7 @@ pub mod planner;
 pub mod runtime_events;
 pub mod shadow;
 pub mod store;
+pub mod verdict;
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, OriginalUri, State};
