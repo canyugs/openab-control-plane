@@ -23,6 +23,11 @@ use crate::config::Config;
 /// call with a token about to die. Installation tokens live an hour.
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
 const USER_AGENT: &str = "openab-github-controller";
+/// Reconcile reads page until exhausted, capped here. GitHub's reviews list is
+/// oldest-first with no sort parameter, so "read one newest page" is not a
+/// thing (council F2, #307) — scan everything, bounded: a thousand entries on
+/// one pull request is beyond any real council history.
+const RECONCILE_MAX_PAGES: usize = 10;
 
 /// The only two formal reviews this controller submits. A closed enum, so a
 /// parsed decision string can never reach GitHub as, say, `COMMENT` or
