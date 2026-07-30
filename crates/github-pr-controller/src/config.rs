@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 const DEFAULT_ADDR: &str = "0.0.0.0:8091";
 const DEFAULT_DB: &str = "github-controller.db";
+const DEFAULT_GITHUB_API: &str = "https://api.github.com";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperatingMode {
@@ -52,21 +53,12 @@ pub struct GitHubAppConfig {
 }
 
 impl GitHubAppConfig {
-    pub fn readiness(&self) -> ComponentReadiness {
-        let present = [
-            self.app_id.is_some(),
-            self.installation_id.is_some(),
-            self.private_key.is_some(),
-        ];
-        if present.iter().all(|value| !*value) {
-            ComponentReadiness::disabled("not configured; write client disabled")
-        } else if present.iter().all(|value| *value) {
-            ComponentReadiness::not_ready("GitHub App credentials forbidden in this runtime")
-        } else {
-            ComponentReadiness::not_ready(
-                "partial GitHub App configuration forbidden in this runtime",
-            )
-        }
+    pub fn is_empty(&self) -> bool {
+        self.app_id.is_none() && self.installation_id.is_none() && self.private_key.is_none()
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.app_id.is_some() && self.installation_id.is_some() && self.private_key.is_some()
     }
 }
 
@@ -87,6 +79,13 @@ pub struct Config {
     pub ocp_action: OcpActionConfig,
     pub event_signing_secret: Option<String>,
     pub github_app: GitHubAppConfig,
+    /// Second lock on the write client, independent of credentials being
+    /// present. ADR 031 invariant #4 allows exactly one side-effect owner per
+    /// provider object, and until the P7 routing switch that owner is still the
+    /// embedded plugin — so credentials alone must never start writing.
+    pub enable_writes: bool,
+    /// GitHub REST base, overridable so tests can point at a local server.
+    pub github_api_base: String,
 }
 
 impl Config {
@@ -139,6 +138,38 @@ impl Config {
                 installation_id: nonempty(value("GITHUB_CONTROLLER_GITHUB_APP_INSTALLATION_ID")),
                 private_key: nonempty(value("GITHUB_CONTROLLER_GITHUB_APP_PRIVATE_KEY")),
             },
+            enable_writes: nonempty(value("GITHUB_CONTROLLER_ENABLE_WRITES")).as_deref()
+                == Some("1"),
+            github_api_base: nonempty(value("GITHUB_CONTROLLER_GITHUB_API_BASE"))
+                .unwrap_or_else(|| DEFAULT_GITHUB_API.into()),
+        }
+    }
+
+    /// The write client's readiness. Credentials are refused unless the
+    /// controller is both in `external_canary` **and** explicitly switched on,
+    /// so a half-configured deploy fails loudly instead of writing.
+    pub fn github_readiness(&self) -> ComponentReadiness {
+        match self.mode {
+            _ if self.github_app.is_empty() && !self.enable_writes => {
+                ComponentReadiness::disabled("not configured; write client disabled")
+            }
+            OperatingMode::ExternalCanary
+                if self.enable_writes && self.github_app.is_complete() =>
+            {
+                ComponentReadiness::ready("GitHub write client configured")
+            }
+            OperatingMode::ExternalCanary if !self.enable_writes => ComponentReadiness::not_ready(
+                "GitHub App credentials present but writes are not enabled",
+            ),
+            OperatingMode::ExternalCanary if self.github_app.is_empty() => {
+                ComponentReadiness::not_ready("writes enabled but no GitHub App configured")
+            }
+            OperatingMode::ExternalCanary => {
+                ComponentReadiness::not_ready("partial GitHub App configuration")
+            }
+            _ => ComponentReadiness::not_ready(
+                "GitHub App credentials and writes forbidden outside external_canary mode",
+            ),
         }
     }
 
@@ -320,19 +351,39 @@ mod tests {
     }
 
     #[test]
-    fn github_readiness_rejects_partial_and_complete_write_credentials() {
-        let mut config = GitHubAppConfig {
-            app_id: None,
-            installation_id: None,
-            private_key: None,
+    fn writes_need_external_canary_and_an_explicit_switch() {
+        let mut config = Config::from_values(|_| None);
+        assert!(!config.enable_writes);
+        assert!(!config.github_readiness().enabled, "off by default");
+
+        // Credentials in plan_only stay forbidden — that is the pre-P4 rule and
+        // it has not moved.
+        config.github_app = GitHubAppConfig {
+            app_id: Some("1".into()),
+            installation_id: Some("2".into()),
+            private_key: Some("pem".into()),
         };
-        assert!(!config.readiness().enabled);
-        config.app_id = Some("1".into());
-        assert!(!config.readiness().ready);
-        config.installation_id = Some("2".into());
-        config.private_key = Some("pem".into());
-        assert!(!config.readiness().ready);
-        assert!(config.readiness().enabled);
+        assert!(!config.github_readiness().ready);
+        config.enable_writes = true;
+        assert!(!config.github_readiness().ready, "still plan_only");
+
+        // Canary + switch + complete credentials: the only ready combination.
+        config.mode = OperatingMode::ExternalCanary;
+        assert!(config.github_readiness().ready);
+
+        // Each leg alone is not enough.
+        let mut no_switch = config.clone();
+        no_switch.enable_writes = false;
+        assert!(!no_switch.github_readiness().ready);
+        let mut partial = config.clone();
+        partial.github_app.private_key = None;
+        assert!(!partial.github_readiness().ready);
+        // The switch on its own, with no credentials, is a misconfiguration
+        // rather than a quiet no-op.
+        let mut switch_only = Config::from_values(|_| None);
+        switch_only.mode = OperatingMode::ExternalCanary;
+        switch_only.enable_writes = true;
+        assert!(!switch_only.github_readiness().ready);
     }
 
     #[test]

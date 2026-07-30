@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod github;
 pub mod ocp;
 pub mod planner;
 pub mod runtime_events;
@@ -115,7 +116,7 @@ impl AppState {
     fn readiness(&self) -> ReadinessReport {
         let ingress = self.config.ingress_readiness();
         let product_store = self.product_store_readiness();
-        let github = self.config.github_app.readiness();
+        let github = self.config.github_readiness();
         let ownership = self.config.ownership_readiness();
         let mut ocp = self.config.ocp_readiness();
         if ocp.ready && self.action_client.is_none() {
@@ -127,7 +128,7 @@ impl AppState {
         }
         let ready = ingress.ready
             && product_store.ready
-            && !github.enabled
+            && (github.ready || !github.enabled)
             && (ownership.ready || !ownership.enabled)
             && (ocp.ready || !ocp.enabled)
             && (runtime_events.ready || !runtime_events.enabled);
@@ -773,6 +774,8 @@ mod tests {
                 installation_id: None,
                 private_key: None,
             },
+            enable_writes: false,
+            github_api_base: "https://api.github.com".into(),
         }
     }
 
@@ -924,6 +927,55 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn canary_readiness_needs_the_write_switch_alongside_credentials() {
+        // Credentials without the switch is now the *loud* failure — before P4
+        // any credential at all was rejected, so this is the one case whose
+        // meaning changed and it must stay a 503 rather than become ready.
+        let event_secret = vec![9; 32];
+        let mut config = external_config(&event_secret);
+        config.github_app.app_id = Some("1".into());
+        config.github_app.installation_id = Some("2".into());
+        config.github_app.private_key = Some("private".into());
+        let verifier = runtime_events::RuntimeEventVerifier::new(
+            "github-canary",
+            config.event_signing_secret.as_deref().unwrap(),
+        )
+        .unwrap();
+        let state = Arc::new(AppState::with_components(
+            config.clone(),
+            ProductStore::memory().unwrap(),
+            Some(Arc::new(RecordingActionClient::new([]).0)),
+            Some(Arc::new(verifier)),
+        ));
+        let response = router(state)
+            .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // With the switch on, the same deployment is ready and the write client
+        // can be built — the two gates cannot drift apart.
+        config.enable_writes = true;
+        let verifier = runtime_events::RuntimeEventVerifier::new(
+            "github-canary",
+            config.event_signing_secret.as_deref().unwrap(),
+        )
+        .unwrap();
+        let state = Arc::new(AppState::with_components(
+            config.clone(),
+            ProductStore::memory().unwrap(),
+            Some(Arc::new(RecordingActionClient::new([]).0)),
+            Some(Arc::new(verifier)),
+        ));
+        let response = router(state)
+            .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(github::GitHubClient::from_config(&config).is_some());
     }
 
     #[tokio::test]
