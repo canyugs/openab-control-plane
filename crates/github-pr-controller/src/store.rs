@@ -103,6 +103,18 @@ const MIGRATIONS: &[&str] = &[
      );
      CREATE INDEX IF NOT EXISTS idx_github_writes_pending
        ON github_writes(state, id);",
+    // 2 — what a session this controller opened is *about*. The terminal event
+    // names only a session id; the provider object it belongs to is knowledge
+    // the kernel does not hold and must not (ADR 031), so the controller keeps
+    // it. A session with no row here was not opened by us — we ignore its
+    // terminal event rather than guess.
+    "CREATE TABLE IF NOT EXISTS session_targets (
+       session_id TEXT PRIMARY KEY,
+       repo TEXT NOT NULL,
+       pr_number INTEGER NOT NULL,
+       head_sha TEXT,
+       created_at INTEGER NOT NULL
+     );",
 ];
 
 pub struct ProductStore {
@@ -149,6 +161,14 @@ pub struct CanarySummary {
     pub runtime_events: i64,
     pub runtime_event_types: BTreeMap<String, i64>,
     pub latest_event_occurred_at: Option<i64>,
+}
+
+/// The provider object a session belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTarget {
+    pub repo: String,
+    pub pr_number: i64,
+    pub head_sha: Option<String>,
 }
 
 /// One council round as the controller knows it: the verdict it parsed out of
@@ -499,6 +519,48 @@ impl ProductStore {
             runtime_event_types,
             latest_event_occurred_at,
         })
+    }
+
+    /// Remember what a session we just opened is about. Idempotent: a
+    /// redelivered webhook that re-opens the same session must not conflict.
+    pub fn record_session_target(
+        &self,
+        session_id: &str,
+        repo: &str,
+        pr_number: i64,
+        head_sha: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection.execute(
+            "INSERT INTO session_targets
+               (session_id, repo, pr_number, head_sha, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(session_id) DO UPDATE SET
+               repo = excluded.repo,
+               pr_number = excluded.pr_number,
+               head_sha = COALESCE(excluded.head_sha, session_targets.head_sha)",
+            params![session_id, repo, pr_number, head_sha, now_unix()],
+        )?;
+        Ok(())
+    }
+
+    /// `None` means this controller did not open the session — the terminal
+    /// event belongs to someone else and must not be acted on.
+    pub fn session_target(&self, session_id: &str) -> rusqlite::Result<Option<SessionTarget>> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection
+            .query_row(
+                "SELECT repo, pr_number, head_sha FROM session_targets WHERE session_id = ?1",
+                [session_id],
+                |row| {
+                    Ok(SessionTarget {
+                        repo: row.get(0)?,
+                        pr_number: row.get(1)?,
+                        head_sha: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
     }
 
     /// Open (or recover) the round for a closed session. Idempotent: a

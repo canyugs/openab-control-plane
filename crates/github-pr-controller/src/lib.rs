@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod closing;
 pub mod config;
 pub mod github;
 pub mod ocp;
@@ -27,6 +28,8 @@ use store::{DeliveryAdmission, ProductStore, RuntimeEventAdmission, ShadowAdmiss
 type HmacSha256 = Hmac<Sha256>;
 const MAX_WEBHOOK_BODY_BYTES: usize = 1024 * 1024;
 const DELIVERY_PRUNE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+/// Writes drained per pass. One closed round queues at most three.
+const WRITE_DRAIN_BATCH: i64 = 32;
 
 pub struct AppState {
     pub config: Config,
@@ -36,6 +39,10 @@ pub struct AppState {
     pub action_client_error: Option<String>,
     pub event_verifier: Option<Arc<runtime_events::RuntimeEventVerifier>>,
     pub event_verifier_error: Option<String>,
+    /// Present only when this runtime is allowed to write (external_canary +
+    /// the explicit switch). `None` leaves queued writes pending forever,
+    /// which is the correct posture until the P7 cutover.
+    pub github: Option<Arc<github::GitHubClient>>,
 }
 
 impl AppState {
@@ -72,6 +79,7 @@ impl AppState {
             }
             _ => (None, None),
         };
+        let github = github::GitHubClient::from_config(&config).map(Arc::new);
         Self {
             config,
             store,
@@ -80,6 +88,7 @@ impl AppState {
             action_client_error,
             event_verifier,
             event_verifier_error,
+            github,
         }
     }
 
@@ -89,6 +98,7 @@ impl AppState {
         action_client: Option<Arc<dyn ocp::OcpActionClient>>,
         event_verifier: Option<Arc<runtime_events::RuntimeEventVerifier>>,
     ) -> Self {
+        let github = github::GitHubClient::from_config(&config).map(Arc::new);
         Self {
             config,
             store: Some(Arc::new(store)),
@@ -97,6 +107,7 @@ impl AppState {
             action_client_error: None,
             event_verifier,
             event_verifier_error: None,
+            github,
         }
     }
 
@@ -348,17 +359,32 @@ async fn handle_webhook(
                 .open_session(action_id.clone(), plan.open_session_action())
                 .await
             {
-                Ok(action_result) => (
-                    "acted",
-                    json!({
-                        "ok": true,
-                        "planned": true,
-                        "acted": true,
-                        "action_id": action_id,
-                        "action_result": action_result,
-                        "plan": plan,
-                    }),
-                ),
+                Ok(action_result) => {
+                    // The terminal event will name only this session id. What
+                    // it is *about* is provider knowledge the kernel does not
+                    // keep, so record it now or the close is unactionable.
+                    if let Some(session_id) = opened_session_id(&action_result) {
+                        if let Err(error) = store.record_session_target(
+                            session_id,
+                            &plan.repository,
+                            plan.pr_number as i64,
+                            plan.head_sha(),
+                        ) {
+                            tracing::error!(%error, session_id, "session target persistence failed");
+                        }
+                    }
+                    (
+                        "acted",
+                        json!({
+                            "ok": true,
+                            "planned": true,
+                            "acted": true,
+                            "action_id": action_id,
+                            "action_result": action_result,
+                            "plan": plan,
+                        }),
+                    )
+                }
                 Err(error) => {
                     tracing::warn!(
                         %delivery_id,
@@ -448,7 +474,11 @@ async fn handle_runtime_event(
                 session_id = event.session_id,
                 "accepted signed runtime event"
             );
-            response(StatusCode::OK, json!({"ok": true, "duplicate": false}))
+            let closed = dispatch_terminal(&state, store, &event);
+            response(
+                StatusCode::OK,
+                json!({"ok": true, "duplicate": false, "closed": closed}),
+            )
         }
         Ok(RuntimeEventAdmission::Duplicate) => {
             response(StatusCode::OK, json!({"ok": true, "duplicate": true}))
@@ -464,6 +494,209 @@ async fn handle_runtime_event(
                 json!({"ok": false, "error": "runtime_event_store_failed"}),
             )
         }
+    }
+}
+
+/// The session id an `open_session` result carries, whether it opened a new
+/// session or superseded an older one.
+fn opened_session_id(result: &controller_protocol::ActionResultEnvelope) -> Option<&str> {
+    match &result.result {
+        controller_protocol::ControllerActionResult::SessionOpened { session_id, .. }
+        | controller_protocol::ControllerActionResult::Superseded { session_id, .. } => {
+            Some(session_id)
+        }
+        _ => None,
+    }
+}
+
+/// Turn a normal-close `session.terminal` into a persisted round and queued
+/// GitHub writes. Returns false when the event is not ours to act on.
+///
+/// Deliberately synchronous and infallible from the caller's side: the event
+/// receipt has already been recorded, so a failure here must not make the
+/// plane retry the whole delivery — the outbox is what retries.
+fn dispatch_terminal(
+    state: &Arc<AppState>,
+    store: &Arc<ProductStore>,
+    event: &runtime_events::RuntimeEventEnvelope,
+) -> bool {
+    if event.event_type != "session.terminal" {
+        return false;
+    }
+    let Some(session_id) = event.session_id.as_deref() else {
+        return false;
+    };
+    // Timeout and supersede close a session without a result. There is nothing
+    // to say about the pull request that is not already said — and a review
+    // submitted on a guess would be worse than silence.
+    if event.payload["reason"].as_str() != Some("normal") {
+        return false;
+    }
+    let target = match store.session_target(session_id) {
+        Ok(Some(target)) => target,
+        // Not a session this controller opened. The kernel's own plugin owns
+        // it; acting would be the two-writer failure invariant #4 forbids.
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::error!(%error, session_id, "session target lookup failed");
+            return false;
+        }
+    };
+    let final_messages: Vec<String> = event.payload["final_messages"]
+        .as_array()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| part.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let parsed = verdict::parse_final_messages(&final_messages);
+    let comment_id = store
+        .last_comment_id(&target.repo, target.pr_number)
+        .unwrap_or_default();
+    let plan = closing::plan_close(&target, &parsed, comment_id);
+
+    let round = match store.record_review_round(&store::ReviewRound {
+        repo: target.repo.clone(),
+        pr_number: target.pr_number,
+        session_id: session_id.to_string(),
+        head_sha: plan.head_sha.clone(),
+        decision: plan.decision.clone(),
+        red: plan.red,
+        yellow: plan.yellow,
+        green: plan.green,
+    }) {
+        Ok(round) => round,
+        Err(error) => {
+            tracing::error!(%error, session_id, "review round persistence failed");
+            return false;
+        }
+    };
+    if !round.first_time {
+        // A redelivered terminal event. The round and its writes already exist;
+        // re-queueing them would be how a verdict gets posted twice.
+        tracing::info!(
+            session_id,
+            round = round.round,
+            "terminal event redelivered"
+        );
+        return true;
+    }
+    if let Err(error) = store.record_review_findings(
+        session_id,
+        &target.repo,
+        target.pr_number,
+        plan.head_sha.as_deref(),
+        &plan.findings,
+    ) {
+        tracing::error!(%error, session_id, "findings persistence failed");
+    }
+    for (kind, payload) in &plan.writes {
+        if let Err(error) = store.enqueue_write(session_id, kind, payload) {
+            tracing::error!(%error, session_id, kind, "write enqueue failed");
+        }
+    }
+    tracing::info!(
+        session_id,
+        round = round.round,
+        decision = plan.decision,
+        writes = plan.writes.len(),
+        "queued github writes for closed round"
+    );
+    spawn_write_drain(state);
+    true
+}
+
+/// Drain the outbox in the background. Without a write client the rows simply
+/// stay pending — which is the whole posture before the P7 cutover: the
+/// controller knows exactly what it would post and posts none of it.
+fn spawn_write_drain(state: &Arc<AppState>) {
+    let (Some(store), Some(github)) = (state.store.clone(), state.github.clone()) else {
+        return;
+    };
+    tokio::spawn(async move {
+        let pending = match store.pending_writes(WRITE_DRAIN_BATCH) {
+            Ok(pending) => pending,
+            Err(error) => {
+                tracing::error!(%error, "outbox read failed");
+                return;
+            }
+        };
+        for write in pending {
+            match perform_write(&github, &store, &write).await {
+                Ok(()) => {
+                    if let Err(error) = store.mark_write_done(write.id) {
+                        tracing::error!(%error, id = write.id, "outbox completion failed");
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(id = write.id, kind = write.kind, %error, "github write failed");
+                    if let Err(error) = store.mark_write_failed(write.id, &error.to_string()) {
+                        tracing::error!(%error, id = write.id, "outbox failure record failed");
+                    }
+                }
+            }
+        }
+    });
+}
+
+async fn perform_write(
+    github: &github::GitHubClient,
+    store: &ProductStore,
+    write: &store::PendingWrite,
+) -> anyhow::Result<()> {
+    let payload = &write.payload;
+    let repo = payload["repo"].as_str().unwrap_or_default();
+    match write.kind.as_str() {
+        closing::KIND_COMMENT => {
+            let body = payload["body"].as_str().unwrap_or_default();
+            match payload["comment_id"].as_i64() {
+                Some(comment_id) => github.update_comment(repo, comment_id, body).await?,
+                None => {
+                    let issue = payload["pr_number"].as_i64().unwrap_or_default();
+                    let comment_id = github.create_comment(repo, issue, body).await?;
+                    // Learned here, used by every later round of this PR.
+                    store.set_round_comment_id(&write.session_id, comment_id)?;
+                }
+            }
+            Ok(())
+        }
+        closing::KIND_STATUS => {
+            let state = match payload["state"].as_str() {
+                Some("success") => github::StatusState::Success,
+                Some("failure") => github::StatusState::Failure,
+                _ => github::StatusState::Error,
+            };
+            github
+                .set_status(
+                    repo,
+                    payload["sha"].as_str().unwrap_or_default(),
+                    state,
+                    payload["context"]
+                        .as_str()
+                        .unwrap_or(closing::STATUS_CONTEXT),
+                    payload["description"].as_str().unwrap_or_default(),
+                )
+                .await
+        }
+        closing::KIND_REVIEW => {
+            let event = match payload["event"].as_str() {
+                Some("APPROVE") => github::ReviewEvent::Approve,
+                Some("REQUEST_CHANGES") => github::ReviewEvent::RequestChanges,
+                other => anyhow::bail!("unknown review event {other:?}"),
+            };
+            github
+                .submit_review(
+                    repo,
+                    payload["pr_number"].as_i64().unwrap_or_default(),
+                    event,
+                    payload["body"].as_str().unwrap_or_default(),
+                )
+                .await
+                .map(|_| ())
+        }
+        other => anyhow::bail!("unknown write kind {other}"),
     }
 }
 
@@ -900,6 +1133,7 @@ mod tests {
             action_client_error: None,
             event_verifier: None,
             event_verifier_error: None,
+            github: None,
         });
         let response = router(state)
             .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
@@ -976,6 +1210,311 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert!(github::GitHubClient::from_config(&config).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_closed_round_becomes_persisted_state_and_queued_writes() {
+        let event_secret = vec![7; 32];
+        let config = external_config(&event_secret);
+        let verifier = runtime_events::RuntimeEventVerifier::new(
+            "github-canary",
+            config.event_signing_secret.as_deref().unwrap(),
+        )
+        .unwrap();
+        let store = ProductStore::memory().unwrap();
+        store
+            .record_session_target("ses_1", "example/repo", 7, Some("openingsha"))
+            .unwrap();
+        let state = Arc::new(AppState::with_components(
+            config,
+            store,
+            Some(Arc::new(RecordingActionClient::new([]).0)),
+            Some(Arc::new(verifier)),
+        ));
+        let store = state.store.clone().unwrap();
+        let app = router(state.clone());
+
+        let body = json!({
+            "version": "1",
+            "event_id": "cev_close_1",
+            "controller_id": "github-canary",
+            "event_type": "session.terminal",
+            "session_id": "ses_1",
+            "occurred_at": 1_000,
+            "payload": {
+                "reason": "normal",
+                "final_messages": [
+                    "## Verdict\n\nprose\n<!-- openab-findings\n{\"head_sha\":\"reviewedsha\",\"findings\":[{\"id\":\"F1\",\"severity\":\"yellow\",\"title\":\"races on close\"}]}\n-->\n[[verdict:request_changes r=0 y=1 g=2]] [done]"
+                ]
+            }
+        })
+        .to_string();
+        let response = app
+            .clone()
+            .oneshot(signed_runtime_event_request(
+                &event_secret,
+                "cev_close_1",
+                "/api/v1/openab/events?version=1",
+                body.clone(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(value["closed"], true);
+
+        // The round landed with the verdict the chair's counts imply, and with
+        // the sha the council actually read rather than the opening one.
+        let pending = store.pending_writes(10).unwrap();
+        assert_eq!(
+            pending.iter().map(|w| w.kind.as_str()).collect::<Vec<_>>(),
+            ["comment", "status", "review"]
+        );
+        let status = pending.iter().find(|w| w.kind == "status").unwrap();
+        assert_eq!(status.payload["sha"], "reviewedsha");
+        assert_eq!(status.payload["state"], "failure");
+        let review = pending.iter().find(|w| w.kind == "review").unwrap();
+        assert_eq!(review.payload["event"], "REQUEST_CHANGES");
+
+        // Nothing was sent: no write client in this configuration. That is the
+        // pre-cutover posture — the controller knows what it would post.
+        assert!(state.github.is_none());
+
+        // At-least-once redelivery must not queue a second verdict. A fresh
+        // event id, the same session — exactly what a retry after a lost
+        // acknowledgement looks like.
+        let redelivery = body.replace("cev_close_1", "cev_close_2");
+        let response = app
+            .oneshot(signed_runtime_event_request(
+                &event_secret,
+                "cev_close_2",
+                "/api/v1/openab/events?version=1",
+                redelivery,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(store.pending_writes(10).unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn with_writes_enabled_the_outbox_drains_to_real_requests() {
+        // The end the whole workstream is for: a closed round becomes a
+        // comment, a status, and a formal review actually sent over HTTP.
+        use axum::extract::Path;
+        use axum::routing::post as axum_post;
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let recorder = seen.clone();
+        let fake = Router::new()
+            .route(
+                "/app/installations/:id/access_tokens",
+                axum_post(|| async { Json(json!({"token": "ghs_test"})) }),
+            )
+            .route(
+                "/repos/:owner/:name/issues/:number/comments",
+                axum_post({
+                    let seen = seen.clone();
+                    move |Json(body): Json<Value>| {
+                        let seen = seen.clone();
+                        async move {
+                            seen.lock().unwrap().push(format!(
+                                "comment:{}",
+                                body["body"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .lines()
+                                    .next()
+                                    .unwrap_or_default()
+                            ));
+                            Json(json!({"id": 4242}))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/repos/:owner/:name/statuses/:sha",
+                axum_post({
+                    let seen = seen.clone();
+                    move |Path((_, _, sha)): Path<(String, String, String)>,
+                          Json(body): Json<Value>| {
+                        let seen = seen.clone();
+                        async move {
+                            seen.lock().unwrap().push(format!(
+                                "status:{sha}:{}",
+                                body["state"].as_str().unwrap_or_default()
+                            ));
+                            Json(json!({"id": 1}))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/repos/:owner/:name/pulls/:number/reviews",
+                axum_post({
+                    let seen = recorder;
+                    move |Json(body): Json<Value>| {
+                        let seen = seen.clone();
+                        async move {
+                            let event = body["event"].as_str().unwrap_or_default().to_string();
+                            seen.lock().unwrap().push(format!("review:{event}"));
+                            Json(json!({"id": 77, "state": "CHANGES_REQUESTED"}))
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, fake).await;
+        });
+
+        let event_secret = vec![7; 32];
+        let mut config = external_config(&event_secret);
+        config.enable_writes = true;
+        config.github_api_base = format!("http://{addr}");
+        config.github_app = config::GitHubAppConfig {
+            app_id: Some("1".into()),
+            installation_id: Some("2".into()),
+            private_key: Some("unused-the-token-is-seeded".into()),
+        };
+        let verifier = runtime_events::RuntimeEventVerifier::new(
+            "github-canary",
+            config.event_signing_secret.as_deref().unwrap(),
+        )
+        .unwrap();
+        let store = ProductStore::memory().unwrap();
+        store
+            .record_session_target("ses_1", "example/repo", 7, Some("openingsha"))
+            .unwrap();
+        let state = Arc::new(AppState::with_components(
+            config,
+            store,
+            Some(Arc::new(RecordingActionClient::new([]).0)),
+            Some(Arc::new(verifier)),
+        ));
+        state
+            .github
+            .as_ref()
+            .expect("writes enabled builds a client")
+            .seed_test_token("ghs_test");
+        let store = state.store.clone().unwrap();
+
+        let body = json!({
+            "version": "1",
+            "event_id": "cev_drain_1",
+            "controller_id": "github-canary",
+            "event_type": "session.terminal",
+            "session_id": "ses_1",
+            "occurred_at": 1_000,
+            "payload": {
+                "reason": "normal",
+                "final_messages": ["## Verdict\n\nblocked\n[[verdict:request_changes r=1 y=0 g=0]] [done]"]
+            }
+        })
+        .to_string();
+        let response = router(state.clone())
+            .oneshot(signed_runtime_event_request(
+                &event_secret,
+                "cev_drain_1",
+                "/api/v1/openab/events?version=1",
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The drain is spawned; wait for the outbox to empty.
+        for _ in 0..100 {
+            if store.pending_writes(10).unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            store.pending_writes(10).unwrap().is_empty(),
+            "every queued write should have been sent"
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                "comment:## Verdict",
+                "status:openingsha:failure",
+                "review:REQUEST_CHANGES"
+            ]
+        );
+        // The comment id came back from GitHub and is now the upsert anchor
+        // for the next round of this pull request.
+        assert_eq!(
+            store.last_comment_id("example/repo", 7).unwrap(),
+            Some(4242)
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_events_we_do_not_own_or_cannot_act_on_are_left_alone() {
+        let event_secret = vec![7; 32];
+        let config = external_config(&event_secret);
+        let verifier = runtime_events::RuntimeEventVerifier::new(
+            "github-canary",
+            config.event_signing_secret.as_deref().unwrap(),
+        )
+        .unwrap();
+        let store = ProductStore::memory().unwrap();
+        store
+            .record_session_target("ses_ours", "example/repo", 7, Some("sha"))
+            .unwrap();
+        let state = Arc::new(AppState::with_components(
+            config,
+            store,
+            Some(Arc::new(RecordingActionClient::new([]).0)),
+            Some(Arc::new(verifier)),
+        ));
+        let store = state.store.clone().unwrap();
+        let app = router(state);
+
+        let cases = [
+            // A session the embedded plugin owns — acting would be the
+            // two-writer failure invariant #4 forbids.
+            ("cev_a", "ses_theirs", "normal"),
+            // Timeout and supersede have no result to report; a review
+            // submitted on a guess is worse than silence.
+            ("cev_b", "ses_ours", "timeout"),
+            ("cev_c", "ses_ours", "superseded"),
+        ];
+        for (event_id, session_id, reason) in cases {
+            let body = json!({
+                "version": "1",
+                "event_id": event_id,
+                "controller_id": "github-canary",
+                "event_type": "session.terminal",
+                "session_id": session_id,
+                "occurred_at": 1_000,
+                "payload": {
+                    "reason": reason,
+                    "final_messages": ["done [[verdict:approve r=0 y=0 g=1]] [done]"]
+                }
+            })
+            .to_string();
+            let response = app
+                .clone()
+                .oneshot(signed_runtime_event_request(
+                    &event_secret,
+                    event_id,
+                    "/api/v1/openab/events?version=1",
+                    body,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let value: Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(value["closed"], false, "{reason} on {session_id}");
+        }
+        assert!(store.pending_writes(10).unwrap().is_empty());
     }
 
     #[tokio::test]
