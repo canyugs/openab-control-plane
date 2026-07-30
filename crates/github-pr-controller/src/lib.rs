@@ -869,12 +869,26 @@ fn candidate_plan(
     if !trigger.author_trusted {
         return Err("author_not_trusted");
     }
-    Ok(planner::build_plan(
+    // The round number is ours to know: `review_rounds` counts what this
+    // controller actually closed on this pull request.
+    let round = state
+        .store
+        .as_ref()
+        .and_then(|store| {
+            store
+                .next_round(&trigger.repository, trigger.pr_number as i64)
+                .map_err(|error| tracing::warn!(%error, "round lookup failed; assuming round 1"))
+                .ok()
+        })
+        .unwrap_or(1);
+    Ok(planner::build_plan_for_round(
         delivery_id,
         trigger,
         &state.config.roster,
         state.config.council_preset.as_deref(),
         &state.config.review_mode,
+        round,
+        state.config.bot_handle.as_deref(),
     ))
 }
 
