@@ -176,7 +176,14 @@ pub fn build_plan_for_round(
         // review-council rewrite would otherwise re-inject `gh` instructions
         // into the chair's task, and two writers on one pull request is exactly
         // what ADR 031 invariant #4 forbids.
-        recipient_inputs = role_tasks(&trigger, &roster, &assignment, round, bot_mention);
+        //
+        // Council-only: a one-bot roster resolves to `solo` mode below, and the
+        // chair task's quorum protocol would be dead instructions for a session
+        // with no reviewers (council F3, #306). Solo sessions keep the shared
+        // prompt instead.
+        if roster.len() > 1 {
+            recipient_inputs = role_tasks(&trigger, &roster, &assignment, round, bot_mention);
+        }
         (
             roster,
             quorum,
@@ -358,6 +365,11 @@ fn parse_issue_comment(body: &Value, bot_handle: Option<&str>) -> Option<Trigger
 
 /// One task per participant: the chair synthesises and emits the machine
 /// parts, the reviewers report. Neither writes to GitHub.
+///
+/// Each task must be self-contained: when `recipient_inputs` is present the
+/// kernel delivers ONLY these — the shared `prompt` is never posted (see
+/// `controller.rs` `open_session`), so anything a participant needs, including
+/// the author's re-review notes, has to be woven in here (council F1, #306).
 fn role_tasks(
     trigger: &Trigger,
     roster: &[String],
@@ -371,6 +383,7 @@ fn role_tasks(
     };
     let repo = trigger.repository.as_str();
     let number = trigger.pr_number.to_string();
+    let rereview = rereview_context_block(trigger);
     tasks.insert(
         chair.clone(),
         CHAIR_TASK_TEMPLATE
@@ -382,7 +395,8 @@ fn role_tasks(
                 &bot_mention
                     .map(|handle| format!("@{}", handle.trim_start_matches('@')))
                     .unwrap_or_else(|| "@zeabur-council".into()),
-            ),
+            )
+            .replace("{{REREVIEW_CONTEXT}}", &rereview),
     );
     for reviewer in &roster[1..] {
         let angle = angle_for(angle_assignment, reviewer).unwrap_or("correctness");
@@ -392,10 +406,31 @@ fn role_tasks(
                 .replace("{{REPO}}", repo)
                 .replace("{{NUM}}", &number)
                 .replace("{{ANGLE}}", angle)
-                .replace("{{DIFF_NOTE}}", ""),
+                .replace("{{DIFF_NOTE}}", &rereview),
         );
     }
     tasks
+}
+
+/// The author's re-review context, rendered once and appended to every
+/// participant task — same text the shared prompt used to carry.
+fn rereview_context_block(trigger: &Trigger) -> String {
+    if trigger.review_notes.is_none() && !trigger.review_from_scratch {
+        return String::new();
+    }
+    let mut block = format!("\n\n{REREVIEW_CONTEXT_START}\n");
+    if trigger.review_from_scratch {
+        block.push_str("Mode: full review from scratch\n");
+    }
+    if let Some(notes) = trigger.review_notes.as_deref() {
+        block.push_str("Author fix notes:\n");
+        block.push_str(notes);
+        if !notes.ends_with('\n') {
+            block.push('\n');
+        }
+    }
+    block.push_str(REREVIEW_CONTEXT_END);
+    block
 }
 
 /// Read a reviewer's focus back out of the assignment block the trigger
@@ -728,6 +763,48 @@ mod tests {
             );
         }
         assert!(inputs["chair"].as_str().unwrap().contains("(round 1)"));
+    }
+
+    #[test]
+    fn rereview_notes_reach_every_participant_task() {
+        // The shared prompt is never delivered when recipient_inputs exist
+        // (kernel `open_session` posts one or the other), so the author's fix
+        // notes must ride each task or nobody sees them (council F1, #306).
+        let trigger = parse_trigger(
+            "issue_comment",
+            &fixture("mention"),
+            Some("fixture-council"),
+        )
+        .unwrap();
+        let notes = trigger.review_notes.clone().expect("fixture carries notes");
+        let plan = build_plan(
+            "delivery-1",
+            trigger,
+            &["chair".into(), "rev1".into(), "rev2".into()],
+            None,
+            "approve",
+        );
+        assert_eq!(plan.recipient_inputs.len(), plan.roster.len());
+        for (bot, task) in &plan.recipient_inputs {
+            assert!(
+                task.contains(REREVIEW_CONTEXT_START) && task.contains(notes.trim()),
+                "{bot}'s task must carry the author fix notes"
+            );
+        }
+    }
+
+    #[test]
+    fn a_solo_roster_keeps_the_shared_prompt_instead_of_council_tasks() {
+        // One bot means solo mode and no quorum; a chair task built around
+        // "wait for reviewer quorum" would be dead instructions (F3, #306).
+        let trigger = parse_trigger("pull_request", &fixture("opened"), None).unwrap();
+        let plan = build_plan("delivery-1", trigger, &["chair".into()], None, "approve");
+        assert_eq!(plan.mode, "solo");
+        assert!(
+            plan.recipient_inputs.is_empty(),
+            "solo sessions are driven by the shared prompt"
+        );
+        assert!(!plan.prompt.trim().is_empty());
     }
 
     #[test]
