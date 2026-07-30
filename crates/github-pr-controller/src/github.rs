@@ -69,6 +69,7 @@ impl StatusState {
 }
 
 pub struct GitHubClient {
+    repository: String,
     api_base: String,
     app_id: String,
     installation_id: String,
@@ -92,6 +93,11 @@ impl GitHubClient {
         }
         let app = &config.github_app;
         Some(Self {
+            // Invariant #5: the canary owns exactly one repository, so the
+            // client refuses to address any other. The installation token can
+            // reach every repo the App is installed on; a mis-parsed
+            // `trigger_ref` must not be able to write to one of them.
+            repository: config.canary_repository.clone()?,
             api_base: config.github_api_base.trim_end_matches('/').to_string(),
             app_id: app.app_id.clone()?,
             installation_id: app.installation_id.clone()?,
@@ -107,6 +113,7 @@ impl GitHubClient {
     /// Post the round's verdict comment. Returns its id, which the next round
     /// patches instead of posting again.
     pub async fn create_comment(&self, repo: &str, issue: i64, body: &str) -> Result<i64> {
+        self.check_repository(repo)?;
         let response = self
             .send(
                 reqwest::Method::POST,
@@ -120,6 +127,7 @@ impl GitHubClient {
     }
 
     pub async fn update_comment(&self, repo: &str, comment_id: i64, body: &str) -> Result<()> {
+        self.check_repository(repo)?;
         self.send(
             reqwest::Method::PATCH,
             &format!("repos/{repo}/issues/comments/{comment_id}"),
@@ -137,6 +145,7 @@ impl GitHubClient {
         context: &str,
         description: &str,
     ) -> Result<()> {
+        self.check_repository(repo)?;
         self.send(
             reqwest::Method::POST,
             &format!("repos/{repo}/statuses/{sha}"),
@@ -161,6 +170,7 @@ impl GitHubClient {
         event: ReviewEvent,
         body: &str,
     ) -> Result<i64> {
+        self.check_repository(repo)?;
         let response = self
             .send(
                 reqwest::Method::POST,
@@ -176,6 +186,18 @@ impl GitHubClient {
             );
         }
         response["id"].as_i64().context("review carried no id")
+    }
+
+    /// Every write names a repository; this is the one place that checks it is
+    /// the canary. Fail closed rather than trust the caller.
+    fn check_repository(&self, repo: &str) -> Result<()> {
+        if repo != self.repository {
+            bail!(
+                "refusing to write to {repo}: this controller owns {}",
+                self.repository
+            );
+        }
+        Ok(())
     }
 
     async fn send(
@@ -415,6 +437,7 @@ mod tests {
         let mut config = Config::from_values(|_| None);
         config.mode = OperatingMode::ExternalCanary;
         config.enable_writes = true;
+        config.canary_repository = Some("example/repo".into());
         config.github_api_base = api_base.to_string();
         config.github_app = GitHubAppConfig {
             app_id: Some("4235962".into()),
@@ -431,6 +454,7 @@ mod tests {
     fn the_client_refuses_to_exist_without_the_write_switch() {
         let mut config = Config::from_values(|_| None);
         config.mode = OperatingMode::ExternalCanary;
+        config.canary_repository = Some("example/repo".into());
         config.github_app = GitHubAppConfig {
             app_id: Some("1".into()),
             installation_id: Some("2".into()),
@@ -497,6 +521,45 @@ mod tests {
         let (kind, body) = rx.recv().await.unwrap();
         assert_eq!(kind, "review");
         assert_eq!(body["event"], "APPROVE");
+    }
+
+    #[tokio::test]
+    async fn writes_outside_the_canary_repository_are_refused_before_the_request() {
+        // The installation token reaches every repository the App is installed
+        // on. Invariant #5 says the canary owns exactly one, so a repo the
+        // controller was not given must fail here — not at GitHub, and not
+        // silently succeed because the App happens to have access.
+        let (base, mut rx) = fake_github("APPROVED").await;
+        let client = client(&base);
+        for error in [
+            client
+                .create_comment("other/repo", 7, "body")
+                .await
+                .unwrap_err()
+                .to_string(),
+            client
+                .update_comment("other/repo", 1, "body")
+                .await
+                .unwrap_err()
+                .to_string(),
+            client
+                .set_status("other/repo", "sha", StatusState::Success, "ctx", "d")
+                .await
+                .unwrap_err()
+                .to_string(),
+            client
+                .submit_review("other/repo", 7, ReviewEvent::Approve, "LGTM")
+                .await
+                .unwrap_err()
+                .to_string(),
+        ] {
+            assert!(error.contains("other/repo"), "{error}");
+            assert!(error.contains("example/repo"), "{error}");
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "not one request should have left the process"
+        );
     }
 
     #[tokio::test]

@@ -161,6 +161,9 @@ impl Config {
             OperatingMode::ExternalCanary if !self.enable_writes => ComponentReadiness::not_ready(
                 "GitHub App credentials present but writes are not enabled",
             ),
+            OperatingMode::ExternalCanary if self.github_app.is_empty() => {
+                ComponentReadiness::not_ready("writes enabled but no GitHub App configured")
+            }
             OperatingMode::ExternalCanary => {
                 ComponentReadiness::not_ready("partial GitHub App configuration")
             }
