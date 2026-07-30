@@ -86,6 +86,14 @@ struct MentionReview {
 }
 
 impl SessionPlan {
+    /// The head commit this plan was made from. The fingerprint is the only
+    /// place it survives — `sha:<40 hex>` by construction (`:269`).
+    pub fn head_sha(&self) -> Option<&str> {
+        self.trigger_fingerprint
+            .as_deref()
+            .and_then(|fingerprint| fingerprint.strip_prefix("sha:"))
+    }
+
     pub fn open_session_action(&self) -> OpenSessionAction {
         OpenSessionAction {
             title: self.title.clone(),

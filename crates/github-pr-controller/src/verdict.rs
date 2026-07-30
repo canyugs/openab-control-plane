@@ -73,6 +73,10 @@ fn default_status() -> String {
 pub struct ParsedResult {
     pub trailer: Option<VerdictTrailer>,
     pub findings: Option<FindingsBlock>,
+    /// The joined span, kept because the chair's report *is* the comment body
+    /// the controller posts — re-joining it downstream would risk a different
+    /// join than the one the findings were parsed from.
+    pub source: String,
 }
 
 /// Parse both halves out of a terminal event's `final_messages`, each from the
@@ -81,9 +85,11 @@ pub fn parse_final_messages(final_messages: &[String]) -> ParsedResult {
     let Some(closing) = final_messages.last() else {
         return ParsedResult::default();
     };
+    let source = final_messages.join("\n");
     ParsedResult {
         trailer: parse_verdict_trailer(closing),
-        findings: parse_findings_block(&final_messages.join("\n")),
+        findings: parse_findings_block(&source),
+        source,
     }
 }
 
@@ -407,10 +413,9 @@ mod tests {
         assert_eq!(parsed.trailer.unwrap().decision, "approve");
         assert!(parsed.findings.is_none());
 
-        assert_eq!(
-            parse_final_messages(&["just prose, no machine parts".to_string()]),
-            ParsedResult::default()
-        );
+        let prose = parse_final_messages(&["just prose, no machine parts".to_string()]);
+        assert!(prose.trailer.is_none() && prose.findings.is_none());
+        assert_eq!(prose.source, "just prose, no machine parts");
         assert_eq!(parse_final_messages(&[]), ParsedResult::default());
     }
 }

@@ -272,7 +272,7 @@ impl GitHubClient {
     /// Seed the token cache so tests can exercise the four calls without a
     /// private key. No PEM belongs in this repository, test-only or not.
     #[cfg(test)]
-    fn seed_token(&self, value: &str) {
+    pub(crate) fn seed_test_token(&self, value: &str) {
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(CachedToken {
             value: value.to_string(),
             expires_at: SystemTime::now() + Duration::from_secs(3600),
@@ -446,7 +446,7 @@ mod tests {
         };
         let client = GitHubClient::from_config(&config)
             .expect("canary + switch + credentials builds a client");
-        client.seed_token("ghs_installation");
+        client.seed_test_token("ghs_installation");
         client
     }
 
