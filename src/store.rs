@@ -14,6 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 
 const CONTROLLER_ACTION_LEASE_MS: i64 = 5 * 60 * 1000;
+/// Cap on the terminal event's `final_messages` total bytes; oversize spans
+/// are truncated oldest-first (the trailer/findings sit at the end).
+const FINAL_MESSAGES_MAX_BYTES: usize = 256 * 1024;
 
 pub fn now_ms() -> i64 {
     SystemTime::now()
@@ -663,6 +666,7 @@ pub trait Store: Send + Sync {
         green: Option<i64>,
         result_author_id: Option<&str>,
         result_message_ids_json: Option<&str>,
+        final_messages: &[String],
     ) -> Result<bool>;
     /// Reopen a terminal session for a follow-up turn (ADR 011 solo pattern),
     /// clearing the recorded result identity in the same guarded UPDATE — the
@@ -1292,6 +1296,26 @@ impl SqliteStore {
         Ok(SqliteStore {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// Bind a session to a controller without replaying a whole action round —
+    /// tests that only need "this session is controller-owned" (so runtime
+    /// events get enqueued) would otherwise have to drive
+    /// `finish_controller_action`.
+    #[cfg(test)]
+    pub(crate) fn bind_test_controller_session(
+        &self,
+        controller_id: &str,
+        session_id: &str,
+    ) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO controller_sessions
+                (controller_id, scope, trigger_ref, trigger_fingerprint, session_id, current, created_at)
+             VALUES (?1, 'tenant:test', ?2, NULL, ?2, 1, 0)",
+            params![controller_id, session_id],
+        )?;
+        Ok(())
     }
 
     pub fn memory() -> Result<SqliteStore> {
@@ -3048,6 +3072,7 @@ impl Store for SqliteStore {
         green: Option<i64>,
         result_author_id: Option<&str>,
         result_message_ids_json: Option<&str>,
+        final_messages: &[String],
     ) -> Result<bool> {
         let mut c = self.conn.lock().unwrap();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -3070,18 +3095,49 @@ impl Store for SqliteStore {
             ],
         )?;
         if n == 1 {
+            // ADR 031:159 — the terminal event carries the session's final
+            // messages so an external controller can derive its product
+            // projection (verdict, findings) without a read-back API. Capped;
+            // truncation drops the OLDEST parts, because the verdict trailer
+            // and findings block sit at the end of the span.
+            let mut kept: Vec<&str> = final_messages.iter().map(String::as_str).collect();
+            let mut total: usize = kept.iter().map(|m| m.len()).sum();
+            let mut truncated = false;
+            // Never drop the last part: an empty array would tell the consumer
+            // nothing at all, which is worse than a clipped tail.
+            while total > FINAL_MESSAGES_MAX_BYTES && kept.len() > 1 {
+                total -= kept.remove(0).len();
+                truncated = true;
+            }
+            // One part can still exceed the cap alone. Keep its END, on a char
+            // boundary — that is where the trailer and findings block are.
+            if let Some(last) = kept.last_mut() {
+                if last.len() > FINAL_MESSAGES_MAX_BYTES {
+                    let want = last.len() - FINAL_MESSAGES_MAX_BYTES;
+                    let cut = (want..=last.len())
+                        .find(|i| last.is_char_boundary(*i))
+                        .unwrap_or(last.len());
+                    *last = &last[cut..];
+                    truncated = true;
+                }
+            }
+            let mut payload = json!({
+                "state": "closed",
+                "reason": "normal",
+                "decision": decision,
+                "findings_red": red,
+                "findings_yellow": yellow,
+                "findings_green": green,
+                "final_messages": kept,
+            });
+            if truncated {
+                payload["final_messages_truncated"] = json!(true);
+            }
             enqueue_controller_session_event_locked(
                 &tx,
                 session_id,
                 "session.terminal",
-                json!({
-                    "state": "closed",
-                    "reason": "normal",
-                    "decision": decision,
-                    "findings_red": red,
-                    "findings_yellow": yellow,
-                    "findings_green": green,
-                }),
+                payload,
                 &format!("session.terminal:{session_id}:{closed_at}"),
                 closed_at,
             )?;
@@ -4216,6 +4272,7 @@ mod tests {
                 None,
                 Some("bot-a"),
                 Some(r#"["msg_1"]"#),
+                &[],
             )
             .unwrap());
         let row = store.session(&s.id).unwrap().unwrap();
@@ -4233,6 +4290,7 @@ mod tests {
                 Some(2),
                 Some("bot-a"),
                 Some(r#"["msg_1","msg_2"]"#),
+                &[],
             )
             .unwrap());
         let row = store.session(&s.id).unwrap().unwrap();
@@ -4253,6 +4311,210 @@ mod tests {
         assert!(row.result_message_ids.is_none());
         // Reopen CAS is once-only too.
         assert!(!store.reopen_session(&s.id, SessionState::Closed).unwrap());
+    }
+
+    /// SEI-852 step 3 / ADR 031:159: the kernel records final messages, and a
+    /// controller-owned session's terminal event must carry them — they are the
+    /// only material from which an external controller can derive verdict and
+    /// findings (the event previously carried metadata only).
+    #[test]
+    fn terminal_event_carries_final_messages() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .upsert_controller_installation("ctrl-x", 4, 60)
+            .unwrap();
+        assert!(store
+            .configure_controller_events(
+                "ctrl-x",
+                "https://ctrl.example/events",
+                1,
+                &["session.terminal".into()],
+                now_ms(),
+            )
+            .unwrap());
+        let s = store
+            .create_session("t", None, 0, None, &[], "review_council")
+            .unwrap();
+        {
+            let c = store.conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO controller_sessions
+                    (controller_id, scope, trigger_ref, trigger_fingerprint, session_id, current, created_at)
+                 VALUES ('ctrl-x', 'tenant:dev', 'github:pr/o/r#1', NULL, ?1, 1, 0)",
+                params![s.id],
+            )
+            .unwrap();
+        }
+        store.set_state(&s.id, SessionState::Deliberating).unwrap();
+
+        let span = vec![
+            "part one of the verdict".to_string(),
+            "part two [[verdict:approve r=0 y=0 g=2]]".to_string(),
+        ];
+        assert!(store
+            .close_session_with_result(
+                &s.id,
+                SessionState::Deliberating,
+                Some("approve"),
+                Some(0),
+                Some(0),
+                Some(2),
+                Some("chair"),
+                Some(r#"["m1","m2"]"#),
+                &span,
+            )
+            .unwrap());
+
+        let events = store.claim_controller_events(now_ms(), 10, 1_000).unwrap();
+        let terminal = events
+            .iter()
+            .find(|e| e.event_type == "session.terminal")
+            .expect("terminal event enqueued");
+        let body: serde_json::Value = serde_json::from_str(&terminal.body_json).unwrap();
+        assert_eq!(body["payload"]["decision"], "approve");
+        assert_eq!(
+            body["payload"]["final_messages"],
+            json!([
+                "part one of the verdict",
+                "part two [[verdict:approve r=0 y=0 g=2]]"
+            ])
+        );
+        assert!(body["payload"].get("final_messages_truncated").is_none());
+    }
+
+    /// The event bus must never choke on a huge chair message: the span is
+    /// capped and truncation drops the OLDEST parts first — the trailer and the
+    /// findings block live at the end.
+    #[test]
+    fn terminal_event_truncates_final_messages_keeping_newest() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .upsert_controller_installation("ctrl-x", 4, 60)
+            .unwrap();
+        assert!(store
+            .configure_controller_events(
+                "ctrl-x",
+                "https://ctrl.example/events",
+                1,
+                &["session.terminal".into()],
+                now_ms(),
+            )
+            .unwrap());
+        let s = store
+            .create_session("t", None, 0, None, &[], "review_council")
+            .unwrap();
+        {
+            let c = store.conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO controller_sessions
+                    (controller_id, scope, trigger_ref, trigger_fingerprint, session_id, current, created_at)
+                 VALUES ('ctrl-x', 'tenant:dev', 'github:pr/o/r#1', NULL, ?1, 1, 0)",
+                params![s.id],
+            )
+            .unwrap();
+        }
+        store.set_state(&s.id, SessionState::Deliberating).unwrap();
+
+        let huge = "x".repeat(FINAL_MESSAGES_MAX_BYTES);
+        let span = vec![
+            huge,
+            "middle".to_string(),
+            "tail [[verdict:approve r=0 y=0 g=1]]".to_string(),
+        ];
+        assert!(store
+            .close_session_with_result(
+                &s.id,
+                SessionState::Deliberating,
+                Some("approve"),
+                Some(0),
+                Some(0),
+                Some(1),
+                Some("chair"),
+                Some(r#"["m1","m2","m3"]"#),
+                &span,
+            )
+            .unwrap());
+
+        let events = store.claim_controller_events(now_ms(), 10, 1_000).unwrap();
+        let terminal = events
+            .iter()
+            .find(|e| e.event_type == "session.terminal")
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&terminal.body_json).unwrap();
+        assert_eq!(
+            body["payload"]["final_messages"],
+            json!(["middle", "tail [[verdict:approve r=0 y=0 g=1]]"]),
+            "oldest part dropped, newest kept"
+        );
+        assert_eq!(body["payload"]["final_messages_truncated"], json!(true));
+    }
+
+    /// One message can exceed the cap by itself. Sending `[]` would leave the
+    /// consumer with nothing to parse, so the tail survives instead — clipped
+    /// on a char boundary, because the trailer and findings block are there.
+    #[test]
+    fn terminal_event_keeps_the_tail_when_one_message_exceeds_the_cap() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .upsert_controller_installation("ctrl-x", 4, 60)
+            .unwrap();
+        assert!(store
+            .configure_controller_events(
+                "ctrl-x",
+                "https://ctrl.example/events",
+                1,
+                &["session.terminal".into()],
+                now_ms(),
+            )
+            .unwrap());
+        let s = store
+            .create_session("t", None, 0, None, &[], "review_council")
+            .unwrap();
+        {
+            let c = store.conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO controller_sessions
+                    (controller_id, scope, trigger_ref, trigger_fingerprint, session_id, current, created_at)
+                 VALUES ('ctrl-x', 'tenant:dev', 'github:pr/o/r#1', NULL, ?1, 1, 0)",
+                params![s.id],
+            )
+            .unwrap();
+        }
+        store.set_state(&s.id, SessionState::Deliberating).unwrap();
+
+        // Multi-byte padding so a naive byte cut would split a character.
+        let trailer = "[[verdict:approve r=0 y=0 g=1]]";
+        let single = format!("界{}{}", "界".repeat(FINAL_MESSAGES_MAX_BYTES / 3), trailer);
+        assert!(single.len() > FINAL_MESSAGES_MAX_BYTES);
+        assert!(store
+            .close_session_with_result(
+                &s.id,
+                SessionState::Deliberating,
+                Some("approve"),
+                Some(0),
+                Some(0),
+                Some(1),
+                Some("chair"),
+                Some(r#"["m1"]"#),
+                std::slice::from_ref(&single),
+            )
+            .unwrap());
+
+        let events = store.claim_controller_events(now_ms(), 10, 1_000).unwrap();
+        let terminal = events
+            .iter()
+            .find(|e| e.event_type == "session.terminal")
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&terminal.body_json).unwrap();
+        let kept = body["payload"]["final_messages"].as_array().unwrap();
+        assert_eq!(kept.len(), 1, "the only part is kept, never dropped");
+        let text = kept[0].as_str().unwrap();
+        assert!(
+            text.ends_with(trailer),
+            "the trailer at the end must survive"
+        );
+        assert!(text.len() <= FINAL_MESSAGES_MAX_BYTES);
+        assert_eq!(body["payload"]["final_messages_truncated"], json!(true));
     }
 
     #[test]

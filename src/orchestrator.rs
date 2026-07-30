@@ -1962,6 +1962,18 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                 let span = settled_result_span(&messages, &author);
                 let ids_json = (!span.is_empty())
                     .then(|| serde_json::to_string(&span).expect("Vec<String> serializes to JSON"));
+                // The span bodies ride the terminal event (ADR 031:159) so an
+                // external controller can parse verdict + findings from the
+                // same text the kernel parses. Empty span → the closing text.
+                let final_messages: Vec<String> = if span.is_empty() {
+                    vec![verdict.clone()]
+                } else {
+                    messages
+                        .iter()
+                        .filter(|m| span.contains(&m.id))
+                        .map(|m| m.content.clone())
+                        .collect()
+                };
                 // One transaction: close CAS + verdict columns + result
                 // identity. On error nothing landed — the session stays open
                 // and the watchdog timeout path remains the termination
@@ -1975,6 +1987,7 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     structured_verdict.as_ref().and_then(|t| t.green),
                     ids_json.as_ref().map(|_| author.as_str()),
                     ids_json.as_deref(),
+                    &final_messages,
                 ) {
                     Ok(won) => won,
                     Err(e) => {
@@ -4390,6 +4403,70 @@ mod tests {
             .unwrap()
             .contains(&session.id));
         assert!(force_close_timeout(&state, &session.id).unwrap());
+    }
+
+    /// The store tests inject a synthetic span; this one drives a real close and
+    /// asserts the span→body mapping the orchestrator performs — the closing
+    /// text reaches the controller verbatim. Deliberately an opaque sentinel,
+    /// not a provider trailer: this layer must not know what the text means
+    /// (ADR 031, and the kernel purity gate in CI enforces it).
+    #[test]
+    fn terminal_event_final_messages_carry_the_real_chair_text() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        store
+            .upsert_controller_installation("ctrl-x", 4, 60)
+            .unwrap();
+        assert!(store
+            .configure_controller_events(
+                "ctrl-x",
+                "https://ctrl.example/events",
+                1,
+                &["session.terminal".into()],
+                crate::store::now_ms(),
+            )
+            .unwrap());
+        let bot = store.register_bot("allen", "allen", "h1", "t1").unwrap();
+        let session = store
+            .create_session(
+                "controller-owned",
+                Some("github:pr/o/r#7"),
+                0,
+                Some(&bot.id),
+                std::slice::from_ref(&bot.id),
+                "solo",
+            )
+            .unwrap();
+        store
+            .bind_test_controller_session("ctrl-x", &session.id)
+            .unwrap();
+
+        post_client_message(&state, &session.id, "please look").unwrap();
+        // Opaque to this layer by design: only the controller parses it.
+        let closing = "body text\nOPAQUE-TAIL-SENTINEL-42 [done]";
+        handle_reply(&state, &bot.id, msg_reply(&session.id, closing)).unwrap();
+        assert_eq!(store.session(&session.id).unwrap().unwrap().state, "closed");
+
+        let events = store
+            .claim_controller_events(crate::store::now_ms(), 10, 1_000)
+            .unwrap();
+        let terminal = events
+            .iter()
+            .find(|e| e.event_type == "session.terminal")
+            .expect("terminal event enqueued");
+        let body: serde_json::Value = serde_json::from_str(&terminal.body_json).unwrap();
+        let kept = body["payload"]["final_messages"].as_array().unwrap();
+        assert!(!kept.is_empty(), "the closing text must ride along");
+        let joined = kept
+            .iter()
+            .map(|m| m.as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains("OPAQUE-TAIL-SENTINEL-42"),
+            "the tail must survive the span mapping: {joined}"
+        );
+        assert!(joined.contains("body text"));
     }
 
     #[test]

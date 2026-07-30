@@ -129,6 +129,21 @@ arrive after a later event. Receivers must dedupe by `event_id` and use
 rows are retained for seven days; dead-letter audit entries remain available
 through the operator endpoint.
 
+A normal-close `session.terminal` payload carries, besides `state`, `reason`,
+`decision`, and the `findings_red/yellow/green` counts, the session's
+**`final_messages`**: the settled result span's message bodies, in order — the
+same text the kernel itself parses for the verdict trailer and findings block.
+This is the material an external controller derives its product projection
+from (ADR 031 §6); there is no message read-back API. When the span is empty the
+array carries the closing message text instead, so a normal close is never
+silent. The array is capped at 256 KiB total; when over, the oldest parts are
+dropped first and `final_messages_truncated: true` is set. The last part is
+never dropped — if it alone exceeds the cap its *end* is kept, clipped on a
+character boundary. Both rules protect the same thing: the verdict trailer and
+findings block sit at the end of the span.
+Timeout, supersede, and controller-requested closes (`close_session` action)
+carry no result and no final messages — only a normal close has one.
+
 ## Execute an action
 
 ```http
