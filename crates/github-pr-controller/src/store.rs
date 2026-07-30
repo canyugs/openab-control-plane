@@ -528,6 +528,18 @@ impl ProductStore {
         })
     }
 
+    /// The round a session opened now would be: one past the highest this
+    /// controller has closed for the pull request.
+    pub fn next_round(&self, repo: &str, pr_number: i64) -> rusqlite::Result<i64> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection.query_row(
+            "SELECT COALESCE(MAX(round), 0) + 1 FROM review_rounds
+              WHERE repo = ?1 AND pr_number = ?2",
+            params![repo, pr_number],
+            |row| row.get(0),
+        )
+    }
+
     /// Remember what a session we just opened is about. Idempotent: a
     /// redelivered webhook that re-opens the same session must not conflict.
     pub fn record_session_target(

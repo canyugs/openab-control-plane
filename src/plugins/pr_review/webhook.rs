@@ -1070,7 +1070,49 @@ mod tests {
                 )
                 .unwrap()
             };
-            assert_eq!(controller, embedded, "session plan drift for {name}");
+            // Identity must not drift: same object, same roster, same quorum,
+            // same chair, same opening text. That is the parity this corpus
+            // exists to prove.
+            assert_eq!(controller.title, embedded.title, "title drift for {name}");
+            assert_eq!(
+                controller.trigger_ref, embedded.trigger_ref,
+                "trigger_ref drift for {name}"
+            );
+            assert_eq!(
+                controller.trigger_fingerprint, embedded.trigger_fingerprint,
+                "fingerprint drift for {name}"
+            );
+            assert_eq!(controller.roster, embedded.roster, "roster drift for {name}");
+            assert_eq!(
+                controller.quorum_n, embedded.quorum_n,
+                "quorum drift for {name}"
+            );
+            assert_eq!(
+                controller.chair_bot, embedded.chair_bot,
+                "chair drift for {name}"
+            );
+            assert_eq!(controller.prompt, embedded.prompt, "prompt drift for {name}");
+
+            // Two fields diverge on purpose from SEI-852 P6 onward. The
+            // controller asks for a generic coordinator and supplies each
+            // participant's task itself; the embedded path asks this kernel to
+            // rewrite them, which is how the chair used to be handed `gh`
+            // commands. Both cannot own the same pull request (ADR 031
+            // invariant #4), so the divergence is the point, not drift.
+            if embedded.mode == "review_council" {
+                assert_eq!(controller.mode, "council", "coordinator drift for {name}");
+                assert!(
+                    embedded.recipient_inputs.is_empty(),
+                    "embedded path leaves recipient tasks to the kernel rewrite"
+                );
+                assert_eq!(
+                    controller.recipient_inputs.len(),
+                    controller.roster.len(),
+                    "controller must task every rostered bot for {name}"
+                );
+            } else {
+                assert_eq!(controller.mode, embedded.mode, "mode drift for {name}");
+            }
         }
     }
 

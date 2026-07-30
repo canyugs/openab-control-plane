@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 const REVIEW_OPT_IN_LABEL: &str = "oab-review";
 const DEFAULT_PRESET: &str = "lite";
 const REVIEW_TRIGGER_TEMPLATE: &str = include_str!("../templates/pr-review-trigger-pointer.tmpl");
+const CHAIR_TASK_TEMPLATE: &str = include_str!("../templates/council-chair-task.tmpl");
+const REVIEWER_TASK_TEMPLATE: &str = include_str!("../templates/council-reviewer-task.tmpl");
 const ASK_TRIGGER_TEMPLATE: &str = include_str!("../templates/pr-ask-trigger-pointer.tmpl");
 const REREVIEW_CONTEXT_START: &str = "===== RE-REVIEW CONTEXT =====";
 const REREVIEW_CONTEXT_END: &str = "===== END RE-REVIEW CONTEXT =====";
@@ -137,7 +139,32 @@ pub fn build_plan(
     configured_preset: Option<&str>,
     review_mode: &str,
 ) -> SessionPlan {
+    build_plan_for_round(
+        delivery_id,
+        trigger,
+        configured_roster,
+        configured_preset,
+        review_mode,
+        1,
+        None,
+    )
+}
+
+/// `round` is the council round this session will be, counted from the
+/// controller's own `review_rounds` — the chair used to derive it by counting
+/// its own comments on the pull request, which is a guess about GitHub state
+/// rather than a fact about the review.
+pub fn build_plan_for_round(
+    delivery_id: &str,
+    trigger: Trigger,
+    configured_roster: &[String],
+    configured_preset: Option<&str>,
+    review_mode: &str,
+    round: i64,
+    bot_mention: Option<&str>,
+) -> SessionPlan {
     let is_ask = trigger.reason == "ask";
+    let mut recipient_inputs: BTreeMap<String, String> = BTreeMap::new();
     let (roster, quorum_n, prompt, resolved_preset) = if is_ask {
         let roster: Vec<String> = configured_roster.first().cloned().into_iter().collect();
         (roster, 0, render_ask_prompt(&trigger), None)
@@ -145,6 +172,18 @@ pub fn build_plan(
         let preset = pick_preset(trigger.preset.as_deref(), configured_preset);
         let angles = preset_angles(&preset).expect("pick_preset returns a valid preset");
         let (roster, quorum, assignment) = assign_angles(configured_roster, &angles);
+        // The controller writes every participant's task itself. The kernel's
+        // review-council rewrite would otherwise re-inject `gh` instructions
+        // into the chair's task, and two writers on one pull request is exactly
+        // what ADR 031 invariant #4 forbids.
+        //
+        // Council-only: a one-bot roster resolves to `solo` mode below, and the
+        // chair task's quorum protocol would be dead instructions for a session
+        // with no reviewers (council F3, #306). Solo sessions keep the shared
+        // prompt instead.
+        if roster.len() > 1 {
+            recipient_inputs = role_tasks(&trigger, &roster, &assignment, round, bot_mention);
+        }
         (
             roster,
             quorum,
@@ -178,10 +217,13 @@ pub fn build_plan(
     } else {
         trigger.trigger_fingerprint
     };
+    // A generic coordinator: quorum and closing, no provider vocabulary. The
+    // kernel must not recognise this as a PR review — that is the whole point
+    // of ADR 031, and `review_council` would hand the chair `gh` commands back.
     let mode = if is_ask || roster.len() <= 1 {
         "solo"
     } else {
-        "review_council"
+        "council"
     };
     let dedupe = DedupeProjection {
         object_key: trigger_ref.clone(),
@@ -218,7 +260,7 @@ pub fn build_plan(
         chair_bot,
         mode: mode.into(),
         prompt,
-        recipient_inputs: BTreeMap::new(),
+        recipient_inputs,
         dedupe,
         terminal_projection,
         proposed_writes,
@@ -318,6 +360,86 @@ fn parse_issue_comment(body: &Value, bot_handle: Option<&str>) -> Option<Trigger
                 .as_str()
                 .unwrap_or_default(),
         ),
+    })
+}
+
+/// One task per participant: the chair synthesises and emits the machine
+/// parts, the reviewers report. Neither writes to GitHub.
+///
+/// Each task must be self-contained: when `recipient_inputs` is present the
+/// kernel delivers ONLY these — the shared `prompt` is never posted (see
+/// `controller.rs` `open_session`), so anything a participant needs, including
+/// the author's re-review notes, has to be woven in here (council F1, #306).
+fn role_tasks(
+    trigger: &Trigger,
+    roster: &[String],
+    angle_assignment: &str,
+    round: i64,
+    bot_mention: Option<&str>,
+) -> BTreeMap<String, String> {
+    let mut tasks = BTreeMap::new();
+    let Some(chair) = roster.first() else {
+        return tasks;
+    };
+    let repo = trigger.repository.as_str();
+    let number = trigger.pr_number.to_string();
+    let rereview = rereview_context_block(trigger);
+    tasks.insert(
+        chair.clone(),
+        CHAIR_TASK_TEMPLATE
+            .replace("{{REPO}}", repo)
+            .replace("{{NUM}}", &number)
+            .replace("{{ROUND}}", &round.to_string())
+            .replace(
+                "{{BOT_MENTION}}",
+                &bot_mention
+                    .map(|handle| format!("@{}", handle.trim_start_matches('@')))
+                    .unwrap_or_else(|| "@zeabur-council".into()),
+            )
+            .replace("{{REREVIEW_CONTEXT}}", &rereview),
+    );
+    for reviewer in &roster[1..] {
+        let angle = angle_for(angle_assignment, reviewer).unwrap_or("correctness");
+        tasks.insert(
+            reviewer.clone(),
+            REVIEWER_TASK_TEMPLATE
+                .replace("{{REPO}}", repo)
+                .replace("{{NUM}}", &number)
+                .replace("{{ANGLE}}", angle)
+                .replace("{{DIFF_NOTE}}", &rereview),
+        );
+    }
+    tasks
+}
+
+/// The author's re-review context, rendered once and appended to every
+/// participant task — same text the shared prompt used to carry.
+fn rereview_context_block(trigger: &Trigger) -> String {
+    if trigger.review_notes.is_none() && !trigger.review_from_scratch {
+        return String::new();
+    }
+    let mut block = format!("\n\n{REREVIEW_CONTEXT_START}\n");
+    if trigger.review_from_scratch {
+        block.push_str("Mode: full review from scratch\n");
+    }
+    if let Some(notes) = trigger.review_notes.as_deref() {
+        block.push_str("Author fix notes:\n");
+        block.push_str(notes);
+        if !notes.ends_with('\n') {
+            block.push('\n');
+        }
+    }
+    block.push_str(REREVIEW_CONTEXT_END);
+    block
+}
+
+/// Read a reviewer's focus back out of the assignment block the trigger
+/// carries, so the two can never disagree.
+fn angle_for<'a>(assignment: &'a str, reviewer: &str) -> Option<&'a str> {
+    assignment.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("- ")?;
+        let (bot, angle) = rest.split_once(" → ")?;
+        (bot.trim() == reviewer).then(|| angle.trim())
     })
 }
 
@@ -594,15 +716,95 @@ mod tests {
             ]
         );
 
+        // The fixture is the embedded plugin's recorded action. Identity must
+        // still match it byte for byte — that is the invariant #3 evidence.
+        // Two fields deliberately diverge from P6 onward, and they are asserted
+        // below rather than regenerated away.
         let actual = serde_json::to_value(plan.open_session_action()).unwrap();
         let expected: Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/github/pull_request_opened.plan.json"
         ))
         .unwrap();
-        assert_eq!(
-            actual, expected,
-            "controller plan must match embedded bytes"
+        for field in [
+            "title",
+            "trigger_ref",
+            "trigger_fingerprint",
+            "roster",
+            "quorum_n",
+            "chair_bot",
+            "prompt",
+        ] {
+            assert_eq!(
+                actual[field], expected[field],
+                "controller plan must match embedded bytes for {field}"
+            );
+        }
+
+        // Divergence 1: a generic coordinator. `review_council` would make the
+        // kernel rewrite the chair's task and hand it `gh` commands back —
+        // two writers on one pull request, which invariant #4 forbids.
+        assert_eq!(expected["mode"], "review_council");
+        assert_eq!(actual["mode"], "council");
+
+        // Divergence 2: the controller writes every participant's task itself,
+        // and none of them may touch GitHub.
+        let inputs = actual["recipient_inputs"].as_object().unwrap();
+        assert!(expected["recipient_inputs"]
+            .as_object()
+            .is_none_or(|embedded| embedded.is_empty()));
+        assert_eq!(inputs.len(), 3, "one task per rostered bot");
+        for (bot, task) in inputs {
+            let task = task.as_str().unwrap();
+            assert!(
+                !task.contains("gh pr review")
+                    && !task.contains("gh pr comment")
+                    && !task.contains("gh api"),
+                "{bot}'s task must not carry a GitHub write"
+            );
+        }
+        assert!(inputs["chair"].as_str().unwrap().contains("(round 1)"));
+    }
+
+    #[test]
+    fn rereview_notes_reach_every_participant_task() {
+        // The shared prompt is never delivered when recipient_inputs exist
+        // (kernel `open_session` posts one or the other), so the author's fix
+        // notes must ride each task or nobody sees them (council F1, #306).
+        let trigger = parse_trigger(
+            "issue_comment",
+            &fixture("mention"),
+            Some("fixture-council"),
+        )
+        .unwrap();
+        let notes = trigger.review_notes.clone().expect("fixture carries notes");
+        let plan = build_plan(
+            "delivery-1",
+            trigger,
+            &["chair".into(), "rev1".into(), "rev2".into()],
+            None,
+            "approve",
         );
+        assert_eq!(plan.recipient_inputs.len(), plan.roster.len());
+        for (bot, task) in &plan.recipient_inputs {
+            assert!(
+                task.contains(REREVIEW_CONTEXT_START) && task.contains(notes.trim()),
+                "{bot}'s task must carry the author fix notes"
+            );
+        }
+    }
+
+    #[test]
+    fn a_solo_roster_keeps_the_shared_prompt_instead_of_council_tasks() {
+        // One bot means solo mode and no quorum; a chair task built around
+        // "wait for reviewer quorum" would be dead instructions (F3, #306).
+        let trigger = parse_trigger("pull_request", &fixture("opened"), None).unwrap();
+        let plan = build_plan("delivery-1", trigger, &["chair".into()], None, "approve");
+        assert_eq!(plan.mode, "solo");
+        assert!(
+            plan.recipient_inputs.is_empty(),
+            "solo sessions are driven by the shared prompt"
+        );
+        assert!(!plan.prompt.trim().is_empty());
     }
 
     #[test]
