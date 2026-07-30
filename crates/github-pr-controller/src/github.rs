@@ -188,6 +188,51 @@ impl GitHubClient {
         response["id"].as_i64().context("review carried no id")
     }
 
+    /// Find our own earlier comment carrying `marker` on an issue, newest
+    /// first. The pre-send reconcile: a create retried after a crash must adopt
+    /// the comment that already exists instead of posting a second one.
+    pub async fn find_marked_comment(
+        &self,
+        repo: &str,
+        issue: i64,
+        marker: &str,
+    ) -> Result<Option<i64>> {
+        self.check_repository(repo)?;
+        // One page of the newest 100. The write being reconciled is at most a
+        // lease-lapse old, so it is on this page or it does not exist; paging
+        // the whole history would only widen the failure surface of a read
+        // whose job is to make a retry safe.
+        let comments = self
+            .send(
+                reqwest::Method::GET,
+                &format!(
+                    "repos/{repo}/issues/{issue}/comments?per_page=100&sort=created&direction=desc"
+                ),
+                None,
+            )
+            .await?;
+        Ok(scan_for_marker(&comments, marker))
+    }
+
+    /// Same reconcile for formal reviews: `submit_review` retried after a
+    /// crash must find the review it already submitted.
+    pub async fn find_marked_review(
+        &self,
+        repo: &str,
+        pr_number: i64,
+        marker: &str,
+    ) -> Result<Option<i64>> {
+        self.check_repository(repo)?;
+        let reviews = self
+            .send(
+                reqwest::Method::GET,
+                &format!("repos/{repo}/pulls/{pr_number}/reviews?per_page=100"),
+                None,
+            )
+            .await?;
+        Ok(scan_for_marker(&reviews, marker))
+    }
+
     /// Every write names a repository; this is the one place that checks it is
     /// the canary. Fail closed rather than trust the caller.
     fn check_repository(&self, repo: &str) -> Result<()> {
@@ -304,6 +349,18 @@ impl GitHubClient {
             .context("GitHub App private key is not an RSA PEM")?;
         encode(&Header::new(Algorithm::RS256), &claims, &key).context("sign app JWT")
     }
+}
+
+/// The id of the first entry whose body carries `marker`, in an array of
+/// GitHub comment/review objects.
+fn scan_for_marker(entries: &Value, marker: &str) -> Option<i64> {
+    entries.as_array()?.iter().find_map(|entry| {
+        entry["body"]
+            .as_str()
+            .is_some_and(|body| body.contains(marker))
+            .then(|| entry["id"].as_i64())
+            .flatten()
+    })
 }
 
 fn truncate(value: &str, max: usize) -> String {

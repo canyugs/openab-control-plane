@@ -22,6 +22,15 @@ pub const KIND_COMMENT: &str = "comment";
 pub const KIND_STATUS: &str = "status";
 pub const KIND_REVIEW: &str = "review";
 
+/// The invisible identity a write carries so a retry can recognise its own
+/// earlier success. A crash between sending and marking done replays the write
+/// after the claim lease lapses, and neither a comment nor a review is
+/// idempotent on GitHub's side — this marker is what the pre-send reconcile
+/// looks for (council F5 on #305; the P7 gate).
+pub fn round_marker(session_id: &str) -> String {
+    format!("<!-- openab-round:{session_id} -->")
+}
+
 /// What a terminal event turns into. `round` is persisted first; `writes` are
 /// queued in this order and drained independently.
 #[derive(Debug, Clone, PartialEq)]
@@ -48,7 +57,9 @@ pub fn plan_close(
     target: &SessionTarget,
     parsed: &ParsedResult,
     comment_id: Option<i64>,
+    session_id: &str,
 ) -> ClosingPlan {
+    let marker = round_marker(session_id);
     let trailer = parsed.trailer.as_ref();
     let (red, yellow, green) = trailer
         .map(|t| {
@@ -112,7 +123,7 @@ pub fn plan_close(
             // Present → PATCH that comment, absent → create a new one. The
             // round's own id is learned from the response.
             "comment_id": comment_id,
-            "body": comment_body(parsed, trailer),
+            "body": format!("{}\n\n{marker}", comment_body(parsed, trailer)),
         }),
     )];
     if let Some(sha) = status_sha.as_deref() {
@@ -140,7 +151,7 @@ pub fn plan_close(
                 } else {
                     "APPROVE"
                 },
-                "body": review_body(trailer),
+                "body": format!("{}\n\n{marker}", review_body(trailer)),
             }),
         ));
     }
@@ -240,13 +251,17 @@ mod tests {
     #[test]
     fn an_approve_becomes_a_comment_a_success_status_and_a_formal_approval() {
         let parsed = parse_final_messages(&["LGTM\n[[verdict:approve r=0 y=0 g=2]] [done]".into()]);
-        let plan = plan_close(&target(), &parsed, None);
+        let plan = plan_close(&target(), &parsed, None, "ses_t");
         assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_STATUS, KIND_REVIEW]);
         assert_eq!(plan.decision, "approve");
         assert_eq!((plan.red, plan.yellow, plan.green), (0, 0, 2));
         assert_eq!(write(&plan, KIND_STATUS)["state"], "success");
         assert_eq!(write(&plan, KIND_REVIEW)["event"], "APPROVE");
-        assert_eq!(write(&plan, KIND_COMMENT)["body"], "LGTM");
+        assert_eq!(
+            write(&plan, KIND_COMMENT)["body"],
+            format!("LGTM\n\n{}", round_marker("ses_t")),
+            "the comment carries its round marker"
+        );
     }
 
     #[test]
@@ -255,7 +270,7 @@ mod tests {
         // the counts already overrode the word in the parser.
         let parsed =
             parse_final_messages(&["report\n[[verdict:approve r=0 y=1 g=2]] [done]".into()]);
-        let plan = plan_close(&target(), &parsed, None);
+        let plan = plan_close(&target(), &parsed, None, "ses_t");
         assert_eq!(plan.decision, "request_changes");
         assert_eq!(write(&plan, KIND_STATUS)["state"], "failure");
         assert_eq!(write(&plan, KIND_REVIEW)["event"], "REQUEST_CHANGES");
@@ -264,7 +279,7 @@ mod tests {
     #[test]
     fn an_unparseable_close_says_so_and_submits_no_review() {
         let parsed = parse_final_messages(&["the council rambled and stopped".into()]);
-        let plan = plan_close(&target(), &parsed, None);
+        let plan = plan_close(&target(), &parsed, None, "ses_t");
         assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_STATUS]);
         assert_eq!(plan.decision, "unknown");
         assert_eq!(write(&plan, KIND_STATUS)["state"], "error");
@@ -287,7 +302,7 @@ mod tests {
             "[[verdict:request_changes r=0 y=1 g=0]] [done]"
         )
         .into()]);
-        let plan = plan_close(&target(), &parsed, None);
+        let plan = plan_close(&target(), &parsed, None, "ses_t");
         assert_eq!(plan.head_sha.as_deref(), Some("reviewedsha"));
         assert_eq!(
             write(&plan, KIND_STATUS)["sha"],
@@ -301,7 +316,7 @@ mod tests {
     #[test]
     fn a_known_comment_id_turns_the_comment_into_an_upsert() {
         let parsed = parse_final_messages(&["LGTM\n[[verdict:approve r=0 y=0 g=1]] [done]".into()]);
-        let plan = plan_close(&target(), &parsed, Some(4242));
+        let plan = plan_close(&target(), &parsed, Some(4242), "ses_t");
         assert_eq!(write(&plan, KIND_COMMENT)["comment_id"], 4242);
     }
 
@@ -310,7 +325,7 @@ mod tests {
         let mut target = target();
         target.head_sha = None;
         let parsed = parse_final_messages(&["LGTM\n[[verdict:approve r=0 y=0 g=1]] [done]".into()]);
-        let plan = plan_close(&target, &parsed, None);
+        let plan = plan_close(&target, &parsed, None, "ses_t");
         assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_REVIEW]);
     }
 
@@ -322,7 +337,7 @@ mod tests {
             "[[verdict:approve r=0 y=0 g=0]] [done]"
         )
         .into()]);
-        let body = write(&plan_close(&target(), &parsed, None), KIND_COMMENT)["body"]
+        let body = write(&plan_close(&target(), &parsed, None, "ses_t"), KIND_COMMENT)["body"]
             .as_str()
             .unwrap()
             .to_string();

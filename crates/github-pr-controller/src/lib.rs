@@ -562,7 +562,7 @@ fn dispatch_terminal(
             None
         }
     };
-    let plan = closing::plan_close(&target, &parsed, comment_id);
+    let plan = closing::plan_close(&target, &parsed, comment_id, session_id);
 
     let round = match store.record_review_round(&store::ReviewRound {
         repo: target.repo.clone(),
@@ -662,7 +662,19 @@ async fn perform_write(
                 Some(comment_id) => github.update_comment(repo, comment_id, body).await?,
                 None => {
                     let issue = payload["pr_number"].as_i64().unwrap_or_default();
-                    let comment_id = github.create_comment(repo, issue, body).await?;
+                    // Reconcile before creating: a crash after the create but
+                    // before mark-done replays this write once the claim lease
+                    // lapses, and a second create is a second comment. The
+                    // body carries the round marker, so the earlier success is
+                    // findable — adopt it and refresh its body instead.
+                    let marker = closing::round_marker(&write.session_id);
+                    let comment_id = match github.find_marked_comment(repo, issue, &marker).await? {
+                        Some(existing) => {
+                            github.update_comment(repo, existing, body).await?;
+                            existing
+                        }
+                        None => github.create_comment(repo, issue, body).await?,
+                    };
                     // Learned here, used by every later round of this PR.
                     store.set_round_comment_id(&write.session_id, comment_id)?;
                 }
@@ -693,10 +705,25 @@ async fn perform_write(
                 Some("REQUEST_CHANGES") => github::ReviewEvent::RequestChanges,
                 other => anyhow::bail!("unknown review event {other:?}"),
             };
+            let pr_number = payload["pr_number"].as_i64().unwrap_or_default();
+            // Same reconcile as the comment: a replayed submit must find the
+            // review it already submitted, not add a second one.
+            let marker = closing::round_marker(&write.session_id);
+            if github
+                .find_marked_review(repo, pr_number, &marker)
+                .await?
+                .is_some()
+            {
+                tracing::info!(
+                    session_id = write.session_id,
+                    "review already on the pull request; reconciled"
+                );
+                return Ok(());
+            }
             github
                 .submit_review(
                     repo,
-                    payload["pr_number"].as_i64().unwrap_or_default(),
+                    pr_number,
                     event,
                     payload["body"].as_str().unwrap_or_default(),
                 )
@@ -1324,6 +1351,176 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_replayed_write_reconciles_instead_of_posting_twice() {
+        // Council F5 on #305, the P7 gate: a crash between sending and marking
+        // done replays the write after the claim lease lapses, and neither a
+        // comment nor a review is idempotent. The reconcile must find the
+        // earlier success by its round marker and not post again.
+        use axum::extract::Path as AxPath;
+        use axum::routing::{get as axum_get, post as axum_post};
+
+        #[derive(Clone, Default)]
+        struct Github {
+            comments: Arc<std::sync::Mutex<Vec<(i64, String)>>>,
+            reviews: Arc<std::sync::Mutex<Vec<(i64, String)>>>,
+        }
+        let gh = Github::default();
+        let app = Router::new()
+            .route(
+                "/app/installations/:id/access_tokens",
+                axum_post(|| async { Json(json!({"token": "ghs_test"})) }),
+            )
+            .route(
+                "/repos/:o/:n/issues/:num/comments",
+                axum_get({
+                    let gh = gh.clone();
+                    move || {
+                        let gh = gh.clone();
+                        async move {
+                            let list: Vec<Value> = gh
+                                .comments
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .map(|(id, body)| json!({"id": id, "body": body}))
+                                .collect();
+                            Json(Value::Array(list))
+                        }
+                    }
+                })
+                .post({
+                    let gh = gh.clone();
+                    move |Json(body): Json<Value>| {
+                        let gh = gh.clone();
+                        async move {
+                            let mut comments = gh.comments.lock().unwrap();
+                            let id = 1000 + comments.len() as i64;
+                            comments.push((id, body["body"].as_str().unwrap_or_default().into()));
+                            Json(json!({"id": id}))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/repos/:o/:n/issues/comments/:id",
+                axum::routing::patch(
+                    |AxPath((_, _, id)): AxPath<(String, String, i64)>| async move {
+                        Json(json!({"id": id}))
+                    },
+                ),
+            )
+            .route(
+                "/repos/:o/:n/statuses/:sha",
+                axum_post(|| async { Json(json!({"id": 1})) }),
+            )
+            .route(
+                "/repos/:o/:n/pulls/:num/reviews",
+                axum_get({
+                    let gh = gh.clone();
+                    move || {
+                        let gh = gh.clone();
+                        async move {
+                            let list: Vec<Value> = gh
+                                .reviews
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .map(|(id, body)| json!({"id": id, "body": body}))
+                                .collect();
+                            Json(Value::Array(list))
+                        }
+                    }
+                })
+                .post({
+                    let gh = gh.clone();
+                    move |Json(body): Json<Value>| {
+                        let gh = gh.clone();
+                        async move {
+                            let mut reviews = gh.reviews.lock().unwrap();
+                            let id = 2000 + reviews.len() as i64;
+                            reviews.push((id, body["body"].as_str().unwrap_or_default().into()));
+                            Json(json!({"id": id, "state": "CHANGES_REQUESTED"}))
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut config = Config::from_values(|_| None);
+        config.mode = OperatingMode::ExternalCanary;
+        config.enable_writes = true;
+        config.canary_repository = Some("example/repo".into());
+        config.github_api_base = format!("http://{addr}");
+        config.github_app = config::GitHubAppConfig {
+            app_id: Some("1".into()),
+            installation_id: Some("2".into()),
+            private_key: Some("unused".into()),
+        };
+        let client =
+            github::GitHubClient::from_config(&config).expect("writes enabled builds a client");
+        client.seed_test_token("ghs_test");
+        let store = ProductStore::memory().unwrap();
+
+        // The round's writes, as dispatch would queue them.
+        let marker = closing::round_marker("ses_1");
+        store
+            .enqueue_write(
+                "ses_1",
+                closing::KIND_COMMENT,
+                &json!({"repo": "example/repo", "pr_number": 7, "comment_id": null,
+                        "body": format!("verdict body\n\n{marker}")}),
+            )
+            .unwrap();
+        store
+            .enqueue_write(
+                "ses_1",
+                closing::KIND_REVIEW,
+                &json!({"repo": "example/repo", "pr_number": 7, "event": "REQUEST_CHANGES",
+                        "body": format!("blocked\n\n{marker}")}),
+            )
+            .unwrap();
+
+        // First drain pass: both writes go out.
+        for write in store.claim_writes(10).unwrap() {
+            perform_write(&client, &store, &write).await.unwrap();
+            // Deliberately NOT marking done — this is the crash. The rows keep
+            // their claim; GitHub has the comment and the review.
+        }
+        assert_eq!(gh.comments.lock().unwrap().len(), 1);
+        assert_eq!(gh.reviews.lock().unwrap().len(), 1);
+
+        // The lease lapses and another drain claims the same rows. Without the
+        // reconcile this second pass double-posts.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let replayed = store.claim_writes_for_test_after_lease(10).unwrap();
+        assert_eq!(replayed.len(), 2, "the crash left both rows claimable");
+        for write in &replayed {
+            perform_write(&client, &store, write).await.unwrap();
+            store.mark_write_done(write.id).unwrap();
+        }
+        assert_eq!(
+            gh.comments.lock().unwrap().len(),
+            1,
+            "the replayed create adopted the marked comment"
+        );
+        assert_eq!(
+            gh.reviews.lock().unwrap().len(),
+            1,
+            "the replayed submit found the marked review"
+        );
+        // And the adopted comment id is now the round's anchor.
+        assert_eq!(
+            store.last_comment_id("example/repo", 7).unwrap(),
+            None,
+            "no round row in this test; anchor write is a no-op"
+        );
+    }
+
+    #[tokio::test]
     async fn with_writes_enabled_the_outbox_drains_to_real_requests() {
         // The end the whole workstream is for: a closed round becomes a
         // comment, a status, and a formal review actually sent over HTTP.
@@ -1339,7 +1536,9 @@ mod tests {
             )
             .route(
                 "/repos/:owner/:name/issues/:number/comments",
-                axum_post({
+                // The reconcile GETs before the create POSTs; nothing exists
+                // yet, so the listing is empty.
+                axum::routing::get(|| async { Json(json!([])) }).post({
                     let seen = seen.clone();
                     move |Json(body): Json<Value>| {
                         let seen = seen.clone();
@@ -1377,7 +1576,7 @@ mod tests {
             )
             .route(
                 "/repos/:owner/:name/pulls/:number/reviews",
-                axum_post({
+                axum::routing::get(|| async { Json(json!([])) }).post({
                     let seen = recorder;
                     move |Json(body): Json<Value>| {
                         let seen = seen.clone();

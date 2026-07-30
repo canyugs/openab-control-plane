@@ -778,6 +778,16 @@ impl ProductStore {
         Ok(claimed)
     }
 
+    /// Claim rows as if every lease had lapsed — the crash-replay test's way
+    /// of fast-forwarding time.
+    #[cfg(test)]
+    pub fn claim_writes_for_test_after_lease(
+        &self,
+        limit: i64,
+    ) -> rusqlite::Result<Vec<PendingWrite>> {
+        self.claim_writes_at(limit, now_unix() + WRITE_CLAIM_LEASE_SECS + 1)
+    }
+
     /// Queued-but-unsent writes, claimed or not. For inspection and tests —
     /// sending goes through `claim_writes`.
     pub fn pending_writes(&self, limit: i64) -> rusqlite::Result<Vec<PendingWrite>> {
