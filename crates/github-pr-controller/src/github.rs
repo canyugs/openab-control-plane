@@ -207,6 +207,28 @@ impl GitHubClient {
     /// Find our own earlier comment carrying `marker` on an issue. The
     /// pre-send reconcile: a create retried after a crash must adopt the
     /// comment that already exists instead of posting a second one.
+    /// The pull request's current head sha, read from GitHub itself. Needed
+    /// when the trigger webhook carried no sha (issue_comment re-reviews): the
+    /// status write must pin to a commit, and without one a comment-triggered
+    /// round can never overwrite an earlier failure status — an approved
+    /// re-review that leaves the merge blocked (#311). Server-read sha, same
+    /// authority as a webhook sha; the never-trust rule is about the *chair's
+    /// claimed* sha, which stays out of status writes.
+    pub async fn pull_head_sha(&self, repo: &str, pr_number: i64) -> Result<String> {
+        self.check_repository(repo)?;
+        let pr = self
+            .send(
+                reqwest::Method::GET,
+                &format!("repos/{repo}/pulls/{pr_number}"),
+                None,
+            )
+            .await?;
+        pr["head"]["sha"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("pull request response carried no head sha"))
+    }
+
     pub async fn find_marked_comment(
         &self,
         repo: &str,
@@ -516,6 +538,12 @@ mod tests {
                 ),
             )
             .route(
+                "/repos/:owner/:name/pulls/:number",
+                axum::routing::get(|| async {
+                    Json(json!({"head": {"sha": "livehead0000000000000000000000000000dead"}}))
+                }),
+            )
+            .route(
                 "/repos/:owner/:name/pulls/:number/reviews",
                 post(
                     |State(r): State<Recorder>, Json(body): Json<Value>| async move {
@@ -549,6 +577,18 @@ mod tests {
             .expect("canary + switch + credentials builds a client");
         client.seed_test_token("ghs_installation");
         client
+    }
+
+    #[tokio::test]
+    async fn the_pull_head_is_read_from_github_and_bound_to_the_canary_repo() {
+        let (base, _rx) = fake_github("APPROVED").await;
+        let client = client(&base);
+        let sha = client.pull_head_sha("example/repo", 7).await.unwrap();
+        assert_eq!(sha, "livehead0000000000000000000000000000dead");
+        assert!(
+            client.pull_head_sha("other/repo", 7).await.is_err(),
+            "reads honour the canary binding too"
+        );
     }
 
     #[test]
