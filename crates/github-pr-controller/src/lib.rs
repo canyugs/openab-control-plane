@@ -51,26 +51,30 @@ impl AppState {
             Ok(store) => (Some(Arc::new(store)), None),
             Err(error) => (None, Some(error.to_string())),
         };
-        let (action_client, action_client_error) =
-            if matches!(config.mode, OperatingMode::ExternalCanary)
-                && config.ocp_action.is_complete()
-            {
-                match ocp::ReqwestOcpActionClient::new(&config.ocp_action) {
-                    Ok(client) => (
-                        Some(Arc::new(client) as Arc<dyn ocp::OcpActionClient>),
-                        None,
-                    ),
-                    Err(error) => (None, Some(error.to_string())),
-                }
-            } else {
-                (None, None)
-            };
+        let (action_client, action_client_error) = if matches!(
+            config.mode,
+            OperatingMode::ExternalCanary | OperatingMode::External
+        ) && config.ocp_action.is_complete()
+        {
+            match ocp::ReqwestOcpActionClient::new(&config.ocp_action) {
+                Ok(client) => (
+                    Some(Arc::new(client) as Arc<dyn ocp::OcpActionClient>),
+                    None,
+                ),
+                Err(error) => (None, Some(error.to_string())),
+            }
+        } else {
+            (None, None)
+        };
         let (event_verifier, event_verifier_error) = match (
             config.ocp_action.controller_id.as_deref(),
             config.event_signing_secret.as_deref(),
         ) {
             (Some(controller_id), Some(secret))
-                if matches!(config.mode, OperatingMode::ExternalCanary) =>
+                if matches!(
+                    config.mode,
+                    OperatingMode::ExternalCanary | OperatingMode::External
+                ) =>
             {
                 match runtime_events::RuntimeEventVerifier::new(controller_id, secret) {
                     Ok(verifier) => (Some(Arc::new(verifier)), None),
@@ -1097,6 +1101,29 @@ mod tests {
         config.event_signing_secret = Some(URL_SAFE_NO_PAD.encode(event_secret));
         config.observer_secret = Some("observer-secret".into());
         config
+    }
+
+    #[test]
+    fn external_mode_actually_wires_up_and_reaches_ready() {
+        // Council F1 on #315: config-level readiness said external was live
+        // while the AppState constructors still gated on ExternalCanary, so
+        // the mode could never build an action client or event verifier. This
+        // exercises the real wiring end to end.
+        let mut config = external_config(b"0123456789abcdef0123456789abcdef");
+        config.mode = OperatingMode::External;
+        config.canary_repository = None;
+        config.github_app = config::GitHubAppConfig {
+            app_id: Some("4235962".into()),
+            installation_id: Some("144934354".into()),
+            private_key: Some("not-a-pem-but-present".into()),
+        };
+        config.enable_writes = true;
+        let state = AppState::from_config(config);
+        assert!(state.action_client.is_some(), "action client must exist");
+        assert!(state.event_verifier.is_some(), "event verifier must exist");
+        assert!(state.github.is_some(), "write client must exist");
+        let readiness = state.readiness();
+        assert_eq!(readiness.status, "ready", "external mode must reach ready");
     }
 
     fn signed_request(delivery: &str, body: &'static str) -> Request<Body> {
