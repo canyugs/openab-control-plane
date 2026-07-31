@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::config::Config;
+use crate::config::{Config, OperatingMode};
 
 /// Re-mint this long before GitHub's stated expiry so a drain never starts a
 /// call with a token about to die. Installation tokens live an hour.
@@ -74,7 +74,11 @@ impl StatusState {
 }
 
 pub struct GitHubClient {
-    repository: String,
+    /// `Some` in canary mode — writes are pinned to exactly that repository
+    /// (invariant #5's canary-phase guard). `None` in `external` mode: the App
+    /// installation is the scope boundary, enforced by GitHub itself on every
+    /// call the installation token makes.
+    repository: Option<String>,
     /// The App's numeric id and its bot login (`<slug>[bot]`), used to verify
     /// that an object the reconcile found is OURS. The marker alone proves
     /// nothing: it is published in every comment we post, so anyone can copy
@@ -103,12 +107,17 @@ impl GitHubClient {
             return None;
         }
         let app = &config.github_app;
+        // Canary mode pins writes to exactly one repository (invariant #5's
+        // canary-phase guard): the installation token can reach every repo the
+        // App is installed on, and a mis-parsed `trigger_ref` must not write to
+        // one of them. External mode drops the pin — the installation is the
+        // boundary, and GitHub enforces it on every call.
+        let repository = match config.mode {
+            OperatingMode::External => None,
+            _ => Some(config.canary_repository.clone()?),
+        };
         Some(Self {
-            // Invariant #5: the canary owns exactly one repository, so the
-            // client refuses to address any other. The installation token can
-            // reach every repo the App is installed on; a mis-parsed
-            // `trigger_ref` must not be able to write to one of them.
-            repository: config.canary_repository.clone()?,
+            repository,
             app_numeric_id: app.app_id.as_deref().and_then(|id| id.parse().ok()),
             expected_login: config
                 .bot_handle
@@ -311,16 +320,29 @@ impl GitHubClient {
         login_matches || app_matches
     }
 
-    /// Every write names a repository; this is the one place that checks it is
-    /// the canary. Fail closed rather than trust the caller.
+    /// Every write names a repository; this is the one place that checks it.
+    /// Canary mode: must be exactly the pinned repository. External mode: any
+    /// well-formed `owner/name` — the installation token is the real boundary,
+    /// so an out-of-installation repo fails at GitHub, and this check only
+    /// rejects garbage before it becomes a request.
     fn check_repository(&self, repo: &str) -> Result<()> {
-        if repo != self.repository {
-            bail!(
-                "refusing to write to {repo}: this controller owns {}",
-                self.repository
-            );
+        match self.repository.as_deref() {
+            Some(owned) if repo != owned => {
+                bail!("refusing to write to {repo}: this controller owns {owned}")
+            }
+            Some(_) => Ok(()),
+            None => {
+                let mut parts = repo.split('/');
+                let well_formed = matches!(
+                    (parts.next(), parts.next(), parts.next()),
+                    (Some(owner), Some(name), None) if !owner.is_empty() && !name.is_empty()
+                );
+                if !well_formed {
+                    bail!("refusing to write to malformed repository {repo:?}");
+                }
+                Ok(())
+            }
         }
-        Ok(())
     }
 
     async fn send(
@@ -589,6 +611,34 @@ mod tests {
             client.pull_head_sha("other/repo", 7).await.is_err(),
             "reads honour the canary binding too"
         );
+    }
+
+    #[tokio::test]
+    async fn external_mode_writes_anywhere_wellformed_in_the_installation() {
+        let (base, mut rx) = fake_github("APPROVED").await;
+        let mut config = Config::from_values(|_| None);
+        config.mode = OperatingMode::External;
+        config.enable_writes = true;
+        config.github_api_base = base;
+        config.github_app = GitHubAppConfig {
+            app_id: Some("4235962".into()),
+            installation_id: Some("144934354".into()),
+            private_key: Some(NOT_A_PEM.to_string()),
+        };
+        let client =
+            GitHubClient::from_config(&config).expect("external mode needs no canary repository");
+        client.seed_test_token("ghs_installation");
+
+        client.create_comment("any/repo", 7, "body").await.unwrap();
+        let (kind, _) = rx.recv().await.unwrap();
+        assert_eq!(kind, "create_comment");
+
+        for garbage in ["norepo", "a/b/c", "/name", "owner/"] {
+            assert!(
+                client.create_comment(garbage, 7, "body").await.is_err(),
+                "malformed {garbage:?} must be refused before the request"
+            );
+        }
     }
 
     #[test]

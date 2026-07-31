@@ -8,6 +8,12 @@ const DEFAULT_GITHUB_API: &str = "https://api.github.com";
 pub enum OperatingMode {
     PlanOnly,
     ExternalCanary,
+    /// The end state ADR 031 aims at: the controller owns every repository the
+    /// GitHub App installation covers. The installation token is the scope
+    /// boundary — GitHub refuses writes outside it regardless of what this
+    /// process believes — and `allowed_repos` remains available as an optional
+    /// narrower brake.
+    External,
     Invalid(String),
 }
 
@@ -16,6 +22,7 @@ impl OperatingMode {
         match self {
             Self::PlanOnly => "plan_only",
             Self::ExternalCanary => "external_canary",
+            Self::External => "external",
             Self::Invalid(value) => value,
         }
     }
@@ -111,6 +118,7 @@ impl Config {
             mode: match nonempty(value("GITHUB_CONTROLLER_MODE")).as_deref() {
                 None | Some("plan_only") => OperatingMode::PlanOnly,
                 Some("external_canary") => OperatingMode::ExternalCanary,
+                Some("external") => OperatingMode::External,
                 Some(value) => OperatingMode::Invalid(value.into()),
             },
             webhook_secret: nonempty(value("GITHUB_CONTROLLER_WEBHOOK_SECRET")),
@@ -153,18 +161,22 @@ impl Config {
             _ if self.github_app.is_empty() && !self.enable_writes => {
                 ComponentReadiness::disabled("not configured; write client disabled")
             }
-            OperatingMode::ExternalCanary
+            OperatingMode::ExternalCanary | OperatingMode::External
                 if self.enable_writes && self.github_app.is_complete() =>
             {
                 ComponentReadiness::ready("GitHub write client configured")
             }
-            OperatingMode::ExternalCanary if !self.enable_writes => ComponentReadiness::not_ready(
-                "GitHub App credentials present but writes are not enabled",
-            ),
-            OperatingMode::ExternalCanary if self.github_app.is_empty() => {
+            OperatingMode::ExternalCanary | OperatingMode::External if !self.enable_writes => {
+                ComponentReadiness::not_ready(
+                    "GitHub App credentials present but writes are not enabled",
+                )
+            }
+            OperatingMode::ExternalCanary | OperatingMode::External
+                if self.github_app.is_empty() =>
+            {
                 ComponentReadiness::not_ready("writes enabled but no GitHub App configured")
             }
-            OperatingMode::ExternalCanary => {
+            OperatingMode::ExternalCanary | OperatingMode::External => {
                 ComponentReadiness::not_ready("partial GitHub App configuration")
             }
             _ => ComponentReadiness::not_ready(
@@ -191,6 +203,23 @@ impl Config {
             ),
             OperatingMode::Invalid(value) => {
                 ComponentReadiness::not_ready(format!("unsupported controller mode: {value}"))
+            }
+            OperatingMode::External => {
+                if self.canary_repository.is_some() {
+                    return ComponentReadiness::not_ready(
+                        "canary repository is set but the mode is external — unset one of them",
+                    );
+                }
+                if self.allowed_repos.is_empty() {
+                    ComponentReadiness::ready(
+                        "external ingress owned for the whole App installation",
+                    )
+                } else {
+                    ComponentReadiness::ready(format!(
+                        "external ingress owned for the App installation, filtered to {} repos",
+                        self.allowed_repos.len()
+                    ))
+                }
             }
             OperatingMode::ExternalCanary => {
                 let Some(repository) = self.canary_repository.as_deref() else {
@@ -223,10 +252,12 @@ impl Config {
             OperatingMode::PlanOnly | OperatingMode::Invalid(_) => ComponentReadiness::not_ready(
                 "OCP action credentials forbidden outside external_canary mode",
             ),
-            OperatingMode::ExternalCanary if self.ocp_action.is_complete() => {
+            OperatingMode::ExternalCanary | OperatingMode::External
+                if self.ocp_action.is_complete() =>
+            {
                 ComponentReadiness::ready("scoped OCP action client configured")
             }
-            OperatingMode::ExternalCanary => {
+            OperatingMode::ExternalCanary | OperatingMode::External => {
                 ComponentReadiness::not_ready("scoped OCP action client configuration incomplete")
             }
         }
@@ -242,16 +273,18 @@ impl Config {
             OperatingMode::PlanOnly | OperatingMode::Invalid(_) => ComponentReadiness::not_ready(
                 "runtime-event and observer credentials forbidden outside external_canary mode",
             ),
-            OperatingMode::ExternalCanary
+            OperatingMode::ExternalCanary | OperatingMode::External
                 if self.event_signing_secret.is_some()
                     && self.ocp_action.controller_id.is_some()
                     && self.observer_secret.is_some() =>
             {
                 ComponentReadiness::ready("signed runtime-event receiver configured")
             }
-            OperatingMode::ExternalCanary => ComponentReadiness::not_ready(
-                "runtime-event signing and observation secrets are required",
-            ),
+            OperatingMode::ExternalCanary | OperatingMode::External => {
+                ComponentReadiness::not_ready(
+                    "runtime-event signing and observation secrets are required",
+                )
+            }
         }
     }
 }
@@ -408,5 +441,34 @@ mod tests {
         let mut wrong = config;
         wrong.allowed_repos.insert("other/repo".into());
         assert!(!wrong.ownership_readiness().ready);
+    }
+
+    #[test]
+    fn external_mode_owns_the_installation_and_refuses_a_canary_pin() {
+        let values = BTreeMap::from([
+            ("GITHUB_CONTROLLER_MODE", "external"),
+            ("GITHUB_CONTROLLER_OCP_URL", "https://ocp.example.test"),
+            ("GITHUB_CONTROLLER_OCP_ACTION_TOKEN", "token"),
+            ("GITHUB_CONTROLLER_OCP_SCOPE", "tenant:prod/resource:canary"),
+            ("GITHUB_CONTROLLER_ID", "github-prod"),
+            ("GITHUB_CONTROLLER_EVENT_SIGNING_SECRET", "event-secret"),
+            ("GITHUB_CONTROLLER_OBSERVER_SECRET", "observation-secret"),
+        ]);
+        let config = Config::from_values(|name| values.get(name).map(ToString::to_string));
+        assert_eq!(config.mode, OperatingMode::External);
+        assert!(config.ownership_readiness().ready);
+        assert!(config.ocp_readiness().ready);
+        assert!(config.event_readiness().ready);
+
+        // A leftover canary pin means the operator has not decided which mode
+        // this deployment is in — fail loudly rather than guess.
+        let mut pinned = config.clone();
+        pinned.canary_repository = Some("example/repo".into());
+        assert!(!pinned.ownership_readiness().ready);
+
+        // allowed_repos stays available as an optional narrower brake.
+        let mut braked = config;
+        braked.allowed_repos = BTreeSet::from(["example/repo".into()]);
+        assert!(braked.ownership_readiness().ready);
     }
 }
