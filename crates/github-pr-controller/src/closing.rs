@@ -200,12 +200,26 @@ fn review_body(trailer: &VerdictTrailer) -> String {
     )
 }
 
-/// The chair's report is the comment. Machine parts that mean nothing to a
-/// human reader are stripped from the tail: the verdict trailer and the
-/// `[done]` marker. The findings block stays — it is an HTML comment, so it is
-/// invisible in the rendered comment and keeps the round self-describing.
+/// Where the chair's report begins. The task template requires the verdict
+/// comment to start with this line, which makes it a protocol anchor: anything
+/// before it in the settled text is working noise, not report.
+const REPORT_START: &str = "<!-- openab-council -->";
+
+/// The chair's report is the comment. The settled text arrives with working
+/// noise around it — the Kiro CLI transcribes its tool calls into message
+/// bodies, and the chair thinks aloud before the report — so the body starts
+/// at the `<!-- openab-council -->` anchor the template mandates (everything
+/// before it is dropped), and machine parts are stripped from the tail: the
+/// verdict trailer and the `[done]` marker. The findings block stays — it is
+/// an HTML comment, so it is invisible in the rendered comment and keeps the
+/// round self-describing.
 fn comment_body(parsed: &ParsedResult, trailer: Option<&VerdictTrailer>) -> String {
     let text = parsed.source.trim_end();
+    let text = match text.find(REPORT_START) {
+        Some(at) => &text[at..],
+        // No anchor, nothing to trust as "the report" — keep everything.
+        None => text,
+    };
     if trailer.is_none() {
         return format!(
             "{text}\n\n---\n⚠️ The council closed without a parseable verdict. \
@@ -269,6 +283,44 @@ mod tests {
             write(&plan, KIND_COMMENT)["body"],
             format!("LGTM\n\n{}", round_marker("ses_t")),
             "the comment carries its round marker"
+        );
+    }
+
+    #[test]
+    fn the_comment_starts_at_the_report_anchor_not_the_working_noise() {
+        // Shape of #309 round 3: the Kiro chair transcribes tool calls and
+        // thinks aloud before the report in one message, and the footer,
+        // findings block, and trailer arrive in a later message.
+        let synthesis = "✅ `Creating task list: Synthesize round 3 verdict`\n\
+             ✅ `Running: printf '%s' '{\"pullNumber\":309}' | octobroker-mcp call pull_request_read`\n\
+             Good — the head SHA is unchanged. I've verified the file. No issues.\
+             <!-- openab-council -->\n\
+             LGTM ✅ — Docs-only change.\n\
+             Reviewed at 701a1bf (round 3)\n\n\
+             ## Delta since d3fbb56\n\n- One appended line.";
+        let closing = "🔴×0 🟡×0 🟢×1 · 💬 Comment `@bot <question>` for a follow-up\n\n\
+             <!-- openab-findings\n\
+             {\"head_sha\":\"701a1bf\",\"findings\":[]}\n\
+             -->\n\
+             [[verdict:approve r=0 y=0 g=1]] [done]";
+        let parsed = parse_final_messages(&[synthesis.into(), closing.into()]);
+        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
+        assert!(
+            body.starts_with("<!-- openab-council -->"),
+            "report anchor opens the comment: {body}"
+        );
+        assert!(
+            !body.contains("✅ `") && !body.contains("No issues."),
+            "tool echoes and self-talk are dropped: {body}"
+        );
+        assert!(
+            body.contains("## Delta since") && body.contains("🔴×0 🟡×0 🟢×1"),
+            "the report and its footer survive: {body}"
+        );
+        assert!(
+            body.contains("openab-findings") && !body.contains("[[verdict:"),
+            "findings block stays, trailer goes: {body}"
         );
     }
 
