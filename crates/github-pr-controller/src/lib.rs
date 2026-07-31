@@ -364,11 +364,31 @@ async fn handle_webhook(
                     // it is *about* is provider knowledge the kernel does not
                     // keep, so record it now or the close is unactionable.
                     if let Some(session_id) = opened_session_id(&action_result) {
+                        // A comment-triggered round has no webhook sha. Ask
+                        // GitHub for the PR's head so the closing status has a
+                        // commit to pin to — otherwise an approved re-review
+                        // can never overwrite the failure status it answers.
+                        let mut head_sha = plan.head_sha().map(str::to_string);
+                        if head_sha.is_none() {
+                            if let Some(github) = state.github.as_ref() {
+                                match github
+                                    .pull_head_sha(&plan.repository, plan.pr_number as i64)
+                                    .await
+                                {
+                                    Ok(sha) => head_sha = Some(sha),
+                                    Err(error) => tracing::warn!(
+                                        %error,
+                                        session_id,
+                                        "pr head lookup failed; round will close without a status"
+                                    ),
+                                }
+                            }
+                        }
                         if let Err(error) = store.record_session_target(
                             session_id,
                             &plan.repository,
                             plan.pr_number as i64,
-                            plan.head_sha(),
+                            head_sha.as_deref(),
                         ) {
                             tracing::error!(%error, session_id, "session target persistence failed");
                         }
