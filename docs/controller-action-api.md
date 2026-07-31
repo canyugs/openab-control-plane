@@ -201,3 +201,4 @@ session opened, verdict parsed from `final_messages`, and all three GitHub
 writes (round comment, `openab/council` status, formal review) performed by
 the controller's own App credentials — was the pull request that added this
 paragraph.
+Canary note 2: verify v0.1.43 status write + chair message hygiene.
