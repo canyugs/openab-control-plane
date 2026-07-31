@@ -176,10 +176,12 @@ fn status_state(trailer: Option<&VerdictTrailer>) -> &'static str {
 }
 
 fn status_description(trailer: Option<&VerdictTrailer>) -> String {
+    // Commit status descriptions reject 4-byte UTF-8 ("Description doesn't
+    // accept 4-byte Unicode", 422) — no emoji here, unlike the review body.
     match trailer {
         None => "council closed without a parseable verdict".to_string(),
         Some(t) => format!(
-            "{} · 🔴{} 🟡{} 🟢{}",
+            "{} · red {} · yellow {} · green {}",
             t.decision,
             t.red.unwrap_or_default(),
             t.yellow.unwrap_or_default(),
@@ -256,6 +258,12 @@ mod tests {
         assert_eq!(plan.decision, "approve");
         assert_eq!((plan.red, plan.yellow, plan.green), (0, 0, 2));
         assert_eq!(write(&plan, KIND_STATUS)["state"], "success");
+        let description = write(&plan, KIND_STATUS)["description"].as_str().unwrap();
+        assert!(
+            description.chars().all(|c| c <= '\u{FFFF}'),
+            "GitHub rejects 4-byte Unicode in status descriptions: {description}"
+        );
+        assert_eq!(description, "approve · red 0 · yellow 0 · green 2");
         assert_eq!(write(&plan, KIND_REVIEW)["event"], "APPROVE");
         assert_eq!(
             write(&plan, KIND_COMMENT)["body"],
