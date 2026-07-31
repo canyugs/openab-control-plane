@@ -652,6 +652,20 @@ impl ProductStore {
             .optional()
     }
 
+    /// The comment this session's round posted — the review timeline entry
+    /// links to it.
+    pub fn round_comment_id(&self, session_id: &str) -> rusqlite::Result<Option<i64>> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection
+            .query_row(
+                "SELECT comment_id FROM review_rounds
+                  WHERE session_id = ?1 AND comment_id IS NOT NULL",
+                params![session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+    }
+
     pub fn set_round_comment_id(&self, session_id: &str, comment_id: i64) -> rusqlite::Result<()> {
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         connection.execute(

@@ -580,17 +580,13 @@ fn dispatch_terminal(
         })
         .unwrap_or_default();
     let parsed = verdict::parse_final_messages(&final_messages);
-    // A read failure here is not fatal — but it must not silently turn into
-    // "no previous comment", which would post a second verdict comment instead
-    // of editing the first (council F3, #305).
-    let comment_id = match store.last_comment_id(&target.repo, target.pr_number) {
-        Ok(comment_id) => comment_id,
-        Err(error) => {
-            tracing::error!(%error, session_id, "comment anchor lookup failed; posting fresh");
-            None
-        }
-    };
-    let plan = closing::plan_close(&target, &parsed, comment_id, session_id);
+    // Every round posts its OWN comment (operator decision, 2026-08-01):
+    // updating one standing comment in place erased each earlier round's
+    // report from the pull request — four rounds of audit trail collapsed
+    // into one surviving body. The in-place design (council F3, #305) solved
+    // duplicate-comment noise; the round marker plus per-round bodies keep
+    // idempotency without destroying history.
+    let plan = closing::plan_close(&target, &parsed, None, session_id);
 
     let round = match store.record_review_round(&store::ReviewRound {
         repo: target.repo.clone(),
@@ -748,13 +744,21 @@ async fn perform_write(
                 );
                 return Ok(());
             }
+            // The review timeline entry must say where its evidence lives: the
+            // comment write ran earlier in this same drain and recorded its
+            // id, so link this round's report directly. Absent id (comment
+            // write still failing) degrades to the unlinked body.
+            let mut body = payload["body"].as_str().unwrap_or_default().to_string();
+            if let Ok(Some(comment_id)) = store.round_comment_id(&write.session_id) {
+                body = body.replace(
+                    "Details in the review comment.",
+                    &format!(
+                        "Full report: https://github.com/{repo}/pull/{pr_number}#issuecomment-{comment_id}"
+                    ),
+                );
+            }
             github
-                .submit_review(
-                    repo,
-                    pr_number,
-                    event,
-                    payload["body"].as_str().unwrap_or_default(),
-                )
+                .submit_review(repo, pr_number, event, &body)
                 .await
                 .map(|_| ())
         }
