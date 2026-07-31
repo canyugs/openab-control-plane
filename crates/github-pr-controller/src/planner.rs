@@ -763,6 +763,13 @@ mod tests {
             );
         }
         assert!(inputs["chair"].as_str().unwrap().contains("(round 1)"));
+        assert!(
+            inputs["chair"]
+                .as_str()
+                .unwrap()
+                .contains("Message hygiene"),
+            "chair task must forbid tool-echo noise in published messages"
+        );
     }
 
     #[test]
