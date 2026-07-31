@@ -481,6 +481,9 @@ Finding IDs `F1..Fn` are minted once per PR and monotonic across rounds. Round 2
 continues numbering; never renumber prior findings and never re-raise a Resolved
 finding.
 
+Findings tables are raw markdown — never wrap a table in a code fence, which
+would render it as preformatted text instead of a table.
+
 Re-review rounds with a reachable prior SHA: do NOT rewrite
 `What This PR Does` / `How It Works` — replace both with one
 `Delta since <prior-sha>` section (what this round's commits actually change,
