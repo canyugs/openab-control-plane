@@ -151,7 +151,7 @@ pub fn plan_close(
                 } else {
                     "APPROVE"
                 },
-                "body": format!("{}\n\n{marker}", review_body(trailer)),
+                "body": format!("{}\n\n{marker}", review_body(trailer, reviewed_sha.as_deref())),
             }),
         ));
     }
@@ -190,9 +190,12 @@ fn status_description(trailer: Option<&VerdictTrailer>) -> String {
     }
 }
 
-fn review_body(trailer: &VerdictTrailer) -> String {
+fn review_body(trailer: &VerdictTrailer, reviewed_sha: Option<&str>) -> String {
+    let at = reviewed_sha
+        .map(|sha| format!(" Reviewed at {sha}."))
+        .unwrap_or_default();
     format!(
-        "Council {} — 🔴{} 🟡{} 🟢{}. Details in the review comment.",
+        "Council {} — 🔴{} 🟡{} 🟢{}.{at} Details in the review comment.",
         trailer.decision,
         trailer.red.unwrap_or_default(),
         trailer.yellow.unwrap_or_default(),
@@ -321,6 +324,19 @@ mod tests {
         assert!(
             body.contains("openab-findings") && !body.contains("[[verdict:"),
             "findings block stays, trailer goes: {body}"
+        );
+    }
+
+    #[test]
+    fn the_review_names_the_sha_it_stands_behind() {
+        let parsed = parse_final_messages(&[
+            "report\n<!-- openab-findings\n{\"head_sha\":\"feedc0de\",\"findings\":[]}\n-->\n[[verdict:approve r=0 y=0 g=1]] [done]".into(),
+        ]);
+        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let body = write(&plan, KIND_REVIEW)["body"].as_str().unwrap();
+        assert!(
+            body.contains("Reviewed at feedc0de"),
+            "review timeline entry must name the reviewed sha: {body}"
         );
     }
 
