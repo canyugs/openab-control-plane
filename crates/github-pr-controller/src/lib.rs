@@ -368,8 +368,12 @@ async fn handle_webhook(
                         // GitHub for the PR's head so the closing status has a
                         // commit to pin to — otherwise an approved re-review
                         // can never overwrite the failure status it answers.
+                        // Review rounds only: an /ask session closes with no
+                        // verdict trailer, so giving it a sha would turn every
+                        // answered question into an `error` status stomping the
+                        // last real verdict (council F1, #312).
                         let mut head_sha = plan.head_sha().map(str::to_string);
-                        if head_sha.is_none() {
+                        if head_sha.is_none() && plan.reason != "ask" {
                             if let Some(github) = state.github.as_ref() {
                                 match github
                                     .pull_head_sha(&plan.repository, plan.pr_number as i64)
