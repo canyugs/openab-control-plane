@@ -202,3 +202,4 @@ writes (round comment, `openab/council` status, formal review) performed by
 the controller's own App credentials — was the pull request that added this
 paragraph.
 Canary note 2: verify v0.1.43 status write + chair message hygiene.
+Canary note 3: verify v0.1.44 marker-slice comment.
