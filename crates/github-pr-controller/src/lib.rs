@@ -25,6 +25,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use store::{DeliveryAdmission, ProductStore, RuntimeEventAdmission, ShadowAdmission};
 
+#[cfg(test)]
+use store::SqliteStore;
+
 type HmacSha256 = Hmac<Sha256>;
 const MAX_WEBHOOK_BODY_BYTES: usize = 1024 * 1024;
 const DELIVERY_PRUNE_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -33,7 +36,7 @@ const WRITE_DRAIN_BATCH: i64 = 32;
 
 pub struct AppState {
     pub config: Config,
-    pub store: Option<Arc<ProductStore>>,
+    pub store: Option<Arc<dyn ProductStore>>,
     pub store_error: Option<String>,
     pub action_client: Option<Arc<dyn ocp::OcpActionClient>>,
     pub action_client_error: Option<String>,
@@ -46,9 +49,9 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn from_config(config: Config) -> Self {
-        let (store, store_error) = match ProductStore::open(&config.db_path) {
-            Ok(store) => (Some(Arc::new(store)), None),
+    pub async fn from_config(config: Config) -> Self {
+        let (store, store_error) = match store::open_product_store(&config.db_path).await {
+            Ok(store) => (Some(store), None),
             Err(error) => (None, Some(error.to_string())),
         };
         let (action_client, action_client_error) = if matches!(
@@ -98,7 +101,7 @@ impl AppState {
 
     pub fn with_components(
         config: Config,
-        store: ProductStore,
+        store: impl ProductStore + 'static,
         action_client: Option<Arc<dyn ocp::OcpActionClient>>,
         event_verifier: Option<Arc<runtime_events::RuntimeEventVerifier>>,
     ) -> Self {
@@ -116,7 +119,7 @@ impl AppState {
     }
 
     #[cfg(test)]
-    fn with_store(config: Config, store: ProductStore) -> Self {
+    fn with_store(config: Config, store: SqliteStore) -> Self {
         Self::with_components(config, store, None, None)
     }
 
@@ -201,7 +204,7 @@ pub fn spawn_maintenance(state: &Arc<AppState>) {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            match store.prune_completed_deliveries() {
+            match store.prune_completed_deliveries().await {
                 Ok(pruned) if pruned > 0 => {
                     tracing::info!(pruned, "pruned expired webhook deliveries")
                 }
@@ -305,7 +308,10 @@ async fn handle_webhook(
     };
 
     let payload_hash = hex::encode(Sha256::digest(&body));
-    match store.begin_delivery(delivery_id, event_type, repository, &payload_hash) {
+    match store
+        .begin_delivery(delivery_id, event_type, repository, &payload_hash)
+        .await
+    {
         Ok(DeliveryAdmission::New) => {}
         Ok(DeliveryAdmission::Duplicate { state, .. }) if state == "processing" => {
             return response(
@@ -343,7 +349,9 @@ async fn handle_webhook(
         }
     }
 
-    let (durable_state, result) = match candidate_plan(&state, delivery_id, event_type, &payload) {
+    let (durable_state, result) = match candidate_plan(&state, delivery_id, event_type, &payload)
+        .await
+    {
         Err(reason) => (
             "ignored",
             json!({"ok": true, "planned": false, "reason": reason}),
@@ -356,7 +364,7 @@ async fn handle_webhook(
             let action_id = format!("github-delivery-{delivery_id}");
             let Some(client) = state.action_client.as_ref() else {
                 let result = json!({"ok": false, "error": "ocp_action_unavailable"});
-                let _ = store.release_delivery_for_retry(delivery_id, &result);
+                let _ = store.release_delivery_for_retry(delivery_id, &result).await;
                 return response(StatusCode::SERVICE_UNAVAILABLE, result);
             };
             match client
@@ -392,12 +400,15 @@ async fn handle_webhook(
                                 }
                             }
                         }
-                        if let Err(error) = store.record_session_target(
-                            session_id,
-                            &plan.repository,
-                            plan.pr_number as i64,
-                            head_sha.as_deref(),
-                        ) {
+                        if let Err(error) = store
+                            .record_session_target(
+                                session_id,
+                                &plan.repository,
+                                plan.pr_number as i64,
+                                head_sha.as_deref(),
+                            )
+                            .await
+                        {
                             tracing::error!(%error, session_id, "session target persistence failed");
                         }
                     }
@@ -421,7 +432,8 @@ async fn handle_webhook(
                         "external canary action failed; retaining provider retry path"
                     );
                     let result = json!({"ok": false, "error": error.public_code()});
-                    if let Err(store_error) = store.release_delivery_for_retry(delivery_id, &result)
+                    if let Err(store_error) =
+                        store.release_delivery_for_retry(delivery_id, &result).await
                     {
                         tracing::error!(%store_error, %delivery_id, "retryable delivery persistence failed");
                     }
@@ -430,7 +442,10 @@ async fn handle_webhook(
             }
         }
     };
-    if let Err(error) = store.finish_delivery(delivery_id, durable_state, &result) {
+    if let Err(error) = store
+        .finish_delivery(delivery_id, durable_state, &result)
+        .await
+    {
         tracing::error!(%error, %delivery_id, "delivery completion failed");
         return response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -494,7 +509,7 @@ async fn handle_runtime_event(
         );
     };
     let body_hash = hex::encode(Sha256::digest(&body));
-    match store.record_runtime_event(&body_hash, &event) {
+    match store.record_runtime_event(&body_hash, &event).await {
         Ok(RuntimeEventAdmission::New) => {
             tracing::info!(
                 event_id = event.event_id,
@@ -502,7 +517,7 @@ async fn handle_runtime_event(
                 session_id = event.session_id,
                 "accepted signed runtime event"
             );
-            let closed = dispatch_terminal(&state, store, &event);
+            let closed = dispatch_terminal(&state, store, &event).await;
             response(
                 StatusCode::OK,
                 json!({"ok": true, "duplicate": false, "closed": closed}),
@@ -540,12 +555,12 @@ fn opened_session_id(result: &controller_protocol::ActionResultEnvelope) -> Opti
 /// Turn a normal-close `session.terminal` into a persisted round and queued
 /// GitHub writes. Returns false when the event is not ours to act on.
 ///
-/// Deliberately synchronous and infallible from the caller's side: the event
-/// receipt has already been recorded, so a failure here must not make the
-/// plane retry the whole delivery — the outbox is what retries.
-fn dispatch_terminal(
+/// Deliberately infallible from the caller's side: the event receipt has
+/// already been recorded, so a failure here must not make the plane retry the
+/// whole delivery — the outbox is what retries.
+async fn dispatch_terminal(
     state: &Arc<AppState>,
-    store: &Arc<ProductStore>,
+    store: &Arc<dyn ProductStore>,
     event: &runtime_events::RuntimeEventEnvelope,
 ) -> bool {
     if event.event_type != "session.terminal" {
@@ -560,7 +575,7 @@ fn dispatch_terminal(
     if event.payload["reason"].as_str() != Some("normal") {
         return false;
     }
-    let target = match store.session_target(session_id) {
+    let target = match store.session_target(session_id).await {
         Ok(Some(target)) => target,
         // Not a session this controller opened. The kernel's own plugin owns
         // it; acting would be the two-writer failure invariant #4 forbids.
@@ -588,16 +603,19 @@ fn dispatch_terminal(
     // idempotency without destroying history.
     let plan = closing::plan_close(&target, &parsed, None, session_id);
 
-    let round = match store.record_review_round(&store::ReviewRound {
-        repo: target.repo.clone(),
-        pr_number: target.pr_number,
-        session_id: session_id.to_string(),
-        head_sha: plan.head_sha.clone(),
-        decision: plan.decision.clone(),
-        red: plan.red,
-        yellow: plan.yellow,
-        green: plan.green,
-    }) {
+    let round = match store
+        .record_review_round(&store::ReviewRound {
+            repo: target.repo.clone(),
+            pr_number: target.pr_number,
+            session_id: session_id.to_string(),
+            head_sha: plan.head_sha.clone(),
+            decision: plan.decision.clone(),
+            red: plan.red,
+            yellow: plan.yellow,
+            green: plan.green,
+        })
+        .await
+    {
         Ok(round) => round,
         Err(error) => {
             tracing::error!(%error, session_id, "review round persistence failed");
@@ -614,17 +632,20 @@ fn dispatch_terminal(
         );
         return true;
     }
-    if let Err(error) = store.record_review_findings(
-        session_id,
-        &target.repo,
-        target.pr_number,
-        plan.head_sha.as_deref(),
-        &plan.findings,
-    ) {
+    if let Err(error) = store
+        .record_review_findings(
+            session_id,
+            &target.repo,
+            target.pr_number,
+            plan.head_sha.as_deref(),
+            &plan.findings,
+        )
+        .await
+    {
         tracing::error!(%error, session_id, "findings persistence failed");
     }
     for (kind, payload) in &plan.writes {
-        if let Err(error) = store.enqueue_write(session_id, kind, payload) {
+        if let Err(error) = store.enqueue_write(session_id, kind, payload).await {
             tracing::error!(%error, session_id, kind, "write enqueue failed");
         }
     }
@@ -647,7 +668,7 @@ fn spawn_write_drain(state: &Arc<AppState>) {
         return;
     };
     tokio::spawn(async move {
-        let pending = match store.claim_writes(WRITE_DRAIN_BATCH) {
+        let pending = match store.claim_writes(WRITE_DRAIN_BATCH).await {
             Ok(pending) => pending,
             Err(error) => {
                 tracing::error!(%error, "outbox read failed");
@@ -655,15 +676,16 @@ fn spawn_write_drain(state: &Arc<AppState>) {
             }
         };
         for write in pending {
-            match perform_write(&github, &store, &write).await {
+            match perform_write(&github, store.as_ref(), &write).await {
                 Ok(()) => {
-                    if let Err(error) = store.mark_write_done(write.id) {
+                    if let Err(error) = store.mark_write_done(write.id).await {
                         tracing::error!(%error, id = write.id, "outbox completion failed");
                     }
                 }
                 Err(error) => {
                     tracing::warn!(id = write.id, kind = write.kind, %error, "github write failed");
-                    if let Err(error) = store.mark_write_failed(write.id, &error.to_string()) {
+                    if let Err(error) = store.mark_write_failed(write.id, &error.to_string()).await
+                    {
                         tracing::error!(%error, id = write.id, "outbox failure record failed");
                     }
                 }
@@ -674,7 +696,7 @@ fn spawn_write_drain(state: &Arc<AppState>) {
 
 async fn perform_write(
     github: &github::GitHubClient,
-    store: &ProductStore,
+    store: &dyn ProductStore,
     write: &store::PendingWrite,
 ) -> anyhow::Result<()> {
     let payload = &write.payload;
@@ -700,7 +722,9 @@ async fn perform_write(
                         None => github.create_comment(repo, issue, body).await?,
                     };
                     // Learned here, used by every later round of this PR.
-                    store.set_round_comment_id(&write.session_id, comment_id)?;
+                    store
+                        .set_round_comment_id(&write.session_id, comment_id)
+                        .await?;
                 }
             }
             Ok(())
@@ -749,7 +773,7 @@ async fn perform_write(
             // id, so link this round's report directly. Absent id (comment
             // write still failing) degrades to the unlinked body.
             let mut body = payload["body"].as_str().unwrap_or_default().to_string();
-            if let Ok(Some(comment_id)) = store.round_comment_id(&write.session_id) {
+            if let Ok(Some(comment_id)) = store.round_comment_id(&write.session_id).await {
                 body = body.replace(
                     "Details in the review comment.",
                     &format!(
@@ -785,7 +809,7 @@ async fn canary_summary(State(state): State<Arc<AppState>>, headers: HeaderMap) 
             json!({"ok": false, "error": "product_store_unavailable"}),
         );
     };
-    match store.canary_summary() {
+    match store.canary_summary().await {
         Ok(summary) => response(StatusCode::OK, json!({"ok": true, "summary": summary})),
         Err(error) => {
             tracing::error!(%error, "canary summary failed");
@@ -838,7 +862,9 @@ async fn handle_shadow_compare(
         &request.delivery_id,
         &request.event_type,
         &request.payload,
-    ) {
+    )
+    .await
+    {
         Ok(plan) => shadow::ParityOutcome::Planned {
             snapshot: Box::new(plan.parity_snapshot()),
         },
@@ -855,7 +881,10 @@ async fn handle_shadow_compare(
             json!({"ok": false, "error": "product_store_unavailable"}),
         );
     };
-    match store.record_shadow_comparison(&request_hash, repository, &report) {
+    match store
+        .record_shadow_comparison(&request_hash, repository, &report)
+        .await
+    {
         Ok(ShadowAdmission::New) => response(
             StatusCode::OK,
             json!({"ok": true, "duplicate": false, "report": report}),
@@ -897,7 +926,7 @@ async fn shadow_summary(State(state): State<Arc<AppState>>, headers: HeaderMap) 
             json!({"ok": false, "error": "product_store_unavailable"}),
         );
     };
-    match store.shadow_summary() {
+    match store.shadow_summary().await {
         Ok(summary) => response(StatusCode::OK, json!({"ok": true, "summary": summary})),
         Err(error) => {
             tracing::error!(%error, "shadow summary failed");
@@ -909,7 +938,7 @@ async fn shadow_summary(State(state): State<Arc<AppState>>, headers: HeaderMap) 
     }
 }
 
-fn candidate_plan(
+async fn candidate_plan(
     state: &AppState,
     delivery_id: &str,
     event_type: &str,
@@ -930,16 +959,19 @@ fn candidate_plan(
     }
     // The round number is ours to know: `review_rounds` counts what this
     // controller actually closed on this pull request.
-    let round = state
-        .store
-        .as_ref()
-        .and_then(|store| {
-            store
-                .next_round(&trigger.repository, trigger.pr_number as i64)
-                .map_err(|error| tracing::warn!(%error, "round lookup failed; assuming round 1"))
-                .ok()
-        })
-        .unwrap_or(1);
+    let round = match state.store.as_ref() {
+        Some(store) => match store
+            .next_round(&trigger.repository, trigger.pr_number as i64)
+            .await
+        {
+            Ok(round) => round,
+            Err(error) => {
+                tracing::warn!(%error, "round lookup failed; assuming round 1");
+                1
+            }
+        },
+        None => 1,
+    };
     Ok(planner::build_plan_for_round(
         delivery_id,
         trigger,
@@ -1107,8 +1139,8 @@ mod tests {
         config
     }
 
-    #[test]
-    fn external_mode_actually_wires_up_and_reaches_ready() {
+    #[tokio::test]
+    async fn external_mode_actually_wires_up_and_reaches_ready() {
         // Council F1 on #315: config-level readiness said external was live
         // while the AppState constructors still gated on ExternalCanary, so
         // the mode could never build an action client or event verifier. This
@@ -1122,7 +1154,7 @@ mod tests {
             private_key: Some("not-a-pem-but-present".into()),
         };
         config.enable_writes = true;
-        let state = AppState::from_config(config);
+        let state = AppState::from_config(config).await;
         assert!(state.action_client.is_some(), "action client must exist");
         assert!(state.event_verifier.is_some(), "event verifier must exist");
         assert!(state.github.is_some(), "write client must exist");
@@ -1211,7 +1243,7 @@ mod tests {
     async fn readiness_reports_disabled_external_clients() {
         let state = Arc::new(AppState::with_store(
             test_config(),
-            ProductStore::memory().unwrap(),
+            SqliteStore::memory().unwrap(),
         ));
         let response = router(state)
             .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
@@ -1255,10 +1287,7 @@ mod tests {
         config.github_app.app_id = Some("1".into());
         config.github_app.installation_id = Some("2".into());
         config.github_app.private_key = Some("private".into());
-        let state = Arc::new(AppState::with_store(
-            config,
-            ProductStore::memory().unwrap(),
-        ));
+        let state = Arc::new(AppState::with_store(config, SqliteStore::memory().unwrap()));
         let response = router(state)
             .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
             .await
@@ -1283,7 +1312,7 @@ mod tests {
         .unwrap();
         let state = Arc::new(AppState::with_components(
             config.clone(),
-            ProductStore::memory().unwrap(),
+            SqliteStore::memory().unwrap(),
             Some(Arc::new(RecordingActionClient::new([]).0)),
             Some(Arc::new(verifier)),
         ));
@@ -1303,7 +1332,7 @@ mod tests {
         .unwrap();
         let state = Arc::new(AppState::with_components(
             config.clone(),
-            ProductStore::memory().unwrap(),
+            SqliteStore::memory().unwrap(),
             Some(Arc::new(RecordingActionClient::new([]).0)),
             Some(Arc::new(verifier)),
         ));
@@ -1324,7 +1353,7 @@ mod tests {
             config.event_signing_secret.as_deref().unwrap(),
         )
         .unwrap();
-        let store = ProductStore::memory().unwrap();
+        let store = SqliteStore::memory().unwrap();
         store
             .record_session_target("ses_1", "example/repo", 7, Some("openingsha"))
             .unwrap();
@@ -1370,7 +1399,7 @@ mod tests {
 
         // The round landed with the verdict the chair's counts imply, and with
         // the sha the council actually read rather than the opening one.
-        let pending = store.pending_writes(10).unwrap();
+        let pending = store.pending_writes(10).await.unwrap();
         assert_eq!(
             pending.iter().map(|w| w.kind.as_str()).collect::<Vec<_>>(),
             ["comment", "status", "review"]
@@ -1402,7 +1431,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(store.pending_writes(10).unwrap().len(), 3);
+        assert_eq!(store.pending_writes(10).await.unwrap().len(), 3);
     }
 
     #[tokio::test]
@@ -1533,7 +1562,7 @@ mod tests {
         let client =
             github::GitHubClient::from_config(&config).expect("writes enabled builds a client");
         client.seed_test_token("ghs_test");
-        let store = ProductStore::memory().unwrap();
+        let store = SqliteStore::memory().unwrap();
 
         // The round's writes, as dispatch would queue them.
         let marker = closing::round_marker("ses_1");
@@ -1704,7 +1733,7 @@ mod tests {
             config.event_signing_secret.as_deref().unwrap(),
         )
         .unwrap();
-        let store = ProductStore::memory().unwrap();
+        let store = SqliteStore::memory().unwrap();
         store
             .record_session_target("ses_1", "example/repo", 7, Some("openingsha"))
             .unwrap();
@@ -1747,13 +1776,13 @@ mod tests {
 
         // The drain is spawned; wait for the outbox to empty.
         for _ in 0..100 {
-            if store.pending_writes(10).unwrap().is_empty() {
+            if store.pending_writes(10).await.unwrap().is_empty() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(
-            store.pending_writes(10).unwrap().is_empty(),
+            store.pending_writes(10).await.unwrap().is_empty(),
             "every queued write should have been sent"
         );
         assert_eq!(
@@ -1767,7 +1796,7 @@ mod tests {
         // The comment id came back from GitHub and is now the upsert anchor
         // for the next round of this pull request.
         assert_eq!(
-            store.last_comment_id("example/repo", 7).unwrap(),
+            store.last_comment_id("example/repo", 7).await.unwrap(),
             Some(4242)
         );
     }
@@ -1781,7 +1810,7 @@ mod tests {
             config.event_signing_secret.as_deref().unwrap(),
         )
         .unwrap();
-        let store = ProductStore::memory().unwrap();
+        let store = SqliteStore::memory().unwrap();
         store
             .record_session_target("ses_ours", "example/repo", 7, Some("sha"))
             .unwrap();
@@ -1833,7 +1862,7 @@ mod tests {
                     .unwrap();
             assert_eq!(value["closed"], false, "{reason} on {session_id}");
         }
-        assert!(store.pending_writes(10).unwrap().is_empty());
+        assert!(store.pending_writes(10).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1841,12 +1870,13 @@ mod tests {
         const BODY: &str = include_str!("../../../tests/fixtures/github/pull_request_opened.json");
         let state = Arc::new(AppState::with_store(
             test_config(),
-            ProductStore::memory().unwrap(),
+            SqliteStore::memory().unwrap(),
         ));
         let payload: Value = serde_json::from_str(BODY).unwrap();
         let embedded = shadow::ParityOutcome::Planned {
             snapshot: Box::new(
                 candidate_plan(&state, "delivery-shadow", "pull_request", &payload)
+                    .await
                     .unwrap()
                     .parity_snapshot(),
             ),
@@ -1919,7 +1949,7 @@ mod tests {
         const BODY: &str = include_str!("../../../tests/fixtures/github/pull_request_opened.json");
         let state = Arc::new(AppState::with_store(
             test_config(),
-            ProductStore::memory().unwrap(),
+            SqliteStore::memory().unwrap(),
         ));
         let app = router(state);
         let first = app
@@ -1958,7 +1988,7 @@ mod tests {
         let (client, calls) = RecordingActionClient::new([false, false]);
         let state = Arc::new(AppState::with_components(
             config,
-            ProductStore::memory().unwrap(),
+            SqliteStore::memory().unwrap(),
             Some(Arc::new(client)),
             Some(Arc::new(verifier)),
         ));
@@ -2028,7 +2058,7 @@ mod tests {
         let (client, calls) = RecordingActionClient::new([]);
         let state = Arc::new(AppState::with_components(
             config,
-            ProductStore::memory().unwrap(),
+            SqliteStore::memory().unwrap(),
             Some(Arc::new(client)),
             Some(Arc::new(verifier)),
         ));
@@ -2059,7 +2089,7 @@ mod tests {
         let (client, _) = RecordingActionClient::new([]);
         let state = Arc::new(AppState::with_components(
             config,
-            ProductStore::memory().unwrap(),
+            SqliteStore::memory().unwrap(),
             Some(Arc::new(client)),
             Some(Arc::new(verifier)),
         ));
@@ -2167,7 +2197,7 @@ mod tests {
         let (client, calls) = RecordingActionClient::new([true, false]);
         let state = Arc::new(AppState::with_components(
             config,
-            ProductStore::memory().unwrap(),
+            SqliteStore::memory().unwrap(),
             Some(Arc::new(client)),
             Some(Arc::new(verifier)),
         ));
@@ -2203,7 +2233,7 @@ mod tests {
         const BODY: &str = include_str!("../../../tests/fixtures/github/pull_request_opened.json");
         let state = Arc::new(AppState::with_store(
             test_config(),
-            ProductStore::memory().unwrap(),
+            SqliteStore::memory().unwrap(),
         ));
         let payload_hash = hex::encode(Sha256::digest(BODY.as_bytes()));
         state
@@ -2216,6 +2246,7 @@ mod tests {
                 Some("example/repo"),
                 &payload_hash,
             )
+            .await
             .unwrap();
 
         let response = router(state)
@@ -2234,7 +2265,7 @@ mod tests {
         const BODY: &str = include_str!("../../../tests/fixtures/github/pull_request_opened.json");
         let state = Arc::new(AppState::with_store(
             test_config(),
-            ProductStore::memory().unwrap(),
+            SqliteStore::memory().unwrap(),
         ));
         let request = Request::post("/api/v1/github/webhooks")
             .header("x-github-event", "pull_request")
