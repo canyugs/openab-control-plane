@@ -58,6 +58,11 @@ pub struct PostgresStore {
 
 impl PostgresStore {
     pub fn open(url: &str) -> Result<Self> {
+        Self::open_with_options(url, None)
+    }
+
+    /// `search_path` carves out a schema — the tests' isolation mechanism.
+    pub(crate) fn open_with_options(url: &str, search_path: Option<&str>) -> Result<Self> {
         let runtime = std::sync::Arc::new(
             tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -66,7 +71,9 @@ impl PostgresStore {
                 .build()?,
         );
         let mut config: tokio_postgres::Config = url.parse()?;
-        let _unused = &mut config;
+        if let Some(schema) = search_path {
+            config.options(format!("-c search_path={schema}"));
+        }
         let manager_config = ManagerConfig {
             recycling_method: RecyclingMethod::Fast,
         };
@@ -159,6 +166,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE TABLE IF NOT EXISTS session_bots (
     session_id TEXT NOT NULL, bot_id TEXT NOT NULL,
+    -- Materializes SQLite's implicit rowid: roster order = insertion order,
+    -- and pipeline stage order rides on it.
+    ord BIGSERIAL,
     PRIMARY KEY (session_id, bot_id)
 );
 CREATE TABLE IF NOT EXISTS threads (
@@ -167,7 +177,9 @@ CREATE TABLE IF NOT EXISTS threads (
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY, session_id TEXT NOT NULL, thread_id TEXT,
     author_kind TEXT NOT NULL, author_id TEXT, audience TEXT, content TEXT NOT NULL,
-    reply_to TEXT, created_at BIGINT NOT NULL
+    reply_to TEXT, created_at BIGINT NOT NULL,
+    -- rowid replacement: same-millisecond messages keep insertion order.
+    ord BIGSERIAL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 CREATE TABLE IF NOT EXISTS reactions (
@@ -326,6 +338,8 @@ CREATE TABLE IF NOT EXISTS controller_events (
     lease_until BIGINT,
     delivered_at BIGINT,
     last_error TEXT,
+    -- rowid replacement: stable claim ordering under equal timestamps.
+    ord BIGSERIAL,
     UNIQUE(controller_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_controller_events_due
@@ -535,7 +549,22 @@ impl Store for PostgresStore {
         token_hash: &str,
         token_plain: &str,
     ) -> Result<Bot> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        let id = new_id("bot");
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "INSERT INTO bots (id, name, role, token_hash, token_plain, source)
+                     VALUES ($1, $2, $3, $4, $5, 'registered')",
+                    &[&id, &name, &role, &token_hash, &token_plain],
+                )
+                .await?;
+            Ok(Bot {
+                id: id.clone(),
+                name: name.to_string(),
+                role: role.to_string(),
+            })
+        })
     }
 
     fn seed_bot(
@@ -546,39 +575,122 @@ impl Store for PostgresStore {
         token_hash: &str,
         token_plain: &str,
     ) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            let n = client
+                .execute(
+                    "INSERT INTO bots (id, name, role, token_hash, token_plain, source)
+                     VALUES ($1, $2, $3, $4, $5, 'seeded')
+                     ON CONFLICT (id) DO NOTHING",
+                    &[&id, &name, &role, &token_hash, &token_plain],
+                )
+                .await?;
+            Ok(n > 0)
+        })
     }
 
     fn bot_by_token_hash(&self, token_hash: &str) -> Result<Option<Bot>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query_opt(
+                    "SELECT id, name, role FROM bots WHERE token_hash = $1",
+                    &[&token_hash],
+                )
+                .await?
+                .map(map_bot_pg))
+        })
     }
 
     fn bot(&self, id: &str) -> Result<Option<Bot>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query_opt("SELECT id, name, role FROM bots WHERE id = $1", &[&id])
+                .await?
+                .map(map_bot_pg))
+        })
     }
 
     fn bot_token_plain(&self, id: &str) -> Result<Option<String>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query_opt("SELECT token_plain FROM bots WHERE id = $1", &[&id])
+                .await?
+                .and_then(|r| r.get::<_, Option<String>>(0)))
+        })
     }
 
     fn bots_with_plaintext_token(&self) -> Result<Vec<String>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query(
+                    "SELECT name FROM bots
+                     WHERE token_plain IS NOT NULL AND token_plain != ''
+                     ORDER BY name",
+                    &[],
+                )
+                .await?
+                .iter()
+                .map(|r| r.get(0))
+                .collect())
+        })
     }
 
     fn touch_last_seen(&self, bot_id: &str) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.touch_last_seen_at(bot_id, now_ms())
     }
 
     fn touch_last_seen_at(&self, bot_id: &str, ts: i64) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            // Monotonic: never move last_seen backwards (council #274 F1).
+            client
+                .execute(
+                    "UPDATE bots SET last_seen = $2
+                     WHERE id = $1 AND (last_seen IS NULL OR $2 > last_seen)",
+                    &[&bot_id, &ts],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn list_bots(&self) -> Result<Vec<BotInventory>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query(
+                    "SELECT id, name, role, provider, capabilities, enabled,
+                            health, note, version, runtime, last_seen, source
+                     FROM bots
+                     ORDER BY id ASC",
+                    &[],
+                )
+                .await?
+                .iter()
+                .map(map_bot_inventory_pg)
+                .collect())
+        })
     }
 
     fn bot_inventory(&self, id: &str) -> Result<Option<BotInventory>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query_opt(
+                    "SELECT id, name, role, provider, capabilities, enabled,
+                            health, note, version, runtime, last_seen, source
+                     FROM bots
+                     WHERE id = $1",
+                    &[&id],
+                )
+                .await?
+                .as_ref()
+                .map(map_bot_inventory_pg))
+        })
     }
 
     fn discover_bot(
@@ -588,15 +700,159 @@ impl Store for PostgresStore {
         role: &str,
         metadata: &BotMetadata,
     ) -> Result<(Bot, bool)> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        let capabilities = metadata.capabilities.as_deref().map(capabilities_json);
+        let runtime = runtime_json(&metadata.runtime);
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            tx.query("SELECT pg_advisory_xact_lock(hashtext($1))", &[&id])
+                .await?;
+            let source: Option<String> = tx
+                .query_opt("SELECT source FROM bots WHERE id = $1", &[&id])
+                .await?
+                .map(|r| r.get(0));
+            let inserted = if source.is_some() {
+                tx.execute(
+                    "UPDATE bots
+                     SET provider = COALESCE($2, provider),
+                         capabilities = CASE WHEN $3 THEN $4 ELSE capabilities END,
+                         version = COALESCE($5, version),
+                         runtime = COALESCE($6, runtime)
+                     WHERE id = $1",
+                    &[
+                        &id,
+                        &metadata.provider.as_deref(),
+                        &metadata.capabilities.is_some(),
+                        &capabilities.as_deref(),
+                        &metadata.version.as_deref(),
+                        &runtime.as_deref(),
+                    ],
+                )
+                .await?;
+                false
+            } else {
+                let token = format!("oabct_{}", uuid::Uuid::new_v4().simple());
+                let display_name = name.unwrap_or(id);
+                tx.execute(
+                    "INSERT INTO bots
+                        (id, name, role, token_hash, token_plain, provider, capabilities,
+                         version, runtime, source)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'discovered')",
+                    &[
+                        &id,
+                        &display_name,
+                        &role,
+                        &crate::identity::hash_token(&token),
+                        &token.as_str(),
+                        &metadata.provider.as_deref(),
+                        &capabilities.as_deref().unwrap_or("[]"),
+                        &metadata.version.as_deref(),
+                        &runtime.as_deref(),
+                    ],
+                )
+                .await?;
+                true
+            };
+            let bot = tx
+                .query_one("SELECT id, name, role FROM bots WHERE id = $1", &[&id])
+                .await
+                .map(map_bot_pg)?;
+            tx.commit().await?;
+            Ok((bot, inserted))
+        })
     }
 
     fn update_bot_metadata(&self, id: &str, patch: &BotMetadataPatch) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            let exists = tx
+                .query_opt("SELECT 1 FROM bots WHERE id = $1", &[&id])
+                .await?
+                .is_some();
+            if !exists {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+            if let Some(provider) = &patch.provider {
+                tx.execute(
+                    "UPDATE bots SET provider = $2 WHERE id = $1",
+                    &[&id, &provider.as_deref()],
+                )
+                .await?;
+            }
+            if let Some(capabilities) = &patch.capabilities {
+                tx.execute(
+                    "UPDATE bots SET capabilities = $2 WHERE id = $1",
+                    &[&id, &capabilities_json(capabilities)],
+                )
+                .await?;
+            }
+            if let Some(enabled) = patch.enabled {
+                tx.execute(
+                    "UPDATE bots SET enabled = $2 WHERE id = $1",
+                    &[&id, &(enabled as i64)],
+                )
+                .await?;
+            }
+            if let Some(health) = &patch.health {
+                tx.execute("UPDATE bots SET health = $2 WHERE id = $1", &[&id, &health])
+                    .await?;
+            }
+            if let Some(note) = &patch.note {
+                tx.execute(
+                    "UPDATE bots SET note = $2 WHERE id = $1",
+                    &[&id, &note.as_deref()],
+                )
+                .await?;
+            }
+            if let Some(version) = &patch.version {
+                tx.execute(
+                    "UPDATE bots SET version = $2 WHERE id = $1",
+                    &[&id, &version.as_deref()],
+                )
+                .await?;
+            }
+            if let Some(runtime) = &patch.runtime {
+                let runtime = runtime.as_ref().map(serde_json::to_string).transpose()?;
+                tx.execute(
+                    "UPDATE bots SET runtime = $2 WHERE id = $1",
+                    &[&id, &runtime.as_deref()],
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            Ok(true)
+        })
     }
 
     fn delete_bot(&self, bot_id: &str) -> Result<DeleteBotOutcome> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            let has_active_session = client
+                .query_opt(
+                    "SELECT 1
+                     FROM session_bots sb
+                     JOIN sessions s ON s.id = sb.session_id
+                     WHERE sb.bot_id = $1
+                       AND s.state NOT IN ('closed', 'aborted')
+                     LIMIT 1",
+                    &[&bot_id],
+                )
+                .await?
+                .is_some();
+            if has_active_session {
+                return Ok(DeleteBotOutcome::ActiveSession);
+            }
+            let deleted = client
+                .execute("DELETE FROM bots WHERE id = $1", &[&bot_id])
+                .await?;
+            if deleted == 0 {
+                Ok(DeleteBotOutcome::NotFound)
+            } else {
+                Ok(DeleteBotOutcome::Deleted)
+            }
+        })
     }
 
     fn record_bot_frame(
@@ -605,7 +861,62 @@ impl Store for PostgresStore {
         is_error: bool,
         threshold: i64,
     ) -> Result<BotHealthTransition> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let mut client = self.client().await?;
+            // Serialize per bot: SQLite ran this read-decide-write under the
+            // global connection lock; two concurrent frames must not race the
+            // consecutive_errors counter past the degraded threshold.
+            let tx = client.transaction().await?;
+            tx.query("SELECT pg_advisory_xact_lock(hashtext($1))", &[&bot_id])
+                .await?;
+            let Some(row) = tx
+                .query_opt(
+                    "SELECT consecutive_errors, health FROM bots WHERE id = $1",
+                    &[&bot_id],
+                )
+                .await?
+            else {
+                tx.rollback().await?;
+                return Ok(BotHealthTransition::None); // unknown bot
+            };
+            let (errors, health): (i64, String) = (row.get(0), row.get(1));
+            let outcome = if is_error {
+                let next = errors + 1;
+                if next >= threshold && health != "degraded" {
+                    tx.execute(
+                        "UPDATE bots SET consecutive_errors = $2, last_error_at = $3, health = 'degraded' WHERE id = $1",
+                        &[&bot_id, &next, &now_ms()],
+                    )
+                    .await?;
+                    BotHealthTransition::Degraded
+                } else {
+                    tx.execute(
+                        "UPDATE bots SET consecutive_errors = $2, last_error_at = $3 WHERE id = $1",
+                        &[&bot_id, &next, &now_ms()],
+                    )
+                    .await?;
+                    BotHealthTransition::None
+                }
+            } else if health == "degraded" {
+                tx.execute(
+                    "UPDATE bots SET consecutive_errors = 0, health = 'ok' WHERE id = $1",
+                    &[&bot_id],
+                )
+                .await?;
+                BotHealthTransition::Recovered
+            } else if errors != 0 {
+                tx.execute(
+                    "UPDATE bots SET consecutive_errors = 0 WHERE id = $1",
+                    &[&bot_id],
+                )
+                .await?;
+                BotHealthTransition::None
+            } else {
+                BotHealthTransition::None
+            };
+            tx.commit().await?;
+            Ok(outcome)
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -768,7 +1079,17 @@ impl Store for PostgresStore {
     }
 
     fn mark_once(&self, key: &str) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            let n = client
+                .execute(
+                    "INSERT INTO settings (key, value) VALUES ($1, '1')
+                     ON CONFLICT (key) DO NOTHING",
+                    &[&key],
+                )
+                .await?;
+            Ok(n == 1)
+        })
     }
 
     fn upsert_pending_review(
@@ -799,7 +1120,20 @@ impl Store for PostgresStore {
     }
 
     fn roster(&self, session_id: &str) -> Result<Vec<String>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            // ord materializes SQLite's rowid: insertion order = the order the
+            // roster was passed at create_session; pipeline stages ride on it.
+            Ok(client
+                .query(
+                    "SELECT bot_id FROM session_bots WHERE session_id = $1 ORDER BY ord",
+                    &[&session_id],
+                )
+                .await?
+                .iter()
+                .map(|r| r.get(0))
+                .collect())
+        })
     }
 
     fn active_session_for_trigger(&self, trigger_ref: &str) -> Result<Option<String>> {
@@ -807,11 +1141,35 @@ impl Store for PostgresStore {
     }
 
     fn standing_roster(&self) -> Result<Option<Vec<String>>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            let value: Option<String> = client
+                .query_opt(
+                    "SELECT value FROM settings WHERE key = 'council_roster'",
+                    &[],
+                )
+                .await?
+                .map(|r| r.get(0));
+            value
+                .map(|raw| serde_json::from_str(&raw).context("decode council_roster setting"))
+                .transpose()
+        })
     }
 
     fn set_standing_roster(&self, roster: &[String]) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        let value = serde_json::to_string(roster)?;
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "INSERT INTO settings (key, value)
+                     VALUES ('council_roster', $1)
+                     ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    &[&value],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn upsert_thread(&self, session_id: &str, root_message_id: Option<&str>) -> Result<String> {
@@ -926,5 +1284,173 @@ impl Store for PostgresStore {
 
     fn stats(&self, now: i64) -> Result<Value> {
         unimplemented!("ADR 033 phase 2: not yet ported")
+    }
+}
+
+fn map_bot_pg(r: tokio_postgres::Row) -> Bot {
+    Bot {
+        id: r.get(0),
+        name: r.get(1),
+        role: r.get(2),
+    }
+}
+
+fn map_bot_inventory_pg(r: &tokio_postgres::Row) -> BotInventory {
+    BotInventory {
+        id: r.get(0),
+        name: r.get(1),
+        role: r.get(2),
+        provider: r.get(3),
+        capabilities: parse_capabilities(r.get(4)),
+        enabled: r.get::<_, i64>(5) != 0,
+        health: r.get(6),
+        note: r.get(7),
+        version: r.get(8),
+        runtime: parse_runtime(r.get(9)),
+        last_seen_ms: r.get(10),
+        source: r.get(11),
+    }
+}
+
+/// Skips (loudly) without `TEST_POSTGRES_URL`; each test owns a throwaway
+/// schema, dropped and recreated on entry.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store(tag: &str) -> Option<PostgresStore> {
+        let Ok(url) = std::env::var("TEST_POSTGRES_URL") else {
+            eprintln!("TEST_POSTGRES_URL not set; skipping kernel postgres test");
+            return None;
+        };
+        let schema = format!("oab_kernel_{tag}");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let (client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+            tokio::spawn(connection);
+            client
+                .batch_execute(&format!(
+                    "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema};"
+                ))
+                .await
+                .unwrap();
+        });
+        Some(PostgresStore::open_with_options(&url, Some(&schema)).unwrap())
+    }
+
+    #[test]
+    fn bot_identity_seed_register_and_token_lookup() {
+        let Some(s) = store("bots_identity") else {
+            return;
+        };
+        assert!(s
+            .seed_bot("chair", "Chair", "chair", "hash-1", "tok-1")
+            .unwrap());
+        assert!(
+            !s.seed_bot("chair", "Chair", "chair", "other", "tok-x")
+                .unwrap(),
+            "seeding an existing id is a no-op"
+        );
+        let bot = s
+            .register_bot("rev", "reviewer", "hash-2", "tok-2")
+            .unwrap();
+        assert!(bot.id.starts_with("bot"));
+        assert_eq!(s.bot_by_token_hash("hash-1").unwrap().unwrap().id, "chair");
+        assert_eq!(s.bot("chair").unwrap().unwrap().role, "chair");
+        assert_eq!(
+            s.bot_token_plain("chair").unwrap().as_deref(),
+            Some("tok-1")
+        );
+        let names = s.bots_with_plaintext_token().unwrap();
+        assert!(names.contains(&"Chair".to_string()));
+    }
+
+    #[test]
+    fn last_seen_is_monotonic() {
+        let Some(s) = store("last_seen") else { return };
+        s.seed_bot("b", "B", "reviewer", "h", "t").unwrap();
+        s.touch_last_seen_at("b", 2_000).unwrap();
+        s.touch_last_seen_at("b", 1_000).unwrap(); // stale clock must not clobber
+        let inv = s.bot_inventory("b").unwrap().unwrap();
+        assert_eq!(inv.last_seen_ms, Some(2_000));
+    }
+
+    #[test]
+    fn record_bot_frame_degrades_once_and_recovers() {
+        let Some(s) = store("bot_frames") else { return };
+        s.seed_bot("b", "B", "reviewer", "h", "t").unwrap();
+        assert!(matches!(
+            s.record_bot_frame("b", true, 2).unwrap(),
+            BotHealthTransition::None
+        ));
+        assert!(matches!(
+            s.record_bot_frame("b", true, 2).unwrap(),
+            BotHealthTransition::Degraded
+        ));
+        assert!(
+            matches!(
+                s.record_bot_frame("b", true, 2).unwrap(),
+                BotHealthTransition::None,
+            ),
+            "already degraded does not re-fire"
+        );
+        assert!(matches!(
+            s.record_bot_frame("b", false, 2).unwrap(),
+            BotHealthTransition::Recovered
+        ));
+        assert!(matches!(
+            s.record_bot_frame("missing", true, 2).unwrap(),
+            BotHealthTransition::None
+        ));
+    }
+
+    #[test]
+    fn standing_roster_and_mark_once_round_trip() {
+        let Some(s) = store("settings") else { return };
+        assert_eq!(s.standing_roster().unwrap(), None);
+        s.set_standing_roster(&["chair".into(), "rev".into()])
+            .unwrap();
+        assert_eq!(
+            s.standing_roster().unwrap(),
+            Some(vec!["chair".to_string(), "rev".to_string()])
+        );
+        assert!(s.mark_once("migration-x").unwrap());
+        assert!(
+            !s.mark_once("migration-x").unwrap(),
+            "second mark is a no-op"
+        );
+    }
+
+    #[test]
+    fn discover_bot_inserts_then_upserts_metadata() {
+        let Some(s) = store("discover") else { return };
+        let meta = BotMetadata {
+            provider: Some("claude".into()),
+            capabilities: Some(vec!["review".into()]),
+            version: Some("1.0".into()),
+            runtime: None,
+        };
+        let (bot, inserted) = s.discover_bot("d1", Some("D1"), "reviewer", &meta).unwrap();
+        assert!(inserted);
+        assert_eq!(bot.name, "D1");
+        let meta2 = BotMetadata {
+            provider: None,
+            capabilities: None,
+            version: Some("1.1".into()),
+            runtime: None,
+        };
+        let (_, inserted) = s.discover_bot("d1", None, "reviewer", &meta2).unwrap();
+        assert!(!inserted);
+        let inv = s.bot_inventory("d1").unwrap().unwrap();
+        assert_eq!(
+            inv.provider.as_deref(),
+            Some("claude"),
+            "None must not clobber"
+        );
+        assert_eq!(inv.version.as_deref(), Some("1.1"));
+        assert_eq!(inv.source, "discovered");
     }
 }
