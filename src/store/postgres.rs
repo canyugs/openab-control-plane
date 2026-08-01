@@ -604,7 +604,7 @@ impl Store for PostgresStore {
                 .execute(
                     "UPDATE review_waivers SET
                         expires_at = COALESCE($2, expires_at),
-                        revoked_at = CASE WHEN $3 THEN $4 ELSE revoked_at END
+                        revoked_at = CASE WHEN $3 THEN COALESCE(revoked_at, $4) ELSE revoked_at END
                      WHERE id = $1",
                     &[&id, &expires_at, &revoke, &now_ms()],
                 )

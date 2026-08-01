@@ -42,6 +42,7 @@ rustls-native-certs = "0.8.4"
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 
 [dev-dependencies]
+serde_urlencoded = "0.7"
 github-pr-controller = { path = "crates/github-pr-controller" }
 tokio-tungstenite = "0.23"
 futures-util = "0.3"

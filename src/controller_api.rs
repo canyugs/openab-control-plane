@@ -366,8 +366,17 @@ pub struct UpdateReviewWaiver {
 #[derive(Debug, Deserialize)]
 pub struct ListReviewWaivers {
     pub repo: Option<String>,
-    #[serde(default)]
+    /// Accepts 1/true/yes — query strings are not JSON booleans.
+    #[serde(default, deserialize_with = "flag_from_query")]
     pub all: bool,
+}
+
+fn flag_from_query<'de, D>(deserializer: D) -> std::result::Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    Ok(matches!(raw.as_str(), "1" | "true" | "yes"))
 }
 
 /// ADR 035 P1: the human gate. Only the operator key writes waivers; PR
@@ -391,6 +400,12 @@ pub async fn create_review_waiver(
     }
     if created_by.is_empty() || created_by.len() > 100 {
         return admin_error(StatusCode::BAD_REQUEST, "created_by must be 1..=100 bytes");
+    }
+    if request.path_class.as_deref().is_some_and(|v| v.len() > 300) {
+        return admin_error(StatusCode::BAD_REQUEST, "path_class must be <=300 bytes");
+    }
+    if request.origin_pr.as_deref().is_some_and(|v| v.len() > 200) {
+        return admin_error(StatusCode::BAD_REQUEST, "origin_pr must be <=200 bytes");
     }
     if request.expires_at <= now_ms() {
         return admin_error(
@@ -2179,9 +2194,9 @@ mod tests {
         .await;
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
         let empty = update_review_waiver(
-            State(state),
-            operator,
-            Path(waiver_id),
+            State(state.clone()),
+            operator.clone(),
+            Path(waiver_id.clone()),
             Json(UpdateReviewWaiver {
                 expires_at: None,
                 revoke: false,
@@ -2189,6 +2204,33 @@ mod tests {
         )
         .await;
         assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+
+        // Re-revoking never rewrites history: the first revocation time wins.
+        let first_revoked_at = store.list_review_waivers(None, true, now_ms()).unwrap()[0]
+            .revoked_at
+            .unwrap();
+        let again = update_review_waiver(
+            State(state),
+            operator,
+            Path(waiver_id),
+            Json(UpdateReviewWaiver {
+                expires_at: None,
+                revoke: true,
+            }),
+        )
+        .await;
+        assert_eq!(again.status(), StatusCode::OK);
+        assert_eq!(
+            store.list_review_waivers(None, true, now_ms()).unwrap()[0].revoked_at,
+            Some(first_revoked_at)
+        );
+
+        // Query strings are not JSON: ?all=1 must parse as true.
+        let query: ListReviewWaivers =
+            serde_urlencoded::from_str("all=1").expect("all=1 parses");
+        assert!(query.all);
+        let query: ListReviewWaivers = serde_urlencoded::from_str("").unwrap();
+        assert!(!query.all);
     }
 
     #[tokio::test]
