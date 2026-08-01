@@ -325,19 +325,21 @@ pub async fn set_installation_state(
         actions.as_deref(),
         scopes.as_deref(),
     ) {
-        Ok(true) => json_response(
+        // The response is the full post-state, never an echo of the patch:
+        // an untouched field reads as its real value, not as null.
+        Ok(Some(config)) => json_response(
             StatusCode::OK,
             &serde_json::json!({
                 "controller_id": controller_id,
-                "enabled": request.enabled,
-                "max_concurrent_sessions": request.max_concurrent_sessions,
-                "max_actions_per_minute": request.max_actions_per_minute,
-                "actions": actions,
-                "scopes": scopes,
+                "enabled": config.enabled,
+                "max_concurrent_sessions": config.max_concurrent_sessions,
+                "max_actions_per_minute": config.max_actions_per_minute,
+                "actions": config.actions,
+                "scopes": config.scopes,
             }),
             None,
         ),
-        Ok(false) => admin_error(StatusCode::NOT_FOUND, "unknown controller installation"),
+        Ok(None) => admin_error(StatusCode::NOT_FOUND, "unknown controller installation"),
         Err(error) => admin_store_error(error),
     }
 }
@@ -1953,6 +1955,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_legacy_enabled_only_patch_body_still_deserializes() {
+        let legacy: SetControllerState = serde_json::from_str(r#"{"enabled": false}"#).unwrap();
+        assert_eq!(legacy.enabled, Some(false));
+        assert!(legacy.max_concurrent_sessions.is_none());
+        assert!(legacy.max_actions_per_minute.is_none());
+        assert!(legacy.actions.is_none());
+        assert!(legacy.scopes.is_none());
+    }
+
     #[tokio::test]
     async fn a_disabled_registration_drains_its_own_sessions_and_admits_nothing_new() {
         let (state, store, _auth, token) = setup(5, 60);
@@ -2049,7 +2061,14 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(patched.status(), StatusCode::OK);
+        let (patched_status, patched_body, _) = response(patched).await;
+        assert_eq!(patched_status, StatusCode::OK);
+        // The response is the full post-state — untouched fields carry their
+        // real values, not nulls.
+        assert_eq!(patched_body["enabled"], true);
+        assert_eq!(patched_body["max_concurrent_sessions"], 5);
+        assert_eq!(patched_body["max_actions_per_minute"], 120);
+        assert!(patched_body["actions"].as_array().is_some_and(|a| !a.is_empty()));
         assert_eq!(
             request(
                 &state,
@@ -2123,6 +2142,16 @@ mod tests {
         )
         .await;
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+        // Every PATCH left a before/after audit row (ADR 034 §1).
+        let audit = store.controller_event_audit("ctrl-a").unwrap();
+        let patches: Vec<_> = audit
+            .iter()
+            .filter(|row| row.kind == "installation_patched")
+            .collect();
+        assert_eq!(patches.len(), 2, "two effective patches, two audit rows");
+        let detail: Value = serde_json::from_str(&patches[0].detail).unwrap();
+        assert!(detail["before"].is_object() && detail["after"].is_object());
     }
 
     #[tokio::test]

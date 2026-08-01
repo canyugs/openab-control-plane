@@ -321,6 +321,17 @@ pub enum ControllerOpenDecision {
     Supersede(ControllerSessionBinding),
 }
 
+/// The full mutable configuration of a registration, as it stands after a
+/// PATCH — the response body, so callers never have to interpret nulls.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ControllerInstallationConfig {
+    pub enabled: bool,
+    pub max_concurrent_sessions: i64,
+    pub max_actions_per_minute: i64,
+    pub actions: Vec<String>,
+    pub scopes: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControllerActionDenial {
     Credential,
@@ -412,7 +423,8 @@ pub trait Store: Send + Sync {
     /// ADR 034: mutate any subset of a registration's configuration in ONE
     /// transaction — a reader can never observe a half-applied replace-set.
     /// `None` leaves a field untouched; `Some` replace-sets grants/scopes.
-    /// Returns false for an unknown registration.
+    /// Records a before/after audit row and returns the full post-state, or
+    /// `None` for an unknown registration.
     #[allow(clippy::too_many_arguments)]
     fn patch_controller_installation(
         &self,
@@ -422,7 +434,7 @@ pub trait Store: Send + Sync {
         max_actions_per_minute: Option<i64>,
         actions: Option<&[String]>,
         scopes: Option<&[String]>,
-    ) -> Result<bool>;
+    ) -> Result<Option<ControllerInstallationConfig>>;
     #[allow(clippy::too_many_arguments)]
     fn put_controller_action_token(
         &self,
@@ -1522,18 +1534,57 @@ impl Store for SqliteStore {
         max_actions_per_minute: Option<i64>,
         actions: Option<&[String]>,
         scopes: Option<&[String]>,
-    ) -> Result<bool> {
+    ) -> Result<Option<ControllerInstallationConfig>> {
+        fn read_config(
+            tx: &rusqlite::Transaction,
+            controller_id: &str,
+        ) -> Result<Option<ControllerInstallationConfig>> {
+            let Some((enabled, max_concurrent_sessions, max_actions_per_minute)) = tx
+                .query_row(
+                    "SELECT enabled, max_concurrent_sessions, max_actions_per_minute
+                     FROM controllers WHERE id = ?1",
+                    params![controller_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)? != 0,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .optional()?
+            else {
+                return Ok(None);
+            };
+            let mut grants = tx.prepare(
+                "SELECT action_kind FROM controller_action_grants
+                 WHERE controller_id = ?1 AND granted = 1 ORDER BY action_kind",
+            )?;
+            let actions = grants
+                .query_map(params![controller_id], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let mut bindings = tx.prepare(
+                "SELECT scope FROM controller_bindings
+                 WHERE controller_id = ?1 AND enabled = 1 ORDER BY scope",
+            )?;
+            let scopes = bindings
+                .query_map(params![controller_id], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(Some(ControllerInstallationConfig {
+                enabled,
+                max_concurrent_sessions,
+                max_actions_per_minute,
+                actions,
+                scopes,
+            }))
+        }
+
         let mut c = self.conn.lock().unwrap();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = now_ms();
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM controllers WHERE id = ?1)",
-            params![controller_id],
-            |row| row.get(0),
-        )?;
-        if !exists {
-            return Ok(false);
-        }
+        let Some(before) = read_config(&tx, controller_id)? else {
+            return Ok(None);
+        };
         if let Some(enabled) = enabled {
             tx.execute(
                 "UPDATE controllers SET enabled = ?2, updated_at = ?3 WHERE id = ?1",
@@ -1587,8 +1638,26 @@ impl Store for SqliteStore {
                 )?;
             }
         }
+        let after = read_config(&tx, controller_id)?
+            .context("registration vanished mid-transaction")?;
+        // ADR 034 §1: every PATCH lands in the audit trail with the
+        // before/after of the whole mutable document.
+        tx.execute(
+            "INSERT INTO controller_event_audit
+                (controller_id, event_id, kind, detail, created_at)
+             VALUES (?1, ?2, 'installation_patched', ?3, ?4)",
+            params![
+                controller_id,
+                new_id("cfg"),
+                serde_json::to_string(&json!({
+                    "before": before,
+                    "after": after,
+                }))?,
+                now
+            ],
+        )?;
         tx.commit()?;
-        Ok(true)
+        Ok(Some(after))
     }
 
     fn put_controller_action_token(
