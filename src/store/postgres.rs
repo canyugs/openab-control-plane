@@ -1959,6 +1959,177 @@ fn map_bot_inventory_pg(r: &tokio_postgres::Row) -> BotInventory {
     }
 }
 
+fn is_pg_unique_violation(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<tokio_postgres::Error>()
+            .and_then(|e| e.code())
+            .is_some_and(|c| *c == tokio_postgres::error::SqlState::UNIQUE_VIOLATION)
+    })
+}
+
+fn map_session_pg(r: &tokio_postgres::Row) -> Session {
+    Session {
+        id: r.get(0),
+        title: r.get(1),
+        state: r.get(2),
+        trigger_ref: r.get(3),
+        trigger_fingerprint: r.get(4),
+        quorum_n: r.get(5),
+        chair_bot: r.get(6),
+        created_at: r.get(7),
+        closed_at: r.get(8),
+        mode: r.get(9),
+        decision: r.get(10),
+        findings_red: r.get(11),
+        findings_yellow: r.get(12),
+        findings_green: r.get(13),
+        result_author_id: r.get(14),
+        result_message_ids: r.get(15),
+    }
+}
+
+const SESSION_COLS: &str = "id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode, decision, findings_red, findings_yellow, findings_green, result_author_id, result_message_ids";
+
+async fn active_session_for_trigger_pg<G: tokio_postgres::GenericClient>(
+    g: &G,
+    trigger_ref: &str,
+) -> Result<Option<Session>> {
+    Ok(g.query_opt(
+        &format!(
+            "SELECT {SESSION_COLS} FROM sessions
+              WHERE trigger_ref = $1 AND state NOT IN ('closed', 'aborted')
+              ORDER BY created_at DESC, id DESC LIMIT 1"
+        ),
+        &[&trigger_ref],
+    )
+    .await?
+    .as_ref()
+    .map(map_session_pg))
+}
+
+async fn enqueue_controller_event_pg<G: tokio_postgres::GenericClient>(
+    g: &G,
+    controller_id: &str,
+    session_id: Option<&str>,
+    event_type: &str,
+    payload: Value,
+    idempotency_key: &str,
+    occurred_at: i64,
+) -> Result<()> {
+    let destination = g
+        .query_opt(
+            "SELECT c.event_endpoint, c.event_key_version
+             FROM controllers c
+             JOIN controller_event_grants g ON g.controller_id = c.id
+             WHERE c.id = $1 AND c.enabled = 1
+               AND c.event_endpoint IS NOT NULL AND c.event_key_version IS NOT NULL
+               AND g.event_type = $2 AND g.granted = 1",
+            &[&controller_id, &event_type],
+        )
+        .await?
+        .map(|row| (row.get::<_, String>(0), row.get::<_, i64>(1)));
+    let Some((event_endpoint, event_key_version)) = destination else {
+        return Ok(());
+    };
+    let event_id = new_id("cev");
+    let body_json = serde_json::to_string(&json!({
+        "version": "1",
+        "event_id": event_id,
+        "controller_id": controller_id,
+        "event_type": event_type,
+        "session_id": session_id,
+        "occurred_at": occurred_at,
+        "payload": payload,
+    }))?;
+    g.execute(
+        "INSERT INTO controller_events
+            (id, controller_id, session_id, event_type, event_endpoint, event_key_version,
+             body_json, idempotency_key, state, attempts, created_at, next_attempt_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', 0, $9, $9)
+         ON CONFLICT (controller_id, idempotency_key) DO NOTHING",
+        &[
+            &event_id,
+            &controller_id,
+            &session_id,
+            &event_type,
+            &event_endpoint,
+            &event_key_version,
+            &body_json,
+            &idempotency_key,
+            &occurred_at,
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn enqueue_controller_session_event_pg<G: tokio_postgres::GenericClient>(
+    g: &G,
+    session_id: &str,
+    event_type: &str,
+    payload: Value,
+    idempotency_key: &str,
+    occurred_at: i64,
+) -> Result<()> {
+    let controller_id: Option<String> = g
+        .query_opt(
+            "SELECT controller_id FROM controller_sessions WHERE session_id = $1",
+            &[&session_id],
+        )
+        .await?
+        .map(|r| r.get(0));
+    if let Some(controller_id) = controller_id {
+        enqueue_controller_event_pg(
+            g,
+            &controller_id,
+            Some(session_id),
+            event_type,
+            payload,
+            idempotency_key,
+            occurred_at,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn insert_opening_input_pg<G: tokio_postgres::GenericClient>(
+    g: &G,
+    session_id: &str,
+    input: &OpeningInput,
+    created_at: i64,
+) -> Result<()> {
+    g.execute(
+        "INSERT INTO messages
+            (id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at)
+         VALUES ($1, $2, NULL, 'client', NULL, $3, $4, NULL, $5)",
+        &[
+            &new_id("msg"),
+            &session_id,
+            &input.recipient,
+            &input.content,
+            &created_at,
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+fn map_message_pg(r: &tokio_postgres::Row) -> Message {
+    Message {
+        id: r.get(0),
+        session_id: r.get(1),
+        thread_id: r.get(2),
+        author_kind: r.get(3),
+        author_id: r.get(4),
+        audience: r.get(5),
+        content: r.get(6),
+        reply_to: r.get(7),
+        created_at: r.get(8),
+    }
+}
+
 /// Skips (loudly) without `TEST_POSTGRES_URL`; each test owns a throwaway
 /// schema, dropped and recreated on entry.
 #[cfg(test)]
@@ -2300,176 +2471,5 @@ mod tests {
         );
         assert_eq!(inv.version.as_deref(), Some("1.1"));
         assert_eq!(inv.source, "discovered");
-    }
-}
-
-fn is_pg_unique_violation(err: &anyhow::Error) -> bool {
-    err.chain().any(|cause| {
-        cause
-            .downcast_ref::<tokio_postgres::Error>()
-            .and_then(|e| e.code())
-            .is_some_and(|c| *c == tokio_postgres::error::SqlState::UNIQUE_VIOLATION)
-    })
-}
-
-fn map_session_pg(r: &tokio_postgres::Row) -> Session {
-    Session {
-        id: r.get(0),
-        title: r.get(1),
-        state: r.get(2),
-        trigger_ref: r.get(3),
-        trigger_fingerprint: r.get(4),
-        quorum_n: r.get(5),
-        chair_bot: r.get(6),
-        created_at: r.get(7),
-        closed_at: r.get(8),
-        mode: r.get(9),
-        decision: r.get(10),
-        findings_red: r.get(11),
-        findings_yellow: r.get(12),
-        findings_green: r.get(13),
-        result_author_id: r.get(14),
-        result_message_ids: r.get(15),
-    }
-}
-
-const SESSION_COLS: &str = "id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode, decision, findings_red, findings_yellow, findings_green, result_author_id, result_message_ids";
-
-async fn active_session_for_trigger_pg<G: tokio_postgres::GenericClient>(
-    g: &G,
-    trigger_ref: &str,
-) -> Result<Option<Session>> {
-    Ok(g.query_opt(
-        &format!(
-            "SELECT {SESSION_COLS} FROM sessions
-              WHERE trigger_ref = $1 AND state NOT IN ('closed', 'aborted')
-              ORDER BY created_at DESC, id DESC LIMIT 1"
-        ),
-        &[&trigger_ref],
-    )
-    .await?
-    .as_ref()
-    .map(map_session_pg))
-}
-
-async fn enqueue_controller_event_pg<G: tokio_postgres::GenericClient>(
-    g: &G,
-    controller_id: &str,
-    session_id: Option<&str>,
-    event_type: &str,
-    payload: Value,
-    idempotency_key: &str,
-    occurred_at: i64,
-) -> Result<()> {
-    let destination = g
-        .query_opt(
-            "SELECT c.event_endpoint, c.event_key_version
-             FROM controllers c
-             JOIN controller_event_grants g ON g.controller_id = c.id
-             WHERE c.id = $1 AND c.enabled = 1
-               AND c.event_endpoint IS NOT NULL AND c.event_key_version IS NOT NULL
-               AND g.event_type = $2 AND g.granted = 1",
-            &[&controller_id, &event_type],
-        )
-        .await?
-        .map(|row| (row.get::<_, String>(0), row.get::<_, i64>(1)));
-    let Some((event_endpoint, event_key_version)) = destination else {
-        return Ok(());
-    };
-    let event_id = new_id("cev");
-    let body_json = serde_json::to_string(&json!({
-        "version": "1",
-        "event_id": event_id,
-        "controller_id": controller_id,
-        "event_type": event_type,
-        "session_id": session_id,
-        "occurred_at": occurred_at,
-        "payload": payload,
-    }))?;
-    g.execute(
-        "INSERT INTO controller_events
-            (id, controller_id, session_id, event_type, event_endpoint, event_key_version,
-             body_json, idempotency_key, state, attempts, created_at, next_attempt_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', 0, $9, $9)
-         ON CONFLICT (controller_id, idempotency_key) DO NOTHING",
-        &[
-            &event_id,
-            &controller_id,
-            &session_id,
-            &event_type,
-            &event_endpoint,
-            &event_key_version,
-            &body_json,
-            &idempotency_key,
-            &occurred_at,
-        ],
-    )
-    .await?;
-    Ok(())
-}
-
-async fn enqueue_controller_session_event_pg<G: tokio_postgres::GenericClient>(
-    g: &G,
-    session_id: &str,
-    event_type: &str,
-    payload: Value,
-    idempotency_key: &str,
-    occurred_at: i64,
-) -> Result<()> {
-    let controller_id: Option<String> = g
-        .query_opt(
-            "SELECT controller_id FROM controller_sessions WHERE session_id = $1",
-            &[&session_id],
-        )
-        .await?
-        .map(|r| r.get(0));
-    if let Some(controller_id) = controller_id {
-        enqueue_controller_event_pg(
-            g,
-            &controller_id,
-            Some(session_id),
-            event_type,
-            payload,
-            idempotency_key,
-            occurred_at,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-async fn insert_opening_input_pg<G: tokio_postgres::GenericClient>(
-    g: &G,
-    session_id: &str,
-    input: &OpeningInput,
-    created_at: i64,
-) -> Result<()> {
-    g.execute(
-        "INSERT INTO messages
-            (id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at)
-         VALUES ($1, $2, NULL, 'client', NULL, $3, $4, NULL, $5)",
-        &[
-            &new_id("msg"),
-            &session_id,
-            &input.recipient,
-            &input.content,
-            &created_at,
-        ],
-    )
-    .await?;
-    Ok(())
-}
-
-fn map_message_pg(r: &tokio_postgres::Row) -> Message {
-    Message {
-        id: r.get(0),
-        session_id: r.get(1),
-        thread_id: r.get(2),
-        author_kind: r.get(3),
-        author_id: r.get(4),
-        audience: r.get(5),
-        content: r.get(6),
-        reply_to: r.get(7),
-        created_at: r.get(8),
     }
 }
