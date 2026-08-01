@@ -613,6 +613,24 @@ impl Store for PostgresStore {
         })
     }
 
+    fn record_waiver_fired(&self, ids: &[String]) -> Result<()> {
+        self.block(async {
+            let client = self.client().await?;
+            let now = now_ms();
+            for id in ids {
+                client
+                    .execute(
+                        "UPDATE review_waivers
+                         SET fired_count = fired_count + 1, last_fired_at = $2
+                         WHERE id = $1",
+                        &[&id, &now],
+                    )
+                    .await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+    }
+
     fn patch_controller_installation(
         &self,
         controller_id: &str,

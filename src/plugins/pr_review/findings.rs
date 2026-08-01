@@ -44,6 +44,10 @@ pub struct Finding {
     /// Review angle the finding is attributed to (per-angle SNR, ADR 021 D3).
     #[serde(default)]
     pub angle: Option<String>,
+    /// ADR 035 P2: set when `status` is `waived` — the ledger row this
+    /// finding matched. Drives the fired counters, nothing else.
+    #[serde(default)]
+    pub waiver_id: Option<String>,
 }
 
 fn default_status() -> String {
@@ -64,7 +68,9 @@ pub fn parse_findings_block(text: &str) -> Option<FindingsBlock> {
         .find_map(|(end, _)| serde_json::from_str(rest[..end].trim()).ok())?;
     let valid = block.findings.iter().all(|f| {
         matches!(f.severity.as_str(), "red" | "yellow" | "green")
-            && matches!(f.status.as_str(), "open" | "resolved" | "dismissed")
+            // `waived` since ADR 035 P2 — a finding matched to an operator
+            // waiver at synthesis; carries `waiver_id` for the fired counter.
+            && matches!(f.status.as_str(), "open" | "resolved" | "dismissed" | "waived")
             && !f.id.trim().is_empty()
             && !f.title.trim().is_empty()
     });

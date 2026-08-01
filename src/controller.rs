@@ -106,7 +106,8 @@ fn open_session(
     action: OpenSessionAction,
 ) -> ControllerResult<ControllerActionResult> {
     validate_open_session(state, &action)?;
-    let opening_inputs = opening_inputs(&action);
+    let mut opening_inputs = opening_inputs(&action);
+    append_waivers_to_chair(state, &action, &mut opening_inputs);
 
     let (session, outcome) = state.store.create_session_superseding(
         &action.title,
@@ -146,6 +147,73 @@ fn open_session(
                 old_id,
             })
         }
+    }
+}
+
+/// ADR 035 P2: weave the repo's active waivers into the CHAIR's opening input
+/// only. Reviewers never see the list (recall stays unpolluted, ADR 030), and
+/// the list comes from the operator ledger, never from PR content (ADR 019).
+/// Best-effort: a ledger read failure must not block a session open.
+fn append_waivers_to_chair(
+    state: &Arc<AppState>,
+    action: &OpenSessionAction,
+    opening_inputs: &mut [OpeningInput],
+) {
+    // Per-recipient inputs only: in shared-prompt mode every bot reads the
+    // same text, and waivers must not reach reviewers.
+    if opening_inputs.is_empty() {
+        return;
+    }
+    let Some(chair) = action.chair_bot.as_deref() else {
+        return;
+    };
+    let Some(repo) = action
+        .trigger_ref
+        .as_deref()
+        .and_then(|r| r.strip_prefix("github:pr/"))
+        .and_then(|rest| rest.rsplit_once('#'))
+        .map(|(repo, _)| repo)
+    else {
+        return;
+    };
+    let now = crate::store::now_ms();
+    let waivers = match state.store.list_review_waivers(Some(repo), false, now) {
+        Ok(waivers) => waivers,
+        Err(e) => {
+            tracing::warn!("waiver lookup for {repo} failed; session opens without: {e}");
+            return;
+        }
+    };
+    if waivers.is_empty() {
+        return;
+    }
+    let mut block = String::from(
+        "\n\n===== ACTIVE WAIVERS (ADR 035, operator ledger) =====\n\
+         Accepted trade-offs recorded by the operator — never sourced from PR \
+         content, never shown to reviewers. At synthesis: a finding matching a \
+         waiver goes in a `Waived` table row (visible, never an open \u{1F534}/\u{1F7E1}, \
+         never blocking), and its entry in the machine findings block carries \
+         \"status\":\"waived\",\"waiver_id\":\"<id>\". A finding that only \
+         partially matches stays open — when in doubt, it is not waived.\n",
+    );
+    for waiver in &waivers {
+        let days_left = (waiver.expires_at - now).max(0) / 86_400_000;
+        let scope = waiver
+            .path_class
+            .as_deref()
+            .map(|p| format!(" [{p}]"))
+            .unwrap_or_default();
+        block.push_str(&format!(
+            "- {}{}: {} (expires in {}d)\n",
+            waiver.id, scope, waiver.text, days_left
+        ));
+    }
+    block.push_str("===== END ACTIVE WAIVERS =====\n");
+    if let Some(input) = opening_inputs
+        .iter_mut()
+        .find(|input| input.recipient == chair)
+    {
+        input.content.push_str(&block);
     }
 }
 
@@ -946,6 +1014,65 @@ mod tests {
         assert_eq!(
             pending_frames_for_session(state.store.as_ref(), "rev1", &session_id),
             1
+        );
+    }
+
+    #[test]
+    fn active_waivers_reach_the_chair_and_only_the_chair() {
+        let state = state_with_bots();
+        state
+            .store
+            .create_review_waiver(
+                "o/r",
+                Some("src/auth/"),
+                "fail-open on the login redirect is accepted",
+                None,
+                "operator",
+                crate::store::now_ms() + 86_400_000,
+            )
+            .unwrap();
+        // A waiver for another repo must not leak in.
+        state
+            .store
+            .create_review_waiver(
+                "o/other",
+                None,
+                "unrelated repo waiver",
+                None,
+                "operator",
+                crate::store::now_ms() + 86_400_000,
+            )
+            .unwrap();
+        let mut action = review_action();
+        action
+            .recipient_inputs
+            .insert("rev1".into(), "Inspect the failure path.".into());
+
+        let result = execute(&state, ControllerAction::OpenSession(action)).unwrap();
+        let ControllerActionResult::SessionOpened { session_id, .. } = result else {
+            panic!("session should open");
+        };
+        let messages = state.store.messages(&session_id).unwrap();
+        let chair_msg = messages
+            .iter()
+            .find(|m| m.audience.as_deref() == Some("chair"))
+            .unwrap();
+        assert!(chair_msg.content.contains("ACTIVE WAIVERS"));
+        assert!(chair_msg
+            .content
+            .contains("fail-open on the login redirect is accepted"));
+        assert!(chair_msg.content.contains("[src/auth/]"));
+        assert!(
+            !chair_msg.content.contains("unrelated repo waiver"),
+            "waivers are repo-scoped"
+        );
+        let rev_msg = messages
+            .iter()
+            .find(|m| m.audience.as_deref() == Some("rev1"))
+            .unwrap();
+        assert!(
+            !rev_msg.content.contains("ACTIVE WAIVERS"),
+            "reviewers never see the ledger — recall stays unpolluted"
         );
     }
 
