@@ -167,25 +167,40 @@ fn append_waivers_to_chair(
     let Some(chair) = action.chair_bot.as_deref() else {
         return;
     };
-    let Some(repo) = action
-        .trigger_ref
-        .as_deref()
-        .and_then(|r| r.strip_prefix("github:pr/"))
-        .and_then(|rest| rest.rsplit_once('#'))
-        .map(|(repo, _)| repo)
-    else {
+    let Some(block) = waiver_block_for_trigger(state, action.trigger_ref.as_deref()) else {
         return;
     };
+    if let Some(input) = opening_inputs
+        .iter_mut()
+        .find(|input| input.recipient == chair)
+    {
+        input.content.push_str(&block);
+    }
+}
+
+/// The ACTIVE WAIVERS block for a `github:pr/{repo}#{n}` trigger_ref, or None
+/// when the ref is not a PR or the repo has no active waivers. Shared by the
+/// direct execute path above and the external-controller path, which must
+/// inject BEFORE the plane rewrites trigger_ref into its hashed
+/// `controller:{id}:{sha}` form (the 2026-08-02 live-verification miss).
+pub(crate) fn waiver_block_for_trigger(
+    state: &Arc<AppState>,
+    trigger_ref: Option<&str>,
+) -> Option<String> {
+    let repo = trigger_ref?
+        .strip_prefix("github:pr/")
+        .and_then(|rest| rest.rsplit_once('#'))
+        .map(|(repo, _)| repo)?;
     let now = crate::store::now_ms();
     let waivers = match state.store.list_review_waivers(Some(repo), false, now) {
         Ok(waivers) => waivers,
         Err(e) => {
             tracing::warn!("waiver lookup for {repo} failed; session opens without: {e}");
-            return;
+            return None;
         }
     };
     if waivers.is_empty() {
-        return;
+        return None;
     }
     let mut block = String::from(
         "\n\n===== ACTIVE WAIVERS (ADR 035, operator ledger) =====\n\
@@ -220,12 +235,7 @@ fn append_waivers_to_chair(
         ));
     }
     block.push_str("===== END ACTIVE WAIVERS =====\n");
-    if let Some(input) = opening_inputs
-        .iter_mut()
-        .find(|input| input.recipient == chair)
-    {
-        input.content.push_str(&block);
-    }
+    Some(block)
 }
 
 fn opening_inputs(action: &OpenSessionAction) -> Vec<OpeningInput> {

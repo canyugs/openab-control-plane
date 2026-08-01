@@ -613,7 +613,7 @@ impl Store for PostgresStore {
         })
     }
 
-    fn record_waiver_fired(&self, repo: &str, ids: &[String]) -> Result<()> {
+    fn record_waiver_fired(&self, repo: Option<&str>, ids: &[String]) -> Result<()> {
         self.block(async {
             let client = self.client().await?;
             let now = now_ms();
@@ -623,7 +623,7 @@ impl Store for PostgresStore {
                     .execute(
                         "UPDATE review_waivers
                          SET fired_count = fired_count + 1, last_fired_at = $3
-                         WHERE id = $1 AND repo = $2",
+                         WHERE id = $1 AND ($2::TEXT IS NULL OR repo = $2)",
                         &[&id, &repo, &now],
                     )
                     .await?;
