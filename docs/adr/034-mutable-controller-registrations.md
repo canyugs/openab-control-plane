@@ -67,6 +67,12 @@ document:
   per-request from the store, so no restart is involved.
 - `actions`/`scopes` are replace-sets routed through the existing grant
   setters. The registration `id` and its token history are immutable.
+- **The whole PATCH is one store transaction.** The grant setters run
+  inside a single IMMEDIATE (SQLite) / serialized (Postgres) transaction
+  with the limits update, and the replace-set clears and re-inserts within
+  it. A reader can never observe a privilege-widened intermediate state
+  (old scopes + new actions, or a half-applied replace-set), and a failed
+  PATCH leaves the registration exactly as it was.
 - Every PATCH lands in the event-audit trail (who-free: operator auth is
   a single key today; record the changed fields and the before/after).
 
@@ -75,8 +81,15 @@ document:
 The semantic that orphaned the five rounds: verification treated a
 disabled registration as nonexistent. Redefined:
 
-- **Admission** (`open_session` and other actions): gated by `enabled`.
-  Disabled = refuse new work. Unchanged.
+- **Admission — precisely `open_session`** (any action that creates a new
+  session): gated by `enabled`. Disabled = refuse new work.
+- **Every other action kind, when it targets a session opened under this
+  registration** (message posts, status emissions, close paths — whatever
+  the action surface grows): allowed while disabled. Draining includes
+  finishing, and finishing may require actions, not just events. Today's
+  code gates all action kinds uniformly on `enabled`; that uniform gate is
+  exactly what this ADR changes — the gate becomes
+  `enabled OR targets-own-in-flight-session`.
 - **Runtime-event signing for the controller** and **terminal-event
   verification from the controller's sessions**: valid for any
   registration that *exists*, enabled or not. A session opened under a
@@ -84,9 +97,10 @@ disabled registration as nonexistent. Redefined:
 
 Disabling becomes a drain operation by construction: flip `enabled` off,
 in-flight sessions complete and their events still verify, nothing new
-starts. The registration-overlap runbook trap (ops
-`docs/chair-failover-runbook.md`, trap 5) stops being load-bearing — the
-failure it guards against becomes unrepresentable.
+starts. The registration-overlap trap recorded in the ops repository's
+runbooks (openab-control-plane-ops, chair-failover runbook trap 5) stops
+being load-bearing — the failure it guards against becomes
+unrepresentable.
 
 Hard deletion (if ever added) must refuse while sessions opened under the
 registration are still open.
