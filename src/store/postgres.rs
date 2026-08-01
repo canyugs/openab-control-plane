@@ -257,7 +257,10 @@ CREATE TABLE IF NOT EXISTS controllers (
     max_concurrent_sessions BIGINT NOT NULL DEFAULT 5,
     max_actions_per_minute BIGINT NOT NULL DEFAULT 60,
     created_at BIGINT NOT NULL,
-    updated_at BIGINT NOT NULL
+    updated_at BIGINT NOT NULL,
+    -- folded from migrate(): the event destination (P5)
+    event_endpoint TEXT,
+    event_key_version BIGINT
 );
 CREATE TABLE IF NOT EXISTS controller_action_tokens (
     id TEXT PRIMARY KEY,
@@ -297,6 +300,8 @@ CREATE TABLE IF NOT EXISTS controller_action_idempotency (
     response_json TEXT,
     received_at BIGINT NOT NULL,
     completed_at BIGINT,
+    -- folded from migrate(): the session an accepted open_session produced
+    session_id TEXT,
     PRIMARY KEY (controller_id, action_id)
 );
 CREATE INDEX IF NOT EXISTS idx_controller_actions_rate
@@ -371,7 +376,23 @@ impl Store for PostgresStore {
         max_concurrent_sessions: i64,
         max_actions_per_minute: i64,
     ) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        let now = now_ms();
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "INSERT INTO controllers
+                        (id, enabled, max_concurrent_sessions, max_actions_per_minute, created_at, updated_at)
+                     VALUES ($1, 1, $2, $3, $4, $4)
+                     ON CONFLICT (id) DO UPDATE SET
+                        max_concurrent_sessions = excluded.max_concurrent_sessions,
+                        max_actions_per_minute = excluded.max_actions_per_minute,
+                        updated_at = excluded.updated_at",
+                    &[&controller_id, &max_concurrent_sessions, &max_actions_per_minute, &now],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -384,14 +405,72 @@ impl Store for PostgresStore {
         scopes: &[String],
         token: &NewControllerActionToken,
     ) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        let now = now_ms();
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            let inserted = tx
+                .execute(
+                    "INSERT INTO controllers
+                        (id, enabled, max_concurrent_sessions, max_actions_per_minute, created_at, updated_at)
+                     VALUES ($1, 1, $2, $3, $4, $4)
+                     ON CONFLICT (id) DO NOTHING",
+                    &[&controller_id, &max_concurrent_sessions, &max_actions_per_minute, &now],
+                )
+                .await?;
+            if inserted == 0 {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+            for action in actions {
+                tx.execute(
+                    "INSERT INTO controller_action_grants
+                        (controller_id, action_kind, granted, updated_at)
+                     VALUES ($1, $2, 1, $3)",
+                    &[&controller_id, &action, &now],
+                )
+                .await?;
+            }
+            for scope in scopes {
+                tx.execute(
+                    "INSERT INTO controller_bindings (controller_id, scope, enabled, updated_at)
+                     VALUES ($1, $2, 1, $3)",
+                    &[&controller_id, &scope, &now],
+                )
+                .await?;
+            }
+            tx.execute(
+                "INSERT INTO controller_action_tokens
+                    (id, controller_id, token_hash, pepper_version, not_before, expires_at, revoked_at, created_at)
+                 VALUES ($1, $2, $3, $4, $5, NULL, NULL, $6)",
+                &[&token.id, &controller_id, &token.token_hash, &token.pepper_version, &token.not_before, &now],
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(true)
+        })
     }
 
     fn controller_installation(
         &self,
         controller_id: &str,
     ) -> Result<Option<ControllerInstallation>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query_opt(
+                    "SELECT id, enabled, max_concurrent_sessions, max_actions_per_minute
+                     FROM controllers WHERE id = $1",
+                    &[&controller_id],
+                )
+                .await?
+                .map(|row| ControllerInstallation {
+                    id: row.get(0),
+                    enabled: row.get::<_, i64>(1) != 0,
+                    max_concurrent_sessions: row.get(2),
+                    max_actions_per_minute: row.get(3),
+                }))
+        })
     }
 
     fn set_controller_installation_enabled(
@@ -399,10 +478,18 @@ impl Store for PostgresStore {
         controller_id: &str,
         enabled: bool,
     ) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .execute(
+                    "UPDATE controllers SET enabled = $2, updated_at = $3 WHERE id = $1",
+                    &[&controller_id, &i64::from(enabled), &now_ms()],
+                )
+                .await?
+                == 1)
+        })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn put_controller_action_token(
         &self,
         token_id: &str,
@@ -412,7 +499,25 @@ impl Store for PostgresStore {
         not_before: i64,
         expires_at: Option<i64>,
     ) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "INSERT INTO controller_action_tokens
+                        (id, controller_id, token_hash, pepper_version, not_before, expires_at, revoked_at, created_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, NULL, $7)
+                     ON CONFLICT (id) DO UPDATE SET
+                        controller_id = excluded.controller_id,
+                        token_hash = excluded.token_hash,
+                        pepper_version = excluded.pepper_version,
+                        not_before = excluded.not_before,
+                        expires_at = excluded.expires_at,
+                        revoked_at = NULL",
+                    &[&token_id, &controller_id, &token_hash, &pepper_version, &not_before, &expires_at, &now_ms()],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn expire_controller_action_tokens(
@@ -421,7 +526,20 @@ impl Store for PostgresStore {
         expires_at: i64,
         now: i64,
     ) -> Result<usize> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .execute(
+                    "UPDATE controller_action_tokens
+                     SET expires_at = $2
+                     WHERE controller_id = $1
+                       AND revoked_at IS NULL
+                       AND not_before <= $3
+                       AND (expires_at IS NULL OR expires_at > $2)",
+                    &[&controller_id, &expires_at, &now],
+                )
+                .await? as usize)
+        })
     }
 
     fn rotate_controller_action_token(
@@ -430,7 +548,40 @@ impl Store for PostgresStore {
         token: &NewControllerActionToken,
         old_tokens_expire_at: i64,
     ) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            let exists: bool = tx
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM controllers WHERE id = $1)",
+                    &[&controller_id],
+                )
+                .await?
+                .get(0);
+            if !exists {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE controller_action_tokens
+                 SET expires_at = $2
+                 WHERE controller_id = $1
+                   AND revoked_at IS NULL
+                   AND not_before <= $3
+                   AND (expires_at IS NULL OR expires_at > $2)",
+                &[&controller_id, &old_tokens_expire_at, &token.not_before],
+            )
+            .await?;
+            tx.execute(
+                "INSERT INTO controller_action_tokens
+                    (id, controller_id, token_hash, pepper_version, not_before, expires_at, revoked_at, created_at)
+                 VALUES ($1, $2, $3, $4, $5, NULL, NULL, $5)",
+                &[&token.id, &controller_id, &token.token_hash, &token.pepper_version, &token.not_before],
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(true)
+        })
     }
 
     fn revoke_controller_action_token(
@@ -439,11 +590,44 @@ impl Store for PostgresStore {
         token_id: &str,
         revoked_at: i64,
     ) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .execute(
+                    "UPDATE controller_action_tokens SET revoked_at = $2
+                     WHERE id = $1 AND controller_id = $3 AND revoked_at IS NULL",
+                    &[&token_id, &revoked_at, &controller_id],
+                )
+                .await?
+                == 1)
+        })
     }
 
     fn active_controller_action_tokens(&self, now: i64) -> Result<Vec<ControllerActionToken>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query(
+                    "SELECT t.id, t.controller_id, t.token_hash, t.pepper_version
+                     FROM controller_action_tokens t
+                     JOIN controllers c ON c.id = t.controller_id
+                     WHERE c.enabled = 1
+                       AND t.revoked_at IS NULL
+                       AND t.not_before <= $1
+                       AND (t.expires_at IS NULL OR t.expires_at > $1)
+                     ORDER BY t.id",
+                    &[&now],
+                )
+                .await?
+                .iter()
+                .map(|row| ControllerActionToken {
+                    id: row.get(0),
+                    controller_id: row.get(1),
+                    token_hash: row.get(2),
+                    pepper_version: row.get(3),
+                })
+                .collect())
+        })
     }
 
     fn set_controller_action_grant(
@@ -452,7 +636,21 @@ impl Store for PostgresStore {
         action_kind: &str,
         granted: bool,
     ) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "INSERT INTO controller_action_grants
+                        (controller_id, action_kind, granted, updated_at)
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT (controller_id, action_kind) DO UPDATE SET
+                        granted = excluded.granted,
+                        updated_at = excluded.updated_at",
+                    &[&controller_id, &action_kind, &i64::from(granted), &now_ms()],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn set_controller_scope_binding(
@@ -461,7 +659,20 @@ impl Store for PostgresStore {
         scope: &str,
         enabled: bool,
     ) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "INSERT INTO controller_bindings (controller_id, scope, enabled, updated_at)
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT (controller_id, scope) DO UPDATE SET
+                        enabled = excluded.enabled,
+                        updated_at = excluded.updated_at",
+                    &[&controller_id, &scope, &i64::from(enabled), &now_ms()],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -477,9 +688,274 @@ impl Store for PostgresStore {
         open_intent: Option<&ControllerOpenIntent>,
         now: i64,
     ) -> Result<ControllerActionStart> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            // Serialize per controller: quota window counts, the idempotency
+            // check-insert and the concurrent-session count all raced only
+            // behind SQLite's global mutex.
+            tx.query(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                &[&controller_id],
+            )
+            .await?;
+
+            let quotas = tx
+                .query_opt(
+                    "SELECT max_concurrent_sessions, max_actions_per_minute
+                     FROM controllers WHERE id = $1 AND enabled = 1",
+                    &[&controller_id],
+                )
+                .await?
+                .map(|row| (row.get::<_, i64>(0), row.get::<_, i64>(1)));
+            let Some((max_concurrent_sessions, max_actions_per_minute)) = quotas else {
+                tx.rollback().await?;
+                return Ok(ControllerActionStart::Denied(
+                    ControllerActionDenial::Credential,
+                ));
+            };
+
+            let active_tokens: Vec<(Vec<u8>, i64)> = tx
+                .query(
+                    "SELECT token_hash, pepper_version
+                     FROM controller_action_tokens
+                     WHERE controller_id = $1
+                       AND revoked_at IS NULL
+                       AND not_before <= $2
+                       AND (expires_at IS NULL OR expires_at > $2)
+                     ORDER BY id",
+                    &[&controller_id, &now],
+                )
+                .await?
+                .iter()
+                .map(|row| (row.get(0), row.get(1)))
+                .collect();
+            let mut credential_matches = 0u8;
+            for (stored_hash, stored_version) in &active_tokens {
+                for candidate in credential_hashes {
+                    let version_matches = u8::from(candidate.pepper_version == *stored_version);
+                    let hash_matches = candidate.token_hash.ct_eq(stored_hash).unwrap_u8();
+                    credential_matches =
+                        credential_matches.saturating_add(version_matches & hash_matches);
+                }
+            }
+            if credential_matches != 1 {
+                tx.rollback().await?;
+                return Ok(ControllerActionStart::Denied(
+                    ControllerActionDenial::Credential,
+                ));
+            }
+
+            let granted: bool = tx
+                .query_one(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM controller_action_grants
+                        WHERE controller_id = $1 AND action_kind = $2 AND granted = 1
+                     )",
+                    &[&controller_id, &action_kind],
+                )
+                .await?
+                .get(0);
+            if !granted {
+                tx.rollback().await?;
+                return Ok(ControllerActionStart::Denied(ControllerActionDenial::Grant));
+            }
+            let scope_enabled: bool = tx
+                .query_one(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM controller_bindings
+                        WHERE controller_id = $1 AND scope = $2 AND enabled = 1
+                     )",
+                    &[&controller_id, &scope],
+                )
+                .await?
+                .get(0);
+            if !scope_enabled {
+                tx.rollback().await?;
+                return Ok(ControllerActionStart::Denied(ControllerActionDenial::Scope));
+            }
+            if let Some(session_id) = session_id {
+                let owns_session: bool = tx
+                    .query_one(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM controller_sessions
+                            WHERE controller_id = $1 AND scope = $2 AND session_id = $3
+                         )",
+                        &[&controller_id, &scope, &session_id],
+                    )
+                    .await?
+                    .get(0);
+                if !owns_session {
+                    tx.rollback().await?;
+                    return Ok(ControllerActionStart::Denied(
+                        ControllerActionDenial::SessionOwnership,
+                    ));
+                }
+            }
+
+            let existing = tx
+                .query_opt(
+                    "SELECT request_hash, state, http_status, response_json, received_at
+                     FROM controller_action_idempotency
+                     WHERE controller_id = $1 AND action_id = $2",
+                    &[&controller_id, &action_id],
+                )
+                .await?
+                .map(|row| {
+                    (
+                        row.get::<_, Vec<u8>>(0),
+                        row.get::<_, String>(1),
+                        row.get::<_, Option<i64>>(2),
+                        row.get::<_, Option<String>>(3),
+                        row.get::<_, i64>(4),
+                    )
+                });
+            if let Some((stored_hash, state, http_status, response_json, received_at)) = existing {
+                if stored_hash != request_hash {
+                    tx.rollback().await?;
+                    return Ok(ControllerActionStart::RequestMismatch);
+                }
+                if state == "completed" {
+                    tx.rollback().await?;
+                    return Ok(ControllerActionStart::Replay(ControllerActionReplay {
+                        request_hash: stored_hash,
+                        http_status: http_status
+                            .context("completed controller action missing status")?,
+                        response_json: response_json
+                            .context("completed controller action missing response")?,
+                    }));
+                }
+                if state == "processing"
+                    && now.saturating_sub(received_at) <= CONTROLLER_ACTION_LEASE_MS
+                {
+                    tx.rollback().await?;
+                    return Ok(ControllerActionStart::InProgress);
+                }
+                if state == "processing" {
+                    tx.execute(
+                        "UPDATE controller_action_idempotency
+                         SET state = 'indeterminate', completed_at = $3
+                         WHERE controller_id = $1 AND action_id = $2 AND state = 'processing'",
+                        &[&controller_id, &action_id, &now],
+                    )
+                    .await?;
+                    tx.commit().await?;
+                } else {
+                    tx.rollback().await?;
+                }
+                return Ok(ControllerActionStart::OutcomeUnknown);
+            }
+
+            let window_start = now.saturating_sub(60_000);
+            let row = tx
+                .query_one(
+                    "SELECT COUNT(*), MIN(received_at)
+                     FROM controller_action_idempotency
+                     WHERE controller_id = $1 AND received_at > $2",
+                    &[&controller_id, &window_start],
+                )
+                .await?;
+            let (accepted_in_window, oldest): (i64, Option<i64>) = (row.get(0), row.get(1));
+            if accepted_in_window >= max_actions_per_minute {
+                tx.rollback().await?;
+                return Ok(ControllerActionStart::Denied(
+                    ControllerActionDenial::RateQuota {
+                        limit: max_actions_per_minute,
+                        reset_at: oldest.unwrap_or(now).saturating_add(60_000),
+                    },
+                ));
+            }
+
+            let open_decision = if let Some(intent) = open_intent {
+                let existing = tx
+                    .query_opt(
+                        "SELECT cs.controller_id, cs.scope, cs.trigger_ref,
+                                cs.trigger_fingerprint, cs.session_id, s.state
+                         FROM controller_sessions cs
+                         LEFT JOIN sessions s ON s.id = cs.session_id
+                         WHERE cs.controller_id = $1 AND cs.trigger_ref = $2 AND cs.current = 1",
+                        &[&controller_id, &intent.trigger_ref],
+                    )
+                    .await?
+                    .map(|row| {
+                        (
+                            ControllerSessionBinding {
+                                controller_id: row.get(0),
+                                scope: row.get(1),
+                                trigger_ref: row.get(2),
+                                trigger_fingerprint: row.get(3),
+                                session_id: row.get(4),
+                            },
+                            row.get::<_, Option<String>>(5),
+                        )
+                    });
+                match existing {
+                    Some((binding, _)) if binding.scope != scope => {
+                        tx.rollback().await?;
+                        return Ok(ControllerActionStart::Denied(
+                            ControllerActionDenial::TriggerScope,
+                        ));
+                    }
+                    Some((binding, Some(state)))
+                        if !matches!(
+                            SessionState::from_db_str(&state),
+                            SessionState::Closed | SessionState::Aborted
+                        ) =>
+                    {
+                        if matches!(
+                            (
+                                binding.trigger_fingerprint.as_deref(),
+                                intent.trigger_fingerprint.as_deref()
+                            ),
+                            (Some(stored), Some(incoming)) if stored == incoming
+                        ) {
+                            Some(ControllerOpenDecision::Deduplicate(binding))
+                        } else {
+                            Some(ControllerOpenDecision::Supersede(binding))
+                        }
+                    }
+                    _ => Some(ControllerOpenDecision::Create),
+                }
+            } else {
+                None
+            };
+
+            if matches!(open_decision, Some(ControllerOpenDecision::Create)) {
+                let current: i64 = tx
+                    .query_one(
+                        "SELECT COUNT(*)
+                         FROM controller_sessions cs
+                         JOIN sessions s ON s.id = cs.session_id
+                         WHERE cs.controller_id = $1
+                           AND s.state NOT IN ('closed', 'aborted')",
+                        &[&controller_id],
+                    )
+                    .await?
+                    .get(0);
+                if current >= max_concurrent_sessions {
+                    tx.rollback().await?;
+                    return Ok(ControllerActionStart::Denied(
+                        ControllerActionDenial::ConcurrentSessionQuota {
+                            limit: max_concurrent_sessions,
+                            current,
+                        },
+                    ));
+                }
+            }
+
+            tx.execute(
+                "INSERT INTO controller_action_idempotency
+                    (controller_id, action_id, request_hash, action_kind, scope, session_id, state, received_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, 'processing', $7)",
+                &[&controller_id, &action_id, &request_hash, &action_kind, &scope, &session_id, &now],
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(ControllerActionStart::Started { open_decision })
+        })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finish_controller_action(
         &self,
         controller_id: &str,
@@ -489,7 +965,84 @@ impl Store for PostgresStore {
         session_binding: Option<&ControllerSessionBinding>,
         completed_at: i64,
     ) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            if let Some(binding) = session_binding {
+                if binding.controller_id != controller_id {
+                    tx.rollback().await?;
+                    anyhow::bail!("controller session binding owner mismatch");
+                }
+                tx.execute(
+                    "UPDATE controller_sessions SET current = 0
+                     WHERE controller_id = $1 AND trigger_ref = $2 AND current = 1",
+                    &[&binding.controller_id, &binding.trigger_ref],
+                )
+                .await?;
+                tx.execute(
+                    "INSERT INTO controller_sessions
+                        (controller_id, scope, trigger_ref, trigger_fingerprint, session_id, current, created_at)
+                     VALUES ($1, $2, $3, $4, $5, 1, $6)",
+                    &[
+                        &binding.controller_id,
+                        &binding.scope,
+                        &binding.trigger_ref,
+                        &binding.trigger_fingerprint,
+                        &binding.session_id,
+                        &completed_at,
+                    ],
+                )
+                .await?;
+                enqueue_controller_event_pg(
+                    &*tx,
+                    controller_id,
+                    Some(&binding.session_id),
+                    "session.opened",
+                    json!({
+                        "scope": binding.scope,
+                        "trigger_ref": binding.trigger_ref,
+                        "trigger_fingerprint": binding.trigger_fingerprint,
+                    }),
+                    &format!("session.opened:{}", binding.session_id),
+                    completed_at,
+                )
+                .await?;
+            }
+            let updated = tx
+                .execute(
+                    "UPDATE controller_action_idempotency
+                     SET state = 'completed', http_status = $3, response_json = $4, completed_at = $5
+                     WHERE controller_id = $1 AND action_id = $2 AND state = 'processing'",
+                    &[&controller_id, &action_id, &http_status, &response_json, &completed_at],
+                )
+                .await?;
+            if updated != 1 {
+                tx.rollback().await?;
+                anyhow::bail!("controller action is not in processing state");
+            }
+            if !(200..300).contains(&http_status) {
+                let session_id: Option<String> = tx
+                    .query_one(
+                        "SELECT session_id FROM controller_action_idempotency
+                         WHERE controller_id = $1 AND action_id = $2",
+                        &[&controller_id, &action_id],
+                    )
+                    .await?
+                    .get(0);
+                enqueue_controller_event_pg(
+                    &*tx,
+                    controller_id,
+                    session_id.as_deref(),
+                    "action.failed",
+                    json!({ "action_id": action_id, "http_status": http_status }),
+                    &format!("action.failed:{action_id}"),
+                    completed_at,
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            Ok(())
+        })
     }
 
     fn controller_session_for_trigger(
@@ -497,7 +1050,24 @@ impl Store for PostgresStore {
         controller_id: &str,
         trigger_ref: &str,
     ) -> Result<Option<ControllerSessionBinding>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query_opt(
+                    "SELECT controller_id, scope, trigger_ref, trigger_fingerprint, session_id
+                     FROM controller_sessions
+                     WHERE controller_id = $1 AND trigger_ref = $2 AND current = 1",
+                    &[&controller_id, &trigger_ref],
+                )
+                .await?
+                .map(|row| ControllerSessionBinding {
+                    controller_id: row.get(0),
+                    scope: row.get(1),
+                    trigger_ref: row.get(2),
+                    trigger_fingerprint: row.get(3),
+                    session_id: row.get(4),
+                }))
+        })
     }
 
     fn configure_controller_events(
@@ -508,7 +1078,40 @@ impl Store for PostgresStore {
         event_types: &[String],
         now: i64,
     ) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            let updated = tx
+                .execute(
+                    "UPDATE controllers SET event_endpoint = $2, event_key_version = $3, updated_at = $4
+                     WHERE id = $1",
+                    &[&controller_id, &endpoint, &key_version, &now],
+                )
+                .await?;
+            if updated != 1 {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE controller_event_grants SET granted = 0, updated_at = $2
+                 WHERE controller_id = $1",
+                &[&controller_id, &now],
+            )
+            .await?;
+            for event_type in event_types {
+                tx.execute(
+                    "INSERT INTO controller_event_grants
+                        (controller_id, event_type, granted, updated_at)
+                     VALUES ($1, $2, 1, $3)
+                     ON CONFLICT (controller_id, event_type) DO UPDATE SET
+                        granted = 1, updated_at = excluded.updated_at",
+                    &[&controller_id, &event_type, &now],
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            Ok(true)
+        })
     }
 
     fn claim_controller_events(
@@ -517,11 +1120,85 @@ impl Store for PostgresStore {
         limit: usize,
         lease_ms: i64,
     ) -> Result<Vec<ControllerEventDelivery>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            tx.execute(
+                "UPDATE controller_events SET state = 'pending', lease_until = NULL
+                 WHERE state = 'delivering' AND lease_until <= $1",
+                &[&now],
+            )
+            .await?;
+            // FOR UPDATE SKIP LOCKED: concurrent dispatchers partition the due
+            // set instead of claiming the same events (the SQLite IMMEDIATE
+            // transaction serialized them outright).
+            let ids: Vec<String> = tx
+                .query(
+                    "SELECT e.id FROM controller_events e
+                     JOIN controllers c ON c.id = e.controller_id
+                     WHERE e.state = 'pending' AND e.next_attempt_at <= $1 AND c.enabled = 1
+                     ORDER BY e.next_attempt_at, e.created_at, e.ord LIMIT $2
+                       FOR UPDATE OF e SKIP LOCKED",
+                    &[&now, &(limit as i64)],
+                )
+                .await?
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+            let lease_until = now.saturating_add(lease_ms);
+            let mut deliveries = Vec::new();
+            for id in ids {
+                if tx
+                    .execute(
+                        "UPDATE controller_events
+                         SET state = 'delivering', attempts = attempts + 1, lease_until = $2
+                         WHERE id = $1 AND state = 'pending'",
+                        &[&id, &lease_until],
+                    )
+                    .await?
+                    != 1
+                {
+                    continue;
+                }
+                let row = tx
+                    .query_one(
+                        "SELECT id, controller_id, session_id, event_type,
+                                event_endpoint, event_key_version, body_json,
+                                attempts, created_at
+                         FROM controller_events WHERE id = $1",
+                        &[&id],
+                    )
+                    .await?;
+                deliveries.push(ControllerEventDelivery {
+                    id: row.get(0),
+                    controller_id: row.get(1),
+                    session_id: row.get(2),
+                    event_type: row.get(3),
+                    endpoint: row.get(4),
+                    key_version: row.get(5),
+                    body_json: row.get(6),
+                    attempts: row.get(7),
+                    created_at: row.get(8),
+                });
+            }
+            tx.commit().await?;
+            Ok(deliveries)
+        })
     }
 
     fn complete_controller_event(&self, event_id: &str, delivered_at: i64) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .execute(
+                    "UPDATE controller_events SET state = 'delivered', delivered_at = $2,
+                            lease_until = NULL, last_error = NULL
+                     WHERE id = $1 AND state = 'delivering'",
+                    &[&event_id, &delivered_at],
+                )
+                .await?
+                == 1)
+        })
     }
 
     fn fail_controller_event(
@@ -531,15 +1208,78 @@ impl Store for PostgresStore {
         next_attempt_at: Option<i64>,
         now: i64,
     ) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            let updated = if let Some(next_attempt_at) = next_attempt_at {
+                tx.execute(
+                    "UPDATE controller_events SET state = 'pending', next_attempt_at = $2,
+                            lease_until = NULL, last_error = $3
+                     WHERE id = $1 AND state = 'delivering'",
+                    &[&event_id, &next_attempt_at, &error],
+                )
+                .await?
+            } else {
+                let updated = tx
+                    .execute(
+                        "UPDATE controller_events SET state = 'dead_letter', lease_until = NULL,
+                                last_error = $2
+                         WHERE id = $1 AND state = 'delivering'",
+                        &[&event_id, &error],
+                    )
+                    .await?;
+                if updated == 1 {
+                    tx.execute(
+                        "INSERT INTO controller_event_audit
+                            (controller_id, event_id, kind, detail, created_at)
+                         SELECT controller_id, id, 'dead_letter', $2, $3
+                         FROM controller_events WHERE id = $1",
+                        &[&event_id, &error, &now],
+                    )
+                    .await?;
+                }
+                updated
+            };
+            tx.commit().await?;
+            Ok(updated == 1)
+        })
     }
 
     fn prune_delivered_controller_events(&self, before: i64) -> Result<usize> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .execute(
+                    "DELETE FROM controller_events
+                     WHERE state = 'delivered' AND delivered_at < $1",
+                    &[&before],
+                )
+                .await? as usize)
+        })
     }
 
     fn controller_event_audit(&self, controller_id: &str) -> Result<Vec<ControllerEventAudit>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query(
+                    "SELECT id, controller_id, event_id, kind, detail, created_at
+                     FROM controller_event_audit WHERE controller_id = $1
+                     ORDER BY created_at DESC, id DESC LIMIT 200",
+                    &[&controller_id],
+                )
+                .await?
+                .iter()
+                .map(|row| ControllerEventAudit {
+                    id: row.get(0),
+                    controller_id: row.get(1),
+                    event_id: row.get(2),
+                    kind: row.get(3),
+                    detail: row.get(4),
+                    created_at: row.get(5),
+                })
+                .collect())
+        })
     }
 
     fn register_bot(
@@ -2457,6 +3197,221 @@ mod tests {
         s.set_state(&ses.id, SessionState::Closed).unwrap();
         s.purge_terminal_outbox().unwrap();
         assert!(s.pending_outbox("bot-a").unwrap().is_empty());
+    }
+
+    fn provision(s: &PostgresStore, cid: &str) {
+        s.provision_controller_installation(
+            cid,
+            2,
+            60,
+            &["open_session".into()],
+            &["tenant:dev".into()],
+            &NewControllerActionToken {
+                id: format!("tok-{cid}"),
+                token_hash: vec![7u8; 32],
+                pepper_version: 1,
+                not_before: 0,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn controller_action_admission_idempotency_and_replay() {
+        let Some(s) = store("ctrl_actions") else {
+            return;
+        };
+        provision(&s, "gc");
+        let creds = vec![ControllerCredentialHash {
+            pepper_version: 1,
+            token_hash: vec![7u8; 32],
+        }];
+        let now = now_ms();
+        let start = s
+            .begin_controller_action(
+                "gc",
+                &creds,
+                "act-1",
+                b"req",
+                "open_session",
+                "tenant:dev",
+                None,
+                None,
+                now,
+            )
+            .unwrap();
+        assert!(matches!(start, ControllerActionStart::Started { .. }));
+        // same action, in flight → InProgress
+        assert!(matches!(
+            s.begin_controller_action(
+                "gc",
+                &creds,
+                "act-1",
+                b"req",
+                "open_session",
+                "tenant:dev",
+                None,
+                None,
+                now
+            )
+            .unwrap(),
+            ControllerActionStart::InProgress
+        ));
+        // different body under the same id → mismatch
+        assert!(matches!(
+            s.begin_controller_action(
+                "gc",
+                &creds,
+                "act-1",
+                b"OTHER",
+                "open_session",
+                "tenant:dev",
+                None,
+                None,
+                now
+            )
+            .unwrap(),
+            ControllerActionStart::RequestMismatch
+        ));
+        s.finish_controller_action("gc", "act-1", 202, "{\"ok\":true}", None, now)
+            .unwrap();
+        // replay returns the stored response
+        match s
+            .begin_controller_action(
+                "gc",
+                &creds,
+                "act-1",
+                b"req",
+                "open_session",
+                "tenant:dev",
+                None,
+                None,
+                now,
+            )
+            .unwrap()
+        {
+            ControllerActionStart::Replay(replay) => assert_eq!(replay.http_status, 202),
+            other => panic!("expected replay, got {other:?}"),
+        }
+        // wrong credential → denied
+        let bad = vec![ControllerCredentialHash {
+            pepper_version: 1,
+            token_hash: vec![9u8; 32],
+        }];
+        assert!(matches!(
+            s.begin_controller_action(
+                "gc",
+                &bad,
+                "act-2",
+                b"r",
+                "open_session",
+                "tenant:dev",
+                None,
+                None,
+                now
+            )
+            .unwrap(),
+            ControllerActionStart::Denied(ControllerActionDenial::Credential)
+        ));
+        // ungranted action kind → denied
+        assert!(matches!(
+            s.begin_controller_action(
+                "gc",
+                &creds,
+                "act-3",
+                b"r",
+                "close_session",
+                "tenant:dev",
+                None,
+                None,
+                now
+            )
+            .unwrap(),
+            ControllerActionStart::Denied(ControllerActionDenial::Grant)
+        ));
+    }
+
+    #[test]
+    fn controller_event_claim_lease_and_dead_letter() {
+        let Some(s) = store("ctrl_events") else {
+            return;
+        };
+        provision(&s, "gc2");
+        assert!(s
+            .configure_controller_events(
+                "gc2",
+                "https://x/events",
+                1,
+                &["session.opened".into()],
+                now_ms()
+            )
+            .unwrap());
+        // enqueue via the session path: bind a session then finish an action
+        let creds = vec![ControllerCredentialHash {
+            pepper_version: 1,
+            token_hash: vec![7u8; 32],
+        }];
+        let now = now_ms();
+        let start = s
+            .begin_controller_action(
+                "gc2",
+                &creds,
+                "act-open",
+                b"r",
+                "open_session",
+                "tenant:dev",
+                None,
+                Some(&ControllerOpenIntent {
+                    trigger_ref: "pr#5".into(),
+                    trigger_fingerprint: Some("sha:a".into()),
+                }),
+                now,
+            )
+            .unwrap();
+        assert!(matches!(
+            start,
+            ControllerActionStart::Started {
+                open_decision: Some(ControllerOpenDecision::Create)
+            }
+        ));
+        let ses = s
+            .create_session("t", None, 1, None, &[], "council")
+            .unwrap();
+        s.finish_controller_action(
+            "gc2",
+            "act-open",
+            201,
+            "{}",
+            Some(&ControllerSessionBinding {
+                controller_id: "gc2".into(),
+                scope: "tenant:dev".into(),
+                trigger_ref: "pr#5".into(),
+                trigger_fingerprint: Some("sha:a".into()),
+                session_id: ses.id.clone(),
+            }),
+            now,
+        )
+        .unwrap();
+        // the session.opened event is now claimable
+        let claimed = s.claim_controller_events(now_ms(), 10, 30_000).unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].event_type, "session.opened");
+        // leased: a second claim sees nothing
+        assert!(s
+            .claim_controller_events(now_ms(), 10, 30_000)
+            .unwrap()
+            .is_empty());
+        // terminal failure → dead_letter + audit row
+        assert!(s
+            .fail_controller_event(&claimed[0].id, "boom", None, now_ms())
+            .unwrap());
+        let audit = s.controller_event_audit("gc2").unwrap();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].kind, "dead_letter");
+        assert!(s
+            .claim_controller_events(now_ms(), 10, 30_000)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
