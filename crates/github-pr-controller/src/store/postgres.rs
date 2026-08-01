@@ -22,7 +22,36 @@ use super::{
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use tokio_postgres::config::SslMode;
 use tokio_postgres::NoTls;
+
+/// Verified TLS against the platform's root store. Certificate validation is
+/// on by default (council F1, round 1) — `sslmode=disable` in the URL is the
+/// only way to skip encryption, and there is deliberately no
+/// "encrypt but do not verify" mode.
+fn tls_connector() -> StoreResult<tokio_postgres_rustls::MakeRustlsConnect> {
+    let mut roots = rustls::RootCertStore::empty();
+    let loaded = rustls_native_certs::load_native_certs();
+    for cert in loaded.certs {
+        roots
+            .add(cert)
+            .map_err(|error| StoreError::Pool(format!("root certificate rejected: {error}")))?;
+    }
+    if roots.is_empty() {
+        let detail = loaded
+            .errors
+            .first()
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "no certificates found".into());
+        return Err(StoreError::Pool(format!(
+            "platform root certificate store unavailable: {detail}"
+        )));
+    }
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(tokio_postgres_rustls::MakeRustlsConnect::new(config))
+}
 
 /// Mirrors the SQLite `MIGRATIONS` list step for step: same four versions,
 /// same tables, dialect differences only (BIGSERIAL ids, `$N` params live in
@@ -144,13 +173,21 @@ impl PostgresStore {
         if let Some(schema) = search_path {
             config.options(format!("-c search_path={schema}"));
         }
-        let manager = Manager::from_config(
-            config,
-            NoTls,
-            ManagerConfig {
-                recycling_method: RecyclingMethod::Fast,
-            },
-        );
+        // TLS with certificate verification against the platform trust store
+        // is the default; the URL carries a password and ADR 033's whole point
+        // is a network-reachable database. `sslmode=disable` is the explicit
+        // opt-out for same-project / local-Docker plaintext. The default
+        // (`prefer`) negotiates: TLS where the server offers it, plaintext
+        // where it does not — so a lane-internal instance without TLS still
+        // works without any URL surgery.
+        let manager_config = ManagerConfig {
+            recycling_method: RecyclingMethod::Fast,
+        };
+        let manager = if matches!(config.get_ssl_mode(), SslMode::Disable) {
+            Manager::from_config(config, NoTls, manager_config)
+        } else {
+            Manager::from_config(config, tls_connector()?, manager_config)
+        };
         let pool = Pool::builder(manager)
             .max_size(8)
             .build()
