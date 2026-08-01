@@ -5,7 +5,7 @@ Status: proposed · 2026-08-01
 Builds on: [ADR 020](020-review-audit-effectiveness-ledger.md) (findings ledger),
 [ADR 021](021-review-effectiveness-feedback-loop.md) (adoption as the primary signal),
 [ADR 031](031-provider-neutral-kernel.md) (controller-owned review closing),
-[ADR 034](034-review-memory-waivers.md) (the waiver ledger — this ADR's
+[ADR 035](035-review-memory-waivers.md) (the waiver ledger — this ADR's
 suppression-type priors are delivered exclusively through it).
 
 ## Context
@@ -44,7 +44,7 @@ automated; **every write into council behavior stays human-gated.**
 ### Loop 1 — per round: priors in, evidence still required
 
 Priors split into two kinds with different blast radii, and the split
-decides who sees them ([ADR 034](034-review-memory-waivers.md)):
+decides who sees them ([ADR 035](035-review-memory-waivers.md)):
 
 - **Conventions** — descriptive repo facts (build system, framework
   idioms, layering rules). Loaded by reviewers and chair alike from a
@@ -53,10 +53,10 @@ decides who sees them ([ADR 034](034-review-memory-waivers.md)):
   what HEAD shows must be re-verified, and re-raising with evidence beats
   silent deference.
 - **Confirmed false positives and accepted trade-offs** — suppressions.
-  These are exactly ADR 034 waivers and use only that mechanism:
+  These are exactly ADR 035 waivers and use only that mechanism:
   chair-only, controller-injected at convene, cited visibly in the PR
   comment, mandatory expiry. Reviewers never load them — suppression at
-  the recall side is what ADR 034 exists to prevent, and a
+  the recall side is what ADR 035 exists to prevent, and a
   compromised-reviewer prompt surface full of "ignore X" entries is the
   cheapest poisoning path there is.
 
@@ -64,7 +64,7 @@ Priors enter either corpus through exactly one door: **author interaction
 plus maintainer approval** — a dispute the council accepted, or an author
 dismissal with a reason that a maintainer (allowlisted principal, not the
 PR author) has approved before the corpus write; the write itself is
-operator-keyed per ADR 034. Dismissal reasons and convention text are
+operator-keyed per ADR 035. Dismissal reasons and convention text are
 loaded as **bounded untrusted data, not instructions** (ADR 019 posture).
 Model self-reflection never writes to either corpus; letting the council
 author its own suppressions is self-reinforcement with a delay. The seed
