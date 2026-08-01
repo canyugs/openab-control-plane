@@ -48,10 +48,14 @@ chair at synthesis, and validated by the controller at close.
    reason, source (PR#/dispute/override), approved_by (a human),
    created_at, expires_at (mandatory), status (active|expired|revoked) }`.
    North API: `GET /v1/review/waivers?repo=&paths=&active=1` readable by
-   bots; `POST`/`DELETE` require the operator key. Expiry is enforced by the
+   the **controller identity only** — no bot identity can read the ledger.
+   The chair receives waivers exclusively through the injected task payload
+   (point 3), so no agent can enumerate the org's accepted-risk inventory;
+   a compromised or prompt-injected reviewer finds no read surface at all.
+   `POST`/`DELETE` require the operator key. Expiry is enforced by the
    plane — expired entries are simply not returned. Revocation keeps an
    audit row. A per-repo cap on active waivers forces curation. The findings
-   ledger gains `waived_by` for downstream joins.
+   ledger gains `waived_by` for downstream joins. (Council review #323 F1.)
 
 2. **No GitHub-facing surface can create a waiver.** Not `@bot` commands,
    not PR content, not any bot identity. Writes are operator-key only. This
@@ -72,11 +76,18 @@ chair at synthesis, and validated by the controller at close.
    the trade-off and its expiry; the audit trail is the PR itself. Silence
    remains the violation.
 
-5. **Controller: validate at close, fail toward noise.** Every waiver id the
-   chair cites must exist and be active; otherwise the finding is processed
-   at its original severity. If the waiver API is unreachable at convene,
-   the council runs without memory. Memory failure degrades the system to
-   *noisier*, never to *blinder*.
+5. **Controller: validate at close, bound to the session, fail toward
+   noise.** A citation is honored only if the waiver (a) was in **this
+   session's injected set** — which was already filtered to the PR's repo
+   and touched paths/classes at convene, so scope-match is structural, not
+   re-derived; (b) matches the finding it is applied to (path or
+   finding-class within the waiver's scope); and (c) is still active at
+   close — not expired or revoked in the convene-to-close window. Anything
+   else — unknown id, active-but-uninjected waiver from another repo or
+   path, lapsed entry — and the finding is processed at its original
+   severity. If the waiver API is unreachable at convene, the council runs
+   without memory. Memory failure degrades the system to *noisier*, never
+   to *blinder*. (Council review #323 F2.)
 
 6. **One-way reference between memory and constitution.** The steering doc
    never cites waivers. A waiver that keeps recurring and deserves
@@ -99,9 +110,10 @@ that waiver for mandatory re-review. Compromises get verified too.
 - Re-litigation noise drops without lowering recall: the original findings
   still exist in the session record and the PR comment, in waived form.
 - The org acquires an explicit, expiring, auditable inventory of accepted
-  risk — readable in one API call. That inventory is sensitive; waiver
-  CONTENT stays in the plane DB and the private ops repo, while this repo
-  (public) carries only the mechanism.
+  risk — one API call away for the operator and the controller, and only
+  for them. That inventory is sensitive; waiver CONTENT stays in the plane
+  DB and the private ops repo, while this repo (public) carries only the
+  mechanism.
 - Expiry pressure is real: when a waiver lapses, the finding returns at full
   severity on the next touch of that path. That is the designed nudge to
   either fix the debt or consciously re-approve it.
