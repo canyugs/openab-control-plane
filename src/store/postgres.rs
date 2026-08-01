@@ -364,6 +364,25 @@ CREATE INDEX IF NOT EXISTS idx_outbox_session_bot ON outbox(session_id, bot_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_active_trigger_ref
     ON sessions(trigger_ref)
     WHERE trigger_ref IS NOT NULL AND state NOT IN ('closed', 'aborted');
+"#,
+    // 2 — ADR 035 P1: the waiver ledger. Written only by operators, read by
+    // nothing until P2; expiry is mandatory so blindness cannot fossilize.
+    r#"
+CREATE TABLE IF NOT EXISTS review_waivers (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    path_class TEXT,
+    text TEXT NOT NULL,
+    origin_pr TEXT,
+    created_by TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL,
+    revoked_at BIGINT,
+    fired_count BIGINT NOT NULL DEFAULT 0,
+    last_fired_at BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_review_waivers_repo
+    ON review_waivers(repo, expires_at);
 "#];
 
 impl Store for PostgresStore {
@@ -481,6 +500,113 @@ impl Store for PostgresStore {
                 .execute(
                     "UPDATE controllers SET enabled = $2, updated_at = $3 WHERE id = $1",
                     &[&controller_id, &i64::from(enabled), &now_ms()],
+                )
+                .await?
+                == 1)
+        })
+    }
+
+    fn create_review_waiver(
+        &self,
+        repo: &str,
+        path_class: Option<&str>,
+        text: &str,
+        origin_pr: Option<&str>,
+        created_by: &str,
+        expires_at: i64,
+    ) -> Result<ReviewWaiver> {
+        let waiver = ReviewWaiver {
+            id: new_id("wvr"),
+            repo: repo.into(),
+            path_class: path_class.map(Into::into),
+            text: text.into(),
+            origin_pr: origin_pr.map(Into::into),
+            created_by: created_by.into(),
+            created_at: now_ms(),
+            expires_at,
+            revoked_at: None,
+            fired_count: 0,
+            last_fired_at: None,
+        };
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "INSERT INTO review_waivers
+                        (id, repo, path_class, text, origin_pr, created_by,
+                         created_at, expires_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                    &[
+                        &waiver.id,
+                        &waiver.repo,
+                        &waiver.path_class,
+                        &waiver.text,
+                        &waiver.origin_pr,
+                        &waiver.created_by,
+                        &waiver.created_at,
+                        &waiver.expires_at,
+                    ],
+                )
+                .await?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+        Ok(waiver)
+    }
+
+    fn list_review_waivers(
+        &self,
+        repo: Option<&str>,
+        include_inactive: bool,
+        now: i64,
+    ) -> Result<Vec<ReviewWaiver>> {
+        self.block(async {
+            let client = self.client().await?;
+            let rows = client
+                .query(
+                    "SELECT id, repo, path_class, text, origin_pr, created_by,
+                            created_at, expires_at, revoked_at, fired_count,
+                            last_fired_at
+                     FROM review_waivers
+                     WHERE ($1::TEXT IS NULL OR repo = $1)
+                       AND ($2 OR (revoked_at IS NULL AND expires_at > $3))
+                     ORDER BY created_at",
+                    &[&repo, &include_inactive, &now],
+                )
+                .await?;
+            Ok(rows
+                .iter()
+                .map(|row| ReviewWaiver {
+                    id: row.get(0),
+                    repo: row.get(1),
+                    path_class: row.get(2),
+                    text: row.get(3),
+                    origin_pr: row.get(4),
+                    created_by: row.get(5),
+                    created_at: row.get(6),
+                    expires_at: row.get(7),
+                    revoked_at: row.get(8),
+                    fired_count: row.get(9),
+                    last_fired_at: row.get(10),
+                })
+                .collect())
+        })
+    }
+
+    fn update_review_waiver(
+        &self,
+        id: &str,
+        expires_at: Option<i64>,
+        revoke: bool,
+    ) -> Result<bool> {
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .execute(
+                    "UPDATE review_waivers SET
+                        expires_at = COALESCE($2, expires_at),
+                        revoked_at = CASE WHEN $3 THEN COALESCE(revoked_at, $4) ELSE revoked_at END
+                     WHERE id = $1",
+                    &[&id, &expires_at, &revoke, &now_ms()],
                 )
                 .await?
                 == 1)

@@ -344,6 +344,134 @@ pub async fn set_installation_state(
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateReviewWaiver {
+    pub repo: String,
+    pub path_class: Option<String>,
+    pub text: String,
+    pub origin_pr: Option<String>,
+    pub created_by: String,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateReviewWaiver {
+    pub expires_at: Option<i64>,
+    #[serde(default)]
+    pub revoke: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListReviewWaivers {
+    pub repo: Option<String>,
+    /// Accepts 1/true/yes — query strings are not JSON booleans.
+    #[serde(default, deserialize_with = "flag_from_query")]
+    pub all: bool,
+}
+
+fn flag_from_query<'de, D>(deserializer: D) -> std::result::Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    Ok(matches!(raw.as_str(), "1" | "true" | "yes"))
+}
+
+/// ADR 035 P1: the human gate. Only the operator key writes waivers; PR
+/// content never reaches this surface.
+pub async fn create_review_waiver(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<CreateReviewWaiver>,
+) -> Response {
+    if let Err(error) = check_operator_auth(&state, &headers) {
+        return error.response();
+    }
+    let repo = request.repo.trim();
+    let text = request.text.trim();
+    let created_by = request.created_by.trim();
+    if repo.is_empty() || repo.len() > 200 {
+        return admin_error(StatusCode::BAD_REQUEST, "repo must be 1..=200 bytes");
+    }
+    if text.is_empty() || text.len() > 2000 {
+        return admin_error(StatusCode::BAD_REQUEST, "text must be 1..=2000 bytes");
+    }
+    if created_by.is_empty() || created_by.len() > 100 {
+        return admin_error(StatusCode::BAD_REQUEST, "created_by must be 1..=100 bytes");
+    }
+    if request.path_class.as_deref().is_some_and(|v| v.len() > 300) {
+        return admin_error(StatusCode::BAD_REQUEST, "path_class must be <=300 bytes");
+    }
+    if request.origin_pr.as_deref().is_some_and(|v| v.len() > 200) {
+        return admin_error(StatusCode::BAD_REQUEST, "origin_pr must be <=200 bytes");
+    }
+    if request.expires_at <= now_ms() {
+        return admin_error(
+            StatusCode::BAD_REQUEST,
+            "expires_at must be in the future — waivers without expiry are how blindness fossilizes",
+        );
+    }
+    match state.store.create_review_waiver(
+        repo,
+        request.path_class.as_deref().map(str::trim),
+        text,
+        request.origin_pr.as_deref().map(str::trim),
+        created_by,
+        request.expires_at,
+    ) {
+        Ok(waiver) => json_response(StatusCode::CREATED, &waiver, None),
+        Err(error) => admin_store_error(error),
+    }
+}
+
+pub async fn list_review_waivers(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ListReviewWaivers>,
+) -> Response {
+    if let Err(error) = check_operator_auth(&state, &headers) {
+        return error.response();
+    }
+    match state
+        .store
+        .list_review_waivers(query.repo.as_deref(), query.all, now_ms())
+    {
+        Ok(waivers) => json_response(StatusCode::OK, &waivers, None),
+        Err(error) => admin_store_error(error),
+    }
+}
+
+pub async fn update_review_waiver(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(waiver_id): Path<String>,
+    Json(request): Json<UpdateReviewWaiver>,
+) -> Response {
+    if let Err(error) = check_operator_auth(&state, &headers) {
+        return error.response();
+    }
+    if request.expires_at.is_none() && !request.revoke {
+        return admin_error(StatusCode::BAD_REQUEST, "empty patch: nothing to change");
+    }
+    if request.expires_at.is_some_and(|at| at <= now_ms()) {
+        return admin_error(StatusCode::BAD_REQUEST, "expires_at must be in the future");
+    }
+    match state
+        .store
+        .update_review_waiver(&waiver_id, request.expires_at, request.revoke)
+    {
+        Ok(true) => json_response(
+            StatusCode::OK,
+            &serde_json::json!({ "id": waiver_id, "revoked": request.revoke }),
+            None,
+        ),
+        Ok(false) => admin_error(StatusCode::NOT_FOUND, "unknown waiver"),
+        Err(error) => admin_store_error(error),
+    }
+}
+
 pub async fn configure_installation_events(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1963,6 +2091,146 @@ mod tests {
         assert!(legacy.max_actions_per_minute.is_none());
         assert!(legacy.actions.is_none());
         assert!(legacy.scopes.is_none());
+    }
+
+    #[tokio::test]
+    async fn waiver_crud_is_operator_gated_and_expiry_filtered() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new_with_options_and_runtime_config(
+            store.clone(),
+            Some("root-operator-key".into()),
+            None,
+            None,
+            None,
+            "http://control-plane.test".into(),
+            None,
+            0,
+            crate::plugins::pr_review::PrReviewConfig::default(),
+            Some(auth_config()),
+            None,
+        );
+        let mut operator = HeaderMap::new();
+        operator.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer root-operator-key"),
+        );
+        let body = |expires: i64| CreateReviewWaiver {
+            repo: "zeabur/nuphos".into(),
+            path_class: None,
+            text: "fail-open on the login redirect is an accepted trade-off".into(),
+            origin_pr: Some("zeabur/nuphos#652".into()),
+            created_by: "canyu".into(),
+            expires_at: expires,
+        };
+
+        // No operator key, no write.
+        let unauthorized = create_review_waiver(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(body(now_ms() + 3_600_000)),
+        )
+        .await;
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        // Expiry is mandatory and must be in the future.
+        let fossil = create_review_waiver(
+            State(state.clone()),
+            operator.clone(),
+            Json(body(now_ms() - 1)),
+        )
+        .await;
+        assert_eq!(fossil.status(), StatusCode::BAD_REQUEST);
+
+        let created = create_review_waiver(
+            State(state.clone()),
+            operator.clone(),
+            Json(body(now_ms() + 3_600_000)),
+        )
+        .await;
+        let (status, created, _) = response(created).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let waiver_id = created["id"].as_str().unwrap().to_string();
+
+        let active = store
+            .list_review_waivers(Some("zeabur/nuphos"), false, now_ms())
+            .unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].fired_count, 0);
+
+        // Revoke removes it from the active view but not from history.
+        let revoked = update_review_waiver(
+            State(state.clone()),
+            operator.clone(),
+            Path(waiver_id.clone()),
+            Json(UpdateReviewWaiver {
+                expires_at: None,
+                revoke: true,
+            }),
+        )
+        .await;
+        assert_eq!(revoked.status(), StatusCode::OK);
+        assert!(store
+            .list_review_waivers(Some("zeabur/nuphos"), false, now_ms())
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .list_review_waivers(None, true, now_ms())
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Guard rails.
+        let unknown = update_review_waiver(
+            State(state.clone()),
+            operator.clone(),
+            Path("wvr_nope".into()),
+            Json(UpdateReviewWaiver {
+                expires_at: None,
+                revoke: true,
+            }),
+        )
+        .await;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        let empty = update_review_waiver(
+            State(state.clone()),
+            operator.clone(),
+            Path(waiver_id.clone()),
+            Json(UpdateReviewWaiver {
+                expires_at: None,
+                revoke: false,
+            }),
+        )
+        .await;
+        assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+
+        // Re-revoking never rewrites history: the first revocation time wins.
+        let first_revoked_at = store.list_review_waivers(None, true, now_ms()).unwrap()[0]
+            .revoked_at
+            .unwrap();
+        let again = update_review_waiver(
+            State(state),
+            operator,
+            Path(waiver_id),
+            Json(UpdateReviewWaiver {
+                expires_at: None,
+                revoke: true,
+            }),
+        )
+        .await;
+        assert_eq!(again.status(), StatusCode::OK);
+        assert_eq!(
+            store.list_review_waivers(None, true, now_ms()).unwrap()[0].revoked_at,
+            Some(first_revoked_at)
+        );
+
+        // Query strings are not JSON: ?all=1 must parse as true.
+        let query: ListReviewWaivers =
+            serde_urlencoded::from_str("all=1").expect("all=1 parses");
+        assert!(query.all);
+        let query: ListReviewWaivers = serde_urlencoded::from_str("").unwrap();
+        assert!(!query.all);
     }
 
     #[tokio::test]
