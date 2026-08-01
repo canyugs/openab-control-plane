@@ -4,7 +4,9 @@ Status: proposed · 2026-08-01
 
 Builds on: [ADR 020](020-review-audit-effectiveness-ledger.md) (findings ledger),
 [ADR 021](021-review-effectiveness-feedback-loop.md) (adoption as the primary signal),
-[ADR 031](031-provider-neutral-kernel.md) (controller-owned review closing).
+[ADR 031](031-provider-neutral-kernel.md) (controller-owned review closing),
+[ADR 034](034-review-memory-waivers.md) (the waiver ledger — this ADR's
+suppression-type priors are delivered exclusively through it).
 
 ## Context
 
@@ -41,16 +43,32 @@ automated; **every write into council behavior stays human-gated.**
 
 ### Loop 1 — per round: priors in, evidence still required
 
-Reviewers and chair load a per-repository priors file (repo conventions and
-confirmed false positives, ordered by how often each has fired) before
-reviewing, when one exists for the target repo. Framing is normative:
-**prior, not law** — a prior that contradicts what HEAD shows must be
-re-verified, and re-raising with evidence beats silent deference.
+Priors split into two kinds with different blast radii, and the split
+decides who sees them ([ADR 034](034-review-memory-waivers.md)):
 
-Priors enter the corpus through exactly one door: **author interaction** —
-a dispute the council accepted, or an explicit author dismissal with a
-reason. Model self-reflection never writes to the corpus; letting the
-council author its own suppressions is self-reinforcement with a delay.
+- **Conventions** — descriptive repo facts (build system, framework
+  idioms, layering rules). Loaded by reviewers and chair alike from a
+  per-repository priors file, ordered by how often each has fired.
+  Framing is normative: **prior, not law** — a prior that contradicts
+  what HEAD shows must be re-verified, and re-raising with evidence beats
+  silent deference.
+- **Confirmed false positives and accepted trade-offs** — suppressions.
+  These are exactly ADR 034 waivers and use only that mechanism:
+  chair-only, controller-injected at convene, cited visibly in the PR
+  comment, mandatory expiry. Reviewers never load them — suppression at
+  the recall side is what ADR 034 exists to prevent, and a
+  compromised-reviewer prompt surface full of "ignore X" entries is the
+  cheapest poisoning path there is.
+
+Priors enter either corpus through exactly one door: **author interaction
+plus maintainer approval** — a dispute the council accepted, or an author
+dismissal with a reason that a maintainer (allowlisted principal, not the
+PR author) has approved before the corpus write; the write itself is
+operator-keyed per ADR 034. Dismissal reasons and convention text are
+loaded as **bounded untrusted data, not instructions** (ADR 019 posture).
+Model self-reflection never writes to either corpus; letting the council
+author its own suppressions is self-reinforcement with a delay. The seed
+import (below) passes the same provenance and approval controls.
 
 ### Loop 2 — weekly: calibration from outcomes
 
@@ -65,7 +83,10 @@ three numbers per lane:
 
 Governing rule: an angle whose actionable rate stays below threshold for
 two consecutive periods is removed from the preset or has its task
-rewritten — by a human, via the normal PR path. This is the structural
+rewritten — by a human, via the normal PR path. **ADR 021's floor stands:
+security and correctness angles keep their seat regardless of the number;
+for them a low rate is a review-the-steering signal, never a removal
+trigger.** This is the structural
 answer to "how does the council avoid blind hunting": angles that hunt
 blindly lose their seat, on evidence.
 
