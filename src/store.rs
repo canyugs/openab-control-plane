@@ -466,9 +466,10 @@ pub trait Store: Send + Sync {
         revoke: bool,
     ) -> Result<bool>;
     /// ADR 035 P2: a close reported these waivers as matched — bump their
-    /// fired counters. Unknown ids are ignored (the chair may hallucinate an
-    /// id; the ledger must not error a close over it).
-    fn record_waiver_fired(&self, ids: &[String]) -> Result<()>;
+    /// fired counters. Ids are deduplicated and scoped to the closing
+    /// session's repo; unknown or foreign ids are ignored (the chair may
+    /// hallucinate an id; the ledger must not error a close over it).
+    fn record_waiver_fired(&self, repo: &str, ids: &[String]) -> Result<()>;
 
     /// ADR 034: mutate any subset of a registration's configuration in ONE
     /// transaction — a reader can never observe a half-applied replace-set.
@@ -1704,15 +1705,16 @@ impl Store for SqliteStore {
         Ok(updated == 1)
     }
 
-    fn record_waiver_fired(&self, ids: &[String]) -> Result<()> {
+    fn record_waiver_fired(&self, repo: &str, ids: &[String]) -> Result<()> {
         let c = self.conn.lock().unwrap();
         let now = now_ms();
-        for id in ids {
+        let unique: std::collections::BTreeSet<&String> = ids.iter().collect();
+        for id in unique {
             c.execute(
                 "UPDATE review_waivers
-                 SET fired_count = fired_count + 1, last_fired_at = ?2
-                 WHERE id = ?1",
-                params![id, now],
+                 SET fired_count = fired_count + 1, last_fired_at = ?3
+                 WHERE id = ?1 AND repo = ?2",
+                params![id, repo, now],
             )?;
         }
         Ok(())
