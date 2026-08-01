@@ -899,6 +899,22 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
         let binding_input = if let (ControllerAction::OpenSession(open), Some(intent)) =
             (&mut action, open_intent)
         {
+            // ADR 035 P2: inject the chair's waiver block HERE, while the raw
+            // `github:pr/…` trigger_ref still exists — the hashed rewrite one
+            // line down is opaque to the repo parser (live-verification miss,
+            // 2026-08-02: the waiver never reached the chair).
+            if let Some(chair) = open.chair_bot.clone() {
+                if !open.recipient_inputs.is_empty() {
+                    if let Some(block) = crate::controller::waiver_block_for_trigger(
+                        state,
+                        Some(intent.trigger_ref.as_str()),
+                    ) {
+                        if let Some(input) = open.recipient_inputs.get_mut(&chair) {
+                            input.push_str(&block);
+                        }
+                    }
+                }
+            }
             open.trigger_ref = Some(controller_trigger_ref(&controller_id, &intent.trigger_ref));
             Some((intent.trigger_ref, intent.trigger_fingerprint))
         } else {

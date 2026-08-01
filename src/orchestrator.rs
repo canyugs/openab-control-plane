@@ -761,13 +761,11 @@ fn record_review_findings(state: &Arc<AppState>, session: &Session, verdict_text
         .filter_map(|f| f.waiver_id.clone())
         .collect();
     if !fired.is_empty() {
-        let Some((repo, _)) = repo_pr.as_ref() else {
-            tracing::warn!(
-                "waived findings at close of {} but no pr trigger_ref; counters skipped",
-                session.id
-            );
-            return;
-        };
+        // External-controller sessions carry a hashed trigger_ref, so the
+        // repo is unknown here; waiver ids are 128-bit random capabilities,
+        // so an id-only bump is acceptable there. When the repo IS known
+        // (embedded path), it stays enforced.
+        let repo = repo_pr.as_ref().map(|(r, _)| r.as_str());
         if let Err(e) = state.store.record_waiver_fired(repo, &fired) {
             tracing::warn!("waiver fired-count update for {} failed: {e}", session.id);
         }
@@ -2349,8 +2347,33 @@ mod tests {
             .unwrap();
         assert_eq!(
             foreign_rows[0].fired_count, 0,
-            "a close cannot bump another repo's waiver"
+            "a repo-known close cannot bump another repo's waiver"
         );
+
+        // External path: hashed trigger_ref means repo unknown — the id-only
+        // bump must still land (ids are unguessable capabilities).
+        let external = store
+            .create_session(
+                "council",
+                Some("controller:github-canary:deadbeef"),
+                1,
+                None,
+                &[],
+                "council",
+            )
+            .unwrap();
+        let verdict2 = format!(
+            "verdict body\n<!-- openab-findings\n{{\"findings\":[\
+             {{\"id\":\"F1\",\"severity\":\"yellow\",\"status\":\"waived\",\
+              \"title\":\"waived again\",\"waiver_id\":\"{}\"}}]}}\n-->\n\
+             [[verdict:approve r=0 y=0 g=0]]",
+            waiver.id
+        );
+        record_review_findings(&state, &external, &verdict2);
+        let rows = store
+            .list_review_waivers(Some("o/r"), true, crate::store::now_ms())
+            .unwrap();
+        assert_eq!(rows[0].fired_count, 2, "hashed-ref close still counts");
     }
 
     #[test]
