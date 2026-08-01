@@ -919,7 +919,6 @@ impl Store for PostgresStore {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn create_session(
         &self,
         title: &str,
@@ -929,10 +928,47 @@ impl Store for PostgresStore {
         roster: &[String],
         mode: &str,
     ) -> Result<Session> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        let id = new_id("ses");
+        let created_at = now_ms();
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            tx.execute(
+                "INSERT INTO sessions (id, title, state, trigger_ref, quorum_n, chair_bot, created_at, mode)
+                 VALUES ($1, $2, 'open', $3, $4, $5, $6, $7)",
+                &[&id, &title, &trigger_ref, &quorum_n, &chair_bot, &created_at, &mode],
+            )
+            .await?;
+            for bot_id in roster {
+                tx.execute(
+                    "INSERT INTO session_bots (session_id, bot_id) VALUES ($1, $2)
+                     ON CONFLICT (session_id, bot_id) DO NOTHING",
+                    &[&id, &bot_id],
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            Ok(Session {
+                id: id.clone(),
+                title: title.to_string(),
+                state: "open".into(),
+                trigger_ref: trigger_ref.map(String::from),
+                trigger_fingerprint: None,
+                quorum_n,
+                chair_bot: chair_bot.map(String::from),
+                created_at,
+                closed_at: None,
+                mode: mode.to_string(),
+                decision: None,
+                findings_red: None,
+                findings_yellow: None,
+                findings_green: None,
+                result_author_id: None,
+                result_message_ids: None,
+            })
+        })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn create_session_deduped(
         &self,
         title: &str,
@@ -942,10 +978,36 @@ impl Store for PostgresStore {
         roster: &[String],
         mode: &str,
     ) -> Result<(Session, bool)> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        if let Some(trigger_ref) = trigger_ref {
+            let existing = self.block(async {
+                let client = self.client().await?;
+                active_session_for_trigger_pg(&**client, trigger_ref).await
+            })?;
+            if let Some(existing) = existing {
+                return Ok((existing, true));
+            }
+        }
+        match self.create_session(title, trigger_ref, quorum_n, chair_bot, roster, mode) {
+            Ok(session) => Ok((session, false)),
+            Err(err) if trigger_ref.is_some() && is_pg_unique_violation(&err) => {
+                let trigger_ref = trigger_ref.expect("checked by is_some guard");
+                let existing = self.block(async {
+                    let client = self.client().await?;
+                    active_session_for_trigger_pg(&**client, trigger_ref).await
+                })?;
+                if let Some(existing) = existing {
+                    return Ok((existing, true));
+                }
+                Err(err).with_context(|| {
+                    format!(
+                        "active trigger_ref conflict for '{trigger_ref}' but no active session was found"
+                    )
+                })
+            }
+            Err(err) => Err(err),
+        }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn create_session_superseding(
         &self,
         title: &str,
@@ -957,11 +1019,105 @@ impl Store for PostgresStore {
         mode: &str,
         opening_inputs: &[OpeningInput],
     ) -> Result<(Session, SessionCreateOutcome)> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        let id = new_id("ses");
+        let created_at = now_ms();
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            let mut outcome = SessionCreateOutcome::Created;
+            if let Some(trigger_ref) = trigger_ref {
+                // Serialize per trigger: SQLite ran the whole check-close-insert
+                // under the global mutex; two racing superseders must not both
+                // close-and-insert (the second would trip the partial unique
+                // index mid-flight instead of deduping cleanly).
+                tx.query("SELECT pg_advisory_xact_lock(hashtext($1))", &[&trigger_ref])
+                    .await?;
+                if let Some(existing) = active_session_for_trigger_pg(&*tx, trigger_ref).await? {
+                    if matches!(
+                        (existing.trigger_fingerprint.as_deref(), trigger_fingerprint),
+                        (Some(existing), Some(incoming)) if existing == incoming
+                    ) {
+                        tx.commit().await?;
+                        return Ok((existing, SessionCreateOutcome::Deduped));
+                    }
+                    tx.execute(
+                        "UPDATE sessions SET state = 'closed', closed_at = $2
+                         WHERE id = $1 AND state NOT IN ('closed', 'aborted')",
+                        &[&existing.id.as_str(), &created_at],
+                    )
+                    .await?;
+                    enqueue_controller_session_event_pg(
+                        &*tx,
+                        &existing.id,
+                        "session.superseded",
+                        json!({ "reason": "superseded" }),
+                        &format!("session.superseded:{}", existing.id),
+                        created_at,
+                    )
+                    .await?;
+                    outcome = SessionCreateOutcome::Superseded {
+                        old_id: existing.id,
+                    };
+                }
+            }
+            let initial_state = if opening_inputs.is_empty() {
+                "open"
+            } else {
+                "deliberating"
+            };
+            tx.execute(
+                "INSERT INTO sessions
+                    (id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, mode)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                &[&id, &title, &initial_state, &trigger_ref, &trigger_fingerprint, &quorum_n, &chair_bot, &created_at, &mode],
+            )
+            .await?;
+            for bot_id in roster {
+                tx.execute(
+                    "INSERT INTO session_bots (session_id, bot_id) VALUES ($1, $2)
+                     ON CONFLICT (session_id, bot_id) DO NOTHING",
+                    &[&id, &bot_id],
+                )
+                .await?;
+            }
+            for input in opening_inputs {
+                insert_opening_input_pg(&*tx, &id, input, created_at).await?;
+            }
+            tx.commit().await?;
+            let session = Session {
+                id: id.clone(),
+                title: title.to_string(),
+                state: initial_state.into(),
+                trigger_ref: trigger_ref.map(String::from),
+                trigger_fingerprint: trigger_fingerprint.map(String::from),
+                quorum_n,
+                chair_bot: chair_bot.map(String::from),
+                created_at,
+                closed_at: None,
+                mode: mode.to_string(),
+                decision: None,
+                findings_red: None,
+                findings_yellow: None,
+                findings_green: None,
+                result_author_id: None,
+                result_message_ids: None,
+            };
+            Ok((session, outcome))
+        })
     }
 
     fn session(&self, id: &str) -> Result<Option<Session>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query_opt(
+                    &format!("SELECT {SESSION_COLS} FROM sessions WHERE id = $1"),
+                    &[&id],
+                )
+                .await?
+                .as_ref()
+                .map(map_session_pg))
+        })
     }
 
     fn list_sessions(
@@ -970,11 +1126,76 @@ impl Store for PostgresStore {
         state: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Session>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        let limit = limit as i64;
+        self.block(async {
+            let client = self.client().await?;
+            // id DESC replaces SQLite's rowid DESC tiebreak; ids are random so
+            // this only stabilizes equal-timestamp ordering deterministically.
+            let rows = match (trigger_ref, state) {
+                (Some(trigger_ref), Some(state)) => {
+                    client
+                        .query(
+                            &format!(
+                                "SELECT {SESSION_COLS} FROM sessions
+                                 WHERE trigger_ref = $1 AND state = $2
+                                 ORDER BY created_at DESC, id DESC LIMIT $3"
+                            ),
+                            &[&trigger_ref, &state, &limit],
+                        )
+                        .await?
+                }
+                (Some(trigger_ref), None) => {
+                    client
+                        .query(
+                            &format!(
+                                "SELECT {SESSION_COLS} FROM sessions
+                                 WHERE trigger_ref = $1
+                                 ORDER BY created_at DESC, id DESC LIMIT $2"
+                            ),
+                            &[&trigger_ref, &limit],
+                        )
+                        .await?
+                }
+                (None, Some(state)) => {
+                    client
+                        .query(
+                            &format!(
+                                "SELECT {SESSION_COLS} FROM sessions
+                                 WHERE state = $1
+                                 ORDER BY created_at DESC, id DESC LIMIT $2"
+                            ),
+                            &[&state, &limit],
+                        )
+                        .await?
+                }
+                (None, None) => {
+                    client
+                        .query(
+                            &format!(
+                                "SELECT {SESSION_COLS} FROM sessions
+                                 ORDER BY created_at DESC, id DESC LIMIT $1"
+                            ),
+                            &[&limit],
+                        )
+                        .await?
+                }
+            };
+            Ok(rows.iter().map(map_session_pg).collect())
+        })
     }
 
     fn add_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            let n = client
+                .execute(
+                    "INSERT INTO session_bots (session_id, bot_id) VALUES ($1, $2)
+                     ON CONFLICT (session_id, bot_id) DO NOTHING",
+                    &[&session_id, &bot_id],
+                )
+                .await?;
+            Ok(n == 1)
+        })
     }
 
     fn add_session_bots_if_capacity(
@@ -984,7 +1205,68 @@ impl Store for PostgresStore {
         max_roster: usize,
         opening_inputs: &[OpeningInput],
     ) -> Result<RosterAddOutcome> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        let mut unique = Vec::new();
+        for bot_id in bot_ids {
+            if !unique.iter().any(|known| known == bot_id) {
+                unique.push(bot_id.clone());
+            }
+        }
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            // Serialize per session: the capacity check-then-insert raced only
+            // behind SQLite's global mutex.
+            tx.query("SELECT pg_advisory_xact_lock(hashtext($1))", &[&session_id])
+                .await?;
+            let roster_len: i64 = tx
+                .query_one(
+                    "SELECT COUNT(*) FROM session_bots WHERE session_id = $1",
+                    &[&session_id],
+                )
+                .await?
+                .get(0);
+            let mut added = Vec::new();
+            let mut already_members = Vec::new();
+            for bot_id in unique {
+                let exists: bool = tx
+                    .query_one(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM session_bots WHERE session_id = $1 AND bot_id = $2
+                        )",
+                        &[&session_id, &bot_id],
+                    )
+                    .await?
+                    .get(0);
+                if exists {
+                    already_members.push(bot_id);
+                } else {
+                    added.push(bot_id);
+                }
+            }
+            if roster_len as usize + added.len() > max_roster {
+                tx.rollback().await?;
+                return Ok(RosterAddOutcome::Full);
+            }
+            for bot_id in &added {
+                tx.execute(
+                    "INSERT INTO session_bots (session_id, bot_id) VALUES ($1, $2)",
+                    &[&session_id, &bot_id],
+                )
+                .await?;
+            }
+            let created_at = now_ms();
+            for input in opening_inputs
+                .iter()
+                .filter(|input| added.iter().any(|bot_id| bot_id == &input.recipient))
+            {
+                insert_opening_input_pg(&*tx, session_id, input, created_at).await?;
+            }
+            tx.commit().await?;
+            Ok(RosterAddOutcome::Added {
+                added,
+                already_members,
+            })
+        })
     }
 
     fn replace_session_bot(
@@ -993,23 +1275,74 @@ impl Store for PostgresStore {
         old_bot_id: &str,
         new_bot_id: &str,
     ) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            let n = client
+                .execute(
+                    "UPDATE session_bots SET bot_id = $3
+                     WHERE session_id = $1 AND bot_id = $2",
+                    &[&session_id, &old_bot_id, &new_bot_id],
+                )
+                .await?;
+            Ok(n == 1)
+        })
     }
 
     fn remove_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            let n = client
+                .execute(
+                    "DELETE FROM session_bots WHERE session_id = $1 AND bot_id = $2",
+                    &[&session_id, &bot_id],
+                )
+                .await?;
+            Ok(n == 1)
+        })
     }
 
     fn set_session_quorum(&self, session_id: &str, quorum_n: i64) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "UPDATE sessions SET quorum_n = $2 WHERE id = $1",
+                    &[&session_id, &quorum_n],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn set_session_chair(&self, session_id: &str, chair_bot: &str) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "UPDATE sessions SET chair_bot = $2 WHERE id = $1",
+                    &[&session_id, &chair_bot],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn set_state(&self, session_id: &str, state: SessionState) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        let closed_at = if matches!(state, SessionState::Closed | SessionState::Aborted) {
+            Some(now_ms())
+        } else {
+            None
+        };
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "UPDATE sessions SET state = $2, closed_at = COALESCE($3, closed_at) WHERE id = $1",
+                    &[&session_id, &state.as_str(), &closed_at],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn advance_state(
@@ -1018,11 +1351,50 @@ impl Store for PostgresStore {
         from: SessionState,
         to: SessionState,
     ) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        let closed_at = if matches!(to, SessionState::Closed | SessionState::Aborted) {
+            Some(now_ms())
+        } else {
+            None
+        };
+        self.block(async {
+            let client = self.client().await?;
+            let n = client
+                .execute(
+                    "UPDATE sessions SET state = $3, closed_at = COALESCE($4, closed_at)
+                     WHERE id = $1 AND state = $2",
+                    &[&session_id, &from.as_str(), &to.as_str(), &closed_at],
+                )
+                .await?;
+            Ok(n == 1)
+        })
     }
 
     fn close_if_active(&self, session_id: &str, event_type: &str, reason: &str) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            let closed_at = now_ms();
+            let n = tx
+                .execute(
+                    "UPDATE sessions SET state = 'closed', closed_at = $2
+                     WHERE id = $1 AND state NOT IN ('closed', 'aborted')",
+                    &[&session_id, &closed_at],
+                )
+                .await?;
+            if n == 1 {
+                enqueue_controller_session_event_pg(
+                    &*tx,
+                    session_id,
+                    event_type,
+                    json!({ "state": "closed", "reason": reason }),
+                    &format!("{event_type}:{session_id}:{closed_at}"),
+                    closed_at,
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            Ok(n == 1)
+        })
     }
 
     fn set_session_verdict(
@@ -1033,7 +1405,18 @@ impl Store for PostgresStore {
         yellow: Option<i64>,
         green: Option<i64>,
     ) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "UPDATE sessions SET decision = $2, findings_red = $3,
+                            findings_yellow = $4, findings_green = $5
+                     WHERE id = $1",
+                    &[&session_id, &decision, &red, &yellow, &green],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1049,11 +1432,89 @@ impl Store for PostgresStore {
         result_message_ids_json: Option<&str>,
         final_messages: &[String],
     ) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            let closed_at = now_ms();
+            let n = tx
+                .execute(
+                    "UPDATE sessions SET state = 'closed', closed_at = $3,
+                            decision = $4, findings_red = $5, findings_yellow = $6, findings_green = $7,
+                            result_author_id = $8, result_message_ids = $9
+                     WHERE id = $1 AND state = $2",
+                    &[
+                        &session_id,
+                        &from.as_str(),
+                        &closed_at,
+                        &decision,
+                        &red,
+                        &yellow,
+                        &green,
+                        &result_author_id,
+                        &result_message_ids_json,
+                    ],
+                )
+                .await?;
+            if n == 1 {
+                // ADR 031:159 — cap final_messages, dropping the OLDEST parts;
+                // the verdict trailer and findings block sit at the end.
+                let mut kept: Vec<&str> = final_messages.iter().map(String::as_str).collect();
+                let mut total: usize = kept.iter().map(|m| m.len()).sum();
+                let mut truncated = false;
+                while total > FINAL_MESSAGES_MAX_BYTES && kept.len() > 1 {
+                    total -= kept.remove(0).len();
+                    truncated = true;
+                }
+                if let Some(last) = kept.last_mut() {
+                    if last.len() > FINAL_MESSAGES_MAX_BYTES {
+                        let want = last.len() - FINAL_MESSAGES_MAX_BYTES;
+                        let cut = (want..=last.len())
+                            .find(|i| last.is_char_boundary(*i))
+                            .unwrap_or(last.len());
+                        *last = &last[cut..];
+                        truncated = true;
+                    }
+                }
+                let mut payload = json!({
+                    "state": "closed",
+                    "reason": "normal",
+                    "decision": decision,
+                    "findings_red": red,
+                    "findings_yellow": yellow,
+                    "findings_green": green,
+                    "final_messages": kept,
+                });
+                if truncated {
+                    payload["final_messages_truncated"] = json!(true);
+                }
+                enqueue_controller_session_event_pg(
+                    &*tx,
+                    session_id,
+                    "session.terminal",
+                    payload,
+                    &format!("session.terminal:{session_id}:{closed_at}"),
+                    closed_at,
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            Ok(n == 1)
+        })
     }
 
     fn reopen_session(&self, session_id: &str, from: SessionState) -> Result<bool> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            let n = client
+                .execute(
+                    "UPDATE sessions SET state = 'deliberating',
+                            result_author_id = NULL, result_message_ids = NULL
+                     WHERE id = $1 AND state = $2",
+                    &[&session_id, &from.as_str()],
+                )
+                .await?;
+            Ok(n == 1)
+        })
     }
 
     fn insert_review_findings(
@@ -1112,11 +1573,37 @@ impl Store for PostgresStore {
     }
 
     fn latest_session_created_at(&self, trigger_ref: &str) -> Result<Option<i64>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query_one(
+                    "SELECT MAX(created_at) FROM sessions WHERE trigger_ref = $1",
+                    &[&trigger_ref],
+                )
+                .await?
+                .get(0))
+        })
     }
 
     fn active_sessions_before(&self, cutoff_ms: i64) -> Result<Vec<String>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            // Anchor on last activity, not created_at (see SQLite impl notes).
+            Ok(client
+                .query(
+                    "SELECT s.id FROM sessions s
+                     WHERE s.state NOT IN ('closed', 'aborted')
+                       AND COALESCE(
+                             (SELECT MAX(m.created_at) FROM messages m WHERE m.session_id = s.id),
+                             s.created_at
+                           ) < $1",
+                    &[&cutoff_ms],
+                )
+                .await?
+                .iter()
+                .map(|r| r.get(0))
+                .collect())
+        })
     }
 
     fn roster(&self, session_id: &str) -> Result<Vec<String>> {
@@ -1137,7 +1624,12 @@ impl Store for PostgresStore {
     }
 
     fn active_session_for_trigger(&self, trigger_ref: &str) -> Result<Option<String>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(active_session_for_trigger_pg(&**client, trigger_ref)
+                .await?
+                .map(|session| session.id))
+        })
     }
 
     fn standing_roster(&self) -> Result<Option<Vec<String>>> {
@@ -1173,11 +1665,40 @@ impl Store for PostgresStore {
     }
 
     fn upsert_thread(&self, session_id: &str, root_message_id: Option<&str>) -> Result<String> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            if let Some(existing) = client
+                .query_opt(
+                    "SELECT id FROM threads WHERE session_id = $1",
+                    &[&session_id],
+                )
+                .await?
+                .map(|r| r.get::<_, String>(0))
+            {
+                return Ok(existing);
+            }
+            let id = new_id("thr");
+            client
+                .execute(
+                    "INSERT INTO threads (id, session_id, root_message_id) VALUES ($1, $2, $3)",
+                    &[&id, &session_id, &root_message_id],
+                )
+                .await?;
+            Ok(id)
+        })
     }
 
     fn thread_for_session(&self, session_id: &str) -> Result<Option<String>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query_opt(
+                    "SELECT id FROM threads WHERE session_id = $1",
+                    &[&session_id],
+                )
+                .await?
+                .map(|r| r.get(0)))
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1191,35 +1712,161 @@ impl Store for PostgresStore {
         content: &str,
         reply_to: Option<&str>,
     ) -> Result<Message> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        let id = new_id("msg");
+        let created_at = now_ms();
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            tx.execute(
+                "INSERT INTO messages (id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                &[&id, &session_id, &thread_id, &author_kind, &author_id, &audience, &content, &reply_to, &created_at],
+            )
+            .await?;
+            enqueue_controller_session_event_pg(
+                &*tx,
+                session_id,
+                "session.progress",
+                json!({
+                    "message_id": id,
+                    "author_kind": author_kind,
+                    "author_id": author_id,
+                    "audience": audience,
+                }),
+                &format!("session.progress:{id}"),
+                created_at,
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(Message {
+                id: id.clone(),
+                session_id: session_id.to_string(),
+                thread_id: thread_id.map(String::from),
+                author_kind: author_kind.to_string(),
+                author_id: author_id.map(String::from),
+                audience: audience.map(String::from),
+                content: content.to_string(),
+                reply_to: reply_to.map(String::from),
+                created_at,
+            })
+        })
     }
 
     fn edit_message(&self, message_id: &str, content: &str) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "UPDATE messages SET content = $2 WHERE id = $1",
+                    &[&message_id, &content],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn message(&self, id: &str) -> Result<Option<Message>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query_opt(
+                    "SELECT id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at
+                     FROM messages WHERE id = $1",
+                    &[&id],
+                )
+                .await?
+                .as_ref()
+                .map(map_message_pg))
+        })
     }
 
     fn messages(&self, session_id: &str) -> Result<Vec<Message>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            // ord tiebreak replaces rowid: equal-timestamp chunks keep insertion
+            // order regardless of plan (ADR 028 span integrity, council #241 F1).
+            Ok(client
+                .query(
+                    "SELECT id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at
+                     FROM messages WHERE session_id = $1 ORDER BY created_at ASC, ord ASC",
+                    &[&session_id],
+                )
+                .await?
+                .iter()
+                .map(map_message_pg)
+                .collect())
+        })
     }
 
     fn add_reaction(&self, message_id: &str, bot_id: &str, emoji: &str) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "INSERT INTO reactions (message_id, bot_id, emoji) VALUES ($1, $2, $3)
+                     ON CONFLICT (message_id, bot_id, emoji) DO NOTHING",
+                    &[&message_id, &bot_id, &emoji],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn remove_reaction(&self, message_id: &str, bot_id: &str, emoji: &str) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "DELETE FROM reactions WHERE message_id = $1 AND bot_id = $2 AND emoji = $3",
+                    &[&message_id, &bot_id, &emoji],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn reactions(&self, session_id: &str) -> Result<Vec<Reaction>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query(
+                    "SELECT r.message_id, r.bot_id, r.emoji
+                     FROM reactions r
+                     JOIN messages m ON m.id = r.message_id
+                     WHERE m.session_id = $1
+                     ORDER BY m.created_at, r.message_id, r.bot_id, r.emoji",
+                    &[&session_id],
+                )
+                .await?
+                .iter()
+                .map(|r| Reaction {
+                    message_id: r.get(0),
+                    bot_id: r.get(1),
+                    emoji: r.get(2),
+                })
+                .collect())
+        })
     }
 
     fn done_voters(&self, session_id: &str) -> Result<Vec<String>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            // Done-vote invariant: a done reaction counts only on the opening
+            // trigger / system prompt, or the voting bot's own message.
+            Ok(client
+                .query(
+                    "SELECT DISTINCT r.bot_id FROM reactions r
+                     JOIN messages m ON m.id = r.message_id
+                     WHERE m.session_id = $1
+                       AND r.emoji = '🆗'
+                       AND (m.author_kind IN ('client', 'system') OR m.author_id = r.bot_id)",
+                    &[&session_id],
+                )
+                .await?
+                .iter()
+                .map(|r| r.get(0))
+                .collect())
+        })
     }
 
     fn enqueue_outbox(
@@ -1342,6 +1989,207 @@ mod tests {
     }
 
     #[test]
+    fn session_dedupe_and_supersede_semantics() {
+        let Some(s) = store("sessions_dedupe") else {
+            return;
+        };
+        let roster = vec!["chair".to_string(), "rev".to_string()];
+        let (a, deduped) = s
+            .create_session_deduped("t", Some("pr#1"), 2, Some("chair"), &roster, "council")
+            .unwrap();
+        assert!(!deduped);
+        let (b, deduped) = s
+            .create_session_deduped("t", Some("pr#1"), 2, Some("chair"), &roster, "council")
+            .unwrap();
+        assert!(deduped, "same active trigger dedupes");
+        assert_eq!(a.id, b.id);
+        // same fingerprint → dedupe; new fingerprint → supersede
+        let (c, outcome) = s
+            .create_session_superseding(
+                "t",
+                Some("pr#1"),
+                Some("sha:aaa"),
+                2,
+                Some("chair"),
+                &roster,
+                "council",
+                &[],
+            )
+            .unwrap();
+        assert!(
+            matches!(outcome, SessionCreateOutcome::Superseded { ref old_id } if *old_id == a.id)
+        );
+        let old = s.session(&a.id).unwrap().unwrap();
+        assert_eq!(old.state, "closed");
+        let (d, outcome) = s
+            .create_session_superseding(
+                "t",
+                Some("pr#1"),
+                Some("sha:aaa"),
+                2,
+                Some("chair"),
+                &roster,
+                "council",
+                &[],
+            )
+            .unwrap();
+        assert!(matches!(outcome, SessionCreateOutcome::Deduped));
+        assert_eq!(c.id, d.id);
+    }
+
+    #[test]
+    fn roster_keeps_insertion_order_via_ord() {
+        let Some(s) = store("roster_order") else {
+            return;
+        };
+        let roster: Vec<String> = ["z-bot", "a-bot", "m-bot"]
+            .iter()
+            .map(|b| b.to_string())
+            .collect();
+        let ses = s
+            .create_session("t", None, 2, Some("z-bot"), &roster, "council")
+            .unwrap();
+        assert_eq!(
+            s.roster(&ses.id).unwrap(),
+            roster,
+            "insertion order, not lexical order"
+        );
+        assert!(s.replace_session_bot(&ses.id, "a-bot", "b-bot").unwrap());
+        assert!(s.remove_session_bot(&ses.id, "m-bot").unwrap());
+        assert_eq!(s.roster(&ses.id).unwrap(), vec!["z-bot", "b-bot"]);
+    }
+
+    #[test]
+    fn messages_keep_equal_timestamp_insertion_order() {
+        let Some(s) = store("msg_order") else { return };
+        let ses = s.create_session("t", None, 1, None, &[], "solo").unwrap();
+        for i in 0..5 {
+            s.add_message(
+                &ses.id,
+                None,
+                "bot",
+                Some("b"),
+                None,
+                &format!("m{i}"),
+                None,
+            )
+            .unwrap();
+        }
+        let contents: Vec<String> = s
+            .messages(&ses.id)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.content)
+            .collect();
+        assert_eq!(contents, vec!["m0", "m1", "m2", "m3", "m4"]);
+        let first = s.messages(&ses.id).unwrap().remove(0);
+        s.edit_message(&first.id, "edited").unwrap();
+        assert_eq!(s.message(&first.id).unwrap().unwrap().content, "edited");
+    }
+
+    #[test]
+    fn state_machine_and_close_with_result() {
+        let Some(s) = store("state_machine") else {
+            return;
+        };
+        let ses = s
+            .create_session("t", None, 1, None, &[], "council")
+            .unwrap();
+        assert!(s
+            .advance_state(&ses.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap());
+        assert!(
+            !s.advance_state(&ses.id, SessionState::Open, SessionState::Deliberating)
+                .unwrap(),
+            "stale from-state must not transition"
+        );
+        assert!(s
+            .close_session_with_result(
+                &ses.id,
+                SessionState::Deliberating,
+                Some("approve"),
+                Some(0),
+                Some(1),
+                Some(2),
+                Some("chair"),
+                None,
+                &["report".to_string()],
+            )
+            .unwrap());
+        let closed = s.session(&ses.id).unwrap().unwrap();
+        assert_eq!(closed.state, "closed");
+        assert_eq!(closed.decision.as_deref(), Some("approve"));
+        assert!(closed.closed_at.is_some());
+        assert!(s.reopen_session(&ses.id, SessionState::Closed).unwrap());
+        assert_eq!(s.session(&ses.id).unwrap().unwrap().state, "deliberating");
+    }
+
+    #[test]
+    fn reactions_and_done_voters_invariant() {
+        let Some(s) = store("done_voters") else {
+            return;
+        };
+        let ses = s
+            .create_session("t", None, 2, None, &[], "council")
+            .unwrap();
+        let opening = s
+            .add_message(&ses.id, None, "client", None, None, "prompt", None)
+            .unwrap();
+        let peer = s
+            .add_message(&ses.id, None, "bot", Some("rev-a"), None, "peer msg", None)
+            .unwrap();
+        s.add_reaction(&opening.id, "rev-a", "🆗").unwrap();
+        s.add_reaction(&opening.id, "rev-a", "🆗").unwrap(); // idempotent
+        s.add_reaction(&peer.id, "rev-b", "🆗").unwrap(); // peer's message — not a vote
+        s.add_reaction(&peer.id, "rev-a", "🆗").unwrap(); // own message — counts
+        let mut voters = s.done_voters(&ses.id).unwrap();
+        voters.sort();
+        assert_eq!(voters, vec!["rev-a"]);
+        assert_eq!(s.reactions(&ses.id).unwrap().len(), 3);
+        s.remove_reaction(&opening.id, "rev-a", "🆗").unwrap();
+        assert_eq!(s.reactions(&ses.id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn capacity_gate_and_watchdog_scan() {
+        let Some(s) = store("capacity") else { return };
+        let ses = s
+            .create_session("t", Some("pr#9"), 2, None, &["a".into()], "council")
+            .unwrap();
+        let outcome = s
+            .add_session_bots_if_capacity(&ses.id, &["b".into(), "c".into()], 2, &[])
+            .unwrap();
+        assert!(matches!(outcome, RosterAddOutcome::Full));
+        let outcome = s
+            .add_session_bots_if_capacity(&ses.id, &["b".into(), "a".into()], 3, &[])
+            .unwrap();
+        match outcome {
+            RosterAddOutcome::Added {
+                added,
+                already_members,
+            } => {
+                assert_eq!(added, vec!["b"]);
+                assert_eq!(already_members, vec!["a"]);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert_eq!(
+            s.latest_session_created_at("pr#9").unwrap(),
+            Some(ses.created_at)
+        );
+        // no messages yet → activity anchor = created_at → stale
+        let stale = s.active_sessions_before(now_ms() + 1).unwrap();
+        assert!(stale.contains(&ses.id));
+        s.add_message(&ses.id, None, "bot", Some("a"), None, "alive", None)
+            .unwrap();
+        let stale = s.active_sessions_before(ses.created_at + 1).unwrap();
+        assert!(
+            !stale.contains(&ses.id),
+            "fresh message defers the deadline"
+        );
+    }
+
+    #[test]
     fn bot_identity_seed_register_and_token_lookup() {
         let Some(s) = store("bots_identity") else {
             return;
@@ -1452,5 +2300,176 @@ mod tests {
         );
         assert_eq!(inv.version.as_deref(), Some("1.1"));
         assert_eq!(inv.source, "discovered");
+    }
+}
+
+fn is_pg_unique_violation(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<tokio_postgres::Error>()
+            .and_then(|e| e.code())
+            .is_some_and(|c| *c == tokio_postgres::error::SqlState::UNIQUE_VIOLATION)
+    })
+}
+
+fn map_session_pg(r: &tokio_postgres::Row) -> Session {
+    Session {
+        id: r.get(0),
+        title: r.get(1),
+        state: r.get(2),
+        trigger_ref: r.get(3),
+        trigger_fingerprint: r.get(4),
+        quorum_n: r.get(5),
+        chair_bot: r.get(6),
+        created_at: r.get(7),
+        closed_at: r.get(8),
+        mode: r.get(9),
+        decision: r.get(10),
+        findings_red: r.get(11),
+        findings_yellow: r.get(12),
+        findings_green: r.get(13),
+        result_author_id: r.get(14),
+        result_message_ids: r.get(15),
+    }
+}
+
+const SESSION_COLS: &str = "id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot, created_at, closed_at, mode, decision, findings_red, findings_yellow, findings_green, result_author_id, result_message_ids";
+
+async fn active_session_for_trigger_pg<G: tokio_postgres::GenericClient>(
+    g: &G,
+    trigger_ref: &str,
+) -> Result<Option<Session>> {
+    Ok(g.query_opt(
+        &format!(
+            "SELECT {SESSION_COLS} FROM sessions
+              WHERE trigger_ref = $1 AND state NOT IN ('closed', 'aborted')
+              ORDER BY created_at DESC, id DESC LIMIT 1"
+        ),
+        &[&trigger_ref],
+    )
+    .await?
+    .as_ref()
+    .map(map_session_pg))
+}
+
+async fn enqueue_controller_event_pg<G: tokio_postgres::GenericClient>(
+    g: &G,
+    controller_id: &str,
+    session_id: Option<&str>,
+    event_type: &str,
+    payload: Value,
+    idempotency_key: &str,
+    occurred_at: i64,
+) -> Result<()> {
+    let destination = g
+        .query_opt(
+            "SELECT c.event_endpoint, c.event_key_version
+             FROM controllers c
+             JOIN controller_event_grants g ON g.controller_id = c.id
+             WHERE c.id = $1 AND c.enabled = 1
+               AND c.event_endpoint IS NOT NULL AND c.event_key_version IS NOT NULL
+               AND g.event_type = $2 AND g.granted = 1",
+            &[&controller_id, &event_type],
+        )
+        .await?
+        .map(|row| (row.get::<_, String>(0), row.get::<_, i64>(1)));
+    let Some((event_endpoint, event_key_version)) = destination else {
+        return Ok(());
+    };
+    let event_id = new_id("cev");
+    let body_json = serde_json::to_string(&json!({
+        "version": "1",
+        "event_id": event_id,
+        "controller_id": controller_id,
+        "event_type": event_type,
+        "session_id": session_id,
+        "occurred_at": occurred_at,
+        "payload": payload,
+    }))?;
+    g.execute(
+        "INSERT INTO controller_events
+            (id, controller_id, session_id, event_type, event_endpoint, event_key_version,
+             body_json, idempotency_key, state, attempts, created_at, next_attempt_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', 0, $9, $9)
+         ON CONFLICT (controller_id, idempotency_key) DO NOTHING",
+        &[
+            &event_id,
+            &controller_id,
+            &session_id,
+            &event_type,
+            &event_endpoint,
+            &event_key_version,
+            &body_json,
+            &idempotency_key,
+            &occurred_at,
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn enqueue_controller_session_event_pg<G: tokio_postgres::GenericClient>(
+    g: &G,
+    session_id: &str,
+    event_type: &str,
+    payload: Value,
+    idempotency_key: &str,
+    occurred_at: i64,
+) -> Result<()> {
+    let controller_id: Option<String> = g
+        .query_opt(
+            "SELECT controller_id FROM controller_sessions WHERE session_id = $1",
+            &[&session_id],
+        )
+        .await?
+        .map(|r| r.get(0));
+    if let Some(controller_id) = controller_id {
+        enqueue_controller_event_pg(
+            g,
+            &controller_id,
+            Some(session_id),
+            event_type,
+            payload,
+            idempotency_key,
+            occurred_at,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn insert_opening_input_pg<G: tokio_postgres::GenericClient>(
+    g: &G,
+    session_id: &str,
+    input: &OpeningInput,
+    created_at: i64,
+) -> Result<()> {
+    g.execute(
+        "INSERT INTO messages
+            (id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at)
+         VALUES ($1, $2, NULL, 'client', NULL, $3, $4, NULL, $5)",
+        &[
+            &new_id("msg"),
+            &session_id,
+            &input.recipient,
+            &input.content,
+            &created_at,
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+fn map_message_pg(r: &tokio_postgres::Row) -> Message {
+    Message {
+        id: r.get(0),
+        session_id: r.get(1),
+        thread_id: r.get(2),
+        author_kind: r.get(3),
+        author_id: r.get(4),
+        audience: r.get(5),
+        content: r.get(6),
+        reply_to: r.get(7),
+        created_at: r.get(8),
     }
 }
