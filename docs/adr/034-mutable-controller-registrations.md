@@ -126,7 +126,9 @@ deployment), not configuration.
   liveness leaks nothing.
 - Migration: none. Both stores already hold the rows; the change is
   routes + the verification predicate + tests (a disabled registration's
-  in-flight terminal event must verify; its `open_session` must 401; a
+  in-flight terminal event must verify; its `open_session` must be refused
+  with an explicit disabled 403 (not a credential 401 — the identity still
+  authenticates, which is what makes the refusal diagnosable); a
   PATCH of limits must apply without restart).
 
 ## Non-goals

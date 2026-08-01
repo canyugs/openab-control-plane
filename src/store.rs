@@ -321,6 +321,17 @@ pub enum ControllerOpenDecision {
     Supersede(ControllerSessionBinding),
 }
 
+/// The full mutable configuration of a registration, as it stands after a
+/// PATCH — the response body, so callers never have to interpret nulls.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ControllerInstallationConfig {
+    pub enabled: bool,
+    pub max_concurrent_sessions: i64,
+    pub max_actions_per_minute: i64,
+    pub actions: Vec<String>,
+    pub scopes: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControllerActionDenial {
     Credential,
@@ -328,6 +339,9 @@ pub enum ControllerActionDenial {
     Scope,
     SessionOwnership,
     TriggerScope,
+    /// ADR 034: a disabled registration refuses NEW work only. Actions that
+    /// target a session it already opened pass; everything else lands here.
+    Disabled,
     RateQuota { limit: i64, reset_at: i64 },
     ConcurrentSessionQuota { limit: i64, current: i64 },
 }
@@ -406,6 +420,21 @@ pub trait Store: Send + Sync {
         controller_id: &str,
         enabled: bool,
     ) -> Result<bool>;
+    /// ADR 034: mutate any subset of a registration's configuration in ONE
+    /// transaction — a reader can never observe a half-applied replace-set.
+    /// `None` leaves a field untouched; `Some` replace-sets grants/scopes.
+    /// Records a before/after audit row and returns the full post-state, or
+    /// `None` for an unknown registration.
+    #[allow(clippy::too_many_arguments)]
+    fn patch_controller_installation(
+        &self,
+        controller_id: &str,
+        enabled: Option<bool>,
+        max_concurrent_sessions: Option<i64>,
+        max_actions_per_minute: Option<i64>,
+        actions: Option<&[String]>,
+        scopes: Option<&[String]>,
+    ) -> Result<Option<ControllerInstallationConfig>>;
     #[allow(clippy::too_many_arguments)]
     fn put_controller_action_token(
         &self,
@@ -1189,10 +1218,15 @@ fn enqueue_controller_event_locked(
 ) -> Result<()> {
     let destination = conn
         .query_row(
+            // ADR 034: no `enabled = 1` here on purpose. A session opened
+            // under a registration may always finish under it — disabling
+            // gates admission (begin_controller_action), never the delivery
+            // of events for work already in flight. This is the exact drop
+            // that orphaned five reviews on 2026-07-31.
             "SELECT c.event_endpoint, c.event_key_version
              FROM controllers c
              JOIN controller_event_grants g ON g.controller_id = c.id
-             WHERE c.id = ?1 AND c.enabled = 1
+             WHERE c.id = ?1
                AND c.event_endpoint IS NOT NULL AND c.event_key_version IS NOT NULL
                AND g.event_type = ?2 AND g.granted = 1",
             params![controller_id, event_type],
@@ -1511,6 +1545,140 @@ impl Store for SqliteStore {
         )? == 1)
     }
 
+    fn patch_controller_installation(
+        &self,
+        controller_id: &str,
+        enabled: Option<bool>,
+        max_concurrent_sessions: Option<i64>,
+        max_actions_per_minute: Option<i64>,
+        actions: Option<&[String]>,
+        scopes: Option<&[String]>,
+    ) -> Result<Option<ControllerInstallationConfig>> {
+        fn read_config(
+            tx: &rusqlite::Transaction,
+            controller_id: &str,
+        ) -> Result<Option<ControllerInstallationConfig>> {
+            let Some((enabled, max_concurrent_sessions, max_actions_per_minute)) = tx
+                .query_row(
+                    "SELECT enabled, max_concurrent_sessions, max_actions_per_minute
+                     FROM controllers WHERE id = ?1",
+                    params![controller_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)? != 0,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .optional()?
+            else {
+                return Ok(None);
+            };
+            let mut grants = tx.prepare(
+                "SELECT action_kind FROM controller_action_grants
+                 WHERE controller_id = ?1 AND granted = 1 ORDER BY action_kind",
+            )?;
+            let actions = grants
+                .query_map(params![controller_id], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let mut bindings = tx.prepare(
+                "SELECT scope FROM controller_bindings
+                 WHERE controller_id = ?1 AND enabled = 1 ORDER BY scope",
+            )?;
+            let scopes = bindings
+                .query_map(params![controller_id], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(Some(ControllerInstallationConfig {
+                enabled,
+                max_concurrent_sessions,
+                max_actions_per_minute,
+                actions,
+                scopes,
+            }))
+        }
+
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = now_ms();
+        let Some(before) = read_config(&tx, controller_id)? else {
+            return Ok(None);
+        };
+        if let Some(enabled) = enabled {
+            tx.execute(
+                "UPDATE controllers SET enabled = ?2, updated_at = ?3 WHERE id = ?1",
+                params![controller_id, i64::from(enabled), now],
+            )?;
+        }
+        if let Some(limit) = max_concurrent_sessions {
+            tx.execute(
+                "UPDATE controllers SET max_concurrent_sessions = ?2, updated_at = ?3
+                 WHERE id = ?1",
+                params![controller_id, limit, now],
+            )?;
+        }
+        if let Some(limit) = max_actions_per_minute {
+            tx.execute(
+                "UPDATE controllers SET max_actions_per_minute = ?2, updated_at = ?3
+                 WHERE id = ?1",
+                params![controller_id, limit, now],
+            )?;
+        }
+        if let Some(actions) = actions {
+            tx.execute(
+                "UPDATE controller_action_grants SET granted = 0, updated_at = ?2
+                 WHERE controller_id = ?1",
+                params![controller_id, now],
+            )?;
+            for action in actions {
+                tx.execute(
+                    "INSERT INTO controller_action_grants
+                        (controller_id, action_kind, granted, updated_at)
+                     VALUES (?1, ?2, 1, ?3)
+                     ON CONFLICT(controller_id, action_kind) DO UPDATE SET
+                        granted = 1, updated_at = excluded.updated_at",
+                    params![controller_id, action, now],
+                )?;
+            }
+        }
+        if let Some(scopes) = scopes {
+            tx.execute(
+                "UPDATE controller_bindings SET enabled = 0, updated_at = ?2
+                 WHERE controller_id = ?1",
+                params![controller_id, now],
+            )?;
+            for scope in scopes {
+                tx.execute(
+                    "INSERT INTO controller_bindings (controller_id, scope, enabled, updated_at)
+                     VALUES (?1, ?2, 1, ?3)
+                     ON CONFLICT(controller_id, scope) DO UPDATE SET
+                        enabled = 1, updated_at = excluded.updated_at",
+                    params![controller_id, scope, now],
+                )?;
+            }
+        }
+        let after = read_config(&tx, controller_id)?
+            .context("registration vanished mid-transaction")?;
+        // ADR 034 §1: every PATCH lands in the audit trail with the
+        // before/after of the whole mutable document.
+        tx.execute(
+            "INSERT INTO controller_event_audit
+                (controller_id, event_id, kind, detail, created_at)
+             VALUES (?1, ?2, 'installation_patched', ?3, ?4)",
+            params![
+                controller_id,
+                new_id("cfg"),
+                serde_json::to_string(&json!({
+                    "before": before,
+                    "after": after,
+                }))?,
+                now
+            ],
+        )?;
+        tx.commit()?;
+        Ok(Some(after))
+    }
+
     fn put_controller_action_token(
         &self,
         token_id: &str,
@@ -1621,11 +1789,13 @@ impl Store for SqliteStore {
     fn active_controller_action_tokens(&self, now: i64) -> Result<Vec<ControllerActionToken>> {
         let c = self.conn.lock().unwrap();
         let mut stmt = c.prepare(
+            // ADR 034: disabled registrations still authenticate — identity
+            // resolution is not authorization. The Disabled/ownership gate in
+            // begin_controller_action decides what a disabled registration
+            // may still do (finish its in-flight sessions, nothing else).
             "SELECT t.id, t.controller_id, t.token_hash, t.pepper_version
              FROM controller_action_tokens t
-             JOIN controllers c ON c.id = t.controller_id
-             WHERE c.enabled = 1
-               AND t.revoked_at IS NULL
+             WHERE t.revoked_at IS NULL
                AND t.not_before <= ?1
                AND (t.expires_at IS NULL OR t.expires_at > ?1)
              ORDER BY t.id",
@@ -1695,17 +1865,32 @@ impl Store for SqliteStore {
 
         let quotas = tx
             .query_row(
-                "SELECT max_concurrent_sessions, max_actions_per_minute
-                 FROM controllers WHERE id = ?1 AND enabled = 1",
+                "SELECT max_concurrent_sessions, max_actions_per_minute, enabled
+                 FROM controllers WHERE id = ?1",
                 params![controller_id],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)? != 0,
+                    ))
+                },
             )
             .optional()?;
-        let Some((max_concurrent_sessions, max_actions_per_minute)) = quotas else {
+        let Some((max_concurrent_sessions, max_actions_per_minute, enabled)) = quotas else {
             return Ok(ControllerActionStart::Denied(
                 ControllerActionDenial::Credential,
             ));
         };
+        // ADR 034: disabled means "no NEW work", never "reject finished
+        // work". An action that targets a session this registration already
+        // opened passes (ownership is verified below as always); anything
+        // else — open_session above all — is refused while disabled.
+        if !enabled && session_id.is_none() {
+            return Ok(ControllerActionStart::Denied(
+                ControllerActionDenial::Disabled,
+            ));
+        }
 
         let mut stmt = tx.prepare(
             "SELECT token_hash, pepper_version
@@ -2089,9 +2274,11 @@ impl Store for SqliteStore {
         )?;
         let ids = {
             let mut stmt = tx.prepare(
+                // ADR 034: deliver pending events for disabled registrations
+                // too — drain includes delivery, and an event already
+                // enqueued belongs to work that was admitted.
                 "SELECT e.id FROM controller_events e
-                 JOIN controllers c ON c.id = e.controller_id
-                 WHERE e.state = 'pending' AND e.next_attempt_at <= ?1 AND c.enabled = 1
+                 WHERE e.state = 'pending' AND e.next_attempt_at <= ?1
                  ORDER BY e.next_attempt_at, e.created_at, e.rowid LIMIT ?2",
             )?;
             let rows = stmt
