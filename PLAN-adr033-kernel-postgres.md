@@ -73,10 +73,10 @@ SQLite stays the default and fully supported; Postgres is additive.
 ## Steps
 
 1. [x] Worktree + branch off f490722; survey
-2. [ ] `store::open_store` factory + `OABCP_DB` URL detection + main.rs wiring
-3. [ ] `src/store/postgres.rs`: runtime shim, pool, TLS, schema, migrations table
-4. [ ] Port slices (a)–(e), each with PG tests for its invariants
-5. [ ] Dual-backend CI green; clippy clean
+2. [x] `store::open_store` factory + `OABCP_DB` URL detection + main.rs wiring
+3. [x] `src/store/postgres.rs`: runtime shim, pool, TLS, schema, migrations table
+4. [x] Port slices (a)–(e) — 86/86 methods, 15 PG tests, each with PG tests for its invariants
+5. [x] Dual-backend green locally (350 lib tests incl. PG; workspace 485); clippy --locked -D-grade clean
 6. [ ] PR → dev council; release
 7. [ ] Ops: `plane` database + roles on lane instance; cutover checklist
        (mirror `docs/adr033-prod-cutover-checklist.md` learnings); dev plane

@@ -1295,10 +1295,7 @@ pub fn is_postgres_url(db: &str) -> bool {
 /// value is the SQLite path that has carried the plane since day one.
 pub fn open_store(db: &str) -> Result<std::sync::Arc<dyn Store>> {
     if is_postgres_url(db) {
-        anyhow::bail!(
-            "OABCP_DB is a Postgres URL, but the kernel Postgres backend \
-             has not landed yet (ADR 033 phase 2, PLAN-adr033-kernel-postgres.md)"
-        );
+        return Ok(std::sync::Arc::new(PostgresStore::open(db)?));
     }
     Ok(std::sync::Arc::new(SqliteStore::open(db)?))
 }

@@ -16,9 +16,6 @@
 //! relied on IMMEDIATE-transaction serialization, `FOR UPDATE SKIP LOCKED`
 //! for outbox/dispatcher claims.
 
-#![allow(dead_code)] // unreachable until `open_store` routes postgres:// here
-#![allow(unused_variables)] // stub params; remove with the last `unimplemented!` before merge
-
 use super::*;
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use tokio_postgres::config::SslMode;
@@ -2265,7 +2262,37 @@ impl Store for PostgresStore {
         head_sha: Option<&str>,
         findings: &[NewReviewFinding],
     ) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        let now = now_ms();
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            for f in findings {
+                tx.execute(
+                    "INSERT INTO pr_review_findings
+                        (session_id, repo, pr_number, stable_id, severity, status,
+                         title, path, line, raised_by, angle, head_sha, created_at)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+                    &[
+                        &session_id,
+                        &repo,
+                        &pr_number,
+                        &f.stable_id,
+                        &f.severity,
+                        &f.status,
+                        &f.title,
+                        &f.path,
+                        &f.line,
+                        &f.raised_by,
+                        &f.angle,
+                        &head_sha,
+                        &now,
+                    ],
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            Ok(())
+        })
     }
 
     fn review_findings(
@@ -2276,7 +2303,42 @@ impl Store for PostgresStore {
         severity: Option<&str>,
         limit: i64,
     ) -> Result<Vec<ReviewFinding>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            // Same fixed-slot "IS NULL OR" shape as SQLite; Postgres just needs
+            // explicit casts so NULL params carry a type.
+            Ok(client
+                .query(
+                    "SELECT id, session_id, repo, pr_number, stable_id, severity, status,
+                            title, path, line, raised_by, angle, head_sha, created_at
+                     FROM pr_review_findings
+                     WHERE ($1::text IS NULL OR repo = $1)
+                       AND ($2::bigint IS NULL OR pr_number = $2)
+                       AND ($3::text IS NULL OR status = $3)
+                       AND ($4::text IS NULL OR severity = $4)
+                     ORDER BY id DESC LIMIT $5",
+                    &[&repo, &pr_number, &status, &severity, &limit],
+                )
+                .await?
+                .iter()
+                .map(|r| ReviewFinding {
+                    id: r.get(0),
+                    session_id: r.get(1),
+                    repo: r.get(2),
+                    pr_number: r.get(3),
+                    stable_id: r.get(4),
+                    severity: r.get(5),
+                    status: r.get(6),
+                    title: r.get(7),
+                    path: r.get(8),
+                    line: r.get(9),
+                    raised_by: r.get(10),
+                    angle: r.get(11),
+                    head_sha: r.get(12),
+                    created_at: r.get(13),
+                })
+                .collect())
+        })
     }
 
     fn mark_once(&self, key: &str) -> Result<bool> {
@@ -2301,15 +2363,65 @@ impl Store for PostgresStore {
         fingerprint: Option<&str>,
         preset: Option<&str>,
     ) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "INSERT INTO pending_reviews
+                        (trigger_ref, repo, pr_number, fingerprint, preset, requested_at)
+                     VALUES ($1,$2,$3,$4,$5,$6)
+                     ON CONFLICT (trigger_ref) DO UPDATE SET
+                        fingerprint = excluded.fingerprint,
+                        preset = excluded.preset,
+                        requested_at = excluded.requested_at",
+                    &[
+                        &trigger_ref,
+                        &repo,
+                        &pr_number,
+                        &fingerprint,
+                        &preset,
+                        &now_ms(),
+                    ],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn pending_reviews(&self) -> Result<Vec<PendingReview>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query(
+                    "SELECT trigger_ref, repo, pr_number, fingerprint, preset, requested_at
+                     FROM pending_reviews ORDER BY requested_at",
+                    &[],
+                )
+                .await?
+                .iter()
+                .map(|r| PendingReview {
+                    trigger_ref: r.get(0),
+                    repo: r.get(1),
+                    pr_number: r.get(2),
+                    fingerprint: r.get(3),
+                    preset: r.get(4),
+                    requested_at: r.get(5),
+                })
+                .collect())
+        })
     }
 
     fn delete_pending_review(&self, trigger_ref: &str) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "DELETE FROM pending_reviews WHERE trigger_ref = $1",
+                    &[&trigger_ref],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn latest_session_created_at(&self, trigger_ref: &str) -> Result<Option<i64>> {
@@ -2711,31 +2823,189 @@ impl Store for PostgresStore {
         token: &str,
         expires_at: i64,
     ) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "INSERT INTO installation_tokens (session_id, role, token, expires_at)
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT (session_id, role)
+                     DO UPDATE SET token = excluded.token, expires_at = excluded.expires_at",
+                    &[&session_id, &role, &token, &expires_at],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn installation_token(&self, session_id: &str, role: &str) -> Result<Option<(String, i64)>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query_opt(
+                    "SELECT token, expires_at FROM installation_tokens
+                     WHERE session_id = $1 AND role = $2",
+                    &[&session_id, &role],
+                )
+                .await?
+                .map(|r| (r.get(0), r.get(1))))
+        })
     }
 
     fn session_installation_tokens(&self, session_id: &str) -> Result<Vec<String>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query(
+                    "SELECT token FROM installation_tokens WHERE session_id = $1",
+                    &[&session_id],
+                )
+                .await?
+                .iter()
+                .map(|r| r.get(0))
+                .collect())
+        })
     }
 
     fn purge_installation_tokens(&self, session_id: &str) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "DELETE FROM installation_tokens WHERE session_id = $1",
+                    &[&session_id],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn record_compatibility_use(&self, surface: &str, amount: i64) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        if surface.is_empty() || amount <= 0 {
+            anyhow::bail!("compatibility usage needs a non-empty surface and positive amount");
+        }
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "INSERT INTO compatibility_usage (surface, uses, first_used_at, last_used_at)
+                     VALUES ($1, $2, $3, $3)
+                     ON CONFLICT (surface) DO UPDATE SET
+                         uses = compatibility_usage.uses + excluded.uses,
+                         last_used_at = excluded.last_used_at",
+                    &[&surface, &amount, &now_ms()],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn compatibility_usage(&self) -> Result<Vec<CompatibilityUsage>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query(
+                    "SELECT surface, uses, first_used_at, last_used_at
+                     FROM compatibility_usage ORDER BY surface ASC",
+                    &[],
+                )
+                .await?
+                .iter()
+                .map(|r| CompatibilityUsage {
+                    surface: r.get(0),
+                    uses: r.get(1),
+                    first_used_at: r.get(2),
+                    last_used_at: r.get(3),
+                })
+                .collect())
+        })
     }
 
     fn stats(&self, now: i64) -> Result<Value> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+
+            async fn group(client: &deadpool_postgres::Client, sql: &str) -> Result<Value> {
+                let mut map = serde_json::Map::new();
+                for row in client.query(sql, &[]).await? {
+                    let key = row
+                        .get::<_, Option<String>>(0)
+                        .unwrap_or_else(|| "unknown".into());
+                    map.insert(key, json!(row.get::<_, i64>(1)));
+                }
+                Ok(Value::Object(map))
+            }
+
+            let by_state = group(&client, "SELECT state, COUNT(*) FROM sessions GROUP BY state").await?;
+            let by_mode = group(&client, "SELECT mode, COUNT(*) FROM sessions GROUP BY mode").await?;
+            let by_decision = group(
+                &client,
+                "SELECT decision, COUNT(*) FROM sessions WHERE decision IS NOT NULL GROUP BY decision",
+            )
+            .await?;
+
+            let closed_24h: i64 = client
+                .query_one(
+                    "SELECT COUNT(*) FROM sessions
+                     WHERE decision IS NOT NULL AND closed_at IS NOT NULL AND closed_at >= $1",
+                    &[&(now - 24 * 3600 * 1000)],
+                )
+                .await?
+                .get(0);
+
+            let mut durations: Vec<i64> = client
+                .query(
+                    "SELECT closed_at - created_at FROM sessions
+                     WHERE decision IS NOT NULL AND closed_at IS NOT NULL
+                       AND closed_at >= created_at",
+                    &[],
+                )
+                .await?
+                .iter()
+                .map(|r| r.get(0))
+                .collect();
+            let ttv_count = durations.len() as i64;
+
+            let row = client
+                .query_one(
+                    "SELECT COALESCE(SUM(findings_red),0)::bigint, COALESCE(SUM(findings_yellow),0)::bigint,
+                            COALESCE(SUM(findings_green),0)::bigint, COUNT(*)
+                     FROM sessions WHERE decision IS NOT NULL",
+                    &[],
+                )
+                .await?;
+            let (red, yellow, green, findings_sessions): (i64, i64, i64, i64) =
+                (row.get(0), row.get(1), row.get(2), row.get(3));
+            let avg_findings = if findings_sessions > 0 {
+                (red + yellow + green) as f64 / findings_sessions as f64
+            } else {
+                0.0
+            };
+
+            let outbox_pending: i64 = client
+                .query_one("SELECT COUNT(*) FROM outbox WHERE delivered_at IS NULL", &[])
+                .await?
+                .get(0);
+
+            Ok(json!({
+                "sessions": {
+                    "by_state": by_state,
+                    "closed_24h": closed_24h,
+                    "time_to_verdict_ms": {
+                        "p50": percentile(&mut durations, 50.0),
+                        "p95": percentile(&mut durations, 95.0),
+                        "count": ttv_count,
+                    },
+                    "by_mode": by_mode,
+                    "by_decision": by_decision,
+                    "findings": {
+                        "red": red, "yellow": yellow, "green": green,
+                        "avg_per_session": avg_findings,
+                    },
+                },
+                "outbox": { "pending": outbox_pending },
+            }))
+        })
     }
 }
 
@@ -3412,6 +3682,107 @@ mod tests {
             .claim_controller_events(now_ms(), 10, 30_000)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn findings_ledger_filters_and_pending_reviews() {
+        let Some(s) = store("findings") else { return };
+        s.insert_review_findings(
+            "ses_1",
+            Some("o/r"),
+            Some(7),
+            Some("sha"),
+            &[
+                NewReviewFinding {
+                    stable_id: "f1".into(),
+                    severity: "red".into(),
+                    status: "open".into(),
+                    title: "bug".into(),
+                    path: None,
+                    line: None,
+                    raised_by: Some("rev".into()),
+                    angle: None,
+                },
+                NewReviewFinding {
+                    stable_id: "f2".into(),
+                    severity: "green".into(),
+                    status: "open".into(),
+                    title: "praise".into(),
+                    path: None,
+                    line: None,
+                    raised_by: None,
+                    angle: None,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            s.review_findings(Some("o/r"), Some(7), None, None, 10)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            s.review_findings(None, None, None, Some("red"), 10)
+                .unwrap()
+                .len(),
+            1,
+            "NULL slots pass, bound slots filter"
+        );
+        s.upsert_pending_review("pr#7", "o/r", 7, Some("sha:a"), None)
+            .unwrap();
+        s.upsert_pending_review("pr#7", "o/r", 7, Some("sha:b"), Some("quick"))
+            .unwrap();
+        let pending = s.pending_reviews().unwrap();
+        assert_eq!(pending.len(), 1, "newest drop wins per trigger");
+        assert_eq!(pending[0].fingerprint.as_deref(), Some("sha:b"));
+        s.delete_pending_review("pr#7").unwrap();
+        assert!(s.pending_reviews().unwrap().is_empty());
+    }
+
+    #[test]
+    fn installation_tokens_compat_usage_and_stats() {
+        let Some(s) = store("tokens_stats") else {
+            return;
+        };
+        s.cache_installation_token("ses_1", "reviewer", "ghs_a", 111)
+            .unwrap();
+        s.cache_installation_token("ses_1", "reviewer", "ghs_b", 222)
+            .unwrap();
+        assert_eq!(
+            s.installation_token("ses_1", "reviewer").unwrap(),
+            Some(("ghs_b".into(), 222))
+        );
+        assert_eq!(s.session_installation_tokens("ses_1").unwrap().len(), 1);
+        s.purge_installation_tokens("ses_1").unwrap();
+        assert!(s.installation_token("ses_1", "reviewer").unwrap().is_none());
+
+        s.record_compatibility_use("surface-x", 2).unwrap();
+        s.record_compatibility_use("surface-x", 3).unwrap();
+        let usage = s.compatibility_usage().unwrap();
+        assert_eq!(usage[0].uses, 5);
+        assert!(s.record_compatibility_use("", 1).is_err());
+
+        let ses = s
+            .create_session("t", None, 1, None, &[], "council")
+            .unwrap();
+        assert!(s
+            .close_session_with_result(
+                &ses.id,
+                SessionState::Open,
+                Some("approve"),
+                Some(1),
+                Some(0),
+                Some(2),
+                None,
+                None,
+                &[],
+            )
+            .unwrap());
+        let stats = s.stats(now_ms()).unwrap();
+        assert_eq!(stats["sessions"]["by_decision"]["approve"], json!(1));
+        assert_eq!(stats["sessions"]["findings"]["red"], json!(1));
+        assert_eq!(stats["outbox"]["pending"], json!(0));
     }
 
     #[test]
