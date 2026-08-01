@@ -21,6 +21,14 @@ pub const STATUS_CONTEXT: &str = "openab/council";
 pub const KIND_COMMENT: &str = "comment";
 pub const KIND_STATUS: &str = "status";
 pub const KIND_REVIEW: &str = "review";
+// The round comment's two pre-verdict states: posted the moment the council
+// convenes (create only if the session's marker is absent, so a fast close
+// can never be clobbered), and rewritten if the session ends without a
+// verdict (update only if the marker exists; markers are per-session, and a
+// session gets exactly one terminal state, so this can never touch a
+// verdict).
+pub const KIND_COMMENT_OPEN: &str = "comment_open";
+pub const KIND_COMMENT_ABANDON: &str = "comment_abandon";
 
 /// The invisible identity a write carries so a retry can recognise its own
 /// earlier success. A crash between sending and marking done replays the write

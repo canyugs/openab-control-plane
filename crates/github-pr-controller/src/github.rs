@@ -238,6 +238,45 @@ impl GitHubClient {
             .ok_or_else(|| anyhow::anyhow!("pull request response carried no head sha"))
     }
 
+    /// The opening comment's deterministic Baseline: change scope and CI
+    /// state straight from the API, so the "review started" post carries
+    /// substance the second the council convenes — no model in the loop.
+    pub async fn pull_baseline(&self, repo: &str, pr_number: i64) -> Result<String> {
+        self.check_repository(repo)?;
+        let pr = self
+            .send(
+                reqwest::Method::GET,
+                &format!("repos/{repo}/pulls/{pr_number}"),
+                None,
+            )
+            .await?;
+        let files = pr["changed_files"].as_i64().unwrap_or_default();
+        let additions = pr["additions"].as_i64().unwrap_or_default();
+        let deletions = pr["deletions"].as_i64().unwrap_or_default();
+        let head = pr["head"]["sha"].as_str().unwrap_or_default();
+        let short = &head[..head.len().min(7)];
+        let checks = match self
+            .send(
+                reqwest::Method::GET,
+                &format!("repos/{repo}/commits/{head}/status"),
+                None,
+            )
+            .await
+        {
+            Ok(status) => format!(
+                "{} ({} contexts)",
+                status["state"].as_str().unwrap_or("unknown"),
+                status["total_count"].as_i64().unwrap_or_default()
+            ),
+            Err(_) => "unavailable".into(),
+        };
+        Ok(format!(
+            "Baseline:\n\
+             - Scope: {files} files changed (+{additions}/\u{2212}{deletions})\n\
+             - CI/checks: {checks} at `{short}`"
+        ))
+    }
+
     pub async fn find_marked_comment(
         &self,
         repo: &str,

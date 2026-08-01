@@ -518,6 +518,7 @@ async fn handle_runtime_event(
                 "accepted signed runtime event"
             );
             let closed = dispatch_terminal(&state, store, &event).await;
+            dispatch_opened(&state, store, &event).await;
             response(
                 StatusCode::OK,
                 json!({"ok": true, "duplicate": false, "closed": closed}),
@@ -558,6 +559,69 @@ fn opened_session_id(result: &controller_protocol::ActionResultEnvelope) -> Opti
 /// Deliberately infallible from the caller's side: the event receipt has
 /// already been recorded, so a failure here must not make the plane retry the
 /// whole delivery — the outbox is what retries.
+/// A session opening is the reader's cue that the council convened: post the
+/// round comment the moment the session opens, before any verdict exists —
+/// the kernel-era "Review Council started" post the controller cutover lost.
+/// The close finds this comment by its round marker and rewrites it into the
+/// verdict, so each round still ends as exactly one comment.
+async fn dispatch_opened(
+    state: &Arc<AppState>,
+    store: &Arc<dyn ProductStore>,
+    event: &runtime_events::RuntimeEventEnvelope,
+) -> bool {
+    let kind = match event.event_type.as_str() {
+        "session.opened" => closing::KIND_COMMENT_OPEN,
+        "session.superseded" | "session.timeout" => closing::KIND_COMMENT_ABANDON,
+        _ => return false,
+    };
+    let Some(session_id) = event.session_id.as_deref() else {
+        return false;
+    };
+    let target = match store.session_target(session_id).await {
+        Ok(Some(target)) => target,
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::error!(%error, session_id, "session target lookup failed");
+            return false;
+        }
+    };
+    let payload = if kind == closing::KIND_COMMENT_OPEN {
+        // The body is composed at send time (perform_write): the Baseline
+        // comes from the GitHub API, and the outbox executor is where the
+        // GitHub client lives.
+        let round = store
+            .next_round(&target.repo, target.pr_number)
+            .await
+            .unwrap_or(1);
+        serde_json::json!({
+            "repo": target.repo,
+            "pr_number": target.pr_number,
+            "round": round,
+        })
+    } else {
+        let marker = closing::round_marker(session_id);
+        serde_json::json!({
+            "repo": target.repo,
+            "pr_number": target.pr_number,
+            "body": format!(
+                "<!-- openab-council -->\n\
+                 Review Council round closed without a verdict — superseded \
+                 by a newer round or timed out.\n\n{marker}"
+            ),
+        })
+    };
+    match store.enqueue_write(session_id, kind, &payload).await {
+        Ok(_) => {
+            spawn_write_drain(state);
+            true
+        }
+        Err(error) => {
+            tracing::error!(%error, session_id, kind, "opening-comment enqueue failed");
+            false
+        }
+    }
+}
+
 async fn dispatch_terminal(
     state: &Arc<AppState>,
     store: &Arc<dyn ProductStore>,
@@ -726,6 +790,41 @@ async fn perform_write(
                         .set_round_comment_id(&write.session_id, comment_id)
                         .await?;
                 }
+            }
+            Ok(())
+        }
+        closing::KIND_COMMENT_OPEN => {
+            let issue = payload["pr_number"].as_i64().unwrap_or_default();
+            let marker = closing::round_marker(&write.session_id);
+            // Create only if the session's marker is absent: a fast close (or
+            // a replay of this write) means the round comment already exists
+            // in a later state, and "started" must never overwrite it.
+            if github.find_marked_comment(repo, issue, &marker).await?.is_none() {
+                let round = payload["round"].as_i64().unwrap_or(1);
+                let baseline = github
+                    .pull_baseline(repo, issue)
+                    .await
+                    .unwrap_or_else(|_| "Baseline: unavailable".into());
+                let body = format!(
+                    "<!-- openab-council -->\n\
+                     Review Council started (round {round}).\n\n\
+                     {baseline}\n\n\
+                     The council is reviewing this pull request; this comment \
+                     will be updated with this round's verdict.\n\n{marker}"
+                );
+                github.create_comment(repo, issue, &body).await?;
+            }
+            Ok(())
+        }
+        closing::KIND_COMMENT_ABANDON => {
+            let issue = payload["pr_number"].as_i64().unwrap_or_default();
+            let marker = closing::round_marker(&write.session_id);
+            // Update only if the marker exists. A session gets exactly one
+            // terminal state, so the found comment can only be this round's
+            // own "started" post — never a verdict.
+            if let Some(existing) = github.find_marked_comment(repo, issue, &marker).await? {
+                let body = payload["body"].as_str().unwrap_or_default();
+                github.update_comment(repo, existing, body).await?;
             }
             Ok(())
         }
@@ -1342,6 +1441,92 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert!(github::GitHubClient::from_config(&config).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_session_opening_queues_the_round_comment_and_a_supersede_rewrites_it() {
+        let event_secret = vec![7; 32];
+        let config = external_config(&event_secret);
+        let verifier = runtime_events::RuntimeEventVerifier::new(
+            "github-canary",
+            config.event_signing_secret.as_deref().unwrap(),
+        )
+        .unwrap();
+        let store = SqliteStore::memory().unwrap();
+        store
+            .record_session_target("ses_1", "example/repo", 7, Some("openingsha"))
+            .unwrap();
+        let state = Arc::new(AppState::with_components(
+            config,
+            store,
+            Some(Arc::new(RecordingActionClient::new([]).0)),
+            Some(Arc::new(verifier)),
+        ));
+        let store = state.store.clone().unwrap();
+        let app = router(state.clone());
+
+        let opened = json!({
+            "version": "1",
+            "event_id": "cev_open_1",
+            "controller_id": "github-canary",
+            "event_type": "session.opened",
+            "session_id": "ses_1",
+            "occurred_at": 1_000,
+            "payload": {"trigger_ref": "github:pr/example/repo#7"}
+        })
+        .to_string();
+        let response = app
+            .clone()
+            .oneshot(signed_runtime_event_request(
+                &event_secret,
+                "cev_open_1",
+                "/api/v1/openab/events?version=1",
+                opened,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let pending = store.pending_writes(10).await.unwrap();
+        assert_eq!(
+            pending.iter().map(|w| w.kind.as_str()).collect::<Vec<_>>(),
+            [closing::KIND_COMMENT_OPEN]
+        );
+        let open = &pending[0];
+        assert_eq!(open.payload["round"], 1);
+        assert_eq!(open.payload["pr_number"], 7);
+        assert_eq!(open.payload["repo"], "example/repo");
+
+        // A supersede queues the rewrite that retires the "started" post —
+        // marked with the session's own marker, so it can never touch another
+        // round's verdict.
+        let superseded = json!({
+            "version": "1",
+            "event_id": "cev_sup_1",
+            "controller_id": "github-canary",
+            "event_type": "session.superseded",
+            "session_id": "ses_1",
+            "occurred_at": 2_000,
+            "payload": {"reason": "superseded"}
+        })
+        .to_string();
+        let response = app
+            .oneshot(signed_runtime_event_request(
+                &event_secret,
+                "cev_sup_1",
+                "/api/v1/openab/events?version=1",
+                superseded,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let pending = store.pending_writes(10).await.unwrap();
+        let abandon = pending
+            .iter()
+            .find(|w| w.kind == closing::KIND_COMMENT_ABANDON)
+            .expect("abandon write queued");
+        let body = abandon.payload["body"].as_str().unwrap();
+        assert!(body.contains("without a verdict"));
+        assert!(body.contains(&closing::round_marker("ses_1")));
     }
 
     #[tokio::test]
