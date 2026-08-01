@@ -1876,27 +1876,92 @@ impl Store for PostgresStore {
         idem_key: &str,
         frame: &str,
     ) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            // A duplicate idem_key means this logical frame is already pending
+            // or delivered for the session — dropping the second insert is the
+            // whole point (idempotent enqueue). NULL idem_keys stay distinct in
+            // Postgres exactly as they did in SQLite.
+            client
+                .execute(
+                    "INSERT INTO outbox (bot_id, session_id, idem_key, frame, created_at)
+                     VALUES ($1, $2, $3, $4, $5)
+                     ON CONFLICT (idem_key) DO NOTHING",
+                    &[&bot_id, &session_id, &idem_key, &frame, &now_ms()],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn pending_outbox(&self, bot_id: &str) -> Result<Vec<(i64, String)>> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .query(
+                    "SELECT seq, frame FROM outbox
+                     WHERE bot_id = $1 AND delivered_at IS NULL
+                     ORDER BY seq ASC",
+                    &[&bot_id],
+                )
+                .await?
+                .iter()
+                .map(|r| (r.get(0), r.get(1)))
+                .collect())
+        })
     }
 
     fn ack_outbox(&self, seq: i64) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "UPDATE outbox SET delivered_at = $2 WHERE seq = $1",
+                    &[&seq, &now_ms()],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn purge_outbox_for_session_bot(&self, session_id: &str, bot_id: &str) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "DELETE FROM outbox WHERE session_id = $1 AND bot_id = $2",
+                    &[&session_id, &bot_id],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn purge_outbox_for_session(&self, session_id: &str) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute("DELETE FROM outbox WHERE session_id = $1", &[&session_id])
+                .await?;
+            Ok(())
+        })
     }
 
     fn purge_terminal_outbox(&self) -> Result<()> {
-        unimplemented!("ADR 033 phase 2: not yet ported")
+        self.block(async {
+            let client = self.client().await?;
+            client
+                .execute(
+                    "DELETE FROM outbox
+                     WHERE session_id IN (
+                         SELECT id FROM sessions WHERE state IN ('closed', 'aborted')
+                     )
+                     OR session_id IS NULL",
+                    &[],
+                )
+                .await?;
+            Ok(())
+        })
     }
 
     fn cache_installation_token(
@@ -2358,6 +2423,40 @@ mod tests {
             !stale.contains(&ses.id),
             "fresh message defers the deadline"
         );
+    }
+
+    #[test]
+    fn outbox_idempotent_enqueue_ack_and_purges() {
+        let Some(s) = store("outbox") else { return };
+        let ses = s
+            .create_session("t", None, 1, None, &[], "council")
+            .unwrap();
+        s.enqueue_outbox("bot-a", &ses.id, "bot-a:msg-1", "frame-1")
+            .unwrap();
+        s.enqueue_outbox("bot-a", &ses.id, "bot-a:msg-1", "frame-1-dup")
+            .unwrap();
+        s.enqueue_outbox("bot-a", &ses.id, "bot-a:msg-2", "frame-2")
+            .unwrap();
+        s.enqueue_outbox("bot-b", &ses.id, "bot-b:msg-1", "frame-3")
+            .unwrap();
+        let pending = s.pending_outbox("bot-a").unwrap();
+        assert_eq!(
+            pending.iter().map(|(_, f)| f.as_str()).collect::<Vec<_>>(),
+            vec!["frame-1", "frame-2"],
+            "idem dedupe dropped the second insert; seq order preserved"
+        );
+        s.ack_outbox(pending[0].0).unwrap();
+        assert_eq!(s.pending_outbox("bot-a").unwrap().len(), 1);
+        // idem_key survives ack: re-enqueue after delivery is still a no-op
+        s.enqueue_outbox("bot-a", &ses.id, "bot-a:msg-1", "frame-1-again")
+            .unwrap();
+        assert_eq!(s.pending_outbox("bot-a").unwrap().len(), 1);
+        s.purge_outbox_for_session_bot(&ses.id, "bot-b").unwrap();
+        assert!(s.pending_outbox("bot-b").unwrap().is_empty());
+        // terminal purge sweeps closed sessions
+        s.set_state(&ses.id, SessionState::Closed).unwrap();
+        s.purge_terminal_outbox().unwrap();
+        assert!(s.pending_outbox("bot-a").unwrap().is_empty());
     }
 
     #[test]
