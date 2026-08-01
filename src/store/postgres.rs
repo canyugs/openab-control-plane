@@ -613,6 +613,25 @@ impl Store for PostgresStore {
         })
     }
 
+    fn record_waiver_fired(&self, repo: &str, ids: &[String]) -> Result<()> {
+        self.block(async {
+            let client = self.client().await?;
+            let now = now_ms();
+            let unique: std::collections::BTreeSet<&String> = ids.iter().collect();
+            for id in unique {
+                client
+                    .execute(
+                        "UPDATE review_waivers
+                         SET fired_count = fired_count + 1, last_fired_at = $3
+                         WHERE id = $1 AND repo = $2",
+                        &[&id, &repo, &now],
+                    )
+                    .await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+    }
+
     fn patch_controller_installation(
         &self,
         controller_id: &str,

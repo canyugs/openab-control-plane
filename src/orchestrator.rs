@@ -750,6 +750,28 @@ fn record_review_findings(state: &Arc<AppState>, session: &Session, verdict_text
     } else if !rows.is_empty() {
         state.record_compatibility_use("review_findings_write", rows.len() as i64);
     }
+    // ADR 035 P2: waived findings bump the matched waivers' fired counters —
+    // the hygiene report's signal for "still earning its keep". Repo-scoped
+    // (the chair cannot bump another repo's ledger) and best-effort, like
+    // everything else in this function.
+    let fired: Vec<String> = block
+        .findings
+        .iter()
+        .filter(|f| f.status == "waived")
+        .filter_map(|f| f.waiver_id.clone())
+        .collect();
+    if !fired.is_empty() {
+        let Some((repo, _)) = repo_pr.as_ref() else {
+            tracing::warn!(
+                "waived findings at close of {} but no pr trigger_ref; counters skipped",
+                session.id
+            );
+            return;
+        };
+        if let Err(e) = state.store.record_waiver_fired(repo, &fired) {
+            tracing::warn!("waiver fired-count update for {} failed: {e}", session.id);
+        }
+    }
 }
 
 /// Parse a PR `trigger_ref` (`github:pr/{owner}/{name}#{num}`) back into
@@ -2267,6 +2289,69 @@ mod tests {
     use tokio::sync::mpsc;
 
     static BACKFILL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn waived_findings_bump_fired_counters_and_unknown_ids_are_ignored() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let waiver = store
+            .create_review_waiver(
+                "o/r",
+                None,
+                "accepted trade-off",
+                None,
+                "operator",
+                crate::store::now_ms() + 86_400_000,
+            )
+            .unwrap();
+        let session = store
+            .create_session("council", Some("github:pr/o/r#7"), 1, None, &[], "council")
+            .unwrap();
+        // A foreign-repo waiver: same ledger, different repo — the close on
+        // o/r must not be able to bump it.
+        let foreign = store
+            .create_review_waiver(
+                "o/other",
+                None,
+                "foreign repo trade-off",
+                None,
+                "operator",
+                crate::store::now_ms() + 86_400_000,
+            )
+            .unwrap();
+        let verdict = format!(
+            "verdict body\n<!-- openab-findings\n{{\"findings\":[\
+             {{\"id\":\"F1\",\"severity\":\"yellow\",\"status\":\"waived\",\
+              \"title\":\"waived one\",\"waiver_id\":\"{id}\"}},\
+             {{\"id\":\"F4\",\"severity\":\"yellow\",\"status\":\"waived\",\
+              \"title\":\"duplicate match\",\"waiver_id\":\"{id}\"}},\
+             {{\"id\":\"F2\",\"severity\":\"yellow\",\"status\":\"waived\",\
+              \"title\":\"phantom\",\"waiver_id\":\"wvr_nope\"}},\
+             {{\"id\":\"F5\",\"severity\":\"yellow\",\"status\":\"waived\",\
+              \"title\":\"cross-repo bump attempt\",\"waiver_id\":\"{foreign}\"}},\
+             {{\"id\":\"F3\",\"severity\":\"green\",\"title\":\"normal\"}}]}}\n-->\n\
+             [[verdict:approve r=0 y=0 g=1]]",
+            id = waiver.id,
+            foreign = foreign.id
+        );
+        record_review_findings(&state, &session, &verdict);
+        let rows = store
+            .list_review_waivers(Some("o/r"), true, crate::store::now_ms())
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].fired_count, 1,
+            "duplicate ids in one close count once"
+        );
+        assert!(rows[0].last_fired_at.is_some());
+        let foreign_rows = store
+            .list_review_waivers(Some("o/other"), true, crate::store::now_ms())
+            .unwrap();
+        assert_eq!(
+            foreign_rows[0].fired_count, 0,
+            "a close cannot bump another repo's waiver"
+        );
+    }
 
     #[test]
     fn pr_trigger_ref_parses_only_well_formed_pr_refs() {
