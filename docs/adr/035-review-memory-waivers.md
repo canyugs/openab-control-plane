@@ -1,4 +1,4 @@
-# ADR 034 — Review memory: a waiver ledger applied at synthesis, not at recall
+# ADR 035 — Review memory: a waiver ledger applied at synthesis, not at recall
 
 Status: proposed · 2026-08-01
 
