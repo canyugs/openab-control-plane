@@ -411,6 +411,38 @@ async fn handle_webhook(
                         {
                             tracing::error!(%error, session_id, "session target persistence failed");
                         }
+                        // The opening comment is queued HERE, not on the
+                        // plane's session.opened event: that event races the
+                        // session-target write above and lost in practice
+                        // (dev, 2026-08-01) — the action result is the
+                        // race-free "session exists" signal. Ask sessions get
+                        // no round comment; they answer in their own reply.
+                        if plan.reason != "ask" {
+                            let round = store
+                                .next_round(&plan.repository, plan.pr_number as i64)
+                                .await
+                                .unwrap_or(1);
+                            let payload = json!({
+                                "repo": plan.repository,
+                                "pr_number": plan.pr_number,
+                                "round": round,
+                            });
+                            if let Err(error) = store
+                                .enqueue_write(
+                                    session_id,
+                                    closing::KIND_COMMENT_OPEN,
+                                    &payload,
+                                )
+                                .await
+                            {
+                                tracing::error!(
+                                    %error,
+                                    session_id,
+                                    "opening-comment enqueue failed"
+                                );
+                            }
+                            spawn_write_drain(&state);
+                        }
                     }
                     (
                         "acted",
@@ -518,7 +550,7 @@ async fn handle_runtime_event(
                 "accepted signed runtime event"
             );
             let closed = dispatch_terminal(&state, store, &event).await;
-            dispatch_opened(&state, store, &event).await;
+            dispatch_abandoned(&state, store, &event).await;
             response(
                 StatusCode::OK,
                 json!({"ok": true, "duplicate": false, "closed": closed}),
@@ -559,18 +591,17 @@ fn opened_session_id(result: &controller_protocol::ActionResultEnvelope) -> Opti
 /// Deliberately infallible from the caller's side: the event receipt has
 /// already been recorded, so a failure here must not make the plane retry the
 /// whole delivery — the outbox is what retries.
-/// A session opening is the reader's cue that the council convened: post the
-/// round comment the moment the session opens, before any verdict exists —
-/// the kernel-era "Review Council started" post the controller cutover lost.
-/// The close finds this comment by its round marker and rewrites it into the
-/// verdict, so each round still ends as exactly one comment.
-async fn dispatch_opened(
+/// A session that ends without a verdict (superseded by a newer round, or
+/// timed out) must not leave its opening post claiming to review forever —
+/// rewrite it to say what happened. The opening post itself is queued from
+/// the open_session action result in `handle_webhook`, not from here: the
+/// plane's session.opened event races the session-target write and loses.
+async fn dispatch_abandoned(
     state: &Arc<AppState>,
     store: &Arc<dyn ProductStore>,
     event: &runtime_events::RuntimeEventEnvelope,
 ) -> bool {
     let kind = match event.event_type.as_str() {
-        "session.opened" => closing::KIND_COMMENT_OPEN,
         "session.superseded" | "session.timeout" => closing::KIND_COMMENT_ABANDON,
         _ => return false,
     };
@@ -585,38 +616,23 @@ async fn dispatch_opened(
             return false;
         }
     };
-    let payload = if kind == closing::KIND_COMMENT_OPEN {
-        // The body is composed at send time (perform_write): the Baseline
-        // comes from the GitHub API, and the outbox executor is where the
-        // GitHub client lives.
-        let round = store
-            .next_round(&target.repo, target.pr_number)
-            .await
-            .unwrap_or(1);
-        serde_json::json!({
-            "repo": target.repo,
-            "pr_number": target.pr_number,
-            "round": round,
-        })
-    } else {
-        let marker = closing::round_marker(session_id);
-        serde_json::json!({
-            "repo": target.repo,
-            "pr_number": target.pr_number,
-            "body": format!(
-                "<!-- openab-council -->\n\
-                 Review Council round closed without a verdict — superseded \
-                 by a newer round or timed out.\n\n{marker}"
-            ),
-        })
-    };
+    let marker = closing::round_marker(session_id);
+    let payload = serde_json::json!({
+        "repo": target.repo,
+        "pr_number": target.pr_number,
+        "body": format!(
+            "<!-- openab-council -->\n\
+             Review Council round closed without a verdict — superseded \
+             by a newer round or timed out.\n\n{marker}"
+        ),
+    });
     match store.enqueue_write(session_id, kind, &payload).await {
         Ok(_) => {
             spawn_write_drain(state);
             true
         }
         Err(error) => {
-            tracing::error!(%error, session_id, kind, "opening-comment enqueue failed");
+            tracing::error!(%error, session_id, kind, "abandon-comment enqueue failed");
             false
         }
     }
@@ -1444,7 +1460,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_session_opening_queues_the_round_comment_and_a_supersede_rewrites_it() {
+    async fn a_supersede_rewrites_the_round_comment_and_session_opened_queues_nothing() {
         let event_secret = vec![7; 32];
         let config = external_config(&event_secret);
         let verifier = runtime_events::RuntimeEventVerifier::new(
@@ -1486,15 +1502,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let pending = store.pending_writes(10).await.unwrap();
-        assert_eq!(
-            pending.iter().map(|w| w.kind.as_str()).collect::<Vec<_>>(),
-            [closing::KIND_COMMENT_OPEN]
-        );
-        let open = &pending[0];
-        assert_eq!(open.payload["round"], 1);
-        assert_eq!(open.payload["pr_number"], 7);
-        assert_eq!(open.payload["repo"], "example/repo");
+        // session.opened queues nothing: it races the session-target write,
+        // so the opening comment is queued from the open_session action
+        // result instead (see handle_webhook).
+        assert_eq!(store.pending_writes(10).await.unwrap().len(), 0);
 
         // A supersede queues the rewrite that retires the "started" post —
         // marked with the session's own marker, so it can never touch another
@@ -2177,6 +2188,7 @@ mod tests {
             Some(Arc::new(client)),
             Some(Arc::new(verifier)),
         ));
+        let store = state.store.clone().unwrap();
         let app = router(state);
 
         let first = app
@@ -2192,6 +2204,15 @@ mod tests {
         let first: Value =
             serde_json::from_slice(&first.into_body().collect().await.unwrap().to_bytes()).unwrap();
         assert_eq!(first["action_result"]["result"]["type"], "session_opened");
+
+        // Opening the session queued the round comment — from the action
+        // result, race-free, before any runtime event arrives.
+        let pending = store.pending_writes(10).await.unwrap();
+        let open = pending
+            .iter()
+            .find(|w| w.kind == closing::KIND_COMMENT_OPEN)
+            .expect("opening comment queued");
+        assert_eq!(open.payload["round"], 1);
 
         let duplicate = app
             .clone()
