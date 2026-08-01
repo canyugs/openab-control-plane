@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env();
     let addr = config.addr.clone();
     let mode = config.mode.as_str().to_string();
-    let state = Arc::new(AppState::from_config(config));
+    let state = Arc::new(AppState::from_config(config).await);
     if let Some(error) = state.store_error.as_deref() {
         tracing::error!(%error, "controller product store unavailable; starting not-ready");
     }

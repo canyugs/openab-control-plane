@@ -2104,7 +2104,7 @@ mod tests {
         };
         let controller_state = Arc::new(github_pr_controller::AppState::with_components(
             controller_config,
-            github_pr_controller::store::ProductStore::open(":memory:").unwrap(),
+            github_pr_controller::store::SqliteStore::open(":memory:").unwrap(),
             Some(Arc::new(action_client)),
             Some(Arc::new(verifier)),
         ));
@@ -2161,6 +2161,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .canary_summary()
+            .await
             .unwrap();
         assert_eq!(opened_summary.runtime_event_types["session.opened"], 1);
 
@@ -2241,6 +2242,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .canary_summary()
+            .await
             .unwrap();
         assert_eq!(summary.acted_deliveries, 3);
         assert!(summary.runtime_event_types["session.superseded"] >= 1);

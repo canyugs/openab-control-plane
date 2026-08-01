@@ -121,7 +121,7 @@ read the authenticated aggregate gate.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GITHUB_CONTROLLER_ADDR` | `0.0.0.0:8091` | Listen address |
-| `GITHUB_CONTROLLER_DB` | `github-controller.db` | Controller-owned SQLite database |
+| `GITHUB_CONTROLLER_DB` | `github-controller.db` | Controller-owned database: a `postgres://…` URL selects the Postgres backend (ADR 033), any other value is a SQLite path. Postgres connections use verified TLS (platform trust store) by default; `?sslmode=disable` is the explicit plaintext opt-out for lane-internal instances |
 | `GITHUB_CONTROLLER_MODE` | `plan_only` | `plan_only` or `external_canary` |
 | `GITHUB_CONTROLLER_WEBHOOK_SECRET` | _(missing)_ | GitHub webhook HMAC secret; missing is not-ready and fail-closed |
 | `GITHUB_CONTROLLER_SHADOW_SECRET` | _(disabled)_ | HMAC secret for trusted shadow comparison wrappers; not an OCP action credential |
