@@ -254,7 +254,7 @@ fn comment_body(parsed: &ParsedResult, trailer: Option<&VerdictTrailer>) -> Stri
 /// renders them as preformatted text. The steering rule against it is
 /// ignored, so the fence is undone here: a fenced block whose non-empty
 /// lines all start with `|` (and at least one does) is unwrapped.
-fn unfence_tables<'a>(lines: Vec<&'a str>) -> Vec<&'a str> {
+fn unfence_tables(lines: Vec<&str>) -> Vec<&str> {
     let mut out = Vec::with_capacity(lines.len());
     let mut i = 0;
     while i < lines.len() {
