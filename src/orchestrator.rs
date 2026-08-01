@@ -2328,9 +2328,10 @@ mod tests {
              {{\"id\":\"F5\",\"severity\":\"yellow\",\"status\":\"waived\",\
               \"title\":\"cross-repo bump attempt\",\"waiver_id\":\"{foreign}\"}},\
              {{\"id\":\"F3\",\"severity\":\"green\",\"title\":\"normal\"}}]}}\n-->\n\
-             [[verdict:approve r=0 y=0 g=1]]",
+             {lb}{lb}verdict:approve r=0 y=0 g=1]]",
             id = waiver.id,
-            foreign = foreign.id
+            foreign = foreign.id,
+            lb = "["
         );
         record_review_findings(&state, &session, &verdict);
         let rows = store
@@ -2366,8 +2367,9 @@ mod tests {
             "verdict body\n<!-- openab-findings\n{{\"findings\":[\
              {{\"id\":\"F1\",\"severity\":\"yellow\",\"status\":\"waived\",\
               \"title\":\"waived again\",\"waiver_id\":\"{}\"}}]}}\n-->\n\
-             [[verdict:approve r=0 y=0 g=0]]",
-            waiver.id
+             {lb}{lb}verdict:approve r=0 y=0 g=0]]",
+            waiver.id,
+            lb = "["
         );
         record_review_findings(&state, &external, &verdict2);
         let rows = store

@@ -909,9 +909,15 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
                         state,
                         Some(intent.trigger_ref.as_str()),
                     ) {
-                        if let Some(input) = open.recipient_inputs.get_mut(&chair) {
-                            input.push_str(&block);
-                        }
+                        // The chair may be absent from a non-empty map — the
+                        // runtime falls back to `prompt` for missing roster
+                        // members (opening_inputs), so seed the same fallback
+                        // here instead of silently dropping the block.
+                        let fallback = open.prompt.clone();
+                        open.recipient_inputs
+                            .entry(chair)
+                            .or_insert(fallback)
+                            .push_str(&block);
                     }
                 }
             }
@@ -2107,6 +2113,43 @@ mod tests {
         assert!(legacy.max_actions_per_minute.is_none());
         assert!(legacy.actions.is_none());
         assert!(legacy.scopes.is_none());
+    }
+
+    #[tokio::test]
+    async fn external_open_injects_waivers_even_when_chair_lacks_a_recipient_input() {
+        let (state, store, _auth, token) = setup(5, 60);
+        store
+            .create_review_waiver(
+                "o/r",
+                None,
+                "accepted trade-off for the canary",
+                None,
+                "operator",
+                crate::store::now_ms() + 86_400_000,
+            )
+            .unwrap();
+        let mut envelope = open_action("act-w-1", "github:pr/o/r#7", "sha:w1");
+        if let ControllerAction::OpenSession(open) = &mut envelope.action {
+            // Reviewer has an input, the chair does not — the runtime falls
+            // back to `prompt` for the chair, and the waiver block must ride
+            // on that fallback instead of being silently dropped.
+            open.recipient_inputs
+                .insert("rev1".into(), "Inspect the failure path.".into());
+        }
+        let session_id = opened_session_id(request(&state, &token, SCOPE, &envelope)).await;
+        let messages = store.messages(&session_id).unwrap();
+        let chair_msg = messages
+            .iter()
+            .find(|m| m.audience.as_deref() == Some("chair"))
+            .unwrap();
+        assert!(chair_msg.content.starts_with("Inspect the external request."));
+        assert!(chair_msg.content.contains("ACTIVE WAIVERS"));
+        assert!(chair_msg.content.contains("accepted trade-off for the canary"));
+        let rev_msg = messages
+            .iter()
+            .find(|m| m.audience.as_deref() == Some("rev1"))
+            .unwrap();
+        assert!(!rev_msg.content.contains("ACTIVE WAIVERS"));
     }
 
     #[tokio::test]
