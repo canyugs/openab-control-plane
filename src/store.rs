@@ -321,6 +321,24 @@ pub enum ControllerOpenDecision {
     Supersede(ControllerSessionBinding),
 }
 
+/// ADR 035 P1: one accepted trade-off, operator-written, always expiring.
+/// Nothing reads these yet (P2 is synthesis-time application); P1 is the
+/// ledger itself plus its human-gated surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReviewWaiver {
+    pub id: String,
+    pub repo: String,
+    pub path_class: Option<String>,
+    pub text: String,
+    pub origin_pr: Option<String>,
+    pub created_by: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub revoked_at: Option<i64>,
+    pub fired_count: i64,
+    pub last_fired_at: Option<i64>,
+}
+
 /// The full mutable configuration of a registration, as it stands after a
 /// PATCH — the response body, so callers never have to interpret nulls.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -420,6 +438,34 @@ pub trait Store: Send + Sync {
         controller_id: &str,
         enabled: bool,
     ) -> Result<bool>;
+    /// ADR 035 P1 — waiver ledger CRUD, operator-gated at the API layer.
+    #[allow(clippy::too_many_arguments)]
+    fn create_review_waiver(
+        &self,
+        repo: &str,
+        path_class: Option<&str>,
+        text: &str,
+        origin_pr: Option<&str>,
+        created_by: &str,
+        expires_at: i64,
+    ) -> Result<ReviewWaiver>;
+    /// Active = not revoked and not expired at `now`; `include_inactive`
+    /// lists everything for the retro/hygiene reports.
+    fn list_review_waivers(
+        &self,
+        repo: Option<&str>,
+        include_inactive: bool,
+        now: i64,
+    ) -> Result<Vec<ReviewWaiver>>;
+    /// Extend (`expires_at = Some`) and/or revoke. Returns false when the
+    /// waiver does not exist.
+    fn update_review_waiver(
+        &self,
+        id: &str,
+        expires_at: Option<i64>,
+        revoke: bool,
+    ) -> Result<bool>;
+
     /// ADR 034: mutate any subset of a registration's configuration in ONE
     /// transaction — a reader can never observe a half-applied replace-set.
     /// `None` leaves a field untouched; `Some` replace-sets grants/scopes.
@@ -1046,6 +1092,21 @@ CREATE TABLE IF NOT EXISTS controller_event_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_controller_event_audit_controller
     ON controller_event_audit(controller_id, created_at);
+CREATE TABLE IF NOT EXISTS review_waivers (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    path_class TEXT,
+    text TEXT NOT NULL,
+    origin_pr TEXT,
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    fired_count INTEGER NOT NULL DEFAULT 0,
+    last_fired_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_review_waivers_repo
+    ON review_waivers(repo, expires_at);
 "#;
 
 /// Additive migrations for DBs created before a column or index existed. Each
@@ -1543,6 +1604,100 @@ impl Store for SqliteStore {
             "UPDATE controllers SET enabled = ?2, updated_at = ?3 WHERE id = ?1",
             params![controller_id, i64::from(enabled), now_ms()],
         )? == 1)
+    }
+
+    fn create_review_waiver(
+        &self,
+        repo: &str,
+        path_class: Option<&str>,
+        text: &str,
+        origin_pr: Option<&str>,
+        created_by: &str,
+        expires_at: i64,
+    ) -> Result<ReviewWaiver> {
+        let c = self.conn.lock().unwrap();
+        let waiver = ReviewWaiver {
+            id: new_id("wvr"),
+            repo: repo.into(),
+            path_class: path_class.map(Into::into),
+            text: text.into(),
+            origin_pr: origin_pr.map(Into::into),
+            created_by: created_by.into(),
+            created_at: now_ms(),
+            expires_at,
+            revoked_at: None,
+            fired_count: 0,
+            last_fired_at: None,
+        };
+        c.execute(
+            "INSERT INTO review_waivers
+                (id, repo, path_class, text, origin_pr, created_by,
+                 created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                waiver.id,
+                waiver.repo,
+                waiver.path_class,
+                waiver.text,
+                waiver.origin_pr,
+                waiver.created_by,
+                waiver.created_at,
+                waiver.expires_at
+            ],
+        )?;
+        Ok(waiver)
+    }
+
+    fn list_review_waivers(
+        &self,
+        repo: Option<&str>,
+        include_inactive: bool,
+        now: i64,
+    ) -> Result<Vec<ReviewWaiver>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt = c.prepare(
+            "SELECT id, repo, path_class, text, origin_pr, created_by,
+                    created_at, expires_at, revoked_at, fired_count, last_fired_at
+             FROM review_waivers
+             WHERE (?1 IS NULL OR repo = ?1)
+               AND (?2 OR (revoked_at IS NULL AND expires_at > ?3))
+             ORDER BY created_at",
+        )?;
+        let rows = stmt
+            .query_map(params![repo, include_inactive, now], |row| {
+                Ok(ReviewWaiver {
+                    id: row.get(0)?,
+                    repo: row.get(1)?,
+                    path_class: row.get(2)?,
+                    text: row.get(3)?,
+                    origin_pr: row.get(4)?,
+                    created_by: row.get(5)?,
+                    created_at: row.get(6)?,
+                    expires_at: row.get(7)?,
+                    revoked_at: row.get(8)?,
+                    fired_count: row.get(9)?,
+                    last_fired_at: row.get(10)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    fn update_review_waiver(
+        &self,
+        id: &str,
+        expires_at: Option<i64>,
+        revoke: bool,
+    ) -> Result<bool> {
+        let c = self.conn.lock().unwrap();
+        let updated = c.execute(
+            "UPDATE review_waivers SET
+                expires_at = COALESCE(?2, expires_at),
+                revoked_at = CASE WHEN ?3 THEN ?4 ELSE revoked_at END
+             WHERE id = ?1",
+            params![id, expires_at, revoke, now_ms()],
+        )?;
+        Ok(updated == 1)
     }
 
     fn patch_controller_installation(
