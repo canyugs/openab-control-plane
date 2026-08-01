@@ -1281,6 +1281,9 @@ fn map_bot_inventory(r: &rusqlite::Row<'_>) -> rusqlite::Result<BotInventory> {
 /// SQLite-backed `Store`. ponytail: one process-wide Mutex<Connection>. Fine at
 /// council scale (router + light writes). Swap the whole type for a networked
 /// `Store` impl in production (design §6c).
+pub mod postgres;
+pub use postgres::PostgresStore;
+
 /// True when the configured database location selects the Postgres backend —
 /// the same URL convention the controller shipped in ADR 033 phase 1.
 pub fn is_postgres_url(db: &str) -> bool {
@@ -3194,8 +3197,19 @@ impl Store for SqliteStore {
                      title, path, line, raised_by, angle, head_sha, created_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
                 params![
-                    session_id, repo, pr_number, f.stable_id, f.severity, f.status,
-                    f.title, f.path, f.line, f.raised_by, f.angle, head_sha, now
+                    session_id,
+                    repo,
+                    pr_number,
+                    f.stable_id,
+                    f.severity,
+                    f.status,
+                    f.title,
+                    f.path,
+                    f.line,
+                    f.raised_by,
+                    f.angle,
+                    head_sha,
+                    now
                 ],
             )?;
         }
@@ -3265,8 +3279,7 @@ impl Store for SqliteStore {
 
     fn latest_session_created_at(&self, trigger_ref: &str) -> Result<Option<i64>> {
         let c = self.conn.lock().unwrap();
-        let mut stmt =
-            c.prepare("SELECT MAX(created_at) FROM sessions WHERE trigger_ref = ?1")?;
+        let mut stmt = c.prepare("SELECT MAX(created_at) FROM sessions WHERE trigger_ref = ?1")?;
         let v: Option<i64> = stmt.query_row(params![trigger_ref], |r| r.get(0))?;
         Ok(v)
     }
@@ -3291,27 +3304,24 @@ impl Store for SqliteStore {
                AND (?4 IS NULL OR severity = ?4)
              ORDER BY id DESC LIMIT ?5",
         )?;
-        let rows = stmt.query_map(
-            params![repo, pr_number, status, severity, limit],
-            |r| {
-                Ok(ReviewFinding {
-                    id: r.get(0)?,
-                    session_id: r.get(1)?,
-                    repo: r.get(2)?,
-                    pr_number: r.get(3)?,
-                    stable_id: r.get(4)?,
-                    severity: r.get(5)?,
-                    status: r.get(6)?,
-                    title: r.get(7)?,
-                    path: r.get(8)?,
-                    line: r.get(9)?,
-                    raised_by: r.get(10)?,
-                    angle: r.get(11)?,
-                    head_sha: r.get(12)?,
-                    created_at: r.get(13)?,
-                })
-            },
-        )?;
+        let rows = stmt.query_map(params![repo, pr_number, status, severity, limit], |r| {
+            Ok(ReviewFinding {
+                id: r.get(0)?,
+                session_id: r.get(1)?,
+                repo: r.get(2)?,
+                pr_number: r.get(3)?,
+                stable_id: r.get(4)?,
+                severity: r.get(5)?,
+                status: r.get(6)?,
+                title: r.get(7)?,
+                path: r.get(8)?,
+                line: r.get(9)?,
+                raised_by: r.get(10)?,
+                angle: r.get(11)?,
+                head_sha: r.get(12)?,
+                created_at: r.get(13)?,
+            })
+        })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -4176,7 +4186,9 @@ mod tests {
             s.conn
                 .lock()
                 .unwrap()
-                .query_row("SELECT health FROM bots WHERE id = 'kiro'", [], |r| r.get(0))
+                .query_row("SELECT health FROM bots WHERE id = 'kiro'", [], |r| {
+                    r.get(0)
+                })
                 .unwrap()
         };
 
@@ -4216,9 +4228,11 @@ mod tests {
             .conn
             .lock()
             .unwrap()
-            .query_row("SELECT last_error_at FROM bots WHERE id = 'kiro'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT last_error_at FROM bots WHERE id = 'kiro'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(last_error_at.is_some(), "error frames stamp last_error_at");
 
@@ -5441,12 +5455,23 @@ mod tests {
         // A timestamp deliberately unlike now() — the fix must persist THIS value.
         let ts = 1_000_000_000_000i64;
         store.touch_last_seen_at("b1", ts).unwrap();
-        assert_eq!(store.bot_inventory("b1").unwrap().unwrap().last_seen_ms, Some(ts));
+        assert_eq!(
+            store.bot_inventory("b1").unwrap().unwrap().last_seen_ms,
+            Some(ts)
+        );
 
         // Plain touch_last_seen still advances to ~now (and past our fixed ts).
         store.touch_last_seen("b1").unwrap();
-        let seen = store.bot_inventory("b1").unwrap().unwrap().last_seen_ms.unwrap();
-        assert!(seen > ts, "touch_last_seen should advance last_seen to now()");
+        let seen = store
+            .bot_inventory("b1")
+            .unwrap()
+            .unwrap()
+            .last_seen_ms
+            .unwrap();
+        assert!(
+            seen > ts,
+            "touch_last_seen should advance last_seen to now()"
+        );
 
         // Monotonic guard (council #274 F1): a stale (older) write is ignored,
         // so a dying overlapping conn can't regress last_seen.
@@ -5466,14 +5491,7 @@ mod tests {
             .upsert_controller_installation("ctrl-atomic", 1, 60)
             .unwrap();
         store
-            .put_controller_action_token(
-                "tok-atomic",
-                "ctrl-atomic",
-                &[7; 32],
-                1,
-                now - 1,
-                None,
-            )
+            .put_controller_action_token("tok-atomic", "ctrl-atomic", &[7; 32], 1, now - 1, None)
             .unwrap();
         store
             .set_controller_action_grant("ctrl-atomic", "open_session", true)
@@ -5518,14 +5536,7 @@ mod tests {
             }
         ));
         store
-            .finish_controller_action(
-                "ctrl-atomic",
-                "act-initial",
-                200,
-                "{}",
-                Some(&binding),
-                now,
-            )
+            .finish_controller_action("ctrl-atomic", "act-initial", 200, "{}", Some(&binding), now)
             .unwrap();
 
         assert!(matches!(
@@ -5618,7 +5629,7 @@ mod tests {
         let now = now_ms();
         let day_ms = 24 * 60 * 60 * 1000;
         let cutoff = now - 600_000; // 10 min of silence, the watchdog default
-        // Old session, no messages yet: creation is the only anchor available.
+                                    // Old session, no messages yet: creation is the only anchor available.
         store
             .conn
             .lock()
