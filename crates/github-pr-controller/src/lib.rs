@@ -632,7 +632,7 @@ async fn dispatch_abandoned(
             true
         }
         Err(error) => {
-            tracing::error!(%error, session_id, kind, "opening-comment enqueue failed");
+            tracing::error!(%error, session_id, kind, "abandon-comment enqueue failed");
             false
         }
     }
