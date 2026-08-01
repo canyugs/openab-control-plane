@@ -156,7 +156,13 @@ pub struct IssuedControllerToken {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetControllerState {
-    pub enabled: bool,
+    // ADR 034: every field optional, absent = untouched. The historical
+    // enabled-only body is the degenerate case, so old callers keep working.
+    pub enabled: Option<bool>,
+    pub max_concurrent_sessions: Option<i64>,
+    pub max_actions_per_minute: Option<i64>,
+    pub actions: Option<Vec<String>>,
+    pub scopes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -290,13 +296,45 @@ pub async fn set_installation_state(
     if let Err(error) = check_operator_auth(&state, &headers) {
         return error.response();
     }
-    match state
-        .store
-        .set_controller_installation_enabled(&controller_id, request.enabled)
+    if request.enabled.is_none()
+        && request.max_concurrent_sessions.is_none()
+        && request.max_actions_per_minute.is_none()
+        && request.actions.is_none()
+        && request.scopes.is_none()
     {
+        return admin_error(StatusCode::BAD_REQUEST, "empty patch: nothing to change");
+    }
+    if request.max_concurrent_sessions.is_some_and(|limit| limit <= 0)
+        || request.max_actions_per_minute.is_some_and(|limit| limit <= 0)
+    {
+        return admin_error(StatusCode::BAD_REQUEST, "controller quotas must be positive");
+    }
+    let actions = match request.actions.as_deref().map(validate_actions).transpose() {
+        Ok(actions) => actions,
+        Err(message) => return admin_error(StatusCode::BAD_REQUEST, &message),
+    };
+    let scopes = match request.scopes.as_deref().map(validate_scopes).transpose() {
+        Ok(scopes) => scopes,
+        Err(message) => return admin_error(StatusCode::BAD_REQUEST, &message),
+    };
+    match state.store.patch_controller_installation(
+        &controller_id,
+        request.enabled,
+        request.max_concurrent_sessions,
+        request.max_actions_per_minute,
+        actions.as_deref(),
+        scopes.as_deref(),
+    ) {
         Ok(true) => json_response(
             StatusCode::OK,
-            &serde_json::json!({ "controller_id": controller_id, "enabled": request.enabled }),
+            &serde_json::json!({
+                "controller_id": controller_id,
+                "enabled": request.enabled,
+                "max_concurrent_sessions": request.max_concurrent_sessions,
+                "max_actions_per_minute": request.max_actions_per_minute,
+                "actions": actions,
+                "scopes": scopes,
+            }),
             None,
         ),
         Ok(false) => admin_error(StatusCode::NOT_FOUND, "unknown controller installation"),
@@ -400,6 +438,12 @@ fn validate_installation_request(
     if request.max_concurrent_sessions <= 0 || request.max_actions_per_minute <= 0 {
         return Err("controller quotas must be positive".into());
     }
+    let actions = validate_actions(&request.actions)?;
+    let scopes = validate_scopes(&request.scopes)?;
+    Ok((actions, scopes))
+}
+
+fn validate_actions(values: &[String]) -> std::result::Result<Vec<String>, String> {
     let allowed_actions = [
         "open_session",
         "post_message",
@@ -407,7 +451,7 @@ fn validate_installation_request(
         "close_session",
         "emit_status",
     ];
-    let actions = normalized_unique(&request.actions);
+    let actions = normalized_unique(values);
     if actions.is_empty()
         || actions
             .iter()
@@ -415,7 +459,11 @@ fn validate_installation_request(
     {
         return Err("actions must contain only supported v1 action names".into());
     }
-    let scopes = normalized_unique(&request.scopes);
+    Ok(actions)
+}
+
+fn validate_scopes(values: &[String]) -> std::result::Result<Vec<String>, String> {
+    let scopes = normalized_unique(values);
     if scopes.is_empty()
         || scopes
             .iter()
@@ -423,7 +471,7 @@ fn validate_installation_request(
     {
         return Err("scopes must be explicit non-wildcard values up to 512 bytes".into());
     }
-    Ok((actions, scopes))
+    Ok(scopes)
 }
 
 fn normalized_unique(values: &[String]) -> Vec<String> {
@@ -894,6 +942,14 @@ fn denial_response(
             action_id,
             ErrorCode::Forbidden,
             "controller scope is not granted",
+            false,
+            None,
+        ),
+        ControllerActionDenial::Disabled => protocol_error_response(
+            StatusCode::FORBIDDEN,
+            action_id,
+            ErrorCode::Forbidden,
+            "controller installation is disabled; only actions on its in-flight sessions are allowed",
             false,
             None,
         ),
@@ -1873,10 +1929,18 @@ mod tests {
             State(state.clone()),
             operator_headers,
             Path("ctrl-managed".into()),
-            Json(SetControllerState { enabled: false }),
+            Json(SetControllerState {
+                enabled: Some(false),
+                max_concurrent_sessions: None,
+                max_actions_per_minute: None,
+                actions: None,
+                scopes: None,
+            }),
         )
         .await;
         assert_eq!(disabled.status(), StatusCode::OK);
+        // ADR 034: a disabled registration still authenticates; NEW work is
+        // refused with an explicit 403, not a credential 401.
         assert_eq!(
             request(
                 &state,
@@ -1885,8 +1949,180 @@ mod tests {
                 &open_action("act-managed-disabled", "object:managed-5", "v1"),
             )
             .status(),
-            StatusCode::UNAUTHORIZED
+            StatusCode::FORBIDDEN
         );
+    }
+
+    #[tokio::test]
+    async fn a_disabled_registration_drains_its_own_sessions_and_admits_nothing_new() {
+        let (state, store, _auth, token) = setup(5, 60);
+        let session_id = opened_session_id(request(
+            &state,
+            &token,
+            SCOPE,
+            &open_action("act-open-drain", "object:drain", "v1"),
+        ))
+        .await;
+
+        store
+            .set_controller_installation_enabled("ctrl-a", false)
+            .unwrap();
+
+        // ADR 034: in-flight work still finishes — actions on the session
+        // this registration opened pass while disabled...
+        let post = post_action("act-drain-post", &session_id, "Still finishing.");
+        let (status, _, _) = response(request(&state, &token, SCOPE, &post)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        // ...but new admission is refused, explicitly, not as a 401.
+        let denied = response(request(
+            &state,
+            &token,
+            SCOPE,
+            &open_action("act-open-denied", "object:drain-2", "v1"),
+        ))
+        .await;
+        assert_eq!(denied.0, StatusCode::FORBIDDEN);
+        assert_eq!(
+            denied.1["error"]["message"],
+            "controller installation is disabled; only actions on its in-flight sessions are allowed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_patch_changes_limits_and_grants_in_place_without_replacement() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        seed_bots(&store);
+        let auth = auth_config();
+        let action_token = token(7);
+        install(
+            &store, &auth, "ctrl-a", "tok-a-1", &action_token, 1, SCOPE, 1, 60,
+        );
+        let state = AppState::new_with_options_and_runtime_config(
+            store.clone(),
+            Some("root-operator-key".into()),
+            None,
+            None,
+            None,
+            "http://control-plane.test".into(),
+            None,
+            0,
+            crate::plugins::pr_review::PrReviewConfig::default(),
+            Some(auth),
+            None,
+        );
+        let mut operator_headers = HeaderMap::new();
+        operator_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer root-operator-key"),
+        );
+
+        // Concurrency 1: the first session fills the quota.
+        let first = request(
+            &state,
+            &action_token,
+            SCOPE,
+            &open_action("act-p-1", "object:p1", "v1"),
+        );
+        assert_eq!(first.status(), StatusCode::OK);
+        let quota_hit = response(request(
+            &state,
+            &action_token,
+            SCOPE,
+            &open_action("act-p-2", "object:p2", "v1"),
+        ))
+        .await;
+        assert_eq!(quota_hit.0, StatusCode::CONFLICT);
+
+        // One PATCH raises the limit — no restart, no replacement
+        // registration; the very next admission check sees it.
+        let patched = set_installation_state(
+            State(state.clone()),
+            operator_headers.clone(),
+            Path("ctrl-a".into()),
+            Json(SetControllerState {
+                enabled: None,
+                max_concurrent_sessions: Some(5),
+                max_actions_per_minute: Some(120),
+                actions: None,
+                scopes: None,
+            }),
+        )
+        .await;
+        assert_eq!(patched.status(), StatusCode::OK);
+        assert_eq!(
+            request(
+                &state,
+                &action_token,
+                SCOPE,
+                &open_action("act-p-3", "object:p3", "v1"),
+            )
+            .status(),
+            StatusCode::OK
+        );
+
+        // Replace-set the grants down to open_session only; post_message
+        // dies with a grant denial, not a credential one.
+        let session_id = opened_session_id(request(
+            &state,
+            &action_token,
+            SCOPE,
+            &open_action("act-p-4", "object:p4", "v1"),
+        ))
+        .await;
+        let narrowed = set_installation_state(
+            State(state.clone()),
+            operator_headers.clone(),
+            Path("ctrl-a".into()),
+            Json(SetControllerState {
+                enabled: None,
+                max_concurrent_sessions: None,
+                max_actions_per_minute: None,
+                actions: Some(vec!["open_session".into()]),
+                scopes: None,
+            }),
+        )
+        .await;
+        assert_eq!(narrowed.status(), StatusCode::OK);
+        let denied = response(request(
+            &state,
+            &action_token,
+            SCOPE,
+            &post_action("act-p-5", &session_id, "should be refused"),
+        ))
+        .await;
+        assert_eq!(denied.0, StatusCode::FORBIDDEN);
+        assert_eq!(denied.1["error"]["message"], "controller action is not granted");
+
+        // Guard rails: an empty patch and an unknown id are explicit errors.
+        let empty = set_installation_state(
+            State(state.clone()),
+            operator_headers.clone(),
+            Path("ctrl-a".into()),
+            Json(SetControllerState {
+                enabled: None,
+                max_concurrent_sessions: None,
+                max_actions_per_minute: None,
+                actions: None,
+                scopes: None,
+            }),
+        )
+        .await;
+        assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+        let unknown = set_installation_state(
+            State(state.clone()),
+            operator_headers,
+            Path("ctrl-nope".into()),
+            Json(SetControllerState {
+                enabled: Some(true),
+                max_concurrent_sessions: None,
+                max_actions_per_minute: None,
+                actions: None,
+                scopes: None,
+            }),
+        )
+        .await;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

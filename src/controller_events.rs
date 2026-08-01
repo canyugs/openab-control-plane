@@ -578,15 +578,11 @@ mod tests {
         let store = SqliteStore::memory().unwrap();
         let start = 2_000_000;
         seed_opened_event(&store, start);
+        // ADR 034: disabling no longer holds back queued deliveries — a
+        // pending event belongs to work that was already admitted, so the
+        // claim below proceeds regardless of the enabled flag.
         store
             .set_controller_installation_enabled("ctrl-events", false)
-            .unwrap();
-        assert!(store
-            .claim_controller_events(start, 1, 30_000)
-            .unwrap()
-            .is_empty());
-        store
-            .set_controller_installation_enabled("ctrl-events", true)
             .unwrap();
         store
             .configure_controller_events(
