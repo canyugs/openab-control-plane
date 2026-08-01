@@ -1,4 +1,4 @@
-use openab_control_plane::store::{now_ms, SqliteStore, Store};
+use openab_control_plane::store::{now_ms, Store};
 use openab_control_plane::{
     build_router, identity, ops::seed_roster, orchestrator, state::AppState,
 };
@@ -17,8 +17,8 @@ async fn main() -> anyhow::Result<()> {
     let addr = std::env::var("OABCP_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());
 
     // ponytail: SQLite default — the simple path that works out of the box.
-    // Swap this one line for a networked Store impl when scale needs it (§6c).
-    let store: Arc<dyn Store> = Arc::new(SqliteStore::open(&db)?);
+    // A postgres:// OABCP_DB selects the networked Store impl (ADR 033 §6c).
+    let store: Arc<dyn Store> = openab_control_plane::store::open_store(&db)?;
     identity::resolve_externalize_default(store.as_ref())?;
     seed_roster(store.as_ref())?;
     store.purge_terminal_outbox()?;

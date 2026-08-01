@@ -1281,6 +1281,25 @@ fn map_bot_inventory(r: &rusqlite::Row<'_>) -> rusqlite::Result<BotInventory> {
 /// SQLite-backed `Store`. ponytail: one process-wide Mutex<Connection>. Fine at
 /// council scale (router + light writes). Swap the whole type for a networked
 /// `Store` impl in production (design §6c).
+/// True when the configured database location selects the Postgres backend —
+/// the same URL convention the controller shipped in ADR 033 phase 1.
+pub fn is_postgres_url(db: &str) -> bool {
+    db.starts_with("postgres://") || db.starts_with("postgresql://")
+}
+
+/// Open the backend `OABCP_DB` selects: a `postgres://` URL opens the
+/// Postgres store (ADR 033 phase 2, landing behind this seam); any other
+/// value is the SQLite path that has carried the plane since day one.
+pub fn open_store(db: &str) -> Result<std::sync::Arc<dyn Store>> {
+    if is_postgres_url(db) {
+        anyhow::bail!(
+            "OABCP_DB is a Postgres URL, but the kernel Postgres backend \
+             has not landed yet (ADR 033 phase 2, PLAN-adr033-kernel-postgres.md)"
+        );
+    }
+    Ok(std::sync::Arc::new(SqliteStore::open(db)?))
+}
+
 pub struct SqliteStore {
     conn: Mutex<Connection>,
 }
