@@ -487,6 +487,145 @@ impl Store for PostgresStore {
         })
     }
 
+    fn patch_controller_installation(
+        &self,
+        controller_id: &str,
+        enabled: Option<bool>,
+        max_concurrent_sessions: Option<i64>,
+        max_actions_per_minute: Option<i64>,
+        actions: Option<&[String]>,
+        scopes: Option<&[String]>,
+    ) -> Result<Option<ControllerInstallationConfig>> {
+        async fn read_config(
+            tx: &tokio_postgres::Transaction<'_>,
+            controller_id: &str,
+        ) -> Result<Option<ControllerInstallationConfig>> {
+            let Some(row) = tx
+                .query_opt(
+                    "SELECT enabled, max_concurrent_sessions, max_actions_per_minute
+                     FROM controllers WHERE id = $1",
+                    &[&controller_id],
+                )
+                .await?
+            else {
+                return Ok(None);
+            };
+            let actions = tx
+                .query(
+                    "SELECT action_kind FROM controller_action_grants
+                     WHERE controller_id = $1 AND granted = 1 ORDER BY action_kind",
+                    &[&controller_id],
+                )
+                .await?
+                .iter()
+                .map(|r| r.get::<_, String>(0))
+                .collect();
+            let scopes = tx
+                .query(
+                    "SELECT scope FROM controller_bindings
+                     WHERE controller_id = $1 AND enabled = 1 ORDER BY scope",
+                    &[&controller_id],
+                )
+                .await?
+                .iter()
+                .map(|r| r.get::<_, String>(0))
+                .collect();
+            Ok(Some(ControllerInstallationConfig {
+                enabled: row.get::<_, i64>(0) != 0,
+                max_concurrent_sessions: row.get(1),
+                max_actions_per_minute: row.get(2),
+                actions,
+                scopes,
+            }))
+        }
+
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            let now = now_ms();
+            let Some(before) = read_config(&tx, controller_id).await? else {
+                return Ok(None);
+            };
+            if let Some(enabled) = enabled {
+                tx.execute(
+                    "UPDATE controllers SET enabled = $2, updated_at = $3 WHERE id = $1",
+                    &[&controller_id, &i64::from(enabled), &now],
+                )
+                .await?;
+            }
+            if let Some(limit) = max_concurrent_sessions {
+                tx.execute(
+                    "UPDATE controllers SET max_concurrent_sessions = $2, updated_at = $3
+                     WHERE id = $1",
+                    &[&controller_id, &limit, &now],
+                )
+                .await?;
+            }
+            if let Some(limit) = max_actions_per_minute {
+                tx.execute(
+                    "UPDATE controllers SET max_actions_per_minute = $2, updated_at = $3
+                     WHERE id = $1",
+                    &[&controller_id, &limit, &now],
+                )
+                .await?;
+            }
+            if let Some(actions) = actions {
+                tx.execute(
+                    "UPDATE controller_action_grants SET granted = 0, updated_at = $2
+                     WHERE controller_id = $1",
+                    &[&controller_id, &now],
+                )
+                .await?;
+                for action in actions {
+                    tx.execute(
+                        "INSERT INTO controller_action_grants
+                            (controller_id, action_kind, granted, updated_at)
+                         VALUES ($1, $2, 1, $3)
+                         ON CONFLICT (controller_id, action_kind) DO UPDATE SET
+                            granted = 1, updated_at = EXCLUDED.updated_at",
+                        &[&controller_id, &action, &now],
+                    )
+                    .await?;
+                }
+            }
+            if let Some(scopes) = scopes {
+                tx.execute(
+                    "UPDATE controller_bindings SET enabled = 0, updated_at = $2
+                     WHERE controller_id = $1",
+                    &[&controller_id, &now],
+                )
+                .await?;
+                for scope in scopes {
+                    tx.execute(
+                        "INSERT INTO controller_bindings (controller_id, scope, enabled, updated_at)
+                         VALUES ($1, $2, 1, $3)
+                         ON CONFLICT (controller_id, scope) DO UPDATE SET
+                            enabled = 1, updated_at = EXCLUDED.updated_at",
+                        &[&controller_id, &scope, &now],
+                    )
+                    .await?;
+                }
+            }
+            let after = read_config(&tx, controller_id)
+                .await?
+                .context("registration vanished mid-transaction")?;
+            tx.execute(
+                "INSERT INTO controller_event_audit
+                    (controller_id, event_id, kind, detail, created_at)
+                 VALUES ($1, $2, 'installation_patched', $3, $4)",
+                &[
+                    &controller_id,
+                    &new_id("cfg"),
+                    &serde_json::to_string(&json!({"before": before, "after": after}))?,
+                    &now,
+                ],
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(Some(after))
+        })
+    }
+
     fn put_controller_action_token(
         &self,
         token_id: &str,
