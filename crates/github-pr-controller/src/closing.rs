@@ -238,7 +238,39 @@ fn comment_body(parsed: &ParsedResult, trailer: Option<&VerdictTrailer>) -> Stri
             break;
         }
     }
-    lines.join("\n").trim_end().to_string()
+    unfence_tables(lines).join("\n").trim_end().to_string()
+}
+
+/// Every chair model tried (Kiro and Claude alike) wraps the Findings tables
+/// in code fences when writing the report as a chat message — GitHub then
+/// renders them as preformatted text. The steering rule against it is
+/// ignored, so the fence is undone here: a fenced block whose non-empty
+/// lines all start with `|` (and at least one does) is unwrapped.
+fn unfence_tables<'a>(lines: Vec<&'a str>) -> Vec<&'a str> {
+    let mut out = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim().starts_with("```") {
+            if let Some(close) = lines[i + 1..]
+                .iter()
+                .position(|line| line.trim().starts_with("```"))
+            {
+                let block = &lines[i + 1..i + 1 + close];
+                let is_table = block.iter().any(|line| line.trim_start().starts_with('|'))
+                    && block
+                        .iter()
+                        .all(|line| line.trim().is_empty() || line.trim_start().starts_with('|'));
+                if is_table {
+                    out.extend_from_slice(block);
+                    i += close + 2;
+                    continue;
+                }
+            }
+        }
+        out.push(lines[i]);
+        i += 1;
+    }
+    out
 }
 
 #[cfg(test)]
@@ -287,6 +319,32 @@ mod tests {
             format!("LGTM\n\n{}", round_marker("ses_t")),
             "the comment carries its round marker"
         );
+    }
+
+    #[test]
+    fn fenced_findings_tables_are_unwrapped_but_code_blocks_survive() {
+        // Shape of nuphos#664: the chair fences the table header and body as
+        // separate blocks. A real code block in the same report must remain.
+        let report = "<!-- openab-council -->\n\
+             CHANGES REQUESTED ⚠️ — summary.\n\n\
+             ## Findings\n\n\
+             ```\n\
+             | ID | Severity | Title |\n\
+             ```\n\
+             ```\n\
+             | -- | -------- | ----- |\n\
+             | F1 | 🟡 | tab reset |\n\
+             ```\n\n\
+             ```rust\n\
+             let keep = me;\n\
+             ```\n\
+             [[verdict:request_changes r=0 y=1 g=0]] [done]";
+        let parsed = parse_final_messages(&[report.into()]);
+        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
+        assert!(!body.contains("```\n| ID"), "table header unfenced");
+        assert!(body.contains("| ID | Severity | Title |\n| -- | -------- | ----- |"));
+        assert!(body.contains("```rust\nlet keep = me;\n```"));
     }
 
     #[test]
