@@ -3609,11 +3609,15 @@ mod tests {
         let roster = store.roster(&session.id).unwrap();
         assert_eq!(roster, vec![chair.id.clone()]);
         let current = store.session(&session.id).unwrap().unwrap();
-        assert_eq!(current.quorum_n, 0);
+        // Roster exhaustion fail-closes: quorum_n = 0 would make `0 >= 0` a
+        // trivial quorum and convene the chair against nothing (council red
+        // on the #349 sibling review).
         assert_eq!(
             SessionState::from_db_str(&current.state),
-            SessionState::Quorum
+            SessionState::Closed,
+            "exhausting the last reviewer fail-closes the session"
         );
+        assert!(current.decision.is_none(), "no verdict is fabricated");
         let messages = store.messages(&session.id).unwrap();
         assert_eq!(
             messages
@@ -3638,8 +3642,8 @@ mod tests {
                         && message.content.starts_with("Quorum reached.")
                 })
                 .count(),
-            1,
-            "roster shrink must prompt the chair once",
+            0,
+            "the chair must never be convened against an empty roster",
         );
     }
 
