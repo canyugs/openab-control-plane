@@ -2034,7 +2034,14 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     // joined settled span, not just the closing message: the
                     // block can straddle a message-length split (live case:
                     // zeabur.com#702 round 4 lost its whole round to this).
-                    if session.mode == "review_council" {
+                    // Controller-opened reviews use the generic "council"
+                    // mode (the embedded plugin owns "review_council"), so
+                    // gate on a chair being present instead — without this,
+                    // controller rounds never fed the ledger or bumped
+                    // waiver fired-counters (found live, OCP#333 round 2).
+                    if session.mode == "review_council"
+                        || (session.mode == "council" && session.chair_bot.is_some())
+                    {
                         let joined = messages
                             .iter()
                             .filter(|m| span.contains(&m.id))
