@@ -120,6 +120,20 @@ write broker (the pod never holds key material) — that migration is the
 price of promotion, recorded in a future amendment, and the standing-key
 model never widens.
 
+**Reconciliation with ADR 022 D5.** D5 rules that Fix/Dev-shaped agents
+write only to a workflow-owned draft workspace before the side-effect-safety
+slice, with irreversible effects gated behind a journaled staged action.
+v1 satisfies the *structure* of that ruling rather than exempting itself
+from it: the sandbox repository **is** the workflow-owned draft workspace —
+nothing deploys from it, nothing consumes it downstream, and its only
+reader is the review council itself, so a `panel/*` push or a sandbox PR is
+a draft write in D5's sense, not a published side effect. What D5 calls
+"publish" — landing code anywhere a consumer reads — is exactly what the
+panel never does in v1 (runs end at an approved-or-parked PR; merging is a
+human act). Promotion to any consumed repository therefore takes on **both**
+obligations at once: the credential migration above *and* D5's
+`prepare→approve→publish` journaled gate for the merge step.
+
 ### 5. Deployment: dev lane, raised timeout, own installation
 
 - New controller installation (`coding-panel-dev`), action token granting
