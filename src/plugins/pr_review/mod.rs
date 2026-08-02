@@ -154,7 +154,9 @@ impl Default for ReviewCouncil {
 /// the steering format (angle, findings section, verdict line) is comfortably
 /// above this floor; tune only with evidence from the findings ledger.
 pub fn report_delivered(text: &str) -> bool {
-    text.trim().len() >= REPORT_MIN_CHARS
+    // chars, not bytes (council F3 on #353): an emoji-heavy tool echo packs
+    // 4 bytes per glyph and would clear a byte floor with 20 characters.
+    text.trim().chars().count() >= REPORT_MIN_CHARS
 }
 /// Floor between "tool echo / bare ok [done]" (< 30 chars) and the shortest
 /// legitimate steering-format report (> 150 chars observed on both lanes).
@@ -358,6 +360,17 @@ mod tests {
             ReviewCouncil::default().starters(&roster, Some("chair")),
             roster
         );
+    }
+
+    #[test]
+    fn report_floor_counts_characters_not_bytes() {
+        // 20 four-byte glyphs = 80 bytes but 20 chars — must NOT pass.
+        let emoji_echo = "✅".repeat(20) + " [done]";
+        assert!(!report_delivered(&emoji_echo));
+        // 80+ real characters pass regardless of byte width.
+        let report =
+            "審查完成:正確性檢查通過,受影響路徑無回歸,測試涵蓋新行為,無安全疑慮。".repeat(3);
+        assert!(report_delivered(&report));
     }
 
     #[test]
