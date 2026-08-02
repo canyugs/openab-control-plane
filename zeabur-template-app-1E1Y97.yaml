@@ -1,4 +1,9 @@
 # yaml-language-server: $schema=https://schema.zeabur.app/template.json
+# NOTE (2026-08-02): this template installs the EMBEDDED-webhook architecture
+# (plane receives GitHub webhooks; chair posts via the App key). It remains a
+# valid self-host path. The hosted lanes have since moved to the external
+# github-pr-controller (ADR 031) which owns ingress and all GitHub writes;
+# that topology is not yet reflected here.
 apiVersion: zeabur.com/v1
 kind: Template
 metadata:
@@ -110,7 +115,7 @@ spec:
       domainKey: PUBLIC_DOMAIN
       spec:
         source:
-          image: ghcr.io/canyugs/openab-control-plane:0.1.40
+          image: ghcr.io/canyugs/openab-control-plane:0.1.58
         ports:
           - id: web
             port: 8090

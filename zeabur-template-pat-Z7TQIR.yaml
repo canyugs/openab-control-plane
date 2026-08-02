@@ -1,4 +1,7 @@
 # yaml-language-server: $schema=https://schema.zeabur.app/template.json
+# LEGACY (2026-08-02): the PAT install path is legacy — see docs/install-pat.md.
+# Prefer the GitHub App template (zeabur-template-app-1E1Y97.yaml). Kept for
+# quick experiments; image pin updated alongside the App template.
 apiVersion: zeabur.com/v1
 kind: Template
 metadata:
@@ -115,7 +118,7 @@ spec:
       domainKey: PUBLIC_DOMAIN
       spec:
         source:
-          image: ghcr.io/canyugs/openab-control-plane:0.1.40
+          image: ghcr.io/canyugs/openab-control-plane:0.1.58
         ports:
           - id: web
             port: 8090

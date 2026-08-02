@@ -1,0 +1,98 @@
+# yaml-language-server: $schema=https://schema.zeabur.app/template.json
+# PARKED (2026-08-02): phase-0 artifact of docs/forum-north-client-plan.md,
+# committed in the untracked-file sweep (#336/#339/#340). The forum north
+# client is parked; nothing deployed from this template today.
+apiVersion: zeabur.com/v1
+kind: Template
+metadata:
+  name: OpenAB Forum Support (OCP + Allen gateway)
+spec:
+  description: |
+    Minimal openab-control-plane for Zeabur forum north-client dogfood.
+    Seeds a single `allen` bot; wire an existing support pod (codex-allen) via
+    Path B — add `[gateway]` to its own OpenAB config + `OABCP_BOT_TOKEN` env.
+  readme: |
+    # Forum Support Control Plane
+
+    Deploys only the control plane. The support pod (`codex-allen` or similar)
+    keeps its own `config.toml` and adds a `[gateway]` block pointing here.
+
+    ## Required variables
+
+    - `PUBLIC_DOMAIN`: public hostname for the north API (forum server-side proxy).
+    - `OABCP_API_KEY`: north bearer (`openssl rand -hex 32`).
+    - `BOT_TOKEN_ALLEN`: gateway token for the allen pod (`openssl rand -hex 32`).
+
+    ## Wire the support pod (Path B)
+
+    On `codex-allen`, set service env `OABCP_BOT_TOKEN` to `BOT_TOKEN_ALLEN`, then
+    add to `/home/node/.config/openab/config.toml`:
+
+    ```toml
+    [gateway]
+    url = "ws://forum-ocp.zeabur.internal:8090/ws"
+    platform = "feishu"
+    token = "${OABCP_BOT_TOKEN}"
+    allow_all_users = true
+    allow_bot_messages = true
+    bot_username = "allen"
+    streaming = true
+    ```
+
+    Restart the pod. Verify: `GET /v1/bots` shows `allen` with `connected: true`.
+  icon: https://cdn-console.zeabur.com/f/6qNF8/ocp-icon.webp
+  tags:
+    - AI
+    - Developer Tools
+  variables:
+    - key: PUBLIC_DOMAIN
+      type: DOMAIN
+      name: Control plane domain
+      description: Public domain for forum → OCP north API proxy.
+    - key: OABCP_API_KEY
+      type: PASSWORD
+      name: North API key
+      description: Bearer token for REST/SSE (`OABCP_API_KEY`). `openssl rand -hex 32`.
+    - key: BOT_TOKEN_ALLEN
+      type: PASSWORD
+      name: allen gateway token
+      description: WS token for codex-allen. `openssl rand -hex 32`.
+  services:
+    - name: forum-ocp
+      icon: https://cdn-console.zeabur.com/f/6qNF8/ocp-icon.webp
+      template: PREBUILT_V2
+      domainKey: PUBLIC_DOMAIN
+      spec:
+        source:
+          image: ghcr.io/canyugs/openab-control-plane:0.1.58
+        ports:
+          - id: web
+            port: 8090
+            type: HTTP
+        healthCheck:
+          type: HTTP
+          port: web
+          http:
+            path: /healthz
+        volumes:
+          - id: data
+            dir: /data
+        env:
+          OABCP_ADDR:
+            default: 0.0.0.0:8090
+          OABCP_DB:
+            default: /data/plane.db
+          OABCP_API_KEY:
+            default: ${OABCP_API_KEY}
+            expose: true
+            readonly: true
+          OABCP_WS_URL:
+            default: ws://forum-ocp.zeabur.internal:8090/ws
+          OABCP_CONFIG_BASE_URL:
+            default: http://forum-ocp.zeabur.internal:8090
+          OABCP_BOTS:
+            default: allen:chair
+          OABCP_EXTERNALIZE_TOKENS:
+            default: "1"
+          OABCP_BOT_TOKEN_ALLEN:
+            default: ${BOT_TOKEN_ALLEN}
