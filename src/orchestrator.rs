@@ -2368,6 +2368,60 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+
+    /// PR #348 regression: the chair rotation pool must exclude registered
+    /// chair-role bots that have no live gateway connection — rotating to an
+    /// absent bot strands the synthesis prompt in its outbox until the
+    /// watchdog times the round out. This drives the REAL
+    /// OrchCtx::chair_candidates() → AppState::is_connected() wiring (the
+    /// coordinator tests hand-set their candidate lists and cannot catch it).
+    #[test]
+    fn chair_candidates_exclude_disconnected_pool_members() {
+        use crate::coordinator::Ctx as _;
+        let store = std::sync::Arc::new(crate::store::SqliteStore::open(":memory:").unwrap());
+        let state = crate::state::AppState::new(store.clone());
+        store
+            .seed_bot("chair", "Chair", "chair", "h1", "t1")
+            .unwrap();
+        store
+            .seed_bot("chair-claude", "Standby", "chair", "h2", "t2")
+            .unwrap();
+        store
+            .seed_bot("rev-a", "Rev", "reviewer", "h3", "t3")
+            .unwrap();
+        let session = store
+            .create_session("t", None, 1, Some("chair"), &["chair".into()], "council")
+            .unwrap();
+        let cx = OrchCtx {
+            state: &state,
+            session: &session,
+            roster: vec!["chair".into()],
+        };
+        // Nobody connected: the pool is empty (requeue_synthesis then falls
+        // back to re-prompting the failed chair rather than reassigning).
+        assert!(cx.chair_candidates().is_empty());
+
+        // Only the live chair counts; the registered-but-absent standby and
+        // the reviewer never enter the pool.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let generation = state.register_conn("chair", tx);
+        assert_eq!(cx.chair_candidates(), vec!["chair".to_string()]);
+
+        // The standby joins the pool the moment it actually connects…
+        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel();
+        let gen2 = state.register_conn("chair-claude", tx2);
+        assert_eq!(
+            cx.chair_candidates(),
+            vec!["chair".to_string(), "chair-claude".to_string()]
+        );
+
+        // …and leaves it the moment it drops.
+        state.unregister_conn("chair-claude", gen2);
+        assert_eq!(cx.chair_candidates(), vec!["chair".to_string()]);
+        state.unregister_conn("chair", generation);
+        assert!(cx.chair_candidates().is_empty());
+    }
+
     use super::test_support::*;
     use super::*;
     use crate::protocol::ReplyChannel;
