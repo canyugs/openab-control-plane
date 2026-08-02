@@ -733,7 +733,21 @@ pub trait Store: Send + Sync {
     /// Close from *any* non-terminal state (the liveness watchdog — the current
     /// state is unknown when a timeout fires). CAS so only one caller wins;
     /// returns true if this call performed the close.
-    fn close_if_active(&self, session_id: &str, event_type: &str, reason: &str) -> Result<bool>;
+    ///
+    /// `stale_before`: when Some, the close additionally requires the session's
+    /// last activity (MAX message created_at, else session created_at — the
+    /// same anchor as `active_sessions_before`) to predate the cutoff, inside
+    /// the same transaction. This closes the watchdog TOCTOU: a verdict that
+    /// lands between the staleness scan and the close CAS makes the timeout
+    /// close a no-op, so the in-flight normal close delivers it instead of an
+    /// abandon tombstone burying it (#335).
+    fn close_if_active(
+        &self,
+        session_id: &str,
+        event_type: &str,
+        reason: &str,
+        stale_before: Option<i64>,
+    ) -> Result<bool>;
     /// Record the structured verdict (ADR 013) parsed from the chair's
     /// `[[verdict:…]]` trailer. Called once at normal close; never on timeout.
     fn set_session_verdict(
@@ -3943,14 +3957,24 @@ impl Store for SqliteStore {
         Ok(n == 1)
     }
 
-    fn close_if_active(&self, session_id: &str, event_type: &str, reason: &str) -> Result<bool> {
+    fn close_if_active(
+        &self,
+        session_id: &str,
+        event_type: &str,
+        reason: &str,
+        stale_before: Option<i64>,
+    ) -> Result<bool> {
         let mut c = self.conn.lock().unwrap();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let closed_at = now_ms();
         let n = tx.execute(
             "UPDATE sessions SET state = 'closed', closed_at = ?2
-             WHERE id = ?1 AND state NOT IN ('closed', 'aborted')",
-            params![session_id, closed_at],
+             WHERE id = ?1 AND state NOT IN ('closed', 'aborted')
+               AND (?3 IS NULL OR COALESCE(
+                     (SELECT MAX(m.created_at) FROM messages m WHERE m.session_id = sessions.id),
+                     sessions.created_at
+                   ) < ?3)",
+            params![session_id, closed_at, stale_before],
         )?;
         if n == 1 {
             let trigger_ref: Option<String> = tx.query_row(
@@ -6541,7 +6565,7 @@ mod tests {
         ));
 
         store
-            .close_if_active(&session.id, "session.terminal", "external-close")
+            .close_if_active(&session.id, "session.terminal", "external-close", None)
             .unwrap();
         assert!(matches!(
             store

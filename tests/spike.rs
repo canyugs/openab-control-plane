@@ -1557,7 +1557,7 @@ async fn chair_done_before_quorum_waits_for_watchdog() {
 
     let mut north = state.north_tx.subscribe();
     assert!(
-        orchestrator::force_close_timeout(&state, &session).unwrap(),
+        orchestrator::force_close_timeout(&state, &session, i64::MAX).unwrap(),
         "watchdog primitive should force-close the stuck council",
     );
     let mut saw_timeout = false;

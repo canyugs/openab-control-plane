@@ -71,7 +71,7 @@ fn spawn_watchdog(state: Arc<AppState>) {
             match state.store.active_sessions_before(cutoff) {
                 Ok(ids) => {
                     for id in ids {
-                        if let Err(e) = orchestrator::force_close_timeout(&state, &id) {
+                        if let Err(e) = orchestrator::force_close_timeout(&state, &id, cutoff) {
                             tracing::error!("watchdog close {id} failed: {e}");
                         }
                     }
