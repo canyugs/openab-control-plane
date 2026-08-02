@@ -59,7 +59,9 @@ The GitHub controller uses the same two-window audit policy with its own
 namespace: `GITHUB_CONTROLLER_AUDIT_RETENTION_DAYS` (default `90`) and
 `GITHUB_CONTROLLER_AUDIT_EXTENDED_RETENTION_DAYS` (default `365`). Its audit
 query endpoint requires the observer secret and a request-bound
-`x-canary-audit-signature-256` HMAC.
+`x-canary-audit-signature-256` HMAC plus `x-canary-audit-timestamp`. The
+signature covers `v1`, the Unix timestamp, `GET`, and the exact path/query;
+timestamps outside a five-minute clock-skew window are rejected.
 
 ### Read-only investigation bundle
 

@@ -39,6 +39,7 @@ use store::SqliteStore;
 type HmacSha256 = Hmac<Sha256>;
 const MAX_WEBHOOK_BODY_BYTES: usize = 1024 * 1024;
 const DELIVERY_PRUNE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const AUDIT_MAX_TIMESTAMP_SKEW_SECS: u64 = 5 * 60;
 /// Writes drained per pass. One closed round queues at most three.
 const WRITE_DRAIN_BATCH: i64 = 32;
 const AUDIT_SERVICE: &str = "github-pr-controller";
@@ -512,10 +513,9 @@ async fn handle_webhook(
             .await
             {
                 tracing::error!(%error, %delivery_id, "ingress journal append failed");
-                return response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    json!({"ok": false, "error": "audit_store_failed"}),
-                );
+                let result = json!({"ok": false, "error": "audit_store_failed"});
+                release_delivery_after_audit_failure(store.as_ref(), delivery_id, &result).await;
+                return response(StatusCode::SERVICE_UNAVAILABLE, result);
             }
         }
         Ok(DeliveryAdmission::Duplicate {
@@ -646,10 +646,8 @@ async fn handle_webhook(
             .await
             {
                 tracing::error!(%error, %delivery_id, "ignored ingress journal append failed");
-                return response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    json!({"ok": false, "error": "audit_store_failed"}),
-                );
+                release_delivery_after_audit_failure(store.as_ref(), delivery_id, &result).await;
+                return response(StatusCode::SERVICE_UNAVAILABLE, result);
             }
             ("ignored", result)
         }
@@ -680,10 +678,8 @@ async fn handle_webhook(
             .await
             {
                 tracing::error!(%error, %delivery_id, "planned ingress journal append failed");
-                return response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    json!({"ok": false, "error": "audit_store_failed"}),
-                );
+                release_delivery_after_audit_failure(store.as_ref(), delivery_id, &result).await;
+                return response(StatusCode::SERVICE_UNAVAILABLE, result);
             }
             ("planned", result)
         }
@@ -949,10 +945,8 @@ async fn handle_webhook(
     .await
     {
         tracing::error!(%error, %delivery_id, "final ingress journal append failed");
-        return response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            json!({"ok": false, "error": "audit_store_failed"}),
-        );
+        release_delivery_after_audit_failure(store.as_ref(), delivery_id, &result).await;
+        return response(StatusCode::SERVICE_UNAVAILABLE, result);
     }
     if let Err(error) = store
         .finish_delivery(delivery_id, durable_state, &result)
@@ -1149,11 +1143,12 @@ async fn handle_audit_events(
         .path_and_query()
         .map(|value| value.as_str())
         .unwrap_or(uri.path());
-    let canonical = audit_signature_payload(target);
-    if !verify_signature(
+    if !verify_audit_signature(
         secret,
-        canonical.as_bytes(),
+        target,
+        header(&headers, "x-canary-audit-timestamp"),
         header(&headers, "x-canary-audit-signature-256"),
+        now_unix(),
     ) {
         return response(
             StatusCode::FORBIDDEN,
@@ -1942,8 +1937,35 @@ pub fn verify_signature(secret: &str, body: &[u8], signature_header: Option<&str
     mac.verify_slice(&expected).is_ok()
 }
 
-fn audit_signature_payload(target: &str) -> String {
-    format!("GET\n{target}")
+fn verify_audit_signature(
+    secret: &str,
+    target: &str,
+    timestamp_header: Option<&str>,
+    signature_header: Option<&str>,
+    now_secs: i64,
+) -> bool {
+    let Some(timestamp) = timestamp_header.and_then(|value| value.parse::<i64>().ok()) else {
+        return false;
+    };
+    if now_secs.abs_diff(timestamp) > AUDIT_MAX_TIMESTAMP_SKEW_SECS {
+        return false;
+    }
+    let canonical = audit_signature_payload(timestamp, target);
+    verify_signature(secret, canonical.as_bytes(), signature_header)
+}
+
+fn audit_signature_payload(timestamp: i64, target: &str) -> String {
+    format!("v1\n{timestamp}\nGET\n{target}")
+}
+
+async fn release_delivery_after_audit_failure(
+    store: &dyn ProductStore,
+    delivery_id: &str,
+    result: &Value,
+) {
+    if let Err(error) = store.release_delivery_for_retry(delivery_id, result).await {
+        tracing::error!(%error, %delivery_id, "audit failure delivery release failed");
+    }
 }
 
 fn response(status: StatusCode, value: Value) -> Response {
@@ -1968,19 +1990,50 @@ mod tests {
     #[test]
     fn audit_signature_is_bound_to_the_exact_query_target() {
         let target = "/api/v1/audit/events?session_id=ses_1&limit=500";
+        let timestamp = 1_000;
         let mut mac = HmacSha256::new_from_slice(b"observer-secret").unwrap();
-        mac.update(audit_signature_payload(target).as_bytes());
+        mac.update(audit_signature_payload(timestamp, target).as_bytes());
         let header = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
-        assert!(verify_signature(
+        assert!(verify_audit_signature(
             "observer-secret",
-            audit_signature_payload(target).as_bytes(),
+            target,
+            Some("1000"),
             Some(&header),
+            1_001,
         ));
-        assert!(!verify_signature(
+        assert!(!verify_audit_signature(
             "observer-secret",
-            audit_signature_payload("/api/v1/audit/events?session_id=ses_2&limit=500").as_bytes(),
+            "/api/v1/audit/events?session_id=ses_2&limit=500",
+            Some("1000"),
             Some(&header),
+            1_001,
         ));
+        assert!(!verify_audit_signature(
+            "observer-secret",
+            target,
+            Some("1000"),
+            Some(&header),
+            2_000,
+        ));
+    }
+
+    #[tokio::test]
+    async fn audit_failure_release_reopens_delivery_for_retry() {
+        let store = SqliteStore::memory().unwrap();
+        assert_eq!(
+            store
+                .begin_delivery("delivery-audit-failure", "pull_request", None, "hash")
+                .unwrap(),
+            DeliveryAdmission::New
+        );
+        let result = json!({"ok": false, "error": "audit_store_failed"});
+        release_delivery_after_audit_failure(&store, "delivery-audit-failure", &result).await;
+        assert_eq!(
+            store
+                .begin_delivery("delivery-audit-failure", "pull_request", None, "hash")
+                .unwrap(),
+            DeliveryAdmission::New
+        );
     }
 
     #[test]

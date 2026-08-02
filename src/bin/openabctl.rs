@@ -325,13 +325,15 @@ async fn fetch_page(
         request = request.bearer_auth(api_key);
     }
     if let Some(secret) = service.observer_secret.as_deref() {
+        let timestamp = now_unix();
         let mut mac =
             HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts keys of any length");
-        mac.update(format!("GET\n{target}").as_bytes());
+        mac.update(format!("v1\n{timestamp}\nGET\n{target}").as_bytes());
         request = request.header(
             "x-canary-audit-signature-256",
             format!("sha256={}", hex::encode(mac.finalize().into_bytes())),
         );
+        request = request.header("x-canary-audit-timestamp", timestamp.to_string());
     }
     let response = request.send().await.map_err(|error| {
         if error.is_timeout() {
@@ -431,6 +433,13 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 #[cfg(test)]
