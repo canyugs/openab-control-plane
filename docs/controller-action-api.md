@@ -193,3 +193,13 @@ Errors use the versioned `ErrorEnvelope` from `controller-protocol`. Rate quota
 responses return `429` and `Retry-After`; concurrent-session quota responses
 return `409`. Grant, scope, and session-ownership checks fail closed. Action
 request bodies are bounded to 1 MiB before full buffering.
+
+## Canary note
+
+The first pull request reviewed end to end by the external controller —
+session opened, verdict parsed from `final_messages`, and all three GitHub
+writes (round comment, `openab/council` status, formal review) performed by
+the controller's own App credentials — was the pull request that added this
+paragraph.
+Canary note 2: verify v0.1.43 status write + chair message hygiene.
+Canary note 3: verify v0.1.44 marker-slice comment.
