@@ -147,6 +147,19 @@ impl Default for ReviewCouncil {
     }
 }
 
+/// SEI-873 (#349): does this settled final constitute a DELIVERED review
+/// report? Deliberately conservative — the only job is to reject obvious
+/// blanks (the canonical incident was a 17-character tool echo counted as a
+/// full vote), never to grade real reports. A legitimate minimal report under
+/// the steering format (angle, findings section, verdict line) is comfortably
+/// above this floor; tune only with evidence from the findings ledger.
+pub fn report_delivered(text: &str) -> bool {
+    text.trim().len() >= REPORT_MIN_CHARS
+}
+/// Floor between "tool echo / bare ok [done]" (< 30 chars) and the shortest
+/// legitimate steering-format report (> 150 chars observed on both lanes).
+const REPORT_MIN_CHARS: usize = 80;
+
 impl Coordinator for ReviewCouncil {
     fn kind(&self) -> &'static str {
         "review_council"
@@ -179,7 +192,9 @@ impl Coordinator for ReviewCouncil {
     }
 
     fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<crate::coordinator::Action> {
-        QuorumCouncil.on_roster_change(cx)
+        // verdict_required: quorum over validated voters (#349), matching
+        // on_done's contract.
+        crate::coordinator::quorum_actions(cx, crate::coordinator::COUNCIL_QUORUM_PROMPT, true)
     }
 
     fn structured_verdict(&self, cx: &dyn Ctx, verdict_text: &str) -> Option<StructuredVerdict> {

@@ -601,6 +601,14 @@ fn trim_reviewer(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Resul
     if state.is_connected(bot_id) {
         return Ok(());
     }
+    trim_member(state, session_id, bot_id, "unreachable")
+}
+
+/// Guard-free trim: also reached from `Action::TrimReviewer` (#349), where the
+/// blank-voting reviewer is typically CONNECTED — connectivity must not save
+/// the seat there. Shrinks the quorum and re-runs the coordinator so a now-
+/// satisfied quorum convenes the chair immediately.
+fn trim_member(state: &Arc<AppState>, session_id: &str, bot_id: &str, reason: &str) -> Result<()> {
     if !state.store.remove_session_bot(session_id, bot_id)? {
         return Ok(());
     }
@@ -619,9 +627,9 @@ fn trim_reviewer(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Resul
     state.emit_north(
         "roster_drop",
         session_id,
-        json!({ "bot": bot_id, "reason": "unreachable", "quorum_n": quorum_n }),
+        json!({ "bot": bot_id, "reason": reason, "quorum_n": quorum_n }),
     );
-    tracing::info!("liveness: trimmed {bot_id} from {session_id}, quorum now {quorum_n}");
+    tracing::info!("trimmed {bot_id} from {session_id} ({reason}), quorum now {quorum_n}");
     let Some(session) = state.store.session(session_id)? else {
         return Ok(());
     };
@@ -1892,6 +1900,23 @@ impl Ctx for OrchCtx<'_> {
     fn trigger_ref(&self) -> Option<&str> {
         self.session.trigger_ref.as_deref()
     }
+    /// Transcript-derived (#349): report re-requests already sent to `bot`.
+    fn report_requests(&self, bot: &str) -> i64 {
+        self.state
+            .store
+            .messages(&self.session.id)
+            .map(|msgs| {
+                msgs.iter()
+                    .filter(|m| {
+                        m.author_kind == "system"
+                            && m.audience.as_deref() == Some(bot)
+                            && m.content
+                                .starts_with(crate::coordinator::REPORT_REQUEST_PREFIX)
+                    })
+                    .count() as i64
+            })
+            .unwrap_or(0)
+    }
     /// The transcript is the attempt log: every synthesis prompt (initial and
     /// retries) is a system message starting with the quorum-prompt prefix.
     fn synthesis_attempts(&self) -> i64 {
@@ -1997,6 +2022,10 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     continue; // its transition didn't happen — don't prompt
                 }
                 deliver_system_prompt(state, session, &to, &content)?;
+            }
+            Action::TrimReviewer { bot } => {
+                transition_failed = false;
+                trim_member(state, &session.id, &bot, "no_report")?;
             }
             Action::ReassignChair { to } => {
                 // #344: hand the seat over. Membership first (delivery needs
@@ -2368,6 +2397,77 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+
+    /// #349 end-to-end through the real store: a blank done-vote on a
+    /// controller-opened session does not advance quorum and produces a
+    /// report re-request; repeated blanks trim the seat and shrink the
+    /// quorum so the survivors converge; a delivered report counts.
+    #[test]
+    fn blank_votes_rerequest_then_trim_and_survivors_converge() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev1 = store.register_bot("rev1", "reviewer", "h2", "t2").unwrap();
+        let rev2 = store.register_bot("rev2", "reviewer", "h3", "t3").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                Some("controller:test:abc"),
+                2,
+                Some(&chair.id),
+                &[chair.id.clone(), rev1.id.clone(), rev2.id.clone()],
+                "council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+
+        let report = "Reviewed against my focus: correctness holds across the touched paths, no regressions found, and the tests cover the new behavior.";
+
+        // rev2 delivers properly and votes.
+        handle_reply(
+            &state,
+            &rev2.id,
+            msg_reply(&session.id, &format!("{report} [done]")),
+        )
+        .unwrap();
+
+        // rev1 blank-votes: not counted, re-requested — twice.
+        for expected_requests in 1..=2i64 {
+            handle_reply(&state, &rev1.id, msg_reply(&session.id, "ok [done]")).unwrap();
+            assert_eq!(
+                SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+                SessionState::Deliberating,
+                "blank vote must not reach quorum"
+            );
+            let requests = store
+                .messages(&session.id)
+                .unwrap()
+                .iter()
+                .filter(|m| {
+                    m.author_kind == "system"
+                        && m.audience.as_deref() == Some(rev1.id.as_str())
+                        && m.content
+                            .starts_with(crate::coordinator::REPORT_REQUEST_PREFIX)
+                })
+                .count() as i64;
+            assert_eq!(requests, expected_requests);
+        }
+
+        // Third blank exhausts the re-requests: the seat is trimmed, the
+        // quorum shrinks to the survivor, whose delivered vote now convenes
+        // the chair.
+        handle_reply(&state, &rev1.id, msg_reply(&session.id, "ok [done]")).unwrap();
+        let after = store.session(&session.id).unwrap().unwrap();
+        assert!(!store.roster(&session.id).unwrap().contains(&rev1.id));
+        assert_eq!(after.quorum_n, 1, "quorum shrinks with the trim");
+        assert_eq!(
+            SessionState::from_db_str(&after.state),
+            SessionState::Quorum,
+            "the survivor's delivered vote satisfies the shrunk quorum"
+        );
+    }
 
     /// PR #348 regression: the chair rotation pool must exclude registered
     /// chair-role bots that have no live gateway connection — rotating to an
@@ -3347,7 +3447,7 @@ mod tests {
         handle_reply(
             &state,
             &rev.id,
-            msg_reply(&session.id, "reviewer settled final [done]"),
+            msg_reply(&session.id, "Reviewed the change against my assigned focus: correctness holds across the touched paths, no regressions found, and the tests cover the new behavior. [done]"),
         )
         .unwrap();
 
@@ -3361,7 +3461,7 @@ mod tests {
         assert_eq!(relayed.len(), 1);
         assert_eq!(
             relayed[0]["content"]["text"],
-            "reviewer settled final [done]"
+            "Reviewed the change against my assigned focus: correctness holds across the touched paths, no regressions found, and the tests cover the new behavior. [done]"
         );
     }
 
@@ -3421,7 +3521,7 @@ mod tests {
     fn liveness_trims_dead_reviewer_shrinks_quorum_and_reevaluates() {
         let (state, store, session, _chair, rev1, rev2, mut conns) = liveness_setup();
         // rev1 votes; quorum 2 not reached → still deliberating
-        handle_reply(&state, &rev1, msg_reply(&session.id, "findings [done]")).unwrap();
+        handle_reply(&state, &rev1, msg_reply(&session.id, "Reviewed the change against my assigned focus: correctness holds across the touched paths, no regressions found, and the tests cover the new behavior. [done]")).unwrap();
         assert_eq!(
             SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
             SessionState::Deliberating,
@@ -3475,7 +3575,7 @@ mod tests {
                 "bot",
                 Some(&rev1.id),
                 None,
-                "rev1 draft",
+                "rev1 report: correctness reviewed across the touched paths, no regressions found, tests cover the new behavior adequately.",
                 None,
             )
             .unwrap();
@@ -3486,7 +3586,7 @@ mod tests {
                 "bot",
                 Some(&rev2.id),
                 None,
-                "rev2 note",
+                "rev2 report: security posture reviewed, no injection or authorization gaps introduced, error handling stays fail-closed.",
                 None,
             )
             .unwrap();
@@ -3550,6 +3650,18 @@ mod tests {
             .unwrap();
         let trigger = store
             .add_message(&session.id, None, "client", None, None, "review this", None)
+            .unwrap();
+        // #349: a done-vote only counts alongside a delivered report.
+        store
+            .add_message(
+                &session.id,
+                None,
+                "bot",
+                Some(&rev.id),
+                None,
+                "rev report: correctness reviewed across the touched paths, no regressions found, tests cover the new behavior adequately.",
+                None,
+            )
             .unwrap();
 
         handle_reply(
@@ -3692,7 +3804,7 @@ mod tests {
     fn liveness_leaves_done_reviewer_and_live_bots_alone() {
         let (state, store, session, _chair, rev1, rev2, mut conns) = liveness_setup();
         // rev1 votes then dies — its vote is recorded, leave the seat alone
-        handle_reply(&state, &rev1, msg_reply(&session.id, "findings [done]")).unwrap();
+        handle_reply(&state, &rev1, msg_reply(&session.id, "Reviewed the change against my assigned focus: correctness holds across the touched paths, no regressions found, and the tests cover the new behavior. [done]")).unwrap();
         disconnect_bot(&state, &store, &mut conns, &rev1);
         sweep_liveness(&state, 0).unwrap();
 
@@ -4260,7 +4372,7 @@ mod tests {
             "offline reviewer should hold queued session frames before close"
         );
 
-        handle_reply(&state, &rev1.id, msg_reply(&session.id, "findings [done]")).unwrap();
+        handle_reply(&state, &rev1.id, msg_reply(&session.id, "Reviewed the change against my assigned focus: correctness holds across the touched paths, no regressions found, and the tests cover the new behavior. [done]")).unwrap();
         assert_eq!(
             SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
             SessionState::Quorum,

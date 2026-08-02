@@ -31,6 +31,11 @@ pub trait Ctx {
     fn trigger_ref(&self) -> Option<&str> {
         None
     }
+    /// How many report re-requests this session has already sent to `bot`
+    /// (#349) — transcript-derived like `synthesis_attempts`. Default 0.
+    fn report_requests(&self, _bot: &str) -> i64 {
+        0
+    }
     /// How many synthesis prompts this session has already sent. Derived from
     /// the transcript (system messages with the quorum-prompt prefix) — the
     /// transcript is the attempt log, no schema required. Default 0 keeps
@@ -69,6 +74,12 @@ pub enum Action {
         author: String,
         verdict: String,
     },
+    /// Remove a reviewer whose vote never came with a delivered report
+    /// (#349): the orchestrator trims the seat, shrinks the quorum and
+    /// re-evaluates — the round converges honestly on the survivors instead
+    /// of counting a blank vote. Connected bots are trimmable here (unlike
+    /// the liveness sweep's trim, which guards on reconnection).
+    TrimReviewer { bot: String },
     /// Hand the chair seat to another chair-capable bot (#344): membership +
     /// `chair_bot` update; the session stays in Quorum. Always followed by
     /// Relays of the reviewers' finals (the new chair received none of the
@@ -144,10 +155,13 @@ pub trait Coordinator: Send + Sync {
 /// liveness roster trim (a shrunk quorum can make the recorded count sufficient).
 /// `prompt` is per-coordinator — a review chair completes GitHub side effects,
 /// a triage chair must post the report and nothing else.
-pub(crate) fn quorum_actions(cx: &dyn Ctx, prompt: &str) -> Vec<Action> {
+pub(crate) fn quorum_actions(cx: &dyn Ctx, prompt: &str, verdict_required: bool) -> Vec<Action> {
     let mut actions = vec![];
     let chair = cx.chair();
-    if quorum_reached(cx.roster(), chair, &cx.done_voters(), cx.quorum_n()) {
+    // #349: under a verdict contract a vote counts only with a delivered
+    // report — quorum over validated voters, not raw done signals.
+    let voters = delivered_done_voters(cx, verdict_required);
+    if quorum_reached(cx.roster(), chair, &voters, cx.quorum_n()) {
         actions.push(Action::Transition {
             from: SessionState::Deliberating,
             to: SessionState::Quorum,
@@ -162,7 +176,41 @@ pub(crate) fn quorum_actions(cx: &dyn Ctx, prompt: &str) -> Vec<Action> {
     actions
 }
 
+/// Done voters whose vote counts: everyone outside a verdict contract, and
+/// only report-delivering voters under one (#349).
+fn delivered_done_voters(cx: &dyn Ctx, verdict_required: bool) -> Vec<String> {
+    let voters = cx.done_voters();
+    if !verdict_contract(cx, verdict_required) {
+        return voters;
+    }
+    voters
+        .into_iter()
+        .filter(|voter| {
+            cx.latest_settled(voter)
+                .is_some_and(|text| crate::plugins::pr_review::report_delivered(&text))
+        })
+        .collect()
+}
+
 pub(crate) const COUNCIL_QUORUM_PROMPT: &str = "Quorum reached. Chair, synthesize the final verdict, complete any side effect required by the opening trigger, and only then end your final message with [done]. Do not send [done] before the required side effect succeeds.";
+
+/// A reviewer whose done-vote carries no delivered report is re-asked this
+/// many times before being trimmed (#349).
+pub(crate) const MAX_REPORT_REQUESTS: i64 = 2;
+/// Stable prefix for report re-requests — the transcript-derived attempt
+/// counter keys on it (never reword the prefix without migrating the count).
+pub(crate) const REPORT_REQUEST_PREFIX: &str = "Report required.";
+
+/// The verdict contract holds when the coordinator says so (review mode) OR
+/// the session was controller-opened — controller rounds run under plain
+/// `council` mode and fail-closed error statuses are what these paths
+/// prevent. Smoke tests and manual sessions carry neither marker.
+pub(crate) fn verdict_contract(cx: &dyn Ctx, verdict_required: bool) -> bool {
+    verdict_required
+        || cx
+            .trigger_ref()
+            .is_some_and(|t| t.starts_with("controller:"))
+}
 
 /// A synthesis turn that ends without a parseable trailer is retried this many
 /// times in total before the round fail-closes. Chosen to cover the observed
@@ -180,7 +228,7 @@ impl Coordinator for QuorumCouncil {
     }
 
     fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<Action> {
-        quorum_actions(cx, COUNCIL_QUORUM_PROMPT)
+        quorum_actions(cx, COUNCIL_QUORUM_PROMPT, false)
     }
 
     fn starters(&self, roster: &[String], chair: Option<&str>) -> Vec<String> {
@@ -228,6 +276,45 @@ pub(crate) fn council_on_done(
 ) -> Vec<Action> {
     let mut actions = vec![];
     let chair = cx.chair();
+    let contract = verdict_contract(cx, verdict_required);
+
+    // 0. #349: under a verdict contract, a reviewer's done-vote counts only
+    //    with a delivered report. A blank vote is not relayed and not
+    //    counted; the reviewer is re-asked (bounded), then trimmed so the
+    //    quorum shrinks honestly instead of closing one review short.
+    if Some(bot) != chair && contract {
+        let delivered = cx
+            .latest_settled(bot)
+            .is_some_and(|text| crate::plugins::pr_review::report_delivered(&text));
+        if !delivered {
+            let requests = cx.report_requests(bot);
+            if requests < MAX_REPORT_REQUESTS {
+                tracing::warn!(
+                    session = cx.session_id(),
+                    bot,
+                    requests,
+                    "done-vote without a delivered report; re-requesting"
+                );
+                return vec![Action::Prompt {
+                    to: bot.to_string(),
+                    content: format!(
+                        "{REPORT_REQUEST_PREFIX} (request {}) Your done signal \
+arrived without a delivered report. Post your full report for your assigned \
+focus now, then signal done again.",
+                        requests + 1
+                    ),
+                }];
+            }
+            tracing::warn!(
+                session = cx.session_id(),
+                bot,
+                "report never delivered after re-requests; trimming the seat"
+            );
+            return vec![Action::TrimReviewer {
+                bot: bot.to_string(),
+            }];
+        }
+    }
 
     // 1. relay a reviewer's settled final to the chair (was share_final_with_chair)
     if Some(bot) != chair {
@@ -242,7 +329,7 @@ pub(crate) fn council_on_done(
     // 2. quorum reached → enter Quorum + prompt the chair (was maybe_quorum).
     //    The Transition CAS + Prompt-after-failed-Transition suppression make
     //    this fire exactly once, on the call that actually transitions.
-    actions.extend(quorum_actions(cx, prompt));
+    actions.extend(quorum_actions(cx, prompt, verdict_required));
 
     // 3. The chair's own done closes only after reviewer quorum. This prevents
     //    an opening-trigger chair response from closing the PR review before
@@ -262,12 +349,8 @@ pub(crate) fn council_on_done(
         // prefix) — controller rounds run under plain `council` mode today
         // and fail-closed error statuses are exactly what this path
         // prevents. Smoke tests and manual sessions carry neither marker.
-        let verdict_required = verdict_required
-            || cx
-                .trigger_ref()
-                .is_some_and(|t| t.starts_with("controller:"));
         let parseable = crate::plugins::pr_review::verdict::trailer(&verdict).is_some();
-        if verdict_required && !parseable && cx.synthesis_attempts() < MAX_SYNTHESIS_ATTEMPTS {
+        if contract && !parseable && cx.synthesis_attempts() < MAX_SYNTHESIS_ATTEMPTS {
             actions.extend(requeue_synthesis(cx, bot));
         } else {
             actions.push(Action::Close {
@@ -440,6 +523,8 @@ mod tests {
         candidates: Vec<String>,
         attempts: i64,
         trigger_ref: Option<String>,
+        bot_finals: std::collections::HashMap<String, String>,
+        report_requests: std::collections::HashMap<String, i64>,
     }
     /// A Deliberating ctx with no done-signals yet (the common starting point).
     fn ctx(roster: &[&str], final_msg: Option<&str>) -> FakeCtx {
@@ -454,6 +539,8 @@ mod tests {
             candidates: vec![],
             attempts: 0,
             trigger_ref: None,
+            bot_finals: Default::default(),
+            report_requests: Default::default(),
         }
     }
     impl Ctx for FakeCtx {
@@ -472,8 +559,14 @@ mod tests {
         fn done_voters(&self) -> Vec<String> {
             self.reactors.clone()
         }
-        fn latest_settled(&self, _: &str) -> Option<String> {
-            self.final_msg.clone()
+        fn latest_settled(&self, bot: &str) -> Option<String> {
+            self.bot_finals
+                .get(bot)
+                .cloned()
+                .or_else(|| self.final_msg.clone())
+        }
+        fn report_requests(&self, bot: &str) -> i64 {
+            self.report_requests.get(bot).copied().unwrap_or(0)
         }
         fn state(&self) -> SessionState {
             self.state.clone()
@@ -516,7 +609,105 @@ mod tests {
             candidates: vec![],
             attempts: 1, // the initial synthesis prompt has been sent
             trigger_ref: None,
+            bot_finals: Default::default(),
+            report_requests: Default::default(),
         }
+    }
+
+    const REAL_REPORT: &str = "Reviewed against my focus: correctness holds across the touched paths, no regressions found, and the tests cover the new behavior.";
+
+    /// A Deliberating review ctx (controller-opened) where rev-a is casting
+    /// the done-vote under scrutiny and rev-b has already delivered + voted.
+    fn vote_ctx(rev_a_final: Option<&str>) -> FakeCtx {
+        let mut cx = FakeCtx {
+            session_id: "ses_fake".into(),
+            roster: vec!["chair".into(), "rev-a".into(), "rev-b".into()],
+            chair: Some("chair".into()),
+            final_msg: None,
+            quorum_n: 2,
+            reactors: vec!["rev-a".into(), "rev-b".into()],
+            state: SessionState::Deliberating,
+            candidates: vec![],
+            attempts: 0,
+            trigger_ref: Some("controller:github-canary:abc".into()),
+            bot_finals: Default::default(),
+            report_requests: Default::default(),
+        };
+        cx.bot_finals.insert("rev-b".into(), REAL_REPORT.into());
+        if let Some(f) = rev_a_final {
+            cx.bot_finals.insert("rev-a".into(), f.into());
+        }
+        cx
+    }
+
+    #[test]
+    fn blank_vote_is_not_counted_and_gets_a_re_request() {
+        let cx = vote_ctx(Some("ok [done]"));
+        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, true);
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, Action::Transition { .. } | Action::Relay { .. })),
+            "a blank vote must neither count toward quorum nor relay to the chair"
+        );
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            Action::Prompt { to, content } if to == "rev-a" && content.starts_with(REPORT_REQUEST_PREFIX)
+        )));
+    }
+
+    #[test]
+    fn exhausted_re_requests_trim_the_seat() {
+        let mut cx = vote_ctx(Some("ok [done]"));
+        cx.report_requests
+            .insert("rev-a".into(), MAX_REPORT_REQUESTS);
+        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, true);
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::TrimReviewer { bot } if bot == "rev-a")));
+        assert!(!actions.iter().any(|a| matches!(a, Action::Prompt { .. })));
+    }
+
+    #[test]
+    fn delivered_report_counts_and_quorum_convenes_the_chair() {
+        let cx = vote_ctx(Some(REAL_REPORT));
+        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, true);
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            Action::Transition {
+                to: SessionState::Quorum,
+                ..
+            }
+        )));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::Prompt { to, .. } if to == "chair")));
+    }
+
+    #[test]
+    fn quorum_counting_excludes_blank_voters_even_when_votes_exist() {
+        // rev-a voted earlier via reaction with no report; rev-b delivered.
+        // A roster-change re-evaluation must not reach quorum_n = 2.
+        let cx = vote_ctx(None);
+        let actions = quorum_actions(&cx, COUNCIL_QUORUM_PROMPT, true);
+        assert!(
+            actions.is_empty(),
+            "one delivered report + one blank vote is not a quorum of two"
+        );
+    }
+
+    #[test]
+    fn no_contract_means_votes_count_as_before() {
+        let mut cx = vote_ctx(Some("ok [done]"));
+        cx.trigger_ref = None; // manual session, no controller marker
+        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, false);
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            Action::Transition {
+                to: SessionState::Quorum,
+                ..
+            }
+        )));
     }
 
     #[test]

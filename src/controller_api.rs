@@ -2809,13 +2809,13 @@ mod tests {
         crate::orchestrator::handle_reply(
             &ocp_state,
             "rev1",
-            bot_reply(&active_session, "review one [done]"),
+            bot_reply(&active_session, "Reviewed the change against my assigned focus: correctness holds across the touched paths, no regressions found, and the tests cover the new behavior. [done]"),
         )
         .unwrap();
         crate::orchestrator::handle_reply(
             &ocp_state,
             "rev2",
-            bot_reply(&active_session, "review two [done]"),
+            bot_reply(&active_session, "Reviewed the change against my assigned focus: correctness holds across the touched paths, no regressions found, and the tests cover the new behavior. [done]"),
         )
         .unwrap();
         // #344: a controller-opened session's chair close must carry a

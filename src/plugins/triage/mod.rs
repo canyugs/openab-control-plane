@@ -39,7 +39,7 @@ impl Coordinator for TriageCouncil {
     }
 
     fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<Action> {
-        quorum_actions(cx, TRIAGE_QUORUM_PROMPT)
+        quorum_actions(cx, TRIAGE_QUORUM_PROMPT, false)
     }
 }
 
