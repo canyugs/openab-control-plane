@@ -24,6 +24,13 @@ pub trait Ctx {
     /// `bot`'s last *settled* (non-stub) message content, if any.
     fn latest_settled(&self, bot: &str) -> Option<String>;
     fn state(&self) -> SessionState;
+    /// The session's opening trigger reference, when one exists. A
+    /// `controller:`-prefixed trigger marks a controller-opened session,
+    /// which always carries a verdict contract (the controller fail-closes
+    /// on unparseable verdicts) regardless of coordinator mode.
+    fn trigger_ref(&self) -> Option<&str> {
+        None
+    }
     /// How many synthesis prompts this session has already sent. Derived from
     /// the transcript (system messages with the quorum-prompt prefix) — the
     /// transcript is the attempt log, no schema required. Default 0 keeps
@@ -249,6 +256,16 @@ pub(crate) fn council_on_done(
         // not become the round's answer — the turn failed, the round did
         // not. Re-queue the synthesis, rotating to another chair-capable
         // bot when one exists; fail-close only after MAX_SYNTHESIS_ATTEMPTS.
+        //
+        // The contract is keyed two ways: the coordinator says so (review
+        // mode), OR the session was controller-opened (`controller:` trigger
+        // prefix) — controller rounds run under plain `council` mode today
+        // and fail-closed error statuses are exactly what this path
+        // prevents. Smoke tests and manual sessions carry neither marker.
+        let verdict_required = verdict_required
+            || cx
+                .trigger_ref()
+                .is_some_and(|t| t.starts_with("controller:"));
         let parseable = crate::plugins::pr_review::verdict::trailer(&verdict).is_some();
         if verdict_required && !parseable && cx.synthesis_attempts() < MAX_SYNTHESIS_ATTEMPTS {
             actions.extend(requeue_synthesis(cx, bot));
@@ -422,6 +439,7 @@ mod tests {
         state: SessionState,
         candidates: Vec<String>,
         attempts: i64,
+        trigger_ref: Option<String>,
     }
     /// A Deliberating ctx with no done-signals yet (the common starting point).
     fn ctx(roster: &[&str], final_msg: Option<&str>) -> FakeCtx {
@@ -435,6 +453,7 @@ mod tests {
             state: SessionState::Deliberating,
             candidates: vec![],
             attempts: 0,
+            trigger_ref: None,
         }
     }
     impl Ctx for FakeCtx {
@@ -461,6 +480,9 @@ mod tests {
         }
         fn synthesis_attempts(&self) -> i64 {
             self.attempts
+        }
+        fn trigger_ref(&self) -> Option<&str> {
+            self.trigger_ref.as_deref()
         }
         fn chair_candidates(&self) -> Vec<String> {
             if self.candidates.is_empty() {
@@ -493,6 +515,7 @@ mod tests {
             state: SessionState::Quorum,
             candidates: vec![],
             attempts: 1, // the initial synthesis prompt has been sent
+            trigger_ref: None,
         }
     }
 
@@ -572,6 +595,19 @@ mod tests {
             .iter()
             .any(|a| matches!(a, Action::ReassignChair { .. })));
         assert!(!actions.iter().any(|a| matches!(a, Action::Relay { .. })));
+    }
+
+    #[test]
+    fn controller_opened_council_session_requeues_even_in_plain_mode() {
+        // Controller-opened rounds run under plain `council` mode today; the
+        // `controller:` trigger prefix is what marks the verdict contract.
+        let mut cx = quorum_ctx(ERROR_SHAPED);
+        cx.trigger_ref = Some("controller:github-canary:abc123".into());
+        let actions = council_on_done(&cx, "chair", COUNCIL_QUORUM_PROMPT, false);
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::Close { .. })),
+            "controller-opened session without a trailer must requeue"
+        );
     }
 
     #[test]

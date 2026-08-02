@@ -1889,6 +1889,9 @@ impl Ctx for OrchCtx<'_> {
     fn state(&self) -> SessionState {
         SessionState::from_db_str(&self.session.state)
     }
+    fn trigger_ref(&self) -> Option<&str> {
+        self.session.trigger_ref.as_deref()
+    }
     /// The transcript is the attempt log: every synthesis prompt (initial and
     /// retries) is a system message starting with the quorum-prompt prefix.
     fn synthesis_attempts(&self) -> i64 {

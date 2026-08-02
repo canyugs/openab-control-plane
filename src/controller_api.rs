@@ -2818,10 +2818,19 @@ mod tests {
             bot_reply(&active_session, "review two [done]"),
         )
         .unwrap();
+        // #344: a controller-opened session's chair close must carry a
+        // parseable trailer — a bare "final verdict [done]" now re-queues
+        // the synthesis instead of closing.
         crate::orchestrator::handle_reply(
             &ocp_state,
             "chair",
-            bot_reply(&active_session, "final verdict [done]"),
+            bot_reply(
+                &active_session,
+                &format!(
+                    "final verdict {}{}verdict:approve r=0 y=0 g=2]] [done]",
+                    "[", "["
+                ),
+            ),
         )
         .unwrap();
         assert_eq!(
