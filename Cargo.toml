@@ -33,7 +33,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 base64 = "0.22"
 # Webhook signature verification (x-hub-signature-256). sha2 is already a dep.
 hmac = "0.12"
-rand = "0.8"
+rand = "0.10"
 subtle = "2"
 tokio-postgres = "0.7"
 deadpool-postgres = "0.14"
