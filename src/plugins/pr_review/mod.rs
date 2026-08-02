@@ -188,13 +188,19 @@ impl Coordinator for ReviewCouncil {
             bot,
             crate::coordinator::COUNCIL_QUORUM_PROMPT,
             true,
+            true,
         )
     }
 
     fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<crate::coordinator::Action> {
         // verdict_required: quorum over validated voters (#349), matching
         // on_done's contract.
-        crate::coordinator::quorum_actions(cx, crate::coordinator::COUNCIL_QUORUM_PROMPT, true)
+        crate::coordinator::quorum_actions(
+            cx,
+            crate::coordinator::COUNCIL_QUORUM_PROMPT,
+            true,
+            true,
+        )
     }
 
     fn structured_verdict(&self, cx: &dyn Ctx, verdict_text: &str) -> Option<StructuredVerdict> {

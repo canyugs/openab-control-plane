@@ -155,12 +155,17 @@ pub trait Coordinator: Send + Sync {
 /// liveness roster trim (a shrunk quorum can make the recorded count sufficient).
 /// `prompt` is per-coordinator — a review chair completes GitHub side effects,
 /// a triage chair must post the report and nothing else.
-pub(crate) fn quorum_actions(cx: &dyn Ctx, prompt: &str, verdict_required: bool) -> Vec<Action> {
+pub(crate) fn quorum_actions(
+    cx: &dyn Ctx,
+    prompt: &str,
+    verdict_required: bool,
+    controller_trigger_counts: bool,
+) -> Vec<Action> {
     let mut actions = vec![];
     let chair = cx.chair();
     // #349: under a verdict contract a vote counts only with a delivered
     // report — quorum over validated voters, not raw done signals.
-    let voters = delivered_done_voters(cx, verdict_required);
+    let voters = delivered_done_voters(cx, verdict_required, controller_trigger_counts);
     if quorum_reached(cx.roster(), chair, &voters, cx.quorum_n()) {
         actions.push(Action::Transition {
             from: SessionState::Deliberating,
@@ -178,9 +183,13 @@ pub(crate) fn quorum_actions(cx: &dyn Ctx, prompt: &str, verdict_required: bool)
 
 /// Done voters whose vote counts: everyone outside a verdict contract, and
 /// only report-delivering voters under one (#349).
-fn delivered_done_voters(cx: &dyn Ctx, verdict_required: bool) -> Vec<String> {
+fn delivered_done_voters(
+    cx: &dyn Ctx,
+    verdict_required: bool,
+    controller_trigger_counts: bool,
+) -> Vec<String> {
     let voters = cx.done_voters();
-    if !verdict_contract(cx, verdict_required) {
+    if !verdict_contract(cx, verdict_required, controller_trigger_counts) {
         return voters;
     }
     voters
@@ -205,11 +214,16 @@ pub(crate) const REPORT_REQUEST_PREFIX: &str = "Report required.";
 /// the session was controller-opened — controller rounds run under plain
 /// `council` mode and fail-closed error statuses are what these paths
 /// prevent. Smoke tests and manual sessions carry neither marker.
-pub(crate) fn verdict_contract(cx: &dyn Ctx, verdict_required: bool) -> bool {
+pub(crate) fn verdict_contract(
+    cx: &dyn Ctx,
+    verdict_required: bool,
+    controller_trigger_counts: bool,
+) -> bool {
     verdict_required
-        || cx
-            .trigger_ref()
-            .is_some_and(|t| t.starts_with("controller:"))
+        || (controller_trigger_counts
+            && cx
+                .trigger_ref()
+                .is_some_and(|t| t.starts_with("controller:")))
 }
 
 /// A synthesis turn that ends without a parseable trailer is retried this many
@@ -228,7 +242,7 @@ impl Coordinator for QuorumCouncil {
     }
 
     fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<Action> {
-        quorum_actions(cx, COUNCIL_QUORUM_PROMPT, false)
+        quorum_actions(cx, COUNCIL_QUORUM_PROMPT, false, true)
     }
 
     fn starters(&self, roster: &[String], chair: Option<&str>) -> Vec<String> {
@@ -240,7 +254,7 @@ impl Coordinator for QuorumCouncil {
     }
 
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
-        council_on_done(cx, bot, COUNCIL_QUORUM_PROMPT, false)
+        council_on_done(cx, bot, COUNCIL_QUORUM_PROMPT, false, true)
     }
 
     fn structured_verdict(&self, cx: &dyn Ctx, verdict_text: &str) -> Option<StructuredVerdict> {
@@ -273,10 +287,16 @@ pub(crate) fn council_on_done(
     bot: &str,
     prompt: &str,
     verdict_required: bool,
+    // F2 (#353 review): the `controller:` trigger prefix implies a verdict
+    // contract only for coordinators that OPT IN. QuorumCouncil opts in —
+    // the controller opens review rounds under plain `council` mode (#345's
+    // discovery). Triage opts out: a controller-opened triage session must
+    // not inherit the report floor and trim semantics untested.
+    controller_trigger_counts: bool,
 ) -> Vec<Action> {
     let mut actions = vec![];
     let chair = cx.chair();
-    let contract = verdict_contract(cx, verdict_required);
+    let contract = verdict_contract(cx, verdict_required, controller_trigger_counts);
 
     // 0. #349: under a verdict contract, a reviewer's done-vote counts only
     //    with a delivered report. A blank vote is not relayed and not
@@ -329,7 +349,12 @@ focus now, then signal done again.",
     // 2. quorum reached → enter Quorum + prompt the chair (was maybe_quorum).
     //    The Transition CAS + Prompt-after-failed-Transition suppression make
     //    this fire exactly once, on the call that actually transitions.
-    actions.extend(quorum_actions(cx, prompt, verdict_required));
+    actions.extend(quorum_actions(
+        cx,
+        prompt,
+        verdict_required,
+        controller_trigger_counts,
+    ));
 
     // 3. The chair's own done closes only after reviewer quorum. This prevents
     //    an opening-trigger chair response from closing the PR review before
@@ -643,7 +668,7 @@ mod tests {
     #[test]
     fn blank_vote_is_not_counted_and_gets_a_re_request() {
         let cx = vote_ctx(Some("ok [done]"));
-        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, true);
+        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, true, true);
         assert!(
             !actions
                 .iter()
@@ -661,7 +686,7 @@ mod tests {
         let mut cx = vote_ctx(Some("ok [done]"));
         cx.report_requests
             .insert("rev-a".into(), MAX_REPORT_REQUESTS);
-        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, true);
+        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, true, true);
         assert!(actions
             .iter()
             .any(|a| matches!(a, Action::TrimReviewer { bot } if bot == "rev-a")));
@@ -671,7 +696,7 @@ mod tests {
     #[test]
     fn delivered_report_counts_and_quorum_convenes_the_chair() {
         let cx = vote_ctx(Some(REAL_REPORT));
-        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, true);
+        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, true, true);
         assert!(actions.iter().any(|a| matches!(
             a,
             Action::Transition {
@@ -689,7 +714,7 @@ mod tests {
         // rev-a voted earlier via reaction with no report; rev-b delivered.
         // A roster-change re-evaluation must not reach quorum_n = 2.
         let cx = vote_ctx(None);
-        let actions = quorum_actions(&cx, COUNCIL_QUORUM_PROMPT, true);
+        let actions = quorum_actions(&cx, COUNCIL_QUORUM_PROMPT, true, true);
         assert!(
             actions.is_empty(),
             "one delivered report + one blank vote is not a quorum of two"
@@ -697,10 +722,31 @@ mod tests {
     }
 
     #[test]
+    fn coordinators_opting_out_ignore_the_controller_prefix() {
+        // #353 F2: a controller-opened session under a coordinator that does
+        // NOT opt in (triage passes controller_trigger_counts = false) keeps
+        // pre-#349 vote semantics — no report floor, no trim.
+        let cx = vote_ctx(Some("ok [done]"));
+        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, false, false);
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            Action::Transition {
+                to: SessionState::Quorum,
+                ..
+            }
+        )));
+        assert!(!actions.iter().any(|a| match a {
+            Action::TrimReviewer { .. } => true,
+            Action::Prompt { to, .. } => to != "chair",
+            _ => false,
+        }));
+    }
+
+    #[test]
     fn no_contract_means_votes_count_as_before() {
         let mut cx = vote_ctx(Some("ok [done]"));
         cx.trigger_ref = None; // manual session, no controller marker
-        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, false);
+        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, false, true);
         assert!(actions.iter().any(|a| matches!(
             a,
             Action::Transition {
@@ -717,6 +763,7 @@ mod tests {
             "chair",
             COUNCIL_QUORUM_PROMPT,
             true,
+            true,
         );
         assert!(actions.iter().any(
             |a| matches!(a, Action::Close { verdict, .. } if verdict.contains("verdict:approve"))
@@ -729,6 +776,7 @@ mod tests {
             &quorum_ctx(ERROR_SHAPED),
             "chair",
             COUNCIL_QUORUM_PROMPT,
+            true,
             true,
         );
         assert!(
@@ -745,7 +793,7 @@ mod tests {
     fn exhausted_attempts_fail_close_exactly_as_today() {
         let mut cx = quorum_ctx(ERROR_SHAPED);
         cx.attempts = MAX_SYNTHESIS_ATTEMPTS;
-        let actions = council_on_done(&cx, "chair", COUNCIL_QUORUM_PROMPT, true);
+        let actions = council_on_done(&cx, "chair", COUNCIL_QUORUM_PROMPT, true, true);
         assert!(actions.iter().any(|a| matches!(a, Action::Close { .. })));
         assert!(!actions
             .iter()
@@ -756,7 +804,7 @@ mod tests {
     fn requeue_rotates_to_another_candidate_and_relays_reviewer_finals() {
         let mut cx = quorum_ctx(ERROR_SHAPED);
         cx.candidates = vec!["chair".into(), "chair-claude".into()];
-        let actions = council_on_done(&cx, "chair", COUNCIL_QUORUM_PROMPT, true);
+        let actions = council_on_done(&cx, "chair", COUNCIL_QUORUM_PROMPT, true, true);
         assert!(actions
             .iter()
             .any(|a| matches!(a, Action::ReassignChair { to } if to == "chair-claude")));
@@ -781,6 +829,7 @@ mod tests {
             "chair",
             COUNCIL_QUORUM_PROMPT,
             true,
+            true,
         );
         assert!(!actions
             .iter()
@@ -794,7 +843,7 @@ mod tests {
         // `controller:` trigger prefix is what marks the verdict contract.
         let mut cx = quorum_ctx(ERROR_SHAPED);
         cx.trigger_ref = Some("controller:github-canary:abc123".into());
-        let actions = council_on_done(&cx, "chair", COUNCIL_QUORUM_PROMPT, false);
+        let actions = council_on_done(&cx, "chair", COUNCIL_QUORUM_PROMPT, false, true);
         assert!(
             !actions.iter().any(|a| matches!(a, Action::Close { .. })),
             "controller-opened session without a trailer must requeue"
@@ -808,6 +857,7 @@ mod tests {
             "chair",
             COUNCIL_QUORUM_PROMPT,
             false,
+            true,
         );
         assert!(
             actions.iter().any(|a| matches!(a, Action::Close { .. })),
