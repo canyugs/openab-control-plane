@@ -4,7 +4,7 @@
 > ("does not … perform GitHub writes", "write client disabled", App key
 > "forbidden") describe the P7 shadow deployment and are superseded. Since the
 > closing half (SEI-852) and the cutover, `external` / `external_canary` modes
-> require `GITHUB_CONTROLLER_ENABLE_WRITES=true` with the controller's own
+> require `GITHUB_CONTROLLER_ENABLE_WRITES=1` with the controller's own
 > GitHub App credentials (`GITHUB_CONTROLLER_GITHUB_APP_*`, `config.rs`), and
 > the controller performs all GitHub writes — trigger comments, verdict
 > comment, `openab/council` status, and the formal PR review (`closing.rs`).
