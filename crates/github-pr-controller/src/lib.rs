@@ -646,6 +646,7 @@ async fn handle_webhook(
             .await
             {
                 tracing::error!(%error, %delivery_id, "ignored ingress journal append failed");
+                let result = json!({"ok": false, "error": "audit_store_failed"});
                 release_delivery_after_audit_failure(store.as_ref(), delivery_id, &result).await;
                 return response(StatusCode::SERVICE_UNAVAILABLE, result);
             }
@@ -678,6 +679,7 @@ async fn handle_webhook(
             .await
             {
                 tracing::error!(%error, %delivery_id, "planned ingress journal append failed");
+                let result = json!({"ok": false, "error": "audit_store_failed"});
                 release_delivery_after_audit_failure(store.as_ref(), delivery_id, &result).await;
                 return response(StatusCode::SERVICE_UNAVAILABLE, result);
             }
@@ -945,6 +947,7 @@ async fn handle_webhook(
     .await
     {
         tracing::error!(%error, %delivery_id, "final ingress journal append failed");
+        let result = json!({"ok": false, "error": "audit_store_failed"});
         release_delivery_after_audit_failure(store.as_ref(), delivery_id, &result).await;
         return response(StatusCode::SERVICE_UNAVAILABLE, result);
     }
