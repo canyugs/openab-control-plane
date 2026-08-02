@@ -38,6 +38,21 @@ impl Coordinator for TriageCouncil {
         council_on_done(cx, bot, TRIAGE_QUORUM_PROMPT, false)
     }
 
+    fn on_done_with_reviewer_rerequest_attempts(
+        &self,
+        cx: &dyn Ctx,
+        bot: &str,
+        rerequest_attempts: i64,
+    ) -> Vec<Action> {
+        crate::coordinator::council_on_done_with_reviewer_rerequest_attempts(
+            cx,
+            bot,
+            TRIAGE_QUORUM_PROMPT,
+            false,
+            rerequest_attempts,
+        )
+    }
+
     fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<Action> {
         quorum_actions(cx, TRIAGE_QUORUM_PROMPT)
     }
@@ -49,12 +64,14 @@ mod tests {
     use crate::coordinator::Ctx;
     use crate::store::SessionState;
     use crate::store::Store as _;
+    use std::collections::HashMap;
 
     struct FakeCtx {
         session_id: String,
         roster: Vec<String>,
         chair: Option<String>,
         final_msg: Option<String>,
+        settled: HashMap<String, String>,
         quorum_n: i64,
         reactors: Vec<String>,
         state: SessionState,
@@ -66,6 +83,7 @@ mod tests {
             roster: roster.iter().map(|s| s.to_string()).collect(),
             chair: roster.first().map(|s| s.to_string()),
             final_msg: final_msg.map(String::from),
+            settled: HashMap::new(),
             quorum_n: 0,
             reactors: vec![],
             state: SessionState::Deliberating,
@@ -87,8 +105,12 @@ mod tests {
         fn done_voters(&self) -> Vec<String> {
             self.reactors.clone()
         }
-        fn latest_settled(&self, _: &str) -> Option<String> {
-            self.final_msg.clone()
+        fn latest_settled(&self, bot: &str) -> Option<String> {
+            if self.settled.is_empty() {
+                self.final_msg.clone()
+            } else {
+                self.settled.get(bot).cloned()
+            }
         }
         fn state(&self) -> SessionState {
             self.state.clone()

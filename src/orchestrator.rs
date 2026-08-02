@@ -601,6 +601,41 @@ fn trim_reviewer(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Resul
     if state.is_connected(bot_id) {
         return Ok(());
     }
+    trim_reviewer_body(state, session_id, bot_id, "unreachable")
+}
+
+/// The report-delivery action has the same capacity-preserving preference as
+/// liveness: use a connected same-role spare when one is available, and only
+/// shrink the roster when replacement cannot be completed.
+fn replace_or_trim_reviewer(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Result<()> {
+    if let Some(inv) = state.store.bot_inventory(bot_id)? {
+        if let Some(spare) = find_spare(state, session_id, &inv, false)? {
+            match replace_roster_bot(state, session_id, bot_id, &spare)? {
+                Replacement::Replaced => {
+                    tracing::info!(
+                        "report-delivery: replaced {bot_id} with {spare} in {session_id}"
+                    );
+                    return Ok(());
+                }
+                other => tracing::warn!(
+                    "report-delivery: replace {bot_id}→{spare} in {session_id} rejected: {other:?}"
+                ),
+            }
+        }
+    }
+    trim_reviewer_body(state, session_id, bot_id, "report_not_delivered")
+}
+
+/// Remove a reviewer, shrink the quorum, and re-run the coordinator's roster
+/// change hook. There is intentionally no connectivity guard here: the
+/// liveness caller owns that race check, while the report-delivery action must
+/// also be able to remove a connected but non-delivering reviewer.
+fn trim_reviewer_body(
+    state: &Arc<AppState>,
+    session_id: &str,
+    bot_id: &str,
+    reason: &str,
+) -> Result<()> {
     if !state.store.remove_session_bot(session_id, bot_id)? {
         return Ok(());
     }
@@ -619,9 +654,9 @@ fn trim_reviewer(state: &Arc<AppState>, session_id: &str, bot_id: &str) -> Resul
     state.emit_north(
         "roster_drop",
         session_id,
-        json!({ "bot": bot_id, "reason": "unreachable", "quorum_n": quorum_n }),
+        json!({ "bot": bot_id, "reason": reason, "quorum_n": quorum_n }),
     );
-    tracing::info!("liveness: trimmed {bot_id} from {session_id}, quorum now {quorum_n}");
+    tracing::info!("trimmed {bot_id} from {session_id}, quorum now {quorum_n}");
     let Some(session) = state.store.session(session_id)? else {
         return Ok(());
     };
@@ -1801,8 +1836,29 @@ fn run_done(state: &Arc<AppState>, session: &Session, bot_id: &str) -> Result<()
         session,
         roster: state.store.roster(&session.id)?,
     };
-    let actions = coord.on_done(&cx, bot_id);
+    let rerequest_attempts = reviewer_rerequest_attempts(state, &session.id, bot_id);
+    let actions = coord.on_done_with_reviewer_rerequest_attempts(&cx, bot_id, rerequest_attempts);
     run_actions(state, session, actions)
+}
+
+/// Count this reviewer's report re-request prompts from the durable transcript.
+/// The stable prefix is the attempt log; no schema or coordinator context field
+/// is needed.
+fn reviewer_rerequest_attempts(state: &Arc<AppState>, session_id: &str, bot: &str) -> i64 {
+    state
+        .store
+        .messages(session_id)
+        .map(|msgs| {
+            msgs.iter()
+                .filter(|m| {
+                    m.author_kind == "system"
+                        && m.audience.as_deref() == Some(bot)
+                        && m.content
+                            .starts_with(coordinator::REVIEWER_REREQUEST_PREFIX)
+                })
+                .count() as i64
+        })
+        .unwrap_or(0)
 }
 
 /// Real agents often signal completion in message *text* (`[done]`, or a bare
@@ -2026,6 +2082,10 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     deliver_system_prompt(state, session, &to, &task.content)?;
                 }
                 state.emit_north("chair_reassigned", &session.id, json!({ "chair": to }));
+            }
+            Action::TrimReviewer { bot } => {
+                transition_failed = false;
+                replace_or_trim_reviewer(state, &session.id, &bot)?;
             }
             Action::Transition { from, to } => {
                 let to_str = to.as_str();
@@ -3421,7 +3481,15 @@ mod tests {
     fn liveness_trims_dead_reviewer_shrinks_quorum_and_reevaluates() {
         let (state, store, session, _chair, rev1, rev2, mut conns) = liveness_setup();
         // rev1 votes; quorum 2 not reached → still deliberating
-        handle_reply(&state, &rev1, msg_reply(&session.id, "findings [done]")).unwrap();
+        handle_reply(
+            &state,
+            &rev1,
+            msg_reply(
+                &session.id,
+                "Findings: the changed path is covered and has no blocking issue. [done]",
+            ),
+        )
+        .unwrap();
         assert_eq!(
             SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
             SessionState::Deliberating,
@@ -3442,6 +3510,181 @@ mod tests {
         assert_eq!(
             store.bot_inventory(&rev2).unwrap().unwrap().health,
             "unreachable",
+        );
+    }
+
+    #[test]
+    fn connected_blank_reviewer_retries_then_trims_through_real_store() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let reviewer = store
+            .register_bot("reviewer", "reviewer", "h2", "t2")
+            .unwrap();
+        let session = store
+            .create_session(
+                "controller round",
+                Some("controller:test:blank-report"),
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), reviewer.id.clone()],
+                "council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        state.register_conn(&reviewer.id, tx);
+        for _ in 0..3 {
+            handle_reply(&state, &reviewer.id, msg_reply(&session.id, "PONG [done]")).unwrap();
+        }
+
+        let roster = store.roster(&session.id).unwrap();
+        assert_eq!(roster, vec![chair.id.clone()]);
+        let current = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(current.quorum_n, 0);
+        assert_eq!(
+            SessionState::from_db_str(&current.state),
+            SessionState::Quorum
+        );
+        let messages = store.messages(&session.id).unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| {
+                    message.author_kind == "system"
+                        && message.audience.as_deref() == Some(reviewer.id.as_str())
+                        && message
+                            .content
+                            .starts_with(crate::coordinator::REVIEWER_REREQUEST_PREFIX)
+                })
+                .count(),
+            2,
+            "the retry budget is per reviewer and transcript-backed",
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| {
+                    message.author_kind == "system"
+                        && message.audience.as_deref() == Some(chair.id.as_str())
+                        && message.content.starts_with("Quorum reached.")
+                })
+                .count(),
+            1,
+            "roster shrink must prompt the chair once",
+        );
+    }
+
+    #[test]
+    fn echo_then_real_report_reaches_quorum_via_handle_reply() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let reviewer = store
+            .register_bot("reviewer", "reviewer", "h2", "t2")
+            .unwrap();
+        let session = store
+            .create_session(
+                "review round",
+                Some("github:pr/example/repo#349"),
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), reviewer.id.clone()],
+                "review_council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+
+        handle_reply(&state, &reviewer.id, msg_reply(&session.id, "PONG [done]")).unwrap();
+        let after_echo = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&after_echo.state),
+            SessionState::Deliberating
+        );
+        assert_eq!(
+            store
+                .messages(&session.id)
+                .unwrap()
+                .iter()
+                .filter(|message| {
+                    message.author_kind == "system"
+                        && message.audience.as_deref() == Some(reviewer.id.as_str())
+                        && message
+                            .content
+                            .starts_with(crate::coordinator::REVIEWER_REREQUEST_PREFIX)
+                })
+                .count(),
+            1
+        );
+
+        handle_reply(
+            &state,
+            &reviewer.id,
+            msg_reply(
+                &session.id,
+                "Finding: the retry path loses the request id; preserve it before dispatch. [done]",
+            ),
+        )
+        .unwrap();
+        let after_report = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&after_report.state),
+            SessionState::Quorum
+        );
+        assert_eq!(store.done_voters(&session.id).unwrap(), vec![reviewer.id]);
+        assert!(
+            store.messages(&session.id).unwrap().iter().any(|message| {
+                message.author_kind == "system"
+                    && message.audience.as_deref() == Some(chair.id.as_str())
+                    && message.content.starts_with("Quorum reached.")
+            }),
+            "a valid replacement report must proceed to the chair"
+        );
+    }
+
+    #[test]
+    fn exhausted_blank_reviewer_prefers_a_connected_spare() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let reviewer = store
+            .register_bot("reviewer", "reviewer", "h2", "t2")
+            .unwrap();
+        let spare = store.register_bot("spare", "reviewer", "h3", "t3").unwrap();
+        let session = store
+            .create_session(
+                "review round",
+                Some("controller:test:spare"),
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), reviewer.id.clone()],
+                "council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        state.register_conn(&spare.id, tx);
+        for _ in 0..3 {
+            handle_reply(&state, &reviewer.id, msg_reply(&session.id, "PONG [done]")).unwrap();
+        }
+
+        let roster = store.roster(&session.id).unwrap();
+        assert!(roster.contains(&spare.id));
+        assert!(!roster.contains(&reviewer.id));
+        assert_eq!(roster.len(), 2, "replacement preserves reviewer capacity");
+        let current = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(current.quorum_n, 1);
+        assert_eq!(
+            SessionState::from_db_str(&current.state),
+            SessionState::Deliberating
         );
     }
 
@@ -3475,7 +3718,7 @@ mod tests {
                 "bot",
                 Some(&rev1.id),
                 None,
-                "rev1 draft",
+                "Findings from reviewer one: the peer path is safe and covered. [done]",
                 None,
             )
             .unwrap();
@@ -3486,7 +3729,7 @@ mod tests {
                 "bot",
                 Some(&rev2.id),
                 None,
-                "rev2 note",
+                "Findings from reviewer two: the peer path is safe and covered. [done]",
                 None,
             )
             .unwrap();
@@ -3550,6 +3793,17 @@ mod tests {
             .unwrap();
         let trigger = store
             .add_message(&session.id, None, "client", None, None, "review this", None)
+            .unwrap();
+        store
+            .add_message(
+                &session.id,
+                None,
+                "bot",
+                Some(&rev.id),
+                None,
+                "Findings: the requested path is covered and safe. [done]",
+                None,
+            )
             .unwrap();
 
         handle_reply(
