@@ -655,10 +655,12 @@ fn trim_reviewer_body(
     // Fail-close instead; the controller ignores non-normal terminals, so
     // no verdict is fabricated on either side.
     if reviewers == 0 {
-        state
-            .store
-            .close_if_active(session_id, "session.terminal", "roster_exhausted")?;
-        state.store.purge_outbox_for_session(session_id)?;
+        // The standard close helper carries ALL terminal side effects —
+        // outbox purge (log-and-continue), provider token revocation, the
+        // generic state:closed north event and the ADR 012 close webhook
+        // (council F1–F4 on this PR: a hand-rolled close path missed every
+        // one of them; the red was tokens outliving their round).
+        close_session_by_controller(state, session_id, "roster_exhausted")?;
         state.emit_north(
             "roster_exhausted",
             session_id,
