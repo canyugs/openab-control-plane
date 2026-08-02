@@ -1917,7 +1917,18 @@ impl Ctx for OrchCtx<'_> {
             .map(|bots| {
                 let mut ids: Vec<String> = bots
                     .into_iter()
-                    .filter(|b| b.role == "chair" && b.enabled && b.health == "ok")
+                    .filter(|b| {
+                        // Rotating to an ABSENT bot would strand the synthesis
+                        // prompt in its outbox until the watchdog times the
+                        // round out — slower than today's failure. The
+                        // just-failed chair stays eligible (it spoke seconds
+                        // ago), and the rotation fallback re-prompts it when
+                        // nobody else is reachable.
+                        b.role == "chair"
+                            && b.enabled
+                            && b.health == "ok"
+                            && self.state.is_connected(&b.id)
+                    })
                     .map(|b| b.id)
                     .collect();
                 ids.sort();
