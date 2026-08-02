@@ -1,6 +1,10 @@
 # Route — the code review product, two phases (2026-07)
 
-Status: active · 2026-07-08 · This is the **ordering** document. It coordinates
+> **Historical (2026-08-02).** This ordering document served the July push;
+> Phase 1 is delivered and Phase 2 items now live in the ADR series (030–035).
+> Kept as a record of how the work was sequenced.
+
+Status: historical (was active) · 2026-07-08 · This is the **ordering** document. It coordinates
 three plans that each own their own detail — it adds no new items:
 
 - [roadmap.md](roadmap.md) — item status source of truth (engineering phases 1–4)

@@ -1,5 +1,9 @@
 # Forum × OCP North Client — Implementation Plan
 
+> **Parked (2026-08-02).** Phase 0 was verified and the plan fired the Stage 3
+> extraction as the second north consumer; the forum client itself has not
+> been built and no work has landed since 2026-07-09.
+
 Status: proposed · 2026-07-06 · **Phase 0 verified** (see `docs/forum-support-phase0.md`)
 
 Canonical copy also lives in the forum repo:

@@ -1,5 +1,10 @@
 # GitHub controller external-canary runbook
 
+> **Executed (2026-08-02).** The canary phase (P8) completed; the dev lane
+> still runs `external_canary` as its steady state, and prod runs
+> installation-wide `external` mode (cutover 2026-07-31 → 08-01). For current
+> operations see [github-pr-controller.md](github-pr-controller.md).
+
 P8 moves raw GitHub ingress for one development repository from embedded OCP
 to the external controller. OCP remains the runtime, compatibility findings
 owner, and compatibility capability path. The controller receives one scoped
