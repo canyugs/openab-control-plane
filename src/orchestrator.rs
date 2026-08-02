@@ -647,6 +647,26 @@ fn trim_reviewer_body(
     };
     let roster = state.store.roster(session_id)?;
     let reviewers = crate::session::reviewers(&roster, session.chair_bot.as_deref()).len() as i64;
+    // Trimming the LAST reviewer must not leave quorum_n = 0: `0 >= 0` is
+    // trivially a quorum, so the very next roster-change evaluation would
+    // convene the chair to synthesize from nothing — the failure class
+    // SEI-873 exists to prevent, reached at the roster-exhaustion edge
+    // (confirmed as a red by the council on the sibling #349 review).
+    // Fail-close instead; the controller ignores non-normal terminals, so
+    // no verdict is fabricated on either side.
+    if reviewers == 0 {
+        state
+            .store
+            .close_if_active(session_id, "session.terminal", "roster_exhausted")?;
+        state.store.purge_outbox_for_session(session_id)?;
+        state.emit_north(
+            "roster_exhausted",
+            session_id,
+            json!({ "last_trimmed": bot_id, "reason": reason }),
+        );
+        tracing::warn!("roster exhausted on {session_id} ({reason}); session fail-closed");
+        return Ok(());
+    }
     let quorum_n = session.quorum_n.min(reviewers);
     if quorum_n != session.quorum_n {
         state.store.set_session_quorum(session_id, quorum_n)?;
@@ -2428,6 +2448,51 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+
+    /// Roster exhaustion edge (council red on the #349 sibling review):
+    /// trimming the last reviewer must fail-close the session — never leave
+    /// quorum_n = 0, where `0 >= 0` convenes the chair to synthesize from
+    /// nothing.
+    #[test]
+    fn trimming_the_last_reviewer_fail_closes_instead_of_convening() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev = store.register_bot("rev", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                Some("controller:test:solo"),
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), rev.id.clone()],
+                "council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+        // Blank-vote through exhaustion (no spare registered): re-requests,
+        // then the trim that would zero the roster.
+        for _ in 0..4 {
+            handle_reply(&state, &rev.id, msg_reply(&session.id, "ok [done]")).unwrap();
+        }
+        let after = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(
+            SessionState::from_db_str(&after.state),
+            SessionState::Closed,
+            "roster exhaustion fail-closes"
+        );
+        assert!(after.decision.is_none(), "no verdict is fabricated");
+        assert!(
+            !store
+                .messages(&session.id)
+                .unwrap()
+                .iter()
+                .any(|m| m.author_kind == "system" && m.content.starts_with("Quorum reached.")),
+            "the chair must never be convened against an empty roster"
+        );
+    }
 
     /// PR #348 regression: the chair rotation pool must exclude registered
     /// chair-role bots that have no live gateway connection — rotating to an
