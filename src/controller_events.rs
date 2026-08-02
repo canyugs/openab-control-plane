@@ -5,6 +5,9 @@ use crate::store::{now_ms, ControllerEventDelivery};
 use anyhow::{Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use controller_protocol::audit::{
+    AuditCorrelation, AuditError, AuditEvent, AuditOutcome, AUDIT_EVENT_VERSION,
+};
 use futures::future::BoxFuture;
 use hmac::{Hmac, Mac};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
@@ -22,6 +25,54 @@ const DELIVERY_WINDOW_MS: i64 = 5 * 60 * 1000;
 const DELIVERED_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const PRUNE_INTERVAL_MS: i64 = 60 * 60 * 1000;
 const RETRY_DELAYS_MS: [i64; 3] = [10_000, 30_000, 90_000];
+const AUDIT_SERVICE: &str = "openab-control-plane";
+
+fn delivery_audit_event(
+    delivery: &ControllerEventDelivery,
+    kind: &str,
+    outcome: AuditOutcome,
+    occurred_at: i64,
+    detail: serde_json::Value,
+    error: Option<AuditError>,
+) -> AuditEvent {
+    let event_key = format!("{kind}:{}:{}", delivery.id, delivery.attempts);
+    AuditEvent {
+        version: AUDIT_EVENT_VERSION,
+        event_id: format!("aud:{AUDIT_SERVICE}:{event_key}"),
+        event_key,
+        occurred_at,
+        recorded_at: now_ms(),
+        service: AUDIT_SERVICE.into(),
+        kind: kind.into(),
+        outcome,
+        caused_by: None,
+        correlation: AuditCorrelation {
+            controller_id: Some(delivery.controller_id.clone()),
+            session_id: delivery.session_id.clone(),
+            runtime_event_id: Some(delivery.id.clone()),
+            ..Default::default()
+        },
+        actor: None,
+        target: None,
+        detail,
+        error,
+    }
+}
+
+fn append_delivery_audit(
+    state: &AppState,
+    delivery: &ControllerEventDelivery,
+    kind: &str,
+    outcome: AuditOutcome,
+    occurred_at: i64,
+    detail: serde_json::Value,
+    error: Option<AuditError>,
+) {
+    let event = delivery_audit_event(delivery, kind, outcome, occurred_at, detail, error);
+    if let Err(error) = state.store.append_audit_event(&event) {
+        tracing::warn!(%error, event_id = delivery.id, kind, "controller delivery journal append failed");
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ControllerEventKeys {
@@ -220,6 +271,18 @@ pub async fn dispatch_once(state: &Arc<AppState>, now: i64) -> Result<usize> {
         .claim_controller_events(now, 1, DELIVERY_LEASE_MS)?;
     let count = deliveries.len();
     for delivery in deliveries {
+        append_delivery_audit(
+            state,
+            &delivery,
+            "runtime_event.attempted",
+            AuditOutcome::Pending,
+            now,
+            serde_json::json!({
+                "event_type": delivery.event_type,
+                "attempt": delivery.attempts,
+            }),
+            None,
+        );
         let result = match signed_request(&runtime.keys, &delivery, now / 1000) {
             Ok(request) => runtime.transport.post(request).await,
             Err(error) => Err(error),
@@ -229,6 +292,19 @@ pub async fn dispatch_once(state: &Arc<AppState>, now: i64) -> Result<usize> {
                 state
                     .store
                     .complete_controller_event(&delivery.id, now_ms())?;
+                append_delivery_audit(
+                    state,
+                    &delivery,
+                    "runtime_event.delivered",
+                    AuditOutcome::Succeeded,
+                    now_ms(),
+                    serde_json::json!({
+                        "event_type": delivery.event_type,
+                        "attempt": delivery.attempts,
+                        "http_status": status,
+                    }),
+                    None,
+                );
             }
             outcome => {
                 let error = match outcome {
@@ -244,6 +320,32 @@ pub async fn dispatch_once(state: &Arc<AppState>, now: i64) -> Result<usize> {
                 state
                     .store
                     .fail_controller_event(&delivery.id, &error, next_attempt, now_ms())?;
+                let (kind, journal_outcome) = if next_attempt.is_some() {
+                    (
+                        "runtime_event.retry_scheduled",
+                        AuditOutcome::RetryScheduled,
+                    )
+                } else {
+                    ("runtime_event.dead_lettered", AuditOutcome::Failed)
+                };
+                append_delivery_audit(
+                    state,
+                    &delivery,
+                    kind,
+                    journal_outcome,
+                    now_ms(),
+                    serde_json::json!({
+                        "event_type": delivery.event_type,
+                        "attempt": delivery.attempts,
+                        "retry_at": next_attempt,
+                    }),
+                    Some(AuditError {
+                        class: "controller_event_delivery_failed".into(),
+                        retryable: next_attempt.is_some(),
+                        message: None,
+                        status: None,
+                    }),
+                );
                 if next_attempt.is_none() {
                     tracing::error!(
                         controller_id = delivery.controller_id,

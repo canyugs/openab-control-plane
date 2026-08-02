@@ -3,7 +3,11 @@
 use crate::github_app::GitHubApp;
 use crate::protocol::{ChannelInfo, Content, GatewayEvent, SenderInfo, EVENT_SCHEMA};
 use crate::store::{new_id, now_ms, SessionState, Store};
-use serde_json::json;
+use controller_protocol::audit::{
+    AuditActor, AuditCorrelation, AuditEvent, AuditOutcome, AuditTarget, AUDIT_EVENT_VERSION,
+};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -42,6 +46,173 @@ fn controller_events_from_env() -> Option<Arc<crate::controller_events::Controll
 
 /// One live south connection: its generation + the outbound frame sender.
 type Conn = (u64, mpsc::UnboundedSender<String>);
+
+const AUDIT_SERVICE: &str = "openab-control-plane";
+
+fn message_audit_detail(payload: &Value, operation: Option<&str>) -> Value {
+    let content = payload["content"]
+        .as_str()
+        .or_else(|| payload["body"].as_str())
+        .unwrap_or_default();
+    let mut detail = json!({
+        "message_id": payload["message_id"].clone(),
+        "author": payload["author"].clone(),
+        "audience": payload["audience"].clone(),
+        "content_bytes": content.len(),
+        "content_sha256": hex::encode(Sha256::digest(content.as_bytes())),
+    });
+    if let Some(operation) = operation {
+        detail["operation"] = Value::String(operation.into());
+    }
+    detail
+}
+
+/// Convert the existing north projection into a bounded, provider-neutral
+/// journal fact. Message bodies and verdict text stay in their canonical
+/// domain tables; only metadata and hashes enter `audit_events`.
+fn north_audit_event(
+    kind: &str,
+    session_id: &str,
+    payload: &Value,
+    now: i64,
+) -> Option<AuditEvent> {
+    let (audit_kind, outcome, detail) = match kind {
+        "state" => {
+            let state = payload["state"].as_str();
+            let audit_kind = match state {
+                Some("closed") => "session.closed",
+                Some("aborted") => "session.aborted",
+                _ => "session.state_changed",
+            };
+            (audit_kind, AuditOutcome::Succeeded, payload.clone())
+        }
+        "message" | "controller_status" => (
+            "session.message_recorded",
+            AuditOutcome::Succeeded,
+            message_audit_detail(payload, None),
+        ),
+        "message_edit" => (
+            "session.message_recorded",
+            AuditOutcome::Succeeded,
+            message_audit_detail(payload, Some("edit")),
+        ),
+        "roster_add" | "roster_drop" | "roster_replace" => (
+            "session.roster_changed",
+            AuditOutcome::Succeeded,
+            payload.clone(),
+        ),
+        "timeout" => (
+            "session.timed_out",
+            AuditOutcome::Succeeded,
+            json!({
+                "reason": payload["reason"].clone(),
+                "done": payload["done"].clone(),
+                "total": payload["total"].clone(),
+                "absent": payload["absent"].clone(),
+                "trigger_ref": payload["trigger_ref"].clone(),
+            }),
+        ),
+        "bot_health" => (
+            "bot.health_changed",
+            AuditOutcome::Succeeded,
+            payload.clone(),
+        ),
+        "failover" => ("bot.replaced", AuditOutcome::Succeeded, payload.clone()),
+        "chair_reassigned" => ("bot.replaced", AuditOutcome::Succeeded, payload.clone()),
+        _ => return None,
+    };
+
+    let session = (!session_id.is_empty() && session_id != "-").then(|| session_id.to_string());
+    let trigger_ref = payload["trigger_ref"].as_str().map(str::to_string);
+    let message_id = payload["message_id"].as_str().map(str::to_string);
+    let edit_hash = (kind == "message_edit")
+        .then(|| detail["content_sha256"].as_str())
+        .flatten();
+    let event_key = match (audit_kind, message_id.as_deref(), kind) {
+        ("session.message_recorded", Some(message_id), "message_edit") => {
+            format!(
+                "session.message_recorded:{message_id}:edit:{}",
+                edit_hash.unwrap_or("unknown")
+            )
+        }
+        ("session.message_recorded", Some(message_id), _) => {
+            format!("session.message_recorded:{message_id}")
+        }
+        _ => format!("{audit_kind}:{}", new_id("evt")),
+    };
+    let event_id = format!("aud:{AUDIT_SERVICE}:{event_key}");
+    let target = payload["bot"]
+        .as_str()
+        .filter(|bot| !bot.is_empty())
+        .map(|bot| AuditTarget {
+            kind: "openab_bot".into(),
+            reference: Some(bot.into()),
+            ..Default::default()
+        })
+        .or_else(|| {
+            session.as_ref().map(|session_id| AuditTarget {
+                kind: "openab_session".into(),
+                reference: Some(session_id.clone()),
+                ..Default::default()
+            })
+        });
+    let actor = payload["author"].as_str().map(|author| AuditActor {
+        kind: if author == "system" {
+            "system".into()
+        } else if author == "client" {
+            "client".into()
+        } else {
+            "bot".into()
+        },
+        id: (!matches!(author, "system" | "client")).then(|| author.into()),
+        ..Default::default()
+    });
+    Some(AuditEvent {
+        version: AUDIT_EVENT_VERSION,
+        event_id,
+        event_key,
+        occurred_at: now,
+        recorded_at: now,
+        service: AUDIT_SERVICE.into(),
+        kind: audit_kind.into(),
+        outcome,
+        caused_by: None,
+        correlation: AuditCorrelation {
+            session_id: session,
+            trigger_ref,
+            message_id,
+            ..Default::default()
+        },
+        actor,
+        target,
+        detail,
+        error: None,
+    })
+}
+
+fn bot_connection_audit_event(bot_id: &str, generation: u64, kind: &str) -> AuditEvent {
+    let event_key = format!("{kind}:{bot_id}:{generation}");
+    AuditEvent {
+        version: AUDIT_EVENT_VERSION,
+        event_id: format!("aud:{AUDIT_SERVICE}:{event_key}"),
+        event_key,
+        occurred_at: now_ms(),
+        recorded_at: now_ms(),
+        service: AUDIT_SERVICE.into(),
+        kind: kind.into(),
+        outcome: AuditOutcome::Succeeded,
+        caused_by: None,
+        correlation: AuditCorrelation::default(),
+        actor: None,
+        target: Some(AuditTarget {
+            kind: "openab_bot".into(),
+            reference: Some(bot_id.into()),
+            ..Default::default()
+        }),
+        detail: json!({ "generation": generation }),
+        error: None,
+    }
+}
 
 pub struct AppState {
     pub store: Arc<dyn Store>,
@@ -256,15 +427,25 @@ impl AppState {
     /// existing conns for this bot stay live underneath it (see C8).
     pub fn register_conn(&self, bot_id: &str, tx: mpsc::UnboundedSender<String>) -> u64 {
         let gen = self.conn_seq.fetch_add(1, Ordering::Relaxed);
-        let mut hub = self.hub.lock().unwrap();
-        let stack = hub.entry(bot_id.to_string()).or_default();
-        // A second live connection for the same bot_id (fresh-pod double-dial /
-        // overlapping reconnect). No longer a hazard — the older conn is kept and
-        // can be promoted back — but still worth surfacing as the C8 fingerprint.
-        if let Some((old_gen, _)) = stack.last() {
-            tracing::warn!("bot {bot_id} second live connection gen {old_gen}->{gen} (overlap)");
+        {
+            let mut hub = self.hub.lock().unwrap();
+            let stack = hub.entry(bot_id.to_string()).or_default();
+            // A second live connection for the same bot_id (fresh-pod double-dial /
+            // overlapping reconnect). No longer a hazard — the older conn is kept and
+            // can be promoted back — but still worth surfacing as the C8 fingerprint.
+            if let Some((old_gen, _)) = stack.last() {
+                tracing::warn!(
+                    "bot {bot_id} second live connection gen {old_gen}->{gen} (overlap)"
+                );
+            }
+            stack.push((gen, tx));
         }
-        stack.push((gen, tx));
+        if let Err(error) =
+            self.store
+                .append_audit_event(&bot_connection_audit_event(bot_id, gen, "bot.connected"))
+        {
+            tracing::warn!(%error, bot_id, generation = gen, "bot connection journal append failed");
+        }
         gen
     }
 
@@ -273,15 +454,32 @@ impl AppState {
     /// superseded/older conn remains (the double-connect case), returns false: the
     /// bot is still reachable on that conn and must stay `connected`.
     pub fn unregister_conn(&self, bot_id: &str, gen: u64) -> bool {
-        let mut hub = self.hub.lock().unwrap();
-        if let Some(stack) = hub.get_mut(bot_id) {
-            stack.retain(|(g, _)| *g != gen);
-            if stack.is_empty() {
-                hub.remove(bot_id);
-                return true;
+        let (removed, fully_offline) = {
+            let mut hub = self.hub.lock().unwrap();
+            if let Some(stack) = hub.get_mut(bot_id) {
+                let removed = stack.iter().any(|(g, _)| *g == gen);
+                if removed {
+                    stack.retain(|(g, _)| *g != gen);
+                }
+                let fully_offline = removed && stack.is_empty();
+                if fully_offline {
+                    hub.remove(bot_id);
+                }
+                (removed, fully_offline)
+            } else {
+                (false, false)
+            }
+        };
+        if removed {
+            if let Err(error) = self.store.append_audit_event(&bot_connection_audit_event(
+                bot_id,
+                gen,
+                "bot.disconnected",
+            )) {
+                tracing::warn!(%error, bot_id, generation = gen, "bot disconnection journal append failed");
             }
         }
-        false
+        fully_offline
     }
 
     /// Send a raw text frame to a bot's current (most recent live) connection.
@@ -393,11 +591,22 @@ impl AppState {
     }
 
     pub fn emit_north(&self, kind: &str, session_id: &str, payload: serde_json::Value) {
+        let now = now_ms();
+        if let Some(audit) = north_audit_event(kind, session_id, &payload, now) {
+            if let Err(error) = self.store.append_audit_event(&audit) {
+                tracing::warn!(
+                    %error,
+                    kind,
+                    session_id,
+                    "north event investigation journal append failed"
+                );
+            }
+        }
         let ev = json!({
             "type": kind,
             "session_id": session_id,
             "payload": payload,
-            "ts": now_ms(),
+            "ts": now,
         });
         let _ = self.north_tx.send(ev.to_string());
     }

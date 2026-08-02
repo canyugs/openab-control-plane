@@ -17,9 +17,15 @@
 //! for outbox/dispatcher claims.
 
 use super::*;
+use controller_protocol::audit::{
+    AuditActor, AuditCorrelation, AuditCursor, AuditError, AuditEvent, AuditEventPage,
+    AuditEventQuery, AuditEventRecord, AuditOutcome, AuditTarget,
+};
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use tokio_postgres::config::SslMode;
 use tokio_postgres::NoTls;
+
+const AUDIT_SERVICE: &str = "openab-control-plane";
 
 /// Verified TLS against the platform root store; `sslmode=disable` is the
 /// explicit lane-internal opt-out. Same posture as the controller backend
@@ -384,6 +390,50 @@ CREATE TABLE IF NOT EXISTS review_waivers (
 );
 CREATE INDEX IF NOT EXISTS idx_review_waivers_repo
     ON review_waivers(repo, expires_at);
+"#,
+    // 3 — ADR 036 first-party investigation journal. Domain payloads remain in
+    // their owning tables; this table stores the bounded, provider-neutral
+    // correlation envelope and indexed joins.
+    r#"
+CREATE TABLE IF NOT EXISTS audit_events (
+    seq BIGSERIAL PRIMARY KEY,
+    event_id TEXT NOT NULL UNIQUE,
+    event_key TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    occurred_at BIGINT NOT NULL,
+    recorded_at BIGINT NOT NULL,
+    service TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    caused_by TEXT,
+    delivery_id TEXT,
+    controller_id TEXT,
+    action_id TEXT,
+    scope TEXT,
+    trigger_ref TEXT,
+    trigger_fingerprint TEXT,
+    session_id TEXT,
+    message_id TEXT,
+    runtime_event_id TEXT,
+    write_id TEXT,
+    actor_kind TEXT,
+    actor_id TEXT,
+    actor_display TEXT,
+    actor_association TEXT,
+    target_kind TEXT,
+    target_ref TEXT,
+    target_revision TEXT,
+    detail_json TEXT NOT NULL,
+    error_json TEXT,
+    UNIQUE(service, event_key)
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_session ON audit_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_delivery ON audit_events(delivery_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_action ON audit_events(controller_id, action_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_runtime ON audit_events(runtime_event_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_write ON audit_events(write_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_trigger ON audit_events(trigger_ref);
+CREATE INDEX IF NOT EXISTS idx_audit_events_recorded ON audit_events(recorded_at, seq);
 "#,
 ];
 
@@ -1565,6 +1615,193 @@ impl Store for PostgresStore {
         })
     }
 
+    fn append_audit_event(&self, event: &AuditEvent) -> Result<AuditEventRecord> {
+        event
+            .validate()
+            .map_err(|error| anyhow::anyhow!("invalid audit event: {error}"))?;
+        let detail_json = serde_json::to_string(&event.detail)?;
+        let error_json = event
+            .error
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let actor = event.actor.as_ref();
+        let target = event.target.as_ref();
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            let row = tx
+                .query_opt(
+                    "INSERT INTO audit_events
+                        (event_id, event_key, version, occurred_at, recorded_at, service, kind,
+                         outcome, caused_by, delivery_id, controller_id, action_id, scope, trigger_ref,
+                         trigger_fingerprint, session_id, message_id, runtime_event_id, write_id,
+                         actor_kind, actor_id, actor_display, actor_association, target_kind, target_ref,
+                         target_revision, detail_json, error_json)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                             $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+                     ON CONFLICT (service, event_key) DO NOTHING
+                     RETURNING seq, event_id, event_key, version, occurred_at, recorded_at, service,
+                               kind, outcome, caused_by, delivery_id, controller_id, action_id,
+                               scope, trigger_ref, trigger_fingerprint, session_id, message_id,
+                               runtime_event_id, write_id, actor_kind, actor_id, actor_display,
+                               actor_association, target_kind, target_ref, target_revision,
+                               detail_json, error_json",
+                    &[
+                        &event.event_id,
+                        &event.event_key,
+                        &i64::from(event.version),
+                        &event.occurred_at,
+                        &event.recorded_at,
+                        &event.service,
+                        &event.kind,
+                        &event.outcome.as_str(),
+                        &event.caused_by,
+                        &event.correlation.delivery_id,
+                        &event.correlation.controller_id,
+                        &event.correlation.action_id,
+                        &event.correlation.scope,
+                        &event.correlation.trigger_ref,
+                        &event.correlation.trigger_fingerprint,
+                        &event.correlation.session_id,
+                        &event.correlation.message_id,
+                        &event.correlation.runtime_event_id,
+                        &event.correlation.write_id,
+                        &actor.map(|value| value.kind.clone()),
+                        &actor.and_then(|value| value.id.clone()),
+                        &actor.and_then(|value| value.display.clone()),
+                        &actor.and_then(|value| value.association.clone()),
+                        &target.map(|value| value.kind.clone()),
+                        &target.and_then(|value| value.reference.clone()),
+                        &target.and_then(|value| value.revision.clone()),
+                        &detail_json,
+                        &error_json,
+                    ],
+                )
+                .await?;
+            let row = match row {
+                Some(row) => row,
+                None => tx
+                    .query_one(
+                        "SELECT seq, event_id, event_key, version, occurred_at, recorded_at,
+                                service, kind, outcome, caused_by, delivery_id, controller_id,
+                                action_id, scope, trigger_ref, trigger_fingerprint, session_id,
+                                message_id, runtime_event_id, write_id, actor_kind, actor_id,
+                                actor_display, actor_association, target_kind, target_ref,
+                                target_revision, detail_json, error_json
+                         FROM audit_events WHERE service = $1 AND event_key = $2",
+                        &[&event.service, &event.event_key],
+                    )
+                    .await?,
+            };
+            let record = audit_event_from_pg_row(&row)?;
+            tx.commit().await?;
+            Ok(record)
+        })
+    }
+
+    fn audit_events(&self, query: &AuditEventQuery) -> Result<AuditEventPage> {
+        let limit = query.bounded_limit();
+        let cursor_recorded_at = query.cursor.map(|cursor| cursor.recorded_at);
+        let cursor_seq = query.cursor.map(|cursor| cursor.seq);
+        self.block(async {
+            let client = self.client().await?;
+            let rows = client
+                .query(
+                    "SELECT seq, event_id, event_key, version, occurred_at, recorded_at, service,
+                            kind, outcome, caused_by, delivery_id, controller_id, action_id, scope,
+                            trigger_ref, trigger_fingerprint, session_id, message_id,
+                            runtime_event_id, write_id, actor_kind, actor_id, actor_display,
+                            actor_association, target_kind, target_ref, target_revision,
+                            detail_json, error_json
+                     FROM audit_events
+                     WHERE ($1::text IS NULL OR delivery_id = $1)
+                       AND ($2::text IS NULL OR controller_id = $2)
+                       AND ($3::text IS NULL OR action_id = $3)
+                       AND ($4::text IS NULL OR runtime_event_id = $4)
+                       AND ($5::text IS NULL OR session_id = $5)
+                       AND ($6::text IS NULL OR message_id = $6)
+                       AND ($7::text IS NULL OR write_id = $7)
+                       AND ($8::text IS NULL OR trigger_ref = $8)
+                       AND ($9::text IS NULL OR kind = $9)
+                       AND ($10::bigint IS NULL OR recorded_at >= $10)
+                       AND ($11::bigint IS NULL OR recorded_at <= $11)
+                       AND ($12::bigint IS NULL OR recorded_at < $12
+                            OR (recorded_at = $12 AND seq < $13))
+                     ORDER BY recorded_at DESC, seq DESC
+                     LIMIT $14",
+                    &[
+                        &query.delivery_id,
+                        &query.controller_id,
+                        &query.action_id,
+                        &query.runtime_event_id,
+                        &query.session_id,
+                        &query.message_id,
+                        &query.write_id,
+                        &query.trigger_ref,
+                        &query.kind,
+                        &query.since,
+                        &query.until,
+                        &cursor_recorded_at,
+                        &cursor_seq,
+                        &((limit + 1) as i64),
+                    ],
+                )
+                .await?;
+            let mut events = rows
+                .iter()
+                .map(audit_event_from_pg_row)
+                .collect::<Result<Vec<_>>>()?;
+            let has_more = events.len() > limit;
+            if has_more {
+                events.truncate(limit);
+            }
+            let next_cursor = has_more
+                .then(|| {
+                    events.last().map(|event| {
+                        AuditCursor {
+                            recorded_at: event.event.recorded_at,
+                            seq: event.seq,
+                        }
+                        .encode()
+                    })
+                })
+                .flatten();
+            Ok(AuditEventPage {
+                events,
+                next_cursor,
+            })
+        })
+    }
+
+    fn prune_audit_events(&self, before: i64, extended_before: i64) -> Result<usize> {
+        self.block(async {
+            let client = self.client().await?;
+            Ok(client
+                .execute(
+                    "DELETE FROM audit_events
+                     WHERE (recorded_at < $1 AND NOT (
+                               outcome IN ('failed', 'outcome_unknown', 'reconciled')
+                               OR kind LIKE 'security.%'
+                               OR kind LIKE 'config.%'
+                               OR kind LIKE 'operator.%'
+                               OR kind LIKE '%dead_lettered'
+                               OR kind = 'audit.retention_pruned'
+                           ))
+                        OR (recorded_at < $2 AND (
+                               outcome IN ('failed', 'outcome_unknown', 'reconciled')
+                               OR kind LIKE 'security.%'
+                               OR kind LIKE 'config.%'
+                               OR kind LIKE 'operator.%'
+                               OR kind LIKE '%dead_lettered'
+                               OR kind = 'audit.retention_pruned'
+                           ))",
+                    &[&before, &extended_before.min(before)],
+                )
+                .await? as usize)
+        })
+    }
+
     fn register_bot(
         &self,
         name: &str,
@@ -1970,6 +2207,23 @@ impl Store for PostgresStore {
                 )
                 .await?;
             }
+            append_audit_event_pg_locked(
+                &*tx,
+                &super::session_audit_event(
+                    "session.opened",
+                    &id,
+                    AuditOutcome::Accepted,
+                    created_at,
+                    trigger_ref,
+                    json!({
+                        "state": "open",
+                        "mode": mode,
+                        "quorum_n": quorum_n,
+                        "roster_size": roster.len(),
+                    }),
+                ),
+            )
+            .await?;
             tx.commit().await?;
             Ok(Session {
                 id: id.clone(),
@@ -2069,6 +2323,18 @@ impl Store for PostgresStore {
                         &[&existing.id.as_str(), &created_at],
                     )
                     .await?;
+                    append_audit_event_pg_locked(
+                        &*tx,
+                        &super::session_audit_event(
+                            "session.superseded",
+                            &existing.id,
+                            AuditOutcome::Succeeded,
+                            created_at,
+                            existing.trigger_ref.as_deref(),
+                            json!({"replacement_session_id": id.clone()}),
+                        ),
+                    )
+                    .await?;
                     enqueue_controller_session_event_pg(
                         &*tx,
                         &existing.id,
@@ -2106,6 +2372,24 @@ impl Store for PostgresStore {
             for input in opening_inputs {
                 insert_opening_input_pg(&*tx, &id, input, created_at).await?;
             }
+            append_audit_event_pg_locked(
+                &*tx,
+                &super::session_audit_event(
+                    "session.opened",
+                    &id,
+                    AuditOutcome::Accepted,
+                    created_at,
+                    trigger_ref,
+                    json!({
+                        "state": initial_state,
+                        "mode": mode,
+                        "quorum_n": quorum_n,
+                        "roster_size": roster.len(),
+                        "opening_input_count": opening_inputs.len(),
+                    }),
+                ),
+            )
+            .await?;
             tx.commit().await?;
             let session = Session {
                 id: id.clone(),
@@ -2357,13 +2641,50 @@ impl Store for PostgresStore {
             None
         };
         self.block(async {
-            let client = self.client().await?;
-            client
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            let from_state: Option<String> = tx
+                .query_opt("SELECT state FROM sessions WHERE id = $1", &[&session_id])
+                .await?
+                .map(|row| row.get(0));
+            let updated = tx
                 .execute(
                     "UPDATE sessions SET state = $2, closed_at = COALESCE($3, closed_at) WHERE id = $1",
                     &[&session_id, &state.as_str(), &closed_at],
                 )
                 .await?;
+            if updated == 1 {
+                let kind = match &state {
+                    SessionState::Closed => "session.closed",
+                    SessionState::Aborted => "session.aborted",
+                    _ => "session.state_changed",
+                };
+                let trigger_ref: Option<String> = tx
+                    .query_one(
+                        "SELECT trigger_ref FROM sessions WHERE id = $1",
+                        &[&session_id],
+                    )
+                    .await?
+                    .get(0);
+                append_audit_event_pg_locked(
+                    &*tx,
+                    &super::keyed_session_audit_event(
+                        format!(
+                            "{kind}:{session_id}:{}:{}",
+                            from_state.as_deref().unwrap_or("unknown"),
+                            state.as_str()
+                        ),
+                        kind,
+                        session_id,
+                        AuditOutcome::Succeeded,
+                        now_ms(),
+                        trigger_ref.as_deref(),
+                        json!({"from": from_state, "to": state.as_str()}),
+                    ),
+                )
+                .await?;
+            }
+            tx.commit().await?;
             Ok(())
         })
     }
@@ -2380,14 +2701,44 @@ impl Store for PostgresStore {
             None
         };
         self.block(async {
-            let client = self.client().await?;
-            let n = client
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            let n = tx
                 .execute(
                     "UPDATE sessions SET state = $3, closed_at = COALESCE($4, closed_at)
                      WHERE id = $1 AND state = $2",
                     &[&session_id, &from.as_str(), &to.as_str(), &closed_at],
                 )
                 .await?;
+            if n == 1 {
+                let kind = match &to {
+                    SessionState::Quorum => "session.quorum_reached",
+                    SessionState::Closed => "session.closed",
+                    SessionState::Aborted => "session.aborted",
+                    _ => "session.state_changed",
+                };
+                let trigger_ref: Option<String> = tx
+                    .query_one(
+                        "SELECT trigger_ref FROM sessions WHERE id = $1",
+                        &[&session_id],
+                    )
+                    .await?
+                    .get(0);
+                append_audit_event_pg_locked(
+                    &*tx,
+                    &super::keyed_session_audit_event(
+                        format!("{kind}:{session_id}:{}:{}", from.as_str(), to.as_str()),
+                        kind,
+                        session_id,
+                        AuditOutcome::Succeeded,
+                        now_ms(),
+                        trigger_ref.as_deref(),
+                        json!({"from": from.as_str(), "to": to.as_str()}),
+                    ),
+                )
+                .await?;
+            }
+            tx.commit().await?;
             Ok(n == 1)
         })
     }
@@ -2405,6 +2756,31 @@ impl Store for PostgresStore {
                 )
                 .await?;
             if n == 1 {
+                let trigger_ref: Option<String> = tx
+                    .query_one(
+                        "SELECT trigger_ref FROM sessions WHERE id = $1",
+                        &[&session_id],
+                    )
+                    .await?
+                    .get(0);
+                let kind = if event_type == "session.timeout" {
+                    "session.timed_out"
+                } else {
+                    "session.closed"
+                };
+                append_audit_event_pg_locked(
+                    &*tx,
+                    &super::keyed_session_audit_event(
+                        format!("{kind}:{session_id}:{closed_at}"),
+                        kind,
+                        session_id,
+                        AuditOutcome::Succeeded,
+                        closed_at,
+                        trigger_ref.as_deref(),
+                        json!({"reason": reason}),
+                    ),
+                )
+                .await?;
                 enqueue_controller_session_event_pg(
                     &*tx,
                     session_id,
@@ -2479,6 +2855,34 @@ impl Store for PostgresStore {
                 )
                 .await?;
             if n == 1 {
+                let trigger_ref: Option<String> = tx
+                    .query_one(
+                        "SELECT trigger_ref FROM sessions WHERE id = $1",
+                        &[&session_id],
+                    )
+                    .await?
+                    .get(0);
+                append_audit_event_pg_locked(
+                    &*tx,
+                    &super::keyed_session_audit_event(
+                        format!("session.closed:{session_id}:{closed_at}"),
+                        "session.closed",
+                        session_id,
+                        AuditOutcome::Succeeded,
+                        closed_at,
+                        trigger_ref.as_deref(),
+                        json!({
+                            "reason": "normal",
+                            "decision": decision,
+                            "findings_red": red,
+                            "findings_yellow": yellow,
+                            "findings_green": green,
+                            "result_author_id": result_author_id,
+                            "result_message_ids": result_message_ids_json,
+                        }),
+                    ),
+                )
+                .await?;
                 // ADR 031:159 — cap final_messages, dropping the OLDEST parts;
                 // the verdict trailer and findings block sit at the end.
                 let mut kept: Vec<&str> = final_messages.iter().map(String::as_str).collect();
@@ -2859,6 +3263,19 @@ impl Store for PostgresStore {
                 "INSERT INTO messages (id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
                 &[&id, &session_id, &thread_id, &author_kind, &author_id, &audience, &content, &reply_to, &created_at],
+            )
+            .await?;
+            append_audit_event_pg_locked(
+                &*tx,
+                &super::message_audit_event(
+                    session_id,
+                    &id,
+                    author_kind,
+                    author_id,
+                    audience,
+                    content,
+                    created_at,
+                ),
             )
             .await?;
             enqueue_controller_session_event_pg(
@@ -3320,6 +3737,58 @@ fn map_bot_inventory_pg(r: &tokio_postgres::Row) -> BotInventory {
     }
 }
 
+fn audit_event_from_pg_row(row: &tokio_postgres::Row) -> Result<AuditEventRecord> {
+    let outcome_raw: String = row.get(8);
+    let outcome = AuditOutcome::parse(&outcome_raw)
+        .with_context(|| format!("unknown audit outcome {outcome_raw}"))?;
+    let actor = row.get::<_, Option<String>>(20).map(|kind| AuditActor {
+        kind,
+        id: row.get(21),
+        display: row.get(22),
+        association: row.get(23),
+    });
+    let target = row.get::<_, Option<String>>(24).map(|kind| AuditTarget {
+        kind,
+        reference: row.get(25),
+        revision: row.get(26),
+    });
+    let detail_raw: String = row.get(27);
+    let error = row
+        .get::<_, Option<String>>(28)
+        .map(|raw| serde_json::from_str::<AuditError>(&raw))
+        .transpose()?;
+    Ok(AuditEventRecord {
+        seq: row.get(0),
+        event: AuditEvent {
+            version: row.get::<_, i64>(3) as u16,
+            event_id: row.get(1),
+            event_key: row.get(2),
+            occurred_at: row.get(4),
+            recorded_at: row.get(5),
+            service: row.get(6),
+            kind: row.get(7),
+            outcome,
+            caused_by: row.get(9),
+            correlation: AuditCorrelation {
+                delivery_id: row.get(10),
+                controller_id: row.get(11),
+                action_id: row.get(12),
+                scope: row.get(13),
+                trigger_ref: row.get(14),
+                trigger_fingerprint: row.get(15),
+                session_id: row.get(16),
+                message_id: row.get(17),
+                runtime_event_id: row.get(18),
+                write_id: row.get(19),
+            },
+            actor,
+            target,
+            detail: serde_json::from_str(&detail_raw)?,
+            error,
+        },
+    })
+}
+
 fn is_pg_unique_violation(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         cause
@@ -3367,6 +3836,82 @@ async fn active_session_for_trigger_pg<G: tokio_postgres::GenericClient>(
     .await?
     .as_ref()
     .map(map_session_pg))
+}
+
+async fn append_audit_event_pg_locked<G: tokio_postgres::GenericClient>(
+    g: &G,
+    event: &AuditEvent,
+) -> Result<()> {
+    event
+        .validate()
+        .map_err(|error| anyhow::anyhow!("invalid audit event: {error}"))?;
+    let detail_json = serde_json::to_string(&event.detail)?;
+    let error_json = event
+        .error
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    let actor_kind = event.actor.as_ref().map(|value| value.kind.clone());
+    let actor_id = event.actor.as_ref().and_then(|value| value.id.clone());
+    let actor_display = event.actor.as_ref().and_then(|value| value.display.clone());
+    let actor_association = event
+        .actor
+        .as_ref()
+        .and_then(|value| value.association.clone());
+    let target_kind = event.target.as_ref().map(|value| value.kind.clone());
+    let target_ref = event
+        .target
+        .as_ref()
+        .and_then(|value| value.reference.clone());
+    let target_revision = event
+        .target
+        .as_ref()
+        .and_then(|value| value.revision.clone());
+    let outcome = event.outcome.as_str().to_string();
+    let version = i64::from(event.version);
+    g.execute(
+        "INSERT INTO audit_events
+            (event_id, event_key, version, occurred_at, recorded_at, service, kind, outcome,
+             caused_by, delivery_id, controller_id, action_id, scope, trigger_ref,
+             trigger_fingerprint, session_id, message_id, runtime_event_id, write_id,
+             actor_kind, actor_id, actor_display, actor_association, target_kind, target_ref,
+             target_revision, detail_json, error_json)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                 $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+         ON CONFLICT (service, event_key) DO NOTHING",
+        &[
+            &event.event_id,
+            &event.event_key,
+            &version,
+            &event.occurred_at,
+            &event.recorded_at,
+            &event.service,
+            &event.kind,
+            &outcome,
+            &event.caused_by,
+            &event.correlation.delivery_id,
+            &event.correlation.controller_id,
+            &event.correlation.action_id,
+            &event.correlation.scope,
+            &event.correlation.trigger_ref,
+            &event.correlation.trigger_fingerprint,
+            &event.correlation.session_id,
+            &event.correlation.message_id,
+            &event.correlation.runtime_event_id,
+            &event.correlation.write_id,
+            &actor_kind,
+            &actor_id,
+            &actor_display,
+            &actor_association,
+            &target_kind,
+            &target_ref,
+            &target_revision,
+            &detail_json,
+            &error_json,
+        ],
+    )
+    .await?;
+    Ok(())
 }
 
 async fn enqueue_controller_event_pg<G: tokio_postgres::GenericClient>(
@@ -3419,6 +3964,77 @@ async fn enqueue_controller_event_pg<G: tokio_postgres::GenericClient>(
             &body_json,
             &idempotency_key,
             &occurred_at,
+        ],
+    )
+    .await?;
+    let actual_event_id: String = g
+        .query_one(
+            "SELECT id FROM controller_events
+             WHERE controller_id = $1 AND idempotency_key = $2",
+            &[&controller_id, &idempotency_key],
+        )
+        .await?
+        .get(0);
+    let audit_event_key = format!("runtime_event.enqueued:{actual_event_id}");
+    let audit_event = AuditEvent {
+        version: controller_protocol::audit::AUDIT_EVENT_VERSION,
+        event_id: format!("aud:{AUDIT_SERVICE}:{audit_event_key}"),
+        event_key: audit_event_key,
+        occurred_at,
+        recorded_at: now_ms(),
+        service: AUDIT_SERVICE.into(),
+        kind: "runtime_event.enqueued".into(),
+        outcome: AuditOutcome::Pending,
+        caused_by: None,
+        correlation: AuditCorrelation {
+            controller_id: Some(controller_id.into()),
+            session_id: session_id.map(str::to_string),
+            runtime_event_id: Some(actual_event_id),
+            ..Default::default()
+        },
+        actor: None,
+        target: None,
+        detail: json!({
+            "event_type": event_type,
+            "idempotency_key": idempotency_key,
+        }),
+        error: None,
+    };
+    audit_event
+        .validate()
+        .map_err(|error| anyhow::anyhow!("invalid audit event: {error}"))?;
+    let detail_json = serde_json::to_string(&audit_event.detail)?;
+    g.execute(
+        "INSERT INTO audit_events
+            (event_id, event_key, version, occurred_at, recorded_at, service, kind, outcome,
+             caused_by, delivery_id, controller_id, action_id, scope, trigger_ref,
+             trigger_fingerprint, session_id, message_id, runtime_event_id, write_id,
+             actor_kind, actor_id, actor_display, actor_association, target_kind, target_ref,
+             target_revision, detail_json, error_json)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                 $16, $17, $18, $19, NULL, NULL, NULL, NULL, NULL, NULL, NULL, $20, NULL)
+         ON CONFLICT (service, event_key) DO NOTHING",
+        &[
+            &audit_event.event_id,
+            &audit_event.event_key,
+            &i64::from(audit_event.version),
+            &audit_event.occurred_at,
+            &audit_event.recorded_at,
+            &audit_event.service,
+            &audit_event.kind,
+            &audit_event.outcome.as_str(),
+            &audit_event.caused_by,
+            &audit_event.correlation.delivery_id,
+            &audit_event.correlation.controller_id,
+            &audit_event.correlation.action_id,
+            &audit_event.correlation.scope,
+            &audit_event.correlation.trigger_ref,
+            &audit_event.correlation.trigger_fingerprint,
+            &audit_event.correlation.session_id,
+            &audit_event.correlation.message_id,
+            &audit_event.correlation.runtime_event_id,
+            &audit_event.correlation.write_id,
+            &detail_json,
         ],
     )
     .await?;

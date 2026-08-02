@@ -6,14 +6,20 @@
 //! is deliberate (see design §6c "12-factor posture").
 
 use anyhow::{Context, Result};
+use controller_protocol::audit::{
+    AuditActor, AuditCorrelation, AuditCursor, AuditError, AuditEvent, AuditEventPage,
+    AuditEventQuery, AuditEventRecord, AuditOutcome, AuditTarget,
+};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 
 const CONTROLLER_ACTION_LEASE_MS: i64 = 5 * 60 * 1000;
+const AUDIT_SERVICE: &str = "openab-control-plane";
 /// Cap on the terminal event's `final_messages` total bytes; oversize spans
 /// are truncated oldest-first (the trailer/findings sit at the end).
 const FINAL_MESSAGES_MAX_BYTES: usize = 256 * 1024;
@@ -581,6 +587,14 @@ pub trait Store: Send + Sync {
     fn prune_delivered_controller_events(&self, before: i64) -> Result<usize>;
     fn controller_event_audit(&self, controller_id: &str) -> Result<Vec<ControllerEventAudit>>;
 
+    /// Append one provider-neutral investigation event. The `(service,
+    /// event_key)` pair is idempotent; retries return the already durable row.
+    fn append_audit_event(&self, event: &AuditEvent) -> Result<AuditEventRecord>;
+    /// Cursor-paginated, newest-first investigation history.
+    fn audit_events(&self, query: &AuditEventQuery) -> Result<AuditEventPage>;
+    /// Delete only expired journal rows. Domain tables are never touched.
+    fn prune_audit_events(&self, before: i64, extended_before: i64) -> Result<usize>;
+
     fn register_bot(
         &self,
         name: &str,
@@ -1099,6 +1113,45 @@ CREATE TABLE IF NOT EXISTS controller_event_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_controller_event_audit_controller
     ON controller_event_audit(controller_id, created_at);
+CREATE TABLE IF NOT EXISTS audit_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    event_key TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    occurred_at INTEGER NOT NULL,
+    recorded_at INTEGER NOT NULL,
+    service TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    caused_by TEXT,
+    delivery_id TEXT,
+    controller_id TEXT,
+    action_id TEXT,
+    scope TEXT,
+    trigger_ref TEXT,
+    trigger_fingerprint TEXT,
+    session_id TEXT,
+    message_id TEXT,
+    runtime_event_id TEXT,
+    write_id TEXT,
+    actor_kind TEXT,
+    actor_id TEXT,
+    actor_display TEXT,
+    actor_association TEXT,
+    target_kind TEXT,
+    target_ref TEXT,
+    target_revision TEXT,
+    detail_json TEXT NOT NULL,
+    error_json TEXT,
+    UNIQUE(service, event_key)
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_session ON audit_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_delivery ON audit_events(delivery_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_action ON audit_events(controller_id, action_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_runtime ON audit_events(runtime_event_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_write ON audit_events(write_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_trigger ON audit_events(trigger_ref);
+CREATE INDEX IF NOT EXISTS idx_audit_events_recorded ON audit_events(recorded_at, seq);
 CREATE TABLE IF NOT EXISTS review_waivers (
     id TEXT PRIMARY KEY,
     repo TEXT NOT NULL,
@@ -1257,6 +1310,238 @@ fn is_constraint_violation(err: &anyhow::Error) -> bool {
     })
 }
 
+fn audit_event_from_sqlite_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEventRecord> {
+    let outcome_raw: String = row.get(8)?;
+    let outcome = AuditOutcome::parse(&outcome_raw).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            8,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unknown audit outcome {outcome_raw}"),
+            )),
+        )
+    })?;
+    let detail_raw: String = row.get(27)?;
+    let detail = serde_json::from_str(&detail_raw).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(27, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    let error = row
+        .get::<_, Option<String>>(28)?
+        .map(|raw| {
+            serde_json::from_str::<AuditError>(&raw).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    28,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
+        .transpose()?;
+    let actor_kind = row.get::<_, Option<String>>(20)?;
+    let actor = actor_kind.map(|kind| AuditActor {
+        kind,
+        id: row.get(21).ok().flatten(),
+        display: row.get(22).ok().flatten(),
+        association: row.get(23).ok().flatten(),
+    });
+    let target_kind = row.get::<_, Option<String>>(24)?;
+    let target = target_kind.map(|kind| AuditTarget {
+        kind,
+        reference: row.get(25).ok().flatten(),
+        revision: row.get(26).ok().flatten(),
+    });
+    Ok(AuditEventRecord {
+        seq: row.get(0)?,
+        event: AuditEvent {
+            version: row.get::<_, i64>(3)? as u16,
+            event_id: row.get(1)?,
+            event_key: row.get(2)?,
+            occurred_at: row.get(4)?,
+            recorded_at: row.get(5)?,
+            service: row.get(6)?,
+            kind: row.get(7)?,
+            outcome,
+            caused_by: row.get(9)?,
+            correlation: AuditCorrelation {
+                delivery_id: row.get(10)?,
+                controller_id: row.get(11)?,
+                action_id: row.get(12)?,
+                scope: row.get(13)?,
+                trigger_ref: row.get(14)?,
+                trigger_fingerprint: row.get(15)?,
+                session_id: row.get(16)?,
+                message_id: row.get(17)?,
+                runtime_event_id: row.get(18)?,
+                write_id: row.get(19)?,
+            },
+            actor,
+            target,
+            detail,
+            error,
+        },
+    })
+}
+
+/// Insert an audit row on a caller-owned transaction. Keeping this primitive
+/// separate from the public Store method lets domain mutations and their
+/// investigation evidence commit together.
+fn append_audit_event_locked(tx: &rusqlite::Transaction<'_>, event: &AuditEvent) -> Result<()> {
+    event
+        .validate()
+        .map_err(|error| anyhow::anyhow!("invalid audit event: {error}"))?;
+    let detail_json = serde_json::to_string(&event.detail)?;
+    let error_json = event
+        .error
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    let actor = event.actor.as_ref();
+    let target = event.target.as_ref();
+    tx.execute(
+        "INSERT OR IGNORE INTO audit_events
+            (event_id, event_key, version, occurred_at, recorded_at, service, kind, outcome,
+             caused_by, delivery_id, controller_id, action_id, scope, trigger_ref,
+             trigger_fingerprint, session_id, message_id, runtime_event_id, write_id,
+             actor_kind, actor_id, actor_display, actor_association, target_kind, target_ref,
+             target_revision, detail_json, error_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                 ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
+        params![
+            event.event_id,
+            event.event_key,
+            i64::from(event.version),
+            event.occurred_at,
+            event.recorded_at,
+            event.service,
+            event.kind,
+            event.outcome.as_str(),
+            event.caused_by,
+            event.correlation.delivery_id,
+            event.correlation.controller_id,
+            event.correlation.action_id,
+            event.correlation.scope,
+            event.correlation.trigger_ref,
+            event.correlation.trigger_fingerprint,
+            event.correlation.session_id,
+            event.correlation.message_id,
+            event.correlation.runtime_event_id,
+            event.correlation.write_id,
+            actor.map(|value| value.kind.as_str()),
+            actor.and_then(|value| value.id.as_deref()),
+            actor.and_then(|value| value.display.as_deref()),
+            actor.and_then(|value| value.association.as_deref()),
+            target.map(|value| value.kind.as_str()),
+            target.and_then(|value| value.reference.as_deref()),
+            target.and_then(|value| value.revision.as_deref()),
+            detail_json,
+            error_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn keyed_session_audit_event(
+    event_key: String,
+    kind: &str,
+    session_id: &str,
+    outcome: AuditOutcome,
+    occurred_at: i64,
+    trigger_ref: Option<&str>,
+    detail: Value,
+) -> AuditEvent {
+    AuditEvent {
+        version: controller_protocol::audit::AUDIT_EVENT_VERSION,
+        event_id: format!("aud:{AUDIT_SERVICE}:{event_key}"),
+        event_key,
+        occurred_at,
+        recorded_at: now_ms(),
+        service: AUDIT_SERVICE.into(),
+        kind: kind.into(),
+        outcome,
+        caused_by: None,
+        correlation: AuditCorrelation {
+            session_id: Some(session_id.into()),
+            trigger_ref: trigger_ref.map(str::to_string),
+            ..Default::default()
+        },
+        actor: None,
+        target: Some(AuditTarget {
+            kind: "openab_session".into(),
+            reference: Some(session_id.into()),
+            ..Default::default()
+        }),
+        detail,
+        error: None,
+    }
+}
+
+fn session_audit_event(
+    kind: &str,
+    session_id: &str,
+    outcome: AuditOutcome,
+    occurred_at: i64,
+    trigger_ref: Option<&str>,
+    detail: Value,
+) -> AuditEvent {
+    keyed_session_audit_event(
+        format!("{kind}:{session_id}"),
+        kind,
+        session_id,
+        outcome,
+        occurred_at,
+        trigger_ref,
+        detail,
+    )
+}
+
+fn message_audit_event(
+    session_id: &str,
+    message_id: &str,
+    author_kind: &str,
+    author_id: Option<&str>,
+    audience: Option<&str>,
+    content: &str,
+    occurred_at: i64,
+) -> AuditEvent {
+    let event_key = format!("session.message_recorded:{message_id}");
+    AuditEvent {
+        version: controller_protocol::audit::AUDIT_EVENT_VERSION,
+        event_id: format!("aud:{AUDIT_SERVICE}:{event_key}"),
+        event_key,
+        occurred_at,
+        recorded_at: now_ms(),
+        service: AUDIT_SERVICE.into(),
+        kind: "session.message_recorded".into(),
+        outcome: AuditOutcome::Succeeded,
+        caused_by: None,
+        correlation: AuditCorrelation {
+            session_id: Some(session_id.into()),
+            message_id: Some(message_id.into()),
+            ..Default::default()
+        },
+        actor: Some(AuditActor {
+            kind: author_kind.into(),
+            id: author_id.map(str::to_string),
+            ..Default::default()
+        }),
+        target: Some(AuditTarget {
+            kind: "openab_session".into(),
+            reference: Some(session_id.into()),
+            ..Default::default()
+        }),
+        detail: json!({
+            "message_id": message_id,
+            "author_kind": author_kind,
+            "author_id": author_id,
+            "audience": audience,
+            "content_bytes": content.len(),
+            "content_sha256": hex::encode(Sha256::digest(content.as_bytes())),
+        }),
+        error: None,
+    }
+}
+
 fn capabilities_json(capabilities: &[String]) -> String {
     serde_json::to_string(capabilities).unwrap_or_else(|_| "[]".to_string())
 }
@@ -1276,7 +1561,7 @@ fn parse_runtime(raw: Option<String>) -> Option<Value> {
 }
 
 fn enqueue_controller_event_locked(
-    conn: &Connection,
+    conn: &rusqlite::Transaction<'_>,
     controller_id: &str,
     session_id: Option<&str>,
     event_type: &str,
@@ -1320,22 +1605,56 @@ fn enqueue_controller_event_locked(
              body_json, idempotency_key, state, attempts, created_at, next_attempt_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', 0, ?9, ?9)",
         params![
-            event_id,
+            &event_id,
             controller_id,
             session_id,
             event_type,
             event_endpoint,
             event_key_version,
-            body_json,
+            &body_json,
             idempotency_key,
             occurred_at
         ],
+    )?;
+    let actual_event_id: String = conn.query_row(
+        "SELECT id FROM controller_events
+         WHERE controller_id = ?1 AND idempotency_key = ?2",
+        params![controller_id, idempotency_key],
+        |row| row.get(0),
+    )?;
+    let audit_event_key = format!("runtime_event.enqueued:{actual_event_id}");
+    append_audit_event_locked(
+        conn,
+        &AuditEvent {
+            version: controller_protocol::audit::AUDIT_EVENT_VERSION,
+            event_id: format!("aud:{AUDIT_SERVICE}:{audit_event_key}"),
+            event_key: audit_event_key,
+            occurred_at,
+            recorded_at: now_ms(),
+            service: AUDIT_SERVICE.into(),
+            kind: "runtime_event.enqueued".into(),
+            outcome: AuditOutcome::Pending,
+            caused_by: None,
+            correlation: AuditCorrelation {
+                controller_id: Some(controller_id.into()),
+                session_id: session_id.map(str::to_string),
+                runtime_event_id: Some(actual_event_id),
+                ..Default::default()
+            },
+            actor: None,
+            target: None,
+            detail: json!({
+                "event_type": event_type,
+                "idempotency_key": idempotency_key,
+            }),
+            error: None,
+        },
     )?;
     Ok(())
 }
 
 fn enqueue_controller_session_event_locked(
-    conn: &Connection,
+    conn: &rusqlite::Transaction<'_>,
     session_id: &str,
     event_type: &str,
     payload: Value,
@@ -2577,6 +2896,118 @@ impl Store for SqliteStore {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
+    fn append_audit_event(&self, event: &AuditEvent) -> Result<AuditEventRecord> {
+        let c = self.conn.lock().unwrap();
+        let tx = c.unchecked_transaction()?;
+        append_audit_event_locked(&tx, event)?;
+        let record = tx.query_row(
+            "SELECT seq, event_id, event_key, version, occurred_at, recorded_at, service, kind,
+                    outcome, caused_by, delivery_id, controller_id, action_id, scope, trigger_ref,
+                    trigger_fingerprint, session_id, message_id, runtime_event_id, write_id,
+                    actor_kind, actor_id, actor_display, actor_association, target_kind, target_ref,
+                    target_revision, detail_json, error_json
+             FROM audit_events WHERE service = ?1 AND event_key = ?2",
+            params![event.service, event.event_key],
+            audit_event_from_sqlite_row,
+        )?;
+        tx.commit()?;
+        Ok(record)
+    }
+
+    fn audit_events(&self, query: &AuditEventQuery) -> Result<AuditEventPage> {
+        let limit = query.bounded_limit();
+        let cursor_recorded_at = query.cursor.map(|cursor| cursor.recorded_at);
+        let cursor_seq = query.cursor.map(|cursor| cursor.seq);
+        let c = self.conn.lock().unwrap();
+        let mut statement = c.prepare(
+            "SELECT seq, event_id, event_key, version, occurred_at, recorded_at, service, kind,
+                    outcome, caused_by, delivery_id, controller_id, action_id, scope, trigger_ref,
+                    trigger_fingerprint, session_id, message_id, runtime_event_id, write_id,
+                    actor_kind, actor_id, actor_display, actor_association, target_kind, target_ref,
+                    target_revision, detail_json, error_json
+             FROM audit_events
+             WHERE (?1 IS NULL OR delivery_id = ?1)
+               AND (?2 IS NULL OR controller_id = ?2)
+               AND (?3 IS NULL OR action_id = ?3)
+               AND (?4 IS NULL OR runtime_event_id = ?4)
+               AND (?5 IS NULL OR session_id = ?5)
+               AND (?6 IS NULL OR message_id = ?6)
+               AND (?7 IS NULL OR write_id = ?7)
+               AND (?8 IS NULL OR trigger_ref = ?8)
+               AND (?9 IS NULL OR kind = ?9)
+               AND (?10 IS NULL OR recorded_at >= ?10)
+               AND (?11 IS NULL OR recorded_at <= ?11)
+               AND (?12 IS NULL OR recorded_at < ?12
+                    OR (recorded_at = ?12 AND seq < ?13))
+             ORDER BY recorded_at DESC, seq DESC
+             LIMIT ?14",
+        )?;
+        let mut events = statement
+            .query_map(
+                params![
+                    query.delivery_id.as_deref(),
+                    query.controller_id.as_deref(),
+                    query.action_id.as_deref(),
+                    query.runtime_event_id.as_deref(),
+                    query.session_id.as_deref(),
+                    query.message_id.as_deref(),
+                    query.write_id.as_deref(),
+                    query.trigger_ref.as_deref(),
+                    query.kind.as_deref(),
+                    query.since,
+                    query.until,
+                    cursor_recorded_at,
+                    cursor_seq,
+                    (limit + 1) as i64,
+                ],
+                audit_event_from_sqlite_row,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let has_more = events.len() > limit;
+        if has_more {
+            events.truncate(limit);
+        }
+        let next_cursor = has_more
+            .then(|| {
+                events.last().map(|event| {
+                    AuditCursor {
+                        recorded_at: event.event.recorded_at,
+                        seq: event.seq,
+                    }
+                    .encode()
+                })
+            })
+            .flatten();
+        Ok(AuditEventPage {
+            events,
+            next_cursor,
+        })
+    }
+
+    fn prune_audit_events(&self, before: i64, extended_before: i64) -> Result<usize> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.execute(
+            "DELETE FROM audit_events
+             WHERE (recorded_at < ?1 AND NOT (
+                       outcome IN ('failed', 'outcome_unknown', 'reconciled')
+                       OR kind LIKE 'security.%'
+                       OR kind LIKE 'config.%'
+                       OR kind LIKE 'operator.%'
+                       OR kind LIKE '%dead_lettered'
+                       OR kind = 'audit.retention_pruned'
+                   ))
+                OR (recorded_at < ?2 AND (
+                       outcome IN ('failed', 'outcome_unknown', 'reconciled')
+                       OR kind LIKE 'security.%'
+                       OR kind LIKE 'config.%'
+                       OR kind LIKE 'operator.%'
+                       OR kind LIKE '%dead_lettered'
+                       OR kind = 'audit.retention_pruned'
+                   ))",
+            params![before, extended_before.min(before)],
+        )?)
+    }
+
     fn register_bot(
         &self,
         name: &str,
@@ -2950,6 +3381,22 @@ impl Store for SqliteStore {
                 params![id, bot_id],
             )?;
         }
+        append_audit_event_locked(
+            &tx,
+            &session_audit_event(
+                "session.opened",
+                &id,
+                AuditOutcome::Accepted,
+                created_at,
+                trigger_ref,
+                json!({
+                    "state": "open",
+                    "mode": mode,
+                    "quorum_n": quorum_n,
+                    "roster_size": roster.len(),
+                }),
+            ),
+        )?;
         tx.commit()?;
         Ok(Session {
             id,
@@ -3039,6 +3486,17 @@ impl Store for SqliteStore {
                      WHERE id = ?1 AND state NOT IN ('closed', 'aborted')",
                     params![existing.id.as_str(), created_at],
                 )?;
+                append_audit_event_locked(
+                    &tx,
+                    &session_audit_event(
+                        "session.superseded",
+                        &existing.id,
+                        AuditOutcome::Succeeded,
+                        created_at,
+                        existing.trigger_ref.as_deref(),
+                        json!({"replacement_session_id": id.clone()}),
+                    ),
+                )?;
                 enqueue_controller_session_event_locked(
                     &tx,
                     &existing.id,
@@ -3094,6 +3552,23 @@ impl Store for SqliteStore {
                 ],
             )?;
         }
+        append_audit_event_locked(
+            &tx,
+            &session_audit_event(
+                "session.opened",
+                &id,
+                AuditOutcome::Accepted,
+                created_at,
+                trigger_ref,
+                json!({
+                    "state": initial_state,
+                    "mode": mode,
+                    "quorum_n": quorum_n,
+                    "roster_size": roster.len(),
+                    "opening_input_count": opening_inputs.len(),
+                }),
+            ),
+        )?;
         tx.commit()?;
         let session = Session {
             id,
@@ -3376,11 +3851,48 @@ impl Store for SqliteStore {
         } else {
             None
         };
-        let c = self.conn.lock().unwrap();
-        c.execute(
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let from_state: Option<String> = tx
+            .query_row(
+                "SELECT state FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let updated = tx.execute(
             "UPDATE sessions SET state = ?2, closed_at = COALESCE(?3, closed_at) WHERE id = ?1",
             params![session_id, state.as_str(), closed_at],
         )?;
+        if updated == 1 {
+            let kind = match &state {
+                SessionState::Closed => "session.closed",
+                SessionState::Aborted => "session.aborted",
+                _ => "session.state_changed",
+            };
+            let trigger_ref: Option<String> = tx.query_row(
+                "SELECT trigger_ref FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get::<_, Option<String>>(0),
+            )?;
+            append_audit_event_locked(
+                &tx,
+                &keyed_session_audit_event(
+                    format!(
+                        "{kind}:{session_id}:{}:{}",
+                        from_state.as_deref().unwrap_or("unknown"),
+                        state.as_str()
+                    ),
+                    kind,
+                    session_id,
+                    AuditOutcome::Succeeded,
+                    now_ms(),
+                    trigger_ref.as_deref(),
+                    json!({"from": from_state, "to": state.as_str()}),
+                ),
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -3395,12 +3907,39 @@ impl Store for SqliteStore {
         } else {
             None
         };
-        let c = self.conn.lock().unwrap();
-        let n = c.execute(
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let n = tx.execute(
             "UPDATE sessions SET state = ?3, closed_at = COALESCE(?4, closed_at)
              WHERE id = ?1 AND state = ?2",
             params![session_id, from.as_str(), to.as_str(), closed_at],
         )?;
+        if n == 1 {
+            let kind = match &to {
+                SessionState::Quorum => "session.quorum_reached",
+                SessionState::Closed => "session.closed",
+                SessionState::Aborted => "session.aborted",
+                _ => "session.state_changed",
+            };
+            let trigger_ref: Option<String> = tx.query_row(
+                "SELECT trigger_ref FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get::<_, Option<String>>(0),
+            )?;
+            append_audit_event_locked(
+                &tx,
+                &keyed_session_audit_event(
+                    format!("{kind}:{session_id}:{}:{}", from.as_str(), to.as_str()),
+                    kind,
+                    session_id,
+                    AuditOutcome::Succeeded,
+                    now_ms(),
+                    trigger_ref.as_deref(),
+                    json!({"from": from.as_str(), "to": to.as_str()}),
+                ),
+            )?;
+        }
+        tx.commit()?;
         Ok(n == 1)
     }
 
@@ -3414,6 +3953,28 @@ impl Store for SqliteStore {
             params![session_id, closed_at],
         )?;
         if n == 1 {
+            let trigger_ref: Option<String> = tx.query_row(
+                "SELECT trigger_ref FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get::<_, Option<String>>(0),
+            )?;
+            let kind = if event_type == "session.timeout" {
+                "session.timed_out"
+            } else {
+                "session.closed"
+            };
+            append_audit_event_locked(
+                &tx,
+                &keyed_session_audit_event(
+                    format!("{kind}:{session_id}:{closed_at}"),
+                    kind,
+                    session_id,
+                    AuditOutcome::Succeeded,
+                    closed_at,
+                    trigger_ref.as_deref(),
+                    json!({"reason": reason}),
+                ),
+            )?;
             enqueue_controller_session_event_locked(
                 &tx,
                 session_id,
@@ -3478,6 +4039,31 @@ impl Store for SqliteStore {
             ],
         )?;
         if n == 1 {
+            let trigger_ref: Option<String> = tx.query_row(
+                "SELECT trigger_ref FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get::<_, Option<String>>(0),
+            )?;
+            append_audit_event_locked(
+                &tx,
+                &keyed_session_audit_event(
+                    format!("session.closed:{session_id}:{closed_at}"),
+                    "session.closed",
+                    session_id,
+                    AuditOutcome::Succeeded,
+                    closed_at,
+                    trigger_ref.as_deref(),
+                    json!({
+                        "reason": "normal",
+                        "decision": decision,
+                        "findings_red": red,
+                        "findings_yellow": yellow,
+                        "findings_green": green,
+                        "result_author_id": result_author_id,
+                        "result_message_ids": result_message_ids_json,
+                    }),
+                ),
+            )?;
             // ADR 031:159 — the terminal event carries the session's final
             // messages so an external controller can derive its product
             // projection (verdict, findings) without a read-back API. Capped;
@@ -3787,6 +4373,18 @@ impl Store for SqliteStore {
             "INSERT INTO messages (id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![id, session_id, thread_id, author_kind, author_id, audience, content, reply_to, created_at],
+        )?;
+        append_audit_event_locked(
+            &tx,
+            &message_audit_event(
+                session_id,
+                &id,
+                author_kind,
+                author_id,
+                audience,
+                content,
+                created_at,
+            ),
         )?;
         enqueue_controller_session_event_locked(
             &tx,
@@ -6030,5 +6628,124 @@ mod tests {
                 .contains(&session.id),
             "silence past the deadline still trips the watchdog"
         );
+    }
+
+    #[test]
+    fn audit_journal_is_idempotent_and_cursor_paginated() {
+        let store = SqliteStore::memory().unwrap();
+        let event = AuditEvent {
+            version: controller_protocol::audit::AUDIT_EVENT_VERSION,
+            event_id: "aud:kernel:session-opened".into(),
+            event_key: "session.opened:ses_1".into(),
+            occurred_at: 1_000,
+            recorded_at: 1_001,
+            service: "openab-control-plane".into(),
+            kind: "session.opened".into(),
+            outcome: AuditOutcome::Accepted,
+            caused_by: None,
+            correlation: AuditCorrelation {
+                session_id: Some("ses_1".into()),
+                trigger_ref: Some("github:pr/example/repo#1".into()),
+                ..Default::default()
+            },
+            actor: Some(AuditActor {
+                kind: "operator".into(),
+                id: Some("operator-key".into()),
+                ..Default::default()
+            }),
+            target: None,
+            detail: json!({"roster_size": 3}),
+            error: None,
+        };
+        let first = store.append_audit_event(&event).unwrap();
+        assert_eq!(store.append_audit_event(&event).unwrap(), first);
+
+        let second = AuditEvent {
+            event_id: "aud:kernel:session-state".into(),
+            event_key: "session.state_changed:ses_1:deliberating".into(),
+            recorded_at: 1_002,
+            kind: "session.state_changed".into(),
+            outcome: AuditOutcome::Succeeded,
+            detail: json!({"to": "deliberating"}),
+            ..event.clone()
+        };
+        store.append_audit_event(&second).unwrap();
+
+        let first_page = store
+            .audit_events(&AuditEventQuery {
+                session_id: Some("ses_1".into()),
+                limit: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(first_page.events.len(), 1);
+        assert_eq!(first_page.events[0].event.kind, "session.state_changed");
+        let cursor = AuditCursor::decode(first_page.next_cursor.as_deref().unwrap()).unwrap();
+        let second_page = store
+            .audit_events(&AuditEventQuery {
+                session_id: Some("ses_1".into()),
+                cursor: Some(cursor),
+                limit: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(second_page.events.len(), 1);
+        assert_eq!(second_page.events[0].event.kind, "session.opened");
+        assert_eq!(
+            second_page.events[0]
+                .event
+                .correlation
+                .trigger_ref
+                .as_deref(),
+            Some("github:pr/example/repo#1")
+        );
+    }
+
+    #[test]
+    fn audit_retention_keeps_extended_events_until_the_second_cutoff() {
+        let store = SqliteStore::memory().unwrap();
+        let base = AuditEvent {
+            version: controller_protocol::audit::AUDIT_EVENT_VERSION,
+            event_id: String::new(),
+            event_key: String::new(),
+            occurred_at: 0,
+            recorded_at: 0,
+            service: "openab-control-plane".into(),
+            kind: "session.opened".into(),
+            outcome: AuditOutcome::Accepted,
+            caused_by: None,
+            correlation: AuditCorrelation::default(),
+            actor: None,
+            target: None,
+            detail: json!({}),
+            error: None,
+        };
+        let append = |store: &SqliteStore, mut event: AuditEvent, key: &str, recorded_at: i64| {
+            event.event_id = format!("aud:test:{key}");
+            event.event_key = key.into();
+            event.recorded_at = recorded_at;
+            event.occurred_at = recorded_at;
+            store.append_audit_event(&event).unwrap();
+        };
+
+        append(&store, base.clone(), "normal-old", 900);
+        let mut extended = base.clone();
+        extended.kind = "github.write.failed".into();
+        extended.outcome = AuditOutcome::Failed;
+        append(&store, extended.clone(), "failure-between-windows", 900);
+        append(&store, extended, "failure-too-old", 100);
+        append(&store, base, "recent", 1_100);
+
+        assert_eq!(store.prune_audit_events(1_000, 200).unwrap(), 2);
+        let page = store.audit_events(&AuditEventQuery::default()).unwrap();
+        let keys: Vec<_> = page
+            .events
+            .iter()
+            .map(|event| event.event.event_key.as_str())
+            .collect();
+        assert!(keys.contains(&"failure-between-windows"));
+        assert!(keys.contains(&"recent"));
+        assert!(!keys.contains(&"normal-old"));
+        assert!(!keys.contains(&"failure-too-old"));
     }
 }

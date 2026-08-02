@@ -19,6 +19,10 @@ use super::{
     ShadowSummary, StoreError, StoreResult, COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS,
     WRITE_CLAIM_LEASE_SECS, WRITE_MAX_ATTEMPTS,
 };
+use controller_protocol::audit::{
+    AuditActor, AuditCorrelation, AuditCursor, AuditError, AuditEvent, AuditEventPage,
+    AuditEventQuery, AuditEventRecord, AuditOutcome, AuditTarget,
+};
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -148,6 +152,48 @@ const MIGRATIONS: &[&str] = &[
      );",
     // 3 — when a drain took ownership of a write
     "ALTER TABLE github_writes ADD COLUMN IF NOT EXISTS claimed_at BIGINT;",
+    // 4 — ADR 036 first-party investigation journal.
+    r#"
+CREATE TABLE IF NOT EXISTS audit_events (
+    seq BIGSERIAL PRIMARY KEY,
+    event_id TEXT NOT NULL UNIQUE,
+    event_key TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    occurred_at BIGINT NOT NULL,
+    recorded_at BIGINT NOT NULL,
+    service TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    caused_by TEXT,
+    delivery_id TEXT,
+    controller_id TEXT,
+    action_id TEXT,
+    scope TEXT,
+    trigger_ref TEXT,
+    trigger_fingerprint TEXT,
+    session_id TEXT,
+    message_id TEXT,
+    runtime_event_id TEXT,
+    write_id TEXT,
+    actor_kind TEXT,
+    actor_id TEXT,
+    actor_display TEXT,
+    actor_association TEXT,
+    target_kind TEXT,
+    target_ref TEXT,
+    target_revision TEXT,
+    detail_json TEXT NOT NULL,
+    error_json TEXT,
+    UNIQUE(service, event_key)
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_session ON audit_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_delivery ON audit_events(delivery_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_action ON audit_events(controller_id, action_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_runtime ON audit_events(runtime_event_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_write ON audit_events(write_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_trigger ON audit_events(trigger_ref);
+CREATE INDEX IF NOT EXISTS idx_audit_events_recorded ON audit_events(recorded_at, seq);
+"#,
 ];
 
 /// Serializes concurrent boots racing the migration list; any constant that
@@ -380,7 +426,7 @@ impl PostgresStore {
         // loop serialized is gone outright (ADR 033).
         let rows = transaction
             .query(
-                "SELECT id, session_id, kind, payload_json, attempts
+                "SELECT id, session_id, kind, payload_json, attempts, state
                    FROM github_writes
                   WHERE state = 'pending'
                      OR (state = 'in_flight' AND claimed_at <= $2)
@@ -397,6 +443,7 @@ impl PostgresStore {
                 kind: row.get(2),
                 payload: serde_json::from_str(&row.get::<_, String>(3)).unwrap_or(Value::Null),
                 attempts: row.get(4),
+                was_reclaimed: row.get::<_, String>(5) == "in_flight",
             })
             .collect();
         for write in &claimed {
@@ -410,6 +457,84 @@ impl PostgresStore {
         transaction.commit().await?;
         Ok(claimed)
     }
+}
+
+async fn append_audit_event_pg_locked<G: tokio_postgres::GenericClient>(
+    g: &G,
+    event: &AuditEvent,
+) -> StoreResult<()> {
+    event
+        .validate()
+        .map_err(|error| StoreError::Pool(format!("invalid audit event: {error}")))?;
+    let detail_json = serde_json::to_string(&event.detail)
+        .map_err(|error| StoreError::Pool(format!("serialize audit detail: {error}")))?;
+    let error_json = event
+        .error
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| StoreError::Pool(format!("serialize audit error: {error}")))?;
+    let actor_kind = event.actor.as_ref().map(|value| value.kind.clone());
+    let actor_id = event.actor.as_ref().and_then(|value| value.id.clone());
+    let actor_display = event.actor.as_ref().and_then(|value| value.display.clone());
+    let actor_association = event
+        .actor
+        .as_ref()
+        .and_then(|value| value.association.clone());
+    let target_kind = event.target.as_ref().map(|value| value.kind.clone());
+    let target_ref = event
+        .target
+        .as_ref()
+        .and_then(|value| value.reference.clone());
+    let target_revision = event
+        .target
+        .as_ref()
+        .and_then(|value| value.revision.clone());
+    let version = i64::from(event.version);
+    let outcome = event.outcome.as_str().to_string();
+    g.execute(
+        "INSERT INTO audit_events
+            (event_id, event_key, version, occurred_at, recorded_at, service, kind, outcome,
+             caused_by, delivery_id, controller_id, action_id, scope, trigger_ref,
+             trigger_fingerprint, session_id, message_id, runtime_event_id, write_id,
+             actor_kind, actor_id, actor_display, actor_association, target_kind, target_ref,
+             target_revision, detail_json, error_json)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                 $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+         ON CONFLICT (service, event_key) DO NOTHING",
+        &[
+            &event.event_id,
+            &event.event_key,
+            &version,
+            &event.occurred_at,
+            &event.recorded_at,
+            &event.service,
+            &event.kind,
+            &outcome,
+            &event.caused_by,
+            &event.correlation.delivery_id,
+            &event.correlation.controller_id,
+            &event.correlation.action_id,
+            &event.correlation.scope,
+            &event.correlation.trigger_ref,
+            &event.correlation.trigger_fingerprint,
+            &event.correlation.session_id,
+            &event.correlation.message_id,
+            &event.correlation.runtime_event_id,
+            &event.correlation.write_id,
+            &actor_kind,
+            &actor_id,
+            &actor_display,
+            &actor_association,
+            &target_kind,
+            &target_ref,
+            &target_revision,
+            &detail_json,
+            &error_json,
+        ],
+    )
+    .await?;
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -828,16 +953,42 @@ impl ProductStore for PostgresStore {
         kind: &str,
         payload: &Value,
     ) -> StoreResult<bool> {
-        let client = self.client().await?;
-        let inserted = client
+        let now = now_unix();
+        let mut client = self.client().await?;
+        let transaction = client.transaction().await?;
+        let inserted = transaction
             .execute(
                 "INSERT INTO github_writes
                    (session_id, kind, payload_json, state, attempts, created_at)
                  VALUES ($1, $2, $3, 'pending', 0, $4)
                  ON CONFLICT (session_id, kind) DO NOTHING",
-                &[&session_id, &kind, &payload.to_string(), &now_unix()],
+                &[&session_id, &kind, &payload.to_string(), &now],
             )
             .await?;
+        let write_id: i64 = transaction
+            .query_one(
+                "SELECT id FROM github_writes WHERE session_id = $1 AND kind = $2",
+                &[&session_id, &kind],
+            )
+            .await?
+            .get(0);
+        if inserted == 1 {
+            let event = super::new_audit_event(
+                format!("github.write.enqueued:{write_id}"),
+                "github.write.enqueued",
+                super::AuditOutcome::Pending,
+                now,
+                super::AuditCorrelation {
+                    session_id: Some(session_id.into()),
+                    write_id: Some(write_id.to_string()),
+                    ..Default::default()
+                },
+                serde_json::json!({"operation": kind}),
+                None,
+            );
+            append_audit_event_pg_locked(&*transaction, &event).await?;
+        }
+        transaction.commit().await?;
         Ok(inserted == 1)
     }
 
@@ -871,6 +1022,7 @@ impl ProductStore for PostgresStore {
                 kind: row.get(2),
                 payload: serde_json::from_str(&row.get::<_, String>(3)).unwrap_or(Value::Null),
                 attempts: row.get(4),
+                was_reclaimed: false,
             })
             .collect())
     }
@@ -903,12 +1055,268 @@ impl ProductStore for PostgresStore {
             .await?;
         Ok(())
     }
+
+    async fn append_audit_event(&self, event: &AuditEvent) -> StoreResult<AuditEventRecord> {
+        event
+            .validate()
+            .map_err(|error| StoreError::Pool(format!("invalid audit event: {error}")))?;
+        let detail_json = serde_json::to_string(&event.detail)
+            .map_err(|error| StoreError::Pool(format!("serialize audit detail: {error}")))?;
+        let error_json = event
+            .error
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| StoreError::Pool(format!("serialize audit error: {error}")))?;
+        let actor_kind = event.actor.as_ref().map(|value| value.kind.clone());
+        let actor_id = event.actor.as_ref().and_then(|value| value.id.clone());
+        let actor_display = event.actor.as_ref().and_then(|value| value.display.clone());
+        let actor_association = event
+            .actor
+            .as_ref()
+            .and_then(|value| value.association.clone());
+        let target_kind = event.target.as_ref().map(|value| value.kind.clone());
+        let target_ref = event
+            .target
+            .as_ref()
+            .and_then(|value| value.reference.clone());
+        let target_revision = event
+            .target
+            .as_ref()
+            .and_then(|value| value.revision.clone());
+        let outcome = event.outcome.as_str().to_string();
+        let version = i64::from(event.version);
+        let mut client = self.client().await?;
+        let transaction = client.transaction().await?;
+        let row = transaction
+            .query_opt(
+                "INSERT INTO audit_events
+                    (event_id, event_key, version, occurred_at, recorded_at, service, kind,
+                     outcome, caused_by, delivery_id, controller_id, action_id, scope, trigger_ref,
+                     trigger_fingerprint, session_id, message_id, runtime_event_id, write_id,
+                     actor_kind, actor_id, actor_display, actor_association, target_kind, target_ref,
+                     target_revision, detail_json, error_json)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                         $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+                 ON CONFLICT (service, event_key) DO NOTHING
+                 RETURNING seq, event_id, event_key, version, occurred_at, recorded_at, service,
+                           kind, outcome, caused_by, delivery_id, controller_id, action_id,
+                           scope, trigger_ref, trigger_fingerprint, session_id, message_id,
+                           runtime_event_id, write_id, actor_kind, actor_id, actor_display,
+                           actor_association, target_kind, target_ref, target_revision,
+                           detail_json, error_json",
+                &[
+                    &event.event_id,
+                    &event.event_key,
+                    &version,
+                    &event.occurred_at,
+                    &event.recorded_at,
+                    &event.service,
+                    &event.kind,
+                    &outcome,
+                    &event.caused_by,
+                    &event.correlation.delivery_id,
+                    &event.correlation.controller_id,
+                    &event.correlation.action_id,
+                    &event.correlation.scope,
+                    &event.correlation.trigger_ref,
+                    &event.correlation.trigger_fingerprint,
+                    &event.correlation.session_id,
+                    &event.correlation.message_id,
+                    &event.correlation.runtime_event_id,
+                    &event.correlation.write_id,
+                    &actor_kind,
+                    &actor_id,
+                    &actor_display,
+                    &actor_association,
+                    &target_kind,
+                    &target_ref,
+                    &target_revision,
+                    &detail_json,
+                    &error_json,
+                ],
+            )
+            .await?;
+        let row = match row {
+            Some(row) => row,
+            None => transaction
+                .query_one(
+                    "SELECT seq, event_id, event_key, version, occurred_at, recorded_at, service,
+                            kind, outcome, caused_by, delivery_id, controller_id, action_id, scope,
+                            trigger_ref, trigger_fingerprint, session_id, message_id,
+                            runtime_event_id, write_id, actor_kind, actor_id, actor_display,
+                            actor_association, target_kind, target_ref, target_revision,
+                            detail_json, error_json
+                     FROM audit_events WHERE service = $1 AND event_key = $2",
+                    &[&event.service, &event.event_key],
+                )
+                .await?,
+        };
+        let record = audit_event_from_pg_row(&row)?;
+        transaction.commit().await?;
+        Ok(record)
+    }
+
+    async fn audit_events(&self, query: &AuditEventQuery) -> StoreResult<AuditEventPage> {
+        let limit = query.bounded_limit();
+        let cursor_recorded_at = query.cursor.map(|cursor| cursor.recorded_at);
+        let cursor_seq = query.cursor.map(|cursor| cursor.seq);
+        let client = self.client().await?;
+        let rows = client
+            .query(
+                "SELECT seq, event_id, event_key, version, occurred_at, recorded_at, service,
+                        kind, outcome, caused_by, delivery_id, controller_id, action_id, scope,
+                        trigger_ref, trigger_fingerprint, session_id, message_id,
+                        runtime_event_id, write_id, actor_kind, actor_id, actor_display,
+                        actor_association, target_kind, target_ref, target_revision,
+                        detail_json, error_json
+                 FROM audit_events
+                 WHERE ($1::text IS NULL OR delivery_id = $1)
+                   AND ($2::text IS NULL OR controller_id = $2)
+                   AND ($3::text IS NULL OR action_id = $3)
+                   AND ($4::text IS NULL OR runtime_event_id = $4)
+                   AND ($5::text IS NULL OR session_id = $5)
+                   AND ($6::text IS NULL OR message_id = $6)
+                   AND ($7::text IS NULL OR write_id = $7)
+                   AND ($8::text IS NULL OR trigger_ref = $8)
+                   AND ($9::text IS NULL OR kind = $9)
+                   AND ($10::bigint IS NULL OR recorded_at >= $10)
+                   AND ($11::bigint IS NULL OR recorded_at <= $11)
+                   AND ($12::bigint IS NULL OR recorded_at < $12
+                        OR (recorded_at = $12 AND seq < $13))
+                 ORDER BY recorded_at DESC, seq DESC
+                 LIMIT $14",
+                &[
+                    &query.delivery_id,
+                    &query.controller_id,
+                    &query.action_id,
+                    &query.runtime_event_id,
+                    &query.session_id,
+                    &query.message_id,
+                    &query.write_id,
+                    &query.trigger_ref,
+                    &query.kind,
+                    &query.since,
+                    &query.until,
+                    &cursor_recorded_at,
+                    &cursor_seq,
+                    &((limit + 1) as i64),
+                ],
+            )
+            .await?;
+        let mut events = rows
+            .iter()
+            .map(audit_event_from_pg_row)
+            .collect::<StoreResult<Vec<_>>>()?;
+        let has_more = events.len() > limit;
+        if has_more {
+            events.truncate(limit);
+        }
+        let next_cursor = has_more
+            .then(|| {
+                events.last().map(|event| {
+                    AuditCursor {
+                        recorded_at: event.event.recorded_at,
+                        seq: event.seq,
+                    }
+                    .encode()
+                })
+            })
+            .flatten();
+        Ok(AuditEventPage {
+            events,
+            next_cursor,
+        })
+    }
+
+    async fn prune_audit_events(&self, before: i64, extended_before: i64) -> StoreResult<usize> {
+        let client = self.client().await?;
+        Ok(client
+            .execute(
+                "DELETE FROM audit_events
+                 WHERE (recorded_at < $1 AND NOT (
+                           outcome IN ('failed', 'outcome_unknown', 'reconciled')
+                           OR kind LIKE 'security.%'
+                           OR kind LIKE 'config.%'
+                           OR kind LIKE 'operator.%'
+                           OR kind LIKE '%dead_lettered'
+                           OR kind = 'audit.retention_pruned'
+                       ))
+                    OR (recorded_at < $2 AND (
+                           outcome IN ('failed', 'outcome_unknown', 'reconciled')
+                           OR kind LIKE 'security.%'
+                           OR kind LIKE 'config.%'
+                           OR kind LIKE 'operator.%'
+                           OR kind LIKE '%dead_lettered'
+                           OR kind = 'audit.retention_pruned'
+                       ))",
+                &[&before, &extended_before.min(before)],
+            )
+            .await? as usize)
+    }
 }
 
 /// Every test needs a reachable Postgres and skips (loudly) without one:
 /// `TEST_POSTGRES_URL=postgres://user:pass@localhost:5432/postgres`.
 /// Each test owns a throwaway schema, dropped and recreated on entry, so
 /// reruns are clean and a failed run leaves its state behind for inspection.
+fn audit_event_from_pg_row(row: &tokio_postgres::Row) -> StoreResult<AuditEventRecord> {
+    let outcome_raw: String = row.get(8);
+    let outcome = AuditOutcome::parse(&outcome_raw)
+        .ok_or_else(|| StoreError::Pool(format!("unknown audit outcome {outcome_raw}")))?;
+    let actor = row.get::<_, Option<String>>(20).map(|kind| AuditActor {
+        kind,
+        id: row.get(21),
+        display: row.get(22),
+        association: row.get(23),
+    });
+    let target = row.get::<_, Option<String>>(24).map(|kind| AuditTarget {
+        kind,
+        reference: row.get(25),
+        revision: row.get(26),
+    });
+    let detail_raw: String = row.get(27);
+    let detail = serde_json::from_str(&detail_raw)
+        .map_err(|error| StoreError::Pool(format!("parse audit detail: {error}")))?;
+    let error = row
+        .get::<_, Option<String>>(28)
+        .map(|raw| {
+            serde_json::from_str::<AuditError>(&raw)
+                .map_err(|error| StoreError::Pool(format!("parse audit error: {error}")))
+        })
+        .transpose()?;
+    Ok(AuditEventRecord {
+        seq: row.get(0),
+        event: AuditEvent {
+            version: row.get::<_, i64>(3) as u16,
+            event_id: row.get(1),
+            event_key: row.get(2),
+            occurred_at: row.get(4),
+            recorded_at: row.get(5),
+            service: row.get(6),
+            kind: row.get(7),
+            outcome,
+            caused_by: row.get(9),
+            correlation: AuditCorrelation {
+                delivery_id: row.get(10),
+                controller_id: row.get(11),
+                action_id: row.get(12),
+                scope: row.get(13),
+                trigger_ref: row.get(14),
+                trigger_fingerprint: row.get(15),
+                session_id: row.get(16),
+                message_id: row.get(17),
+                runtime_event_id: row.get(18),
+                write_id: row.get(19),
+            },
+            actor,
+            target,
+            detail,
+            error,
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

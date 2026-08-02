@@ -9,6 +9,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod audit;
+
 pub const CURRENT_VERSION: u16 = 1;
 pub const SUPPORTED_VERSIONS: &[u16] = &[CURRENT_VERSION];
 

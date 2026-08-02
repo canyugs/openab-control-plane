@@ -5,8 +5,12 @@
 use super::{
     now_unix, CanarySummary, DeliveryAdmission, PendingWrite, ProductStore, RecordedRound,
     ReviewFinding, ReviewRound, RuntimeEventAdmission, SessionTarget, ShadowAdmission,
-    ShadowSummary, StoreResult, COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS,
+    ShadowSummary, StoreError, StoreResult, COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS,
     WRITE_CLAIM_LEASE_SECS, WRITE_MAX_ATTEMPTS,
+};
+use controller_protocol::audit::{
+    AuditActor, AuditCorrelation, AuditCursor, AuditError, AuditEvent, AuditEventPage,
+    AuditEventQuery, AuditEventRecord, AuditOutcome, AuditTarget,
 };
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
@@ -120,6 +124,46 @@ const MIGRATIONS: &[&str] = &[
     // 3 — when a drain took ownership of a write. Two drains that both read
     // the same pending row would both post, and a comment is not idempotent.
     "ALTER TABLE github_writes ADD COLUMN claimed_at INTEGER;",
+    // 4 — ADR 036 first-party investigation journal.
+    "CREATE TABLE IF NOT EXISTS audit_events (
+       seq INTEGER PRIMARY KEY AUTOINCREMENT,
+       event_id TEXT NOT NULL UNIQUE,
+       event_key TEXT NOT NULL,
+       version INTEGER NOT NULL,
+       occurred_at INTEGER NOT NULL,
+       recorded_at INTEGER NOT NULL,
+       service TEXT NOT NULL,
+       kind TEXT NOT NULL,
+       outcome TEXT NOT NULL,
+       caused_by TEXT,
+       delivery_id TEXT,
+       controller_id TEXT,
+       action_id TEXT,
+       scope TEXT,
+       trigger_ref TEXT,
+       trigger_fingerprint TEXT,
+       session_id TEXT,
+       message_id TEXT,
+       runtime_event_id TEXT,
+       write_id TEXT,
+       actor_kind TEXT,
+       actor_id TEXT,
+       actor_display TEXT,
+       actor_association TEXT,
+       target_kind TEXT,
+       target_ref TEXT,
+       target_revision TEXT,
+       detail_json TEXT NOT NULL,
+       error_json TEXT,
+       UNIQUE(service, event_key)
+     );
+     CREATE INDEX IF NOT EXISTS idx_audit_events_session ON audit_events(session_id);
+     CREATE INDEX IF NOT EXISTS idx_audit_events_delivery ON audit_events(delivery_id);
+     CREATE INDEX IF NOT EXISTS idx_audit_events_action ON audit_events(controller_id, action_id);
+     CREATE INDEX IF NOT EXISTS idx_audit_events_runtime ON audit_events(runtime_event_id);
+     CREATE INDEX IF NOT EXISTS idx_audit_events_write ON audit_events(write_id);
+     CREATE INDEX IF NOT EXISTS idx_audit_events_trigger ON audit_events(trigger_ref);
+     CREATE INDEX IF NOT EXISTS idx_audit_events_recorded ON audit_events(recorded_at, seq);",
 ];
 
 pub struct SqliteStore {
@@ -635,13 +679,38 @@ impl SqliteStore {
         kind: &str,
         payload: &Value,
     ) -> rusqlite::Result<bool> {
-        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
-        let inserted = connection.execute(
+        let created_at = now_unix();
+        let mut connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let inserted = transaction.execute(
             "INSERT OR IGNORE INTO github_writes
                (session_id, kind, payload_json, state, attempts, created_at)
              VALUES (?1, ?2, ?3, 'pending', 0, ?4)",
-            params![session_id, kind, payload.to_string(), now_unix()],
+            params![session_id, kind, payload.to_string(), created_at],
         )?;
+        let write_id = transaction.query_row(
+            "SELECT id FROM github_writes WHERE session_id = ?1 AND kind = ?2",
+            params![session_id, kind],
+            |row| row.get::<_, i64>(0),
+        )?;
+        if inserted == 1 {
+            let event = super::new_audit_event(
+                format!("github.write.enqueued:{write_id}"),
+                "github.write.enqueued",
+                super::AuditOutcome::Pending,
+                created_at,
+                super::AuditCorrelation {
+                    session_id: Some(session_id.into()),
+                    write_id: Some(write_id.to_string()),
+                    ..Default::default()
+                },
+                serde_json::json!({"operation": kind}),
+                None,
+            );
+            Self::append_audit_event_locked(&transaction, &event)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        }
+        transaction.commit()?;
         Ok(inserted == 1)
     }
 
@@ -663,7 +732,7 @@ impl SqliteStore {
         let claimed: Vec<PendingWrite>;
         {
             let mut statement = transaction.prepare(
-                "SELECT id, session_id, kind, payload_json, attempts
+                "SELECT id, session_id, kind, payload_json, attempts, state
                    FROM github_writes
                   WHERE state = 'pending'
                      OR (state = 'in_flight' AND claimed_at <= ?2)
@@ -680,6 +749,7 @@ impl SqliteStore {
                             payload: serde_json::from_str(&row.get::<_, String>(3)?)
                                 .unwrap_or(Value::Null),
                             attempts: row.get(4)?,
+                            was_reclaimed: row.get::<_, String>(5)? == "in_flight",
                         })
                     },
                 )?
@@ -722,6 +792,7 @@ impl SqliteStore {
                     kind: row.get(2)?,
                     payload: serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or(Value::Null),
                     attempts: row.get(4)?,
+                    was_reclaimed: false,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -753,6 +824,178 @@ impl SqliteStore {
             params![id, error, WRITE_MAX_ATTEMPTS],
         )?;
         Ok(())
+    }
+
+    fn append_audit_event_locked(
+        transaction: &rusqlite::Transaction<'_>,
+        event: &AuditEvent,
+    ) -> StoreResult<()> {
+        event
+            .validate()
+            .map_err(|error| StoreError::Pool(format!("invalid audit event: {error}")))?;
+        let detail_json = serde_json::to_string(&event.detail)
+            .map_err(|error| StoreError::Pool(format!("serialize audit detail: {error}")))?;
+        let error_json = event
+            .error
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| StoreError::Pool(format!("serialize audit error: {error}")))?;
+        let actor = event.actor.as_ref();
+        let target = event.target.as_ref();
+        transaction.execute(
+            "INSERT OR IGNORE INTO audit_events
+                (event_id, event_key, version, occurred_at, recorded_at, service, kind, outcome,
+                 caused_by, delivery_id, controller_id, action_id, scope, trigger_ref,
+                 trigger_fingerprint, session_id, message_id, runtime_event_id, write_id,
+                 actor_kind, actor_id, actor_display, actor_association, target_kind, target_ref,
+                 target_revision, detail_json, error_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                     ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
+            rusqlite::params![
+                event.event_id,
+                event.event_key,
+                i64::from(event.version),
+                event.occurred_at,
+                event.recorded_at,
+                event.service,
+                event.kind,
+                event.outcome.as_str(),
+                event.caused_by,
+                event.correlation.delivery_id,
+                event.correlation.controller_id,
+                event.correlation.action_id,
+                event.correlation.scope,
+                event.correlation.trigger_ref,
+                event.correlation.trigger_fingerprint,
+                event.correlation.session_id,
+                event.correlation.message_id,
+                event.correlation.runtime_event_id,
+                event.correlation.write_id,
+                actor.map(|value| value.kind.as_str()),
+                actor.and_then(|value| value.id.as_deref()),
+                actor.and_then(|value| value.display.as_deref()),
+                actor.and_then(|value| value.association.as_deref()),
+                target.map(|value| value.kind.as_str()),
+                target.and_then(|value| value.reference.as_deref()),
+                target.and_then(|value| value.revision.as_deref()),
+                detail_json,
+                error_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn append_audit_event(&self, event: &AuditEvent) -> StoreResult<AuditEventRecord> {
+        let mut connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        Self::append_audit_event_locked(&transaction, event)?;
+        let record = transaction.query_row(
+            "SELECT seq, event_id, event_key, version, occurred_at, recorded_at, service, kind,
+                    outcome, caused_by, delivery_id, controller_id, action_id, scope, trigger_ref,
+                    trigger_fingerprint, session_id, message_id, runtime_event_id, write_id,
+                    actor_kind, actor_id, actor_display, actor_association, target_kind, target_ref,
+                    target_revision, detail_json, error_json
+             FROM audit_events WHERE service = ?1 AND event_key = ?2",
+            rusqlite::params![event.service, event.event_key],
+            audit_event_from_sqlite_row,
+        )?;
+        transaction.commit()?;
+        Ok(record)
+    }
+
+    pub fn audit_events(&self, query: &AuditEventQuery) -> StoreResult<AuditEventPage> {
+        let limit = query.bounded_limit();
+        let cursor_recorded_at = query.cursor.map(|cursor| cursor.recorded_at);
+        let cursor_seq = query.cursor.map(|cursor| cursor.seq);
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let mut statement = connection.prepare(
+            "SELECT seq, event_id, event_key, version, occurred_at, recorded_at, service, kind,
+                    outcome, caused_by, delivery_id, controller_id, action_id, scope, trigger_ref,
+                    trigger_fingerprint, session_id, message_id, runtime_event_id, write_id,
+                    actor_kind, actor_id, actor_display, actor_association, target_kind, target_ref,
+                    target_revision, detail_json, error_json
+             FROM audit_events
+             WHERE (?1 IS NULL OR delivery_id = ?1)
+               AND (?2 IS NULL OR controller_id = ?2)
+               AND (?3 IS NULL OR action_id = ?3)
+               AND (?4 IS NULL OR runtime_event_id = ?4)
+               AND (?5 IS NULL OR session_id = ?5)
+               AND (?6 IS NULL OR message_id = ?6)
+               AND (?7 IS NULL OR write_id = ?7)
+               AND (?8 IS NULL OR trigger_ref = ?8)
+               AND (?9 IS NULL OR kind = ?9)
+               AND (?10 IS NULL OR recorded_at >= ?10)
+               AND (?11 IS NULL OR recorded_at <= ?11)
+               AND (?12 IS NULL OR recorded_at < ?12
+                    OR (recorded_at = ?12 AND seq < ?13))
+             ORDER BY recorded_at DESC, seq DESC
+             LIMIT ?14",
+        )?;
+        let mut events = statement
+            .query_map(
+                rusqlite::params![
+                    query.delivery_id.as_deref(),
+                    query.controller_id.as_deref(),
+                    query.action_id.as_deref(),
+                    query.runtime_event_id.as_deref(),
+                    query.session_id.as_deref(),
+                    query.message_id.as_deref(),
+                    query.write_id.as_deref(),
+                    query.trigger_ref.as_deref(),
+                    query.kind.as_deref(),
+                    query.since,
+                    query.until,
+                    cursor_recorded_at,
+                    cursor_seq,
+                    (limit + 1) as i64,
+                ],
+                audit_event_from_sqlite_row,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let has_more = events.len() > limit;
+        if has_more {
+            events.truncate(limit);
+        }
+        let next_cursor = has_more
+            .then(|| {
+                events.last().map(|event| {
+                    AuditCursor {
+                        recorded_at: event.event.recorded_at,
+                        seq: event.seq,
+                    }
+                    .encode()
+                })
+            })
+            .flatten();
+        Ok(AuditEventPage {
+            events,
+            next_cursor,
+        })
+    }
+
+    pub fn prune_audit_events(&self, before: i64, extended_before: i64) -> StoreResult<usize> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(connection.execute(
+            "DELETE FROM audit_events
+             WHERE (recorded_at < ?1 AND NOT (
+                       outcome IN ('failed', 'outcome_unknown', 'reconciled')
+                       OR kind LIKE 'security.%'
+                       OR kind LIKE 'config.%'
+                       OR kind LIKE 'operator.%'
+                       OR kind LIKE '%dead_lettered'
+                       OR kind = 'audit.retention_pruned'
+                   ))
+                OR (recorded_at < ?2 AND (
+                       outcome IN ('failed', 'outcome_unknown', 'reconciled')
+                       OR kind LIKE 'security.%'
+                       OR kind LIKE 'config.%'
+                       OR kind LIKE 'operator.%'
+                       OR kind LIKE '%dead_lettered'
+                       OR kind = 'audit.retention_pruned'
+                   ))",
+            rusqlite::params![before, extended_before.min(before)],
+        )?)
     }
 
     fn prune_shadow_comparisons_at(
@@ -936,6 +1179,18 @@ impl ProductStore for SqliteStore {
     async fn mark_write_failed(&self, id: i64, error: &str) -> StoreResult<()> {
         Ok(SqliteStore::mark_write_failed(self, id, error)?)
     }
+
+    async fn append_audit_event(&self, event: &AuditEvent) -> StoreResult<AuditEventRecord> {
+        SqliteStore::append_audit_event(self, event)
+    }
+
+    async fn audit_events(&self, query: &AuditEventQuery) -> StoreResult<AuditEventPage> {
+        SqliteStore::audit_events(self, query)
+    }
+
+    async fn prune_audit_events(&self, before: i64, extended_before: i64) -> StoreResult<usize> {
+        SqliteStore::prune_audit_events(self, before, extended_before)
+    }
 }
 
 fn migrate(connection: &Connection) -> rusqlite::Result<()> {
@@ -949,6 +1204,77 @@ fn migrate(connection: &Connection) -> rusqlite::Result<()> {
         ))?;
     }
     Ok(())
+}
+
+fn audit_event_from_sqlite_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEventRecord> {
+    let outcome_raw: String = row.get(8)?;
+    let outcome = AuditOutcome::parse(&outcome_raw).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            8,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unknown audit outcome {outcome_raw}"),
+            )),
+        )
+    })?;
+    let detail_raw: String = row.get(27)?;
+    let detail = serde_json::from_str(&detail_raw).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(27, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    let error = row
+        .get::<_, Option<String>>(28)?
+        .map(|raw| {
+            serde_json::from_str::<AuditError>(&raw).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    28,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
+        .transpose()?;
+    let actor = row.get::<_, Option<String>>(20)?.map(|kind| AuditActor {
+        kind,
+        id: row.get(21).ok().flatten(),
+        display: row.get(22).ok().flatten(),
+        association: row.get(23).ok().flatten(),
+    });
+    let target = row.get::<_, Option<String>>(24)?.map(|kind| AuditTarget {
+        kind,
+        reference: row.get(25).ok().flatten(),
+        revision: row.get(26).ok().flatten(),
+    });
+    Ok(AuditEventRecord {
+        seq: row.get(0)?,
+        event: AuditEvent {
+            version: row.get::<_, i64>(3)? as u16,
+            event_id: row.get(1)?,
+            event_key: row.get(2)?,
+            occurred_at: row.get(4)?,
+            recorded_at: row.get(5)?,
+            service: row.get(6)?,
+            kind: row.get(7)?,
+            outcome,
+            caused_by: row.get(9)?,
+            correlation: AuditCorrelation {
+                delivery_id: row.get(10)?,
+                controller_id: row.get(11)?,
+                action_id: row.get(12)?,
+                scope: row.get(13)?,
+                trigger_ref: row.get(14)?,
+                trigger_fingerprint: row.get(15)?,
+                session_id: row.get(16)?,
+                message_id: row.get(17)?,
+                runtime_event_id: row.get(18)?,
+                write_id: row.get(19)?,
+            },
+            actor,
+            target,
+            detail,
+            error,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -1338,6 +1664,95 @@ mod tests {
         assert_eq!(store.claim_writes_at(10, 1_020).unwrap().len(), 1);
         store.mark_write_done(first[0].id).unwrap();
         assert!(store.claim_writes_at(10, 1_030).unwrap().is_empty());
+    }
+
+    #[test]
+    fn audit_journal_is_idempotent_and_filters_by_delivery() {
+        let store = SqliteStore::memory().unwrap();
+        let event = AuditEvent {
+            version: controller_protocol::audit::AUDIT_EVENT_VERSION,
+            event_id: "aud:controller:delivery".into(),
+            event_key: "ingress.received:d-1".into(),
+            occurred_at: 10,
+            recorded_at: 11,
+            service: "github-pr-controller".into(),
+            kind: "ingress.received".into(),
+            outcome: AuditOutcome::Pending,
+            caused_by: None,
+            correlation: AuditCorrelation {
+                delivery_id: Some("d-1".into()),
+                ..Default::default()
+            },
+            actor: None,
+            target: Some(AuditTarget {
+                kind: "github_pull_request".into(),
+                reference: Some("example/repo#1".into()),
+                ..Default::default()
+            }),
+            detail: serde_json::json!({"payload_sha256": "hash"}),
+            error: None,
+        };
+        let first = store.append_audit_event(&event).unwrap();
+        assert_eq!(store.append_audit_event(&event).unwrap(), first);
+        let page = store
+            .audit_events(&AuditEventQuery {
+                delivery_id: Some("d-1".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(
+            page.events[0].event.target.as_ref().unwrap().kind,
+            "github_pull_request"
+        );
+    }
+
+    #[test]
+    fn audit_retention_keeps_extended_events_until_the_second_cutoff() {
+        let store = SqliteStore::memory().unwrap();
+        let base = AuditEvent {
+            version: controller_protocol::audit::AUDIT_EVENT_VERSION,
+            event_id: String::new(),
+            event_key: String::new(),
+            occurred_at: 0,
+            recorded_at: 0,
+            service: "github-pr-controller".into(),
+            kind: "ingress.received".into(),
+            outcome: AuditOutcome::Accepted,
+            caused_by: None,
+            correlation: AuditCorrelation::default(),
+            actor: None,
+            target: None,
+            detail: json!({}),
+            error: None,
+        };
+        let append = |store: &SqliteStore, mut event: AuditEvent, key: &str, recorded_at: i64| {
+            event.event_id = format!("aud:test:{key}");
+            event.event_key = key.into();
+            event.recorded_at = recorded_at;
+            event.occurred_at = recorded_at;
+            store.append_audit_event(&event).unwrap();
+        };
+
+        append(&store, base.clone(), "normal-old", 900);
+        let mut extended = base.clone();
+        extended.kind = "github.write.failed".into();
+        extended.outcome = AuditOutcome::Failed;
+        append(&store, extended.clone(), "failure-between-windows", 900);
+        append(&store, extended, "failure-too-old", 100);
+        append(&store, base, "recent", 1_100);
+
+        assert_eq!(store.prune_audit_events(1_000, 200).unwrap(), 2);
+        let page = store.audit_events(&AuditEventQuery::default()).unwrap();
+        let keys: Vec<_> = page
+            .events
+            .iter()
+            .map(|event| event.event.event_key.as_str())
+            .collect();
+        assert!(keys.contains(&"failure-between-windows"));
+        assert!(keys.contains(&"recent"));
+        assert!(!keys.contains(&"normal-old"));
+        assert!(!keys.contains(&"failure-too-old"));
     }
 
     #[test]

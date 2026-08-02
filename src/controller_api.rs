@@ -22,6 +22,9 @@ use axum::response::Response;
 use axum::Json;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use controller_protocol::audit::{
+    AuditCorrelation, AuditError, AuditEvent, AuditOutcome, AUDIT_EVENT_VERSION,
+};
 use controller_protocol::{
     ActionEnvelope, ActionResultEnvelope, ErrorCode, ErrorEnvelope, ProtocolError, CURRENT_VERSION,
 };
@@ -41,6 +44,60 @@ const ACTION_ID_HEADER: &str = "x-oab-action-id";
 const SCOPE_HEADER: &str = "x-oab-scope";
 const PEPPERS_ENV: &str = "OABCP_CONTROLLER_ACTION_PEPPERS";
 const TOKEN_ROTATION_OVERLAP_MS: i64 = 15 * 60 * 1000;
+const AUDIT_SERVICE: &str = "openab-control-plane";
+
+// The constructor keeps each envelope dimension explicit at call sites. These
+// fields intentionally mirror the audit contract rather than an internal
+// request struct, so the argument count is part of the readability trade-off.
+#[allow(clippy::too_many_arguments)]
+fn action_audit_event(
+    action_id: &str,
+    controller_id: &str,
+    scope: &str,
+    action_kind: &str,
+    session_id: Option<&str>,
+    kind: &str,
+    outcome: AuditOutcome,
+    occurred_at: i64,
+    detail: serde_json::Value,
+    error: Option<AuditError>,
+) -> AuditEvent {
+    let event_key = format!("{kind}:{action_id}");
+    AuditEvent {
+        version: AUDIT_EVENT_VERSION,
+        event_id: format!("aud:{AUDIT_SERVICE}:{event_key}"),
+        event_key,
+        occurred_at,
+        recorded_at: now_ms(),
+        service: AUDIT_SERVICE.into(),
+        kind: kind.into(),
+        outcome,
+        caused_by: None,
+        correlation: AuditCorrelation {
+            controller_id: Some(controller_id.into()),
+            action_id: Some(action_id.into()),
+            scope: Some(scope.into()),
+            session_id: session_id.map(str::to_string),
+            ..Default::default()
+        },
+        actor: Some(controller_protocol::audit::AuditActor {
+            kind: "controller".into(),
+            id: Some(controller_id.into()),
+            ..Default::default()
+        }),
+        target: None,
+        detail: serde_json::json!({
+            "action_kind": action_kind,
+            "action_id": action_id,
+            "detail": detail,
+        }),
+        error,
+    }
+}
+
+fn append_action_audit(state: &AppState, event: AuditEvent) -> Result<()> {
+    state.store.append_audit_event(&event).map(|_| ())
+}
 
 /// Deployment-held versioned HMAC keys. The environment value is a JSON map,
 /// for example `{"1":"<base64url-32+-bytes>"}`. SQLite stores only the
@@ -828,7 +885,34 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
         }
         _ => None,
     };
-    let session_id = action_session_id(&envelope.action);
+    let session_id = action_session_id(&envelope.action).map(str::to_string);
+    if let Err(error) = append_action_audit(
+        state,
+        action_audit_event(
+            &action_id,
+            &controller_id,
+            &scope,
+            action_kind,
+            session_id.as_deref(),
+            "action.received",
+            AuditOutcome::Pending,
+            now_ms(),
+            serde_json::json!({
+                "request_sha256": hex::encode(&request_hash),
+            }),
+            None,
+        ),
+    ) {
+        tracing::error!(%error, %controller_id, %action_id, "controller action journal append failed");
+        return protocol_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some(action_id),
+            ErrorCode::Internal,
+            "controller action journal unavailable",
+            true,
+            None,
+        );
+    }
     let started = match state.store.begin_controller_action(
         &controller_id,
         &credential_hashes,
@@ -836,7 +920,7 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
         &request_hash,
         action_kind,
         &scope,
-        session_id,
+        session_id.as_deref(),
         open_intent.as_ref(),
         now_ms(),
     ) {
@@ -845,6 +929,21 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
     };
     let open_decision = match started {
         ControllerActionStart::Replay(replay) => {
+            let _ = append_action_audit(
+                state,
+                action_audit_event(
+                    &action_id,
+                    &controller_id,
+                    &scope,
+                    action_kind,
+                    session_id.as_deref(),
+                    "action.replayed",
+                    AuditOutcome::Ignored,
+                    now_ms(),
+                    serde_json::json!({"http_status": replay.http_status}),
+                    None,
+                ),
+            );
             let status = u16::try_from(replay.http_status)
                 .ok()
                 .and_then(|status| StatusCode::from_u16(status).ok())
@@ -852,6 +951,21 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
             return raw_json_response(status, replay.response_json, None);
         }
         ControllerActionStart::InProgress => {
+            let _ = append_action_audit(
+                state,
+                action_audit_event(
+                    &action_id,
+                    &controller_id,
+                    &scope,
+                    action_kind,
+                    session_id.as_deref(),
+                    "action.replayed",
+                    AuditOutcome::Pending,
+                    now_ms(),
+                    serde_json::json!({"state": "processing"}),
+                    None,
+                ),
+            );
             return protocol_error_response(
                 StatusCode::CONFLICT,
                 Some(action_id),
@@ -859,17 +973,49 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
                 "controller action is already in progress",
                 true,
                 None,
-            )
+            );
         }
-        ControllerActionStart::OutcomeUnknown => return protocol_error_response(
-            StatusCode::CONFLICT,
-            Some(action_id),
-            ErrorCode::Conflict,
-            "previous action execution outcome is unknown; reconcile before using a new action_id",
-            false,
-            None,
-        ),
+        ControllerActionStart::OutcomeUnknown => {
+            let _ = append_action_audit(
+                state,
+                action_audit_event(
+                    &action_id,
+                    &controller_id,
+                    &scope,
+                    action_kind,
+                    session_id.as_deref(),
+                    "action.outcome_unknown",
+                    AuditOutcome::OutcomeUnknown,
+                    now_ms(),
+                    serde_json::json!({"state": "indeterminate"}),
+                    None,
+                ),
+            );
+            return protocol_error_response(
+                StatusCode::CONFLICT,
+                Some(action_id),
+                ErrorCode::Conflict,
+                "previous action execution outcome is unknown; reconcile before using a new action_id",
+                false,
+                None,
+            );
+        }
         ControllerActionStart::RequestMismatch => {
+            let _ = append_action_audit(
+                state,
+                action_audit_event(
+                    &action_id,
+                    &controller_id,
+                    &scope,
+                    action_kind,
+                    session_id.as_deref(),
+                    "action.denied",
+                    AuditOutcome::Denied,
+                    now_ms(),
+                    serde_json::json!({"reason": "request_mismatch"}),
+                    None,
+                ),
+            );
             return protocol_error_response(
                 StatusCode::CONFLICT,
                 Some(action_id),
@@ -877,12 +1023,60 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
                 "action_id was already used with a different request",
                 false,
                 None,
-            )
+            );
         }
         ControllerActionStart::Denied(denial) => {
-            return denial_response(Some(action_id), denial, now_ms())
+            let _ = append_action_audit(
+                state,
+                action_audit_event(
+                    &action_id,
+                    &controller_id,
+                    &scope,
+                    action_kind,
+                    session_id.as_deref(),
+                    "action.denied",
+                    AuditOutcome::Denied,
+                    now_ms(),
+                    serde_json::json!({"reason": denial_code(&denial)}),
+                    None,
+                ),
+            );
+            return denial_response(Some(action_id), denial, now_ms());
         }
-        ControllerActionStart::Started { open_decision } => open_decision,
+        ControllerActionStart::Started { open_decision } => {
+            if let Err(error) = append_action_audit(
+                state,
+                action_audit_event(
+                    &action_id,
+                    &controller_id,
+                    &scope,
+                    action_kind,
+                    session_id.as_deref(),
+                    "action.accepted",
+                    AuditOutcome::Accepted,
+                    now_ms(),
+                    serde_json::json!({
+                        "open_decision": open_decision.as_ref().map(|decision| match decision {
+                            ControllerOpenDecision::Create => "create",
+                            ControllerOpenDecision::Deduplicate(_) => "deduplicate",
+                            ControllerOpenDecision::Supersede(_) => "supersede",
+                        }),
+                    }),
+                    None,
+                ),
+            ) {
+                tracing::error!(%error, %controller_id, %action_id, "accepted action journal append failed");
+                return protocol_error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Some(action_id),
+                    ErrorCode::Internal,
+                    "controller action journal unavailable",
+                    true,
+                    None,
+                );
+            }
+            open_decision
+        }
     };
 
     let (status, body, binding) = if let Some(ControllerOpenDecision::Deduplicate(existing)) =
@@ -993,6 +1187,41 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
             None,
         );
     }
+    let result_session_id = binding
+        .as_ref()
+        .map(|value| value.session_id.as_str())
+        .or(session_id.as_deref());
+    let (audit_kind, audit_outcome, audit_error) = if status.is_success() {
+        ("action.completed", AuditOutcome::Succeeded, None)
+    } else {
+        (
+            "action.failed",
+            AuditOutcome::Failed,
+            Some(AuditError {
+                class: "controller_action_failed".into(),
+                retryable: status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS,
+                message: None,
+                status: Some(i64::from(status.as_u16())),
+            }),
+        )
+    };
+    if let Err(error) = append_action_audit(
+        state,
+        action_audit_event(
+            &action_id,
+            &controller_id,
+            &scope,
+            action_kind,
+            result_session_id,
+            audit_kind,
+            audit_outcome,
+            now_ms(),
+            serde_json::json!({"http_status": status.as_u16()}),
+            audit_error,
+        ),
+    ) {
+        tracing::warn!(%error, %controller_id, %action_id, "controller action result journal append failed");
+    }
     raw_json_response(status, body, None)
 }
 
@@ -1049,6 +1278,19 @@ fn action_kind(action: &ControllerAction) -> &'static str {
         ControllerAction::AddRoster(_) => "add_roster",
         ControllerAction::CloseSession(_) => "close_session",
         ControllerAction::EmitStatus(_) => "emit_status",
+    }
+}
+
+fn denial_code(denial: &ControllerActionDenial) -> &'static str {
+    match denial {
+        ControllerActionDenial::Credential => "credential",
+        ControllerActionDenial::Grant => "grant",
+        ControllerActionDenial::Scope => "scope",
+        ControllerActionDenial::SessionOwnership => "session_ownership",
+        ControllerActionDenial::TriggerScope => "trigger_scope",
+        ControllerActionDenial::Disabled => "disabled",
+        ControllerActionDenial::RateQuota { .. } => "rate_quota",
+        ControllerActionDenial::ConcurrentSessionQuota { .. } => "concurrent_session_quota",
     }
 }
 

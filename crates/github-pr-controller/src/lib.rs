@@ -11,19 +11,27 @@ pub mod store;
 pub mod verdict;
 
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, OriginalUri, State};
+use axum::extract::{DefaultBodyLimit, OriginalUri, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use config::{ComponentReadiness, Config, OperatingMode};
+use controller_protocol::audit::{
+    AuditActor, AuditCorrelation, AuditCursor, AuditError, AuditEvent, AuditEventQuery,
+    AuditOutcome, AuditTarget, AUDIT_EVENT_VERSION, DEFAULT_RETENTION_DAYS,
+    EXTENDED_RETENTION_DAYS,
+};
 use hmac::{Hmac, Mac};
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use store::{DeliveryAdmission, ProductStore, RuntimeEventAdmission, ShadowAdmission};
+use store::{
+    audit_timestamp, now_ms, DeliveryAdmission, ProductStore, RuntimeEventAdmission,
+    ShadowAdmission, WRITE_MAX_ATTEMPTS,
+};
 
 #[cfg(test)]
 use store::SqliteStore;
@@ -33,6 +41,123 @@ const MAX_WEBHOOK_BODY_BYTES: usize = 1024 * 1024;
 const DELIVERY_PRUNE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// Writes drained per pass. One closed round queues at most three.
 const WRITE_DRAIN_BATCH: i64 = 32;
+const AUDIT_SERVICE: &str = "github-pr-controller";
+
+fn controller_audit_event(
+    event_key: impl Into<String>,
+    kind: &str,
+    outcome: AuditOutcome,
+    occurred_at: i64,
+    correlation: AuditCorrelation,
+    detail: Value,
+    error: Option<AuditError>,
+) -> AuditEvent {
+    let event_key = event_key.into();
+    let actor = detail.get("actor").and_then(github_actor_from_detail);
+    let target = github_target_from_detail(&detail);
+    AuditEvent {
+        version: AUDIT_EVENT_VERSION,
+        event_id: format!("aud:{AUDIT_SERVICE}:{event_key}"),
+        event_key,
+        occurred_at: audit_timestamp(occurred_at),
+        recorded_at: now_ms(),
+        service: AUDIT_SERVICE.into(),
+        kind: kind.into(),
+        outcome,
+        caused_by: None,
+        correlation,
+        actor,
+        target,
+        detail,
+        error,
+    }
+}
+
+fn github_actor_from_detail(detail: &Value) -> Option<AuditActor> {
+    let kind = detail.get("kind")?.as_str()?.to_string();
+    Some(AuditActor {
+        kind,
+        id: detail.get("id").and_then(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| value.as_i64().map(|id| id.to_string()))
+        }),
+        display: detail
+            .get("display")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        association: detail
+            .get("association")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+/// Keep only the stable, authenticated sender fields from a verified GitHub
+/// webhook. The raw sender object stays in neither the journal nor the detail
+/// payload.
+fn verified_github_actor(payload: &Value) -> Option<Value> {
+    let sender = payload.get("sender")?;
+    let id = sender.get("id")?.as_i64()?.to_string();
+    let display = sender
+        .get("login")
+        .and_then(Value::as_str)
+        .filter(|login| !login.is_empty())?;
+    let association = sender
+        .get("author_association")
+        .and_then(Value::as_str)
+        .or_else(|| payload["comment"]["author_association"].as_str())
+        .or_else(|| payload["issue"]["author_association"].as_str())
+        .or_else(|| payload["pull_request"]["author_association"].as_str());
+    Some(json!({
+        "kind": "github_user",
+        "id": id,
+        "display": display,
+        "association": association,
+    }))
+}
+
+fn github_pr_number(payload: &Value) -> Option<i64> {
+    payload["number"]
+        .as_i64()
+        .or_else(|| payload["issue"]["number"].as_i64())
+}
+
+fn github_target_from_detail(detail: &Value) -> Option<AuditTarget> {
+    let provider = detail.get("provider").unwrap_or(detail);
+    let repository = provider
+        .get("repository")
+        .or_else(|| provider.get("repo"))
+        .and_then(Value::as_str)
+        .filter(|repository| !repository.is_empty())?;
+    let pr_number = provider
+        .get("pr_number")
+        .or_else(|| provider.get("pull_request_number"))
+        .and_then(Value::as_i64)?;
+    let revision = provider
+        .get("head_sha")
+        .or_else(|| provider.get("sha"))
+        .or_else(|| provider.get("revision"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some(AuditTarget {
+        kind: "github_pull_request".into(),
+        reference: Some(format!("{repository}#{pr_number}")),
+        revision,
+    })
+}
+
+async fn append_controller_audit(
+    store: &dyn ProductStore,
+    event: AuditEvent,
+) -> anyhow::Result<()> {
+    store
+        .append_audit_event(&event)
+        .await
+        .map_err(|error| anyhow::anyhow!("append audit event {}: {error}", event.event_key))?;
+    Ok(())
+}
 
 pub struct AppState {
     pub config: Config,
@@ -190,6 +315,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/shadow/compare", post(handle_shadow_compare))
         .route("/api/v1/shadow/summary", get(shadow_summary))
         .route("/api/v1/openab/events", post(handle_runtime_event))
+        .route("/api/v1/audit/events", get(handle_audit_events))
         .route("/api/v1/canary/summary", get(canary_summary))
         .layer(DefaultBodyLimit::max(MAX_WEBHOOK_BODY_BYTES))
         .with_state(state)
@@ -199,6 +325,15 @@ pub fn spawn_maintenance(state: &Arc<AppState>) {
     let Some(store) = state.store.clone() else {
         return;
     };
+    let retention_days = configured_positive_days(
+        "GITHUB_CONTROLLER_AUDIT_RETENTION_DAYS",
+        DEFAULT_RETENTION_DAYS,
+    );
+    let extended_retention_days = configured_positive_days(
+        "GITHUB_CONTROLLER_AUDIT_EXTENDED_RETENTION_DAYS",
+        EXTENDED_RETENTION_DAYS,
+    )
+    .max(retention_days);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(DELIVERY_PRUNE_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -211,8 +346,47 @@ pub fn spawn_maintenance(state: &Arc<AppState>) {
                 Ok(_) => {}
                 Err(error) => tracing::warn!(%error, "webhook delivery pruning failed"),
             }
+            let now = now_ms();
+            let before = now.saturating_sub(retention_days.saturating_mul(86_400_000));
+            let extended_before =
+                now.saturating_sub(extended_retention_days.saturating_mul(86_400_000));
+            match store.prune_audit_events(before, extended_before).await {
+                Ok(pruned) if pruned > 0 => {
+                    let event_key = format!("audit.retention_pruned:{now}:{pruned}");
+                    let event = controller_audit_event(
+                        event_key,
+                        "audit.retention_pruned",
+                        AuditOutcome::Succeeded,
+                        now,
+                        AuditCorrelation::default(),
+                        json!({
+                            "pruned": pruned,
+                            "retention_days": retention_days,
+                            "extended_retention_days": extended_retention_days,
+                            "before": before,
+                            "extended_before": extended_before,
+                        }),
+                        None,
+                    );
+                    if let Err(error) = append_controller_audit(store.as_ref(), event).await {
+                        tracing::warn!(%error, pruned, "audit retention evidence append failed");
+                    } else {
+                        tracing::info!(pruned, "pruned expired audit events");
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "audit retention sweep failed"),
+            }
         }
     });
+}
+
+fn configured_positive_days(name: &str, default: i64) -> i64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|days: &i64| *days > 0)
+        .unwrap_or(default)
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
@@ -312,8 +486,64 @@ async fn handle_webhook(
         .begin_delivery(delivery_id, event_type, repository, &payload_hash)
         .await
     {
-        Ok(DeliveryAdmission::New) => {}
-        Ok(DeliveryAdmission::Duplicate { state, .. }) if state == "processing" => {
+        Ok(DeliveryAdmission::New) => {
+            if let Err(error) = append_controller_audit(
+                store.as_ref(),
+                controller_audit_event(
+                    format!("ingress.received:{delivery_id}:{payload_hash}"),
+                    "ingress.received",
+                    AuditOutcome::Pending,
+                    now_unix(),
+                    AuditCorrelation {
+                        delivery_id: Some(delivery_id.into()),
+                        controller_id: state.config.ocp_action.controller_id.clone(),
+                        ..Default::default()
+                    },
+                    json!({
+                        "event_type": event_type,
+                        "payload_sha256": payload_hash,
+                        "repository": repository,
+                        "pr_number": github_pr_number(&payload),
+                        "actor": verified_github_actor(&payload),
+                    }),
+                    None,
+                ),
+            )
+            .await
+            {
+                tracing::error!(%error, %delivery_id, "ingress journal append failed");
+                return response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"ok": false, "error": "audit_store_failed"}),
+                );
+            }
+        }
+        Ok(DeliveryAdmission::Duplicate {
+            state: delivery_state,
+            ..
+        }) if delivery_state == "processing" => {
+            let _ = append_controller_audit(
+                store.as_ref(),
+                controller_audit_event(
+                    format!("ingress.duplicate:{delivery_id}:processing"),
+                    "ingress.duplicate",
+                    AuditOutcome::Ignored,
+                    now_unix(),
+                    AuditCorrelation {
+                        delivery_id: Some(delivery_id.into()),
+                        controller_id: state.config.ocp_action.controller_id.clone(),
+                        ..Default::default()
+                    },
+                    json!({
+                        "state": "processing",
+                        "repository": repository,
+                        "pr_number": github_pr_number(&payload),
+                        "actor": verified_github_actor(&payload),
+                    }),
+                    None,
+                ),
+            )
+            .await;
             return response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({
@@ -321,24 +551,61 @@ async fn handle_webhook(
                     "duplicate": true,
                     "error": "delivery_in_progress"
                 }),
-            )
+            );
         }
-        Ok(DeliveryAdmission::Duplicate { state, result }) => {
+        Ok(DeliveryAdmission::Duplicate {
+            state: delivery_state,
+            result,
+        }) => {
+            let _ = append_controller_audit(
+                store.as_ref(),
+                controller_audit_event(
+                    format!("ingress.duplicate:{delivery_id}:{delivery_state}"),
+                    "ingress.duplicate",
+                    AuditOutcome::Ignored,
+                    now_unix(),
+                    AuditCorrelation {
+                        delivery_id: Some(delivery_id.into()),
+                        controller_id: state.config.ocp_action.controller_id.clone(),
+                        ..Default::default()
+                    },
+                    json!({"state": delivery_state}),
+                    None,
+                ),
+            )
+            .await;
             return response(
                 StatusCode::OK,
                 json!({
                     "ok": true,
                     "duplicate": true,
-                    "state": state,
+                    "state": delivery_state,
                     "result": result
                 }),
-            )
+            );
         }
         Ok(DeliveryAdmission::Conflict) => {
+            let _ = append_controller_audit(
+                store.as_ref(),
+                controller_audit_event(
+                    format!("ingress.conflict:{delivery_id}:{payload_hash}"),
+                    "ingress.conflict",
+                    AuditOutcome::Denied,
+                    now_unix(),
+                    AuditCorrelation {
+                        delivery_id: Some(delivery_id.into()),
+                        controller_id: state.config.ocp_action.controller_id.clone(),
+                        ..Default::default()
+                    },
+                    json!({"event_type": event_type}),
+                    None,
+                ),
+            )
+            .await;
             return response(
                 StatusCode::CONFLICT,
                 json!({"ok": false, "error": "delivery_payload_conflict"}),
-            )
+            );
         }
         Err(error) => {
             tracing::error!(%error, %delivery_id, "delivery admission failed");
@@ -352,18 +619,141 @@ async fn handle_webhook(
     let (durable_state, result) = match candidate_plan(&state, delivery_id, event_type, &payload)
         .await
     {
-        Err(reason) => (
-            "ignored",
-            json!({"ok": true, "planned": false, "reason": reason}),
-        ),
-        Ok(plan) if matches!(state.config.mode, OperatingMode::PlanOnly) => (
-            "planned",
-            json!({"ok": true, "planned": true, "plan": plan}),
-        ),
+        Err(reason) => {
+            let result = json!({"ok": true, "planned": false, "reason": reason});
+            if let Err(error) = append_controller_audit(
+                store.as_ref(),
+                controller_audit_event(
+                    format!("ingress.ignored:{delivery_id}"),
+                    "ingress.ignored",
+                    AuditOutcome::Ignored,
+                    now_unix(),
+                    AuditCorrelation {
+                        delivery_id: Some(delivery_id.into()),
+                        controller_id: state.config.ocp_action.controller_id.clone(),
+                        ..Default::default()
+                    },
+                    json!({
+                        "event_type": event_type,
+                        "reason": reason,
+                        "repository": repository,
+                        "pr_number": github_pr_number(&payload),
+                        "actor": verified_github_actor(&payload),
+                    }),
+                    None,
+                ),
+            )
+            .await
+            {
+                tracing::error!(%error, %delivery_id, "ignored ingress journal append failed");
+                return response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"ok": false, "error": "audit_store_failed"}),
+                );
+            }
+            ("ignored", result)
+        }
+        Ok(plan) if matches!(state.config.mode, OperatingMode::PlanOnly) => {
+            let result = json!({"ok": true, "planned": true, "plan": plan});
+            if let Err(error) = append_controller_audit(
+                store.as_ref(),
+                controller_audit_event(
+                    format!("ingress.accepted:{delivery_id}"),
+                    "ingress.accepted",
+                    AuditOutcome::Accepted,
+                    now_unix(),
+                    AuditCorrelation {
+                        delivery_id: Some(delivery_id.into()),
+                        controller_id: state.config.ocp_action.controller_id.clone(),
+                        ..Default::default()
+                    },
+                    json!({
+                        "event_type": event_type,
+                        "mode": "plan_only",
+                        "repository": repository,
+                        "pr_number": github_pr_number(&payload),
+                        "actor": verified_github_actor(&payload),
+                    }),
+                    None,
+                ),
+            )
+            .await
+            {
+                tracing::error!(%error, %delivery_id, "planned ingress journal append failed");
+                return response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"ok": false, "error": "audit_store_failed"}),
+                );
+            }
+            ("planned", result)
+        }
         Ok(plan) => {
             let action_id = format!("github-delivery-{delivery_id}");
+            for (kind, outcome) in [
+                ("action.received", AuditOutcome::Pending),
+                ("action.accepted", AuditOutcome::Accepted),
+            ] {
+                if let Err(error) = append_controller_audit(
+                    store.as_ref(),
+                    controller_audit_event(
+                        format!("{kind}:{action_id}"),
+                        kind,
+                        outcome,
+                        now_unix(),
+                        AuditCorrelation {
+                            delivery_id: Some(delivery_id.into()),
+                            controller_id: state.config.ocp_action.controller_id.clone(),
+                            action_id: Some(action_id.clone()),
+                            scope: state.config.ocp_action.scope.clone(),
+                            trigger_ref: Some(plan.trigger_ref.clone()),
+                            trigger_fingerprint: plan.trigger_fingerprint.clone(),
+                            ..Default::default()
+                        },
+                        json!({
+                            "event_type": event_type,
+                            "repository": plan.repository.clone(),
+                            "pr_number": plan.pr_number,
+                            "actor": verified_github_actor(&payload),
+                        }),
+                        None,
+                    ),
+                )
+                .await
+                {
+                    tracing::error!(%error, %delivery_id, "action journal append failed");
+                    let result = json!({"ok": false, "error": "audit_store_failed"});
+                    let _ = store.release_delivery_for_retry(delivery_id, &result).await;
+                    return response(StatusCode::SERVICE_UNAVAILABLE, result);
+                }
+            }
             let Some(client) = state.action_client.as_ref() else {
                 let result = json!({"ok": false, "error": "ocp_action_unavailable"});
+                let _ = append_controller_audit(
+                    store.as_ref(),
+                    controller_audit_event(
+                        format!("action.failed:{action_id}"),
+                        "action.failed",
+                        AuditOutcome::Failed,
+                        now_unix(),
+                        AuditCorrelation {
+                            delivery_id: Some(delivery_id.into()),
+                            controller_id: state.config.ocp_action.controller_id.clone(),
+                            action_id: Some(action_id.clone()),
+                            scope: state.config.ocp_action.scope.clone(),
+                            trigger_ref: Some(plan.trigger_ref.clone()),
+                            trigger_fingerprint: plan.trigger_fingerprint.clone(),
+                            ..Default::default()
+                        },
+                        json!({"error_code": "ocp_action_unavailable"}),
+                        Some(AuditError {
+                            class: "ocp_action_unavailable".into(),
+                            retryable: true,
+                            message: None,
+                            status: Some(503),
+                        }),
+                    ),
+                )
+                .await;
                 let _ = store.release_delivery_for_retry(delivery_id, &result).await;
                 return response(StatusCode::SERVICE_UNAVAILABLE, result);
             };
@@ -372,6 +762,34 @@ async fn handle_webhook(
                 .await
             {
                 Ok(action_result) => {
+                    if let Err(error) = append_controller_audit(
+                        store.as_ref(),
+                        controller_audit_event(
+                            format!("action.completed:{action_id}"),
+                            "action.completed",
+                            AuditOutcome::Succeeded,
+                            now_unix(),
+                            AuditCorrelation {
+                                delivery_id: Some(delivery_id.into()),
+                                controller_id: state.config.ocp_action.controller_id.clone(),
+                                action_id: Some(action_id.clone()),
+                                scope: state.config.ocp_action.scope.clone(),
+                                trigger_ref: Some(plan.trigger_ref.clone()),
+                                trigger_fingerprint: plan.trigger_fingerprint.clone(),
+                                session_id: opened_session_id(&action_result).map(str::to_string),
+                                ..Default::default()
+                            },
+                            json!({"http_status": 200}),
+                            None,
+                        ),
+                    )
+                    .await
+                    {
+                        tracing::error!(%error, %delivery_id, "completed action journal append failed");
+                        let result = json!({"ok": false, "error": "audit_store_failed"});
+                        let _ = store.release_delivery_for_retry(delivery_id, &result).await;
+                        return response(StatusCode::SERVICE_UNAVAILABLE, result);
+                    }
                     // The terminal event will name only this session id. What
                     // it is *about* is provider knowledge the kernel does not
                     // keep, so record it now or the close is unactionable.
@@ -460,6 +878,32 @@ async fn handle_webhook(
                         "external canary action failed; retaining provider retry path"
                     );
                     let result = json!({"ok": false, "error": error.public_code()});
+                    let _ = append_controller_audit(
+                        store.as_ref(),
+                        controller_audit_event(
+                            format!("action.failed:{action_id}"),
+                            "action.failed",
+                            AuditOutcome::Failed,
+                            now_unix(),
+                            AuditCorrelation {
+                                delivery_id: Some(delivery_id.into()),
+                                controller_id: state.config.ocp_action.controller_id.clone(),
+                                action_id: Some(action_id.clone()),
+                                scope: state.config.ocp_action.scope.clone(),
+                                trigger_ref: Some(plan.trigger_ref.clone()),
+                                trigger_fingerprint: plan.trigger_fingerprint.clone(),
+                                ..Default::default()
+                            },
+                            json!({"error_code": error.public_code()}),
+                            Some(AuditError {
+                                class: error.public_code().into(),
+                                retryable: true,
+                                message: None,
+                                status: None,
+                            }),
+                        ),
+                    )
+                    .await;
                     if let Err(store_error) =
                         store.release_delivery_for_retry(delivery_id, &result).await
                     {
@@ -470,6 +914,46 @@ async fn handle_webhook(
             }
         }
     };
+    if let Err(error) = append_controller_audit(
+        store.as_ref(),
+        controller_audit_event(
+            format!(
+                "ingress.{}:{delivery_id}",
+                if durable_state == "ignored" {
+                    "ignored"
+                } else {
+                    "accepted"
+                }
+            ),
+            if durable_state == "ignored" {
+                "ingress.ignored"
+            } else {
+                "ingress.accepted"
+            },
+            if durable_state == "ignored" {
+                AuditOutcome::Ignored
+            } else {
+                AuditOutcome::Accepted
+            },
+            now_unix(),
+            AuditCorrelation {
+                delivery_id: Some(delivery_id.into()),
+                controller_id: state.config.ocp_action.controller_id.clone(),
+                action_id: result["action_id"].as_str().map(str::to_string),
+                ..Default::default()
+            },
+            json!({"state": durable_state}),
+            None,
+        ),
+    )
+    .await
+    {
+        tracing::error!(%error, %delivery_id, "final ingress journal append failed");
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "audit_store_failed"}),
+        );
+    }
     if let Err(error) = store
         .finish_delivery(delivery_id, durable_state, &result)
         .await
@@ -539,6 +1023,31 @@ async fn handle_runtime_event(
     let body_hash = hex::encode(Sha256::digest(&body));
     match store.record_runtime_event(&body_hash, &event).await {
         Ok(RuntimeEventAdmission::New) => {
+            if let Err(error) = append_controller_audit(
+                store.as_ref(),
+                controller_audit_event(
+                    format!("runtime_event.received:{}", event.event_id),
+                    "runtime_event.received",
+                    AuditOutcome::Accepted,
+                    event.occurred_at,
+                    AuditCorrelation {
+                        controller_id: Some(event.controller_id.clone()),
+                        session_id: event.session_id.clone(),
+                        runtime_event_id: Some(event.event_id.clone()),
+                        ..Default::default()
+                    },
+                    json!({"event_type": event.event_type}),
+                    None,
+                ),
+            )
+            .await
+            {
+                tracing::error!(%error, event_id = event.event_id, "runtime-event journal append failed");
+                return response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"ok": false, "error": "audit_store_failed"}),
+                );
+            }
             tracing::info!(
                 event_id = event.event_id,
                 event_type = event.event_type,
@@ -553,17 +1062,149 @@ async fn handle_runtime_event(
             )
         }
         Ok(RuntimeEventAdmission::Duplicate) => {
+            let _ = append_controller_audit(
+                store.as_ref(),
+                controller_audit_event(
+                    format!("runtime_event.duplicate:{}:{}", event.event_id, body_hash),
+                    "runtime_event.duplicate",
+                    AuditOutcome::Ignored,
+                    now_unix(),
+                    AuditCorrelation {
+                        controller_id: Some(event.controller_id.clone()),
+                        session_id: event.session_id.clone(),
+                        runtime_event_id: Some(event.event_id.clone()),
+                        ..Default::default()
+                    },
+                    json!({"event_type": event.event_type}),
+                    None,
+                ),
+            )
+            .await;
             response(StatusCode::OK, json!({"ok": true, "duplicate": true}))
         }
-        Ok(RuntimeEventAdmission::Conflict) => response(
-            StatusCode::CONFLICT,
-            json!({"ok": false, "error": "runtime_event_payload_conflict"}),
-        ),
+        Ok(RuntimeEventAdmission::Conflict) => {
+            let _ = append_controller_audit(
+                store.as_ref(),
+                controller_audit_event(
+                    format!("runtime_event.conflict:{}:{}", event.event_id, body_hash),
+                    "runtime_event.conflict",
+                    AuditOutcome::Denied,
+                    now_unix(),
+                    AuditCorrelation {
+                        controller_id: Some(event.controller_id.clone()),
+                        session_id: event.session_id.clone(),
+                        runtime_event_id: Some(event.event_id.clone()),
+                        ..Default::default()
+                    },
+                    json!({"event_type": event.event_type}),
+                    None,
+                ),
+            )
+            .await;
+            response(
+                StatusCode::CONFLICT,
+                json!({"ok": false, "error": "runtime_event_payload_conflict"}),
+            )
+        }
         Err(error) => {
             tracing::error!(%error, "runtime-event receipt persistence failed");
             response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({"ok": false, "error": "runtime_event_store_failed"}),
+            )
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AuditEventsParams {
+    delivery_id: Option<String>,
+    controller_id: Option<String>,
+    action_id: Option<String>,
+    runtime_event_id: Option<String>,
+    session_id: Option<String>,
+    message_id: Option<String>,
+    write_id: Option<String>,
+    trigger_ref: Option<String>,
+    kind: Option<String>,
+    since: Option<i64>,
+    until: Option<i64>,
+    cursor: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn handle_audit_events(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Query(params): Query<AuditEventsParams>,
+) -> Response {
+    let Some(secret) = state.config.observer_secret.as_deref() else {
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "observation_hmac_not_configured"}),
+        );
+    };
+    let target = uri
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or(uri.path());
+    let canonical = audit_signature_payload(target);
+    if !verify_signature(
+        secret,
+        canonical.as_bytes(),
+        header(&headers, "x-canary-audit-signature-256"),
+    ) {
+        return response(
+            StatusCode::FORBIDDEN,
+            json!({"ok": false, "error": "invalid_observation_signature"}),
+        );
+    }
+    let cursor = match params.cursor.as_deref() {
+        Some(value) => match AuditCursor::decode(value) {
+            Some(cursor) => Some(cursor),
+            None => {
+                return response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"ok": false, "error": "invalid_audit_cursor"}),
+                )
+            }
+        },
+        None => None,
+    };
+    let Some(store) = state.store.as_ref() else {
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "product_store_unavailable"}),
+        );
+    };
+    match store
+        .audit_events(&AuditEventQuery {
+            delivery_id: params.delivery_id,
+            controller_id: params.controller_id,
+            action_id: params.action_id,
+            runtime_event_id: params.runtime_event_id,
+            session_id: params.session_id,
+            message_id: params.message_id,
+            write_id: params.write_id,
+            trigger_ref: params.trigger_ref,
+            kind: params.kind,
+            since: params.since,
+            until: params.until,
+            cursor,
+            limit: params.limit.unwrap_or_default(),
+        })
+        .await
+    {
+        Ok(page) => response(
+            StatusCode::OK,
+            serde_json::to_value(page).unwrap_or_default(),
+        ),
+        Err(error) => {
+            tracing::error!(%error, "audit event query failed");
+            response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"ok": false, "error": "audit_store_failed"}),
             )
         }
     }
@@ -754,14 +1395,51 @@ fn spawn_write_drain(state: &Arc<AppState>) {
             }
         };
         for write in pending {
-            match perform_write(&github, store.as_ref(), &write).await {
-                Ok(()) => {
+            match perform_write_with_receipt(&github, store.as_ref(), &write).await {
+                Ok(_) => {
                     if let Err(error) = store.mark_write_done(write.id).await {
                         tracing::error!(%error, id = write.id, "outbox completion failed");
                     }
                 }
                 Err(error) => {
                     tracing::warn!(id = write.id, kind = write.kind, %error, "github write failed");
+                    let retryable = write.attempts + 1 < WRITE_MAX_ATTEMPTS;
+                    let (audit_kind, audit_outcome) = if retryable {
+                        ("github.write.retry_scheduled", AuditOutcome::RetryScheduled)
+                    } else {
+                        ("github.write.failed", AuditOutcome::Failed)
+                    };
+                    let _ = append_controller_audit(
+                        store.as_ref(),
+                        controller_audit_event(
+                            format!("{audit_kind}:{}:{}", write.id, write.attempts),
+                            audit_kind,
+                            audit_outcome,
+                            now_unix(),
+                            AuditCorrelation {
+                                session_id: Some(write.session_id.clone()),
+                                write_id: Some(write.id.to_string()),
+                                ..Default::default()
+                            },
+                            json!({
+                                "operation": write.kind,
+                                "attempt": write.attempts,
+                                "retryable": retryable,
+                                "provider": {
+                                    "repository": write.payload["repo"].as_str(),
+                                    "pr_number": write.payload["pr_number"].as_i64(),
+                                    "head_sha": write.payload["sha"].as_str(),
+                                },
+                            }),
+                            Some(AuditError {
+                                class: "provider_write_failed".into(),
+                                retryable,
+                                message: None,
+                                status: None,
+                            }),
+                        ),
+                    )
+                    .await;
                     if let Err(error) = store.mark_write_failed(write.id, &error.to_string()).await
                     {
                         tracing::error!(%error, id = write.id, "outbox failure record failed");
@@ -772,18 +1450,92 @@ fn spawn_write_drain(state: &Arc<AppState>) {
     });
 }
 
+#[cfg(test)]
 async fn perform_write(
     github: &github::GitHubClient,
     store: &dyn ProductStore,
     write: &store::PendingWrite,
 ) -> anyhow::Result<()> {
+    perform_write_with_receipt(github, store, write)
+        .await
+        .map(|_| ())
+}
+
+async fn perform_write_with_receipt(
+    github: &github::GitHubClient,
+    store: &dyn ProductStore,
+    write: &store::PendingWrite,
+) -> anyhow::Result<Value> {
     let payload = &write.payload;
+    let request_json = serde_json::to_vec(&write.payload)?;
+    let request_sha256 = hex::encode(Sha256::digest(&request_json));
+    if write.was_reclaimed {
+        append_controller_audit(
+            store,
+            controller_audit_event(
+                format!(
+                    "github.write.outcome_unknown:{}:{}",
+                    write.id, write.attempts
+                ),
+                "github.write.outcome_unknown",
+                AuditOutcome::OutcomeUnknown,
+                now_unix(),
+                AuditCorrelation {
+                    session_id: Some(write.session_id.clone()),
+                    write_id: Some(write.id.to_string()),
+                    ..Default::default()
+                },
+                json!({
+                    "operation": write.kind.clone(),
+                    "attempt": write.attempts,
+                    "reason": "claim_lease_expired_before_completion",
+                    "request_sha256": request_sha256.clone(),
+                    "provider": {
+                        "repository": payload["repo"].as_str(),
+                        "pr_number": payload["pr_number"].as_i64(),
+                        "head_sha": payload["sha"].as_str(),
+                    },
+                }),
+                None,
+            ),
+        )
+        .await?;
+    }
+    append_controller_audit(
+        store,
+        controller_audit_event(
+            format!("github.write.attempted:{}:{}", write.id, write.attempts),
+            "github.write.attempted",
+            AuditOutcome::Pending,
+            now_unix(),
+            AuditCorrelation {
+                session_id: Some(write.session_id.clone()),
+                write_id: Some(write.id.to_string()),
+                ..Default::default()
+            },
+            json!({
+                "operation": write.kind.clone(),
+                "attempt": write.attempts,
+                "request_sha256": request_sha256.clone(),
+                "provider": {
+                    "repository": payload["repo"].as_str(),
+                    "pr_number": payload["pr_number"].as_i64(),
+                    "head_sha": payload["sha"].as_str(),
+                },
+            }),
+            None,
+        ),
+    )
+    .await?;
     let repo = payload["repo"].as_str().unwrap_or_default();
-    match write.kind.as_str() {
+    let receipt = match write.kind.as_str() {
         closing::KIND_COMMENT => {
             let body = payload["body"].as_str().unwrap_or_default();
             match payload["comment_id"].as_i64() {
-                Some(comment_id) => github.update_comment(repo, comment_id, body).await?,
+                Some(comment_id) => {
+                    github.update_comment(repo, comment_id, body).await?;
+                    json!({"comment_id": comment_id, "reconciled": false})
+                }
                 None => {
                     let issue = payload["pr_number"].as_i64().unwrap_or_default();
                     // Reconcile before creating: a crash after the create but
@@ -792,37 +1544,36 @@ async fn perform_write(
                     // body carries the round marker, so the earlier success is
                     // findable — adopt it and refresh its body instead.
                     let marker = closing::round_marker(&write.session_id);
-                    let comment_id = match github.find_marked_comment(repo, issue, &marker).await? {
-                        Some(existing) => {
-                            github.update_comment(repo, existing, body).await?;
-                            existing
-                        }
-                        None => github.create_comment(repo, issue, body).await?,
-                    };
+                    let (comment_id, reconciled) =
+                        match github.find_marked_comment(repo, issue, &marker).await? {
+                            Some(existing) => {
+                                github.update_comment(repo, existing, body).await?;
+                                (existing, true)
+                            }
+                            None => (github.create_comment(repo, issue, body).await?, false),
+                        };
                     // Learned here, used by every later round of this PR.
                     store
                         .set_round_comment_id(&write.session_id, comment_id)
                         .await?;
+                    json!({"comment_id": comment_id, "reconciled": reconciled})
                 }
             }
-            Ok(())
         }
         closing::KIND_COMMENT_OPEN => {
             let issue = payload["pr_number"].as_i64().unwrap_or_default();
             let open_marker = closing::open_marker(&write.session_id);
             let verdict_marker = closing::round_marker(&write.session_id);
+            let open_exists = github
+                .find_marked_comment(repo, issue, &open_marker)
+                .await?;
+            let verdict_exists = github
+                .find_marked_comment(repo, issue, &verdict_marker)
+                .await?;
             // Create only if neither of the session's comments exists yet: a
             // replay must not duplicate the "started" post, and a fast close
             // (verdict already up) must not gain a stale "started" after it.
-            if github
-                .find_marked_comment(repo, issue, &open_marker)
-                .await?
-                .is_none()
-                && github
-                    .find_marked_comment(repo, issue, &verdict_marker)
-                    .await?
-                    .is_none()
-            {
+            if open_exists.is_none() && verdict_exists.is_none() {
                 let round = payload["round"].as_i64().unwrap_or(1);
                 let baseline = github
                     .pull_baseline(repo, issue)
@@ -836,9 +1587,14 @@ async fn perform_write(
                      will follow as a separate comment when the round \
                      closes.\n\n{open_marker}"
                 );
-                github.create_comment(repo, issue, &body).await?;
+                let comment_id = github.create_comment(repo, issue, &body).await?;
+                json!({"comment_id": comment_id, "reconciled": false})
+            } else {
+                json!({
+                    "comment_id": open_exists.or(verdict_exists),
+                    "reconciled": true,
+                })
             }
-            Ok(())
         }
         closing::KIND_COMMENT_ABANDON => {
             let issue = payload["pr_number"].as_i64().unwrap_or_default();
@@ -847,11 +1603,12 @@ async fn perform_write(
             // managed to post "started" gets no tombstone either. The verdict
             // comment lives under a different marker, so this can never touch
             // a verdict.
-            if let Some(existing) = github.find_marked_comment(repo, issue, &marker).await? {
+            let existing = github.find_marked_comment(repo, issue, &marker).await?;
+            if let Some(existing) = existing {
                 let body = payload["body"].as_str().unwrap_or_default();
                 github.update_comment(repo, existing, body).await?;
             }
-            Ok(())
+            json!({"comment_id": existing, "reconciled": existing.is_some()})
         }
         closing::KIND_STATUS => {
             let state = match payload["state"].as_str() {
@@ -859,17 +1616,24 @@ async fn perform_write(
                 Some("failure") => github::StatusState::Failure,
                 _ => github::StatusState::Error,
             };
+            let sha = payload["sha"].as_str().unwrap_or_default();
+            let context = payload["context"]
+                .as_str()
+                .unwrap_or(closing::STATUS_CONTEXT);
             github
                 .set_status(
                     repo,
-                    payload["sha"].as_str().unwrap_or_default(),
+                    sha,
                     state,
-                    payload["context"]
-                        .as_str()
-                        .unwrap_or(closing::STATUS_CONTEXT),
+                    context,
                     payload["description"].as_str().unwrap_or_default(),
                 )
-                .await
+                .await?;
+            json!({
+                "sha": sha,
+                "context": context,
+                "state": state.as_str(),
+            })
         }
         closing::KIND_REVIEW => {
             let event = match payload["event"].as_str() {
@@ -881,37 +1645,66 @@ async fn perform_write(
             // Same reconcile as the comment: a replayed submit must find the
             // review it already submitted, not add a second one.
             let marker = closing::round_marker(&write.session_id);
-            if github
-                .find_marked_review(repo, pr_number, &marker)
-                .await?
-                .is_some()
-            {
+            if let Some(review_id) = github.find_marked_review(repo, pr_number, &marker).await? {
                 tracing::info!(
                     session_id = write.session_id,
                     "review already on the pull request; reconciled"
                 );
-                return Ok(());
+                json!({"review_id": review_id, "reconciled": true})
+            } else {
+                // The review timeline entry must say where its evidence lives: the
+                // comment write ran earlier in this same drain and recorded its
+                // id, so link this round's report directly. Absent id (comment
+                // write still failing) degrades to the unlinked body.
+                let mut body = payload["body"].as_str().unwrap_or_default().to_string();
+                if let Ok(Some(comment_id)) = store.round_comment_id(&write.session_id).await {
+                    body = body.replace(
+                        "Details in the review comment.",
+                        &format!(
+                            "Full report: https://github.com/{repo}/pull/{pr_number}#issuecomment-{comment_id}"
+                        ),
+                    );
+                }
+                let review_id = github.submit_review(repo, pr_number, event, &body).await?;
+                json!({"review_id": review_id, "reconciled": false})
             }
-            // The review timeline entry must say where its evidence lives: the
-            // comment write ran earlier in this same drain and recorded its
-            // id, so link this round's report directly. Absent id (comment
-            // write still failing) degrades to the unlinked body.
-            let mut body = payload["body"].as_str().unwrap_or_default().to_string();
-            if let Ok(Some(comment_id)) = store.round_comment_id(&write.session_id).await {
-                body = body.replace(
-                    "Details in the review comment.",
-                    &format!(
-                        "Full report: https://github.com/{repo}/pull/{pr_number}#issuecomment-{comment_id}"
-                    ),
-                );
-            }
-            github
-                .submit_review(repo, pr_number, event, &body)
-                .await
-                .map(|_| ())
         }
         other => anyhow::bail!("unknown write kind {other}"),
-    }
+    };
+    let reconciled = receipt["reconciled"].as_bool().unwrap_or(false);
+    let (kind, outcome) = if reconciled {
+        ("github.write.reconciled", AuditOutcome::Reconciled)
+    } else {
+        ("github.write.succeeded", AuditOutcome::Succeeded)
+    };
+    append_controller_audit(
+        store,
+        controller_audit_event(
+            format!("{kind}:{}:{}", write.id, write.attempts),
+            kind,
+            outcome,
+            now_unix(),
+            AuditCorrelation {
+                session_id: Some(write.session_id.clone()),
+                write_id: Some(write.id.to_string()),
+                ..Default::default()
+            },
+            json!({
+                "operation": write.kind.clone(),
+                "attempt": write.attempts,
+                "request_sha256": request_sha256,
+                "provider_receipt": receipt.clone(),
+                "provider": {
+                    "repository": payload["repo"].as_str(),
+                    "pr_number": payload["pr_number"].as_i64(),
+                    "head_sha": payload["sha"].as_str(),
+                },
+            }),
+            None,
+        ),
+    )
+    .await?;
+    Ok(receipt)
 }
 
 async fn canary_summary(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
@@ -1149,6 +1942,10 @@ pub fn verify_signature(secret: &str, body: &[u8], signature_header: Option<&str
     mac.verify_slice(&expected).is_ok()
 }
 
+fn audit_signature_payload(target: &str) -> String {
+    format!("GET\n{target}")
+}
+
 fn response(status: StatusCode, value: Value) -> Response {
     (status, Json(value)).into_response()
 }
@@ -1167,6 +1964,52 @@ mod tests {
     use tower::ServiceExt;
 
     type ActionCalls = Arc<Mutex<Vec<(String, OpenSessionAction)>>>;
+
+    #[test]
+    fn audit_signature_is_bound_to_the_exact_query_target() {
+        let target = "/api/v1/audit/events?session_id=ses_1&limit=500";
+        let mut mac = HmacSha256::new_from_slice(b"observer-secret").unwrap();
+        mac.update(audit_signature_payload(target).as_bytes());
+        let header = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        assert!(verify_signature(
+            "observer-secret",
+            audit_signature_payload(target).as_bytes(),
+            Some(&header),
+        ));
+        assert!(!verify_signature(
+            "observer-secret",
+            audit_signature_payload("/api/v1/audit/events?session_id=ses_2&limit=500").as_bytes(),
+            Some(&header),
+        ));
+    }
+
+    #[test]
+    fn provider_audit_context_normalizes_actor_and_pull_request_target() {
+        let event = controller_audit_event(
+            "action.accepted:test",
+            "action.accepted",
+            AuditOutcome::Accepted,
+            1_000,
+            AuditCorrelation::default(),
+            json!({
+                "actor": {
+                    "kind": "github_user",
+                    "id": "42",
+                    "display": "octocat",
+                    "association": "MEMBER"
+                },
+                "repository": "example/repo",
+                "pr_number": 7,
+                "head_sha": "deadbeef"
+            }),
+            None,
+        );
+        assert_eq!(event.actor.unwrap().id.as_deref(), Some("42"));
+        let target = event.target.unwrap();
+        assert_eq!(target.kind, "github_pull_request");
+        assert_eq!(target.reference.as_deref(), Some("example/repo#7"));
+        assert_eq!(target.revision.as_deref(), Some("deadbeef"));
+    }
 
     struct RecordingActionClient {
         calls: ActionCalls,
