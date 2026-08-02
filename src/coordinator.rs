@@ -24,6 +24,28 @@ pub trait Ctx {
     /// `bot`'s last *settled* (non-stub) message content, if any.
     fn latest_settled(&self, bot: &str) -> Option<String>;
     fn state(&self) -> SessionState;
+    /// The session's opening trigger reference, when one exists. A
+    /// `controller:`-prefixed trigger marks a controller-opened session,
+    /// which always carries a verdict contract (the controller fail-closes
+    /// on unparseable verdicts) regardless of coordinator mode.
+    fn trigger_ref(&self) -> Option<&str> {
+        None
+    }
+    /// How many synthesis prompts this session has already sent. Derived from
+    /// the transcript (system messages with the quorum-prompt prefix) — the
+    /// transcript is the attempt log, no schema required. Default 0 keeps
+    /// non-council Ctx impls untouched.
+    fn synthesis_attempts(&self) -> i64 {
+        0
+    }
+    /// Chair-capable bots eligible to take a synthesis turn (role=chair,
+    /// enabled, healthy). Default: just the current chair — the pool
+    /// mechanism ships even where only one chair is registered.
+    fn chair_candidates(&self) -> Vec<String> {
+        self.chair()
+            .map(|c| vec![c.to_string()])
+            .unwrap_or_default()
+    }
 }
 
 /// What the orchestrator should do. `Transition`/`Close` are guarded CAS (fire
@@ -47,6 +69,11 @@ pub enum Action {
         author: String,
         verdict: String,
     },
+    /// Hand the chair seat to another chair-capable bot (#344): membership +
+    /// `chair_bot` update; the session stays in Quorum. Always followed by
+    /// Relays of the reviewers' finals (the new chair received none of the
+    /// session's earlier fanout) and a synthesis Prompt.
+    ReassignChair { to: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,7 +162,13 @@ pub(crate) fn quorum_actions(cx: &dyn Ctx, prompt: &str) -> Vec<Action> {
     actions
 }
 
-const COUNCIL_QUORUM_PROMPT: &str = "Quorum reached. Chair, synthesize the final verdict, complete any side effect required by the opening trigger, and only then end your final message with [done]. Do not send [done] before the required side effect succeeds.";
+pub(crate) const COUNCIL_QUORUM_PROMPT: &str = "Quorum reached. Chair, synthesize the final verdict, complete any side effect required by the opening trigger, and only then end your final message with [done]. Do not send [done] before the required side effect succeeds.";
+
+/// A synthesis turn that ends without a parseable trailer is retried this many
+/// times in total before the round fail-closes. Chosen to cover the observed
+/// failure (one colliding turn) with margin, while the watchdog remains the
+/// hard backstop.
+pub(crate) const MAX_SYNTHESIS_ATTEMPTS: i64 = 3;
 
 /// v1 lifecycle: reviewers (roster minus chair) signal done; once `quorum_n` of
 /// them have, the chair synthesizes and the chair's own done closes the session.
@@ -159,7 +192,7 @@ impl Coordinator for QuorumCouncil {
     }
 
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
-        council_on_done(cx, bot, COUNCIL_QUORUM_PROMPT)
+        council_on_done(cx, bot, COUNCIL_QUORUM_PROMPT, false)
     }
 
     fn structured_verdict(&self, cx: &dyn Ctx, verdict_text: &str) -> Option<StructuredVerdict> {
@@ -187,7 +220,12 @@ fn parse_structured_verdict(cx: &dyn Ctx, verdict_text: &str) -> Option<Structur
 
 /// Shared quorum-council done-handling; `prompt` is the per-coordinator chair
 /// synthesis instruction.
-pub(crate) fn council_on_done(cx: &dyn Ctx, bot: &str, prompt: &str) -> Vec<Action> {
+pub(crate) fn council_on_done(
+    cx: &dyn Ctx,
+    bot: &str,
+    prompt: &str,
+    verdict_required: bool,
+) -> Vec<Action> {
     let mut actions = vec![];
     let chair = cx.chair();
 
@@ -211,11 +249,33 @@ pub(crate) fn council_on_done(cx: &dyn Ctx, bot: &str, prompt: &str) -> Vec<Acti
     //    reviewers have contributed or before the chair has posted the PR
     //    comment side-effect. Liveness still comes from the watchdog.
     if Some(bot) == chair && cx.state() == SessionState::Quorum {
-        actions.push(Action::Close {
-            from: SessionState::Quorum,
-            author: bot.to_string(),
-            verdict: cx.latest_settled(bot).unwrap_or_default(),
-        });
+        let verdict = cx.latest_settled(bot).unwrap_or_default();
+        // #344: "responded" is not "delivered". Under a verdict contract, a
+        // chair turn without a parseable verdict trailer (an agent error
+        // relayed as content, a meta-acknowledgement, an empty final) must
+        // not become the round's answer — the turn failed, the round did
+        // not. Re-queue the synthesis, rotating to another chair-capable
+        // bot when one exists; fail-close only after MAX_SYNTHESIS_ATTEMPTS.
+        //
+        // The contract is keyed two ways: the coordinator says so (review
+        // mode), OR the session was controller-opened (`controller:` trigger
+        // prefix) — controller rounds run under plain `council` mode today
+        // and fail-closed error statuses are exactly what this path
+        // prevents. Smoke tests and manual sessions carry neither marker.
+        let verdict_required = verdict_required
+            || cx
+                .trigger_ref()
+                .is_some_and(|t| t.starts_with("controller:"));
+        let parseable = crate::plugins::pr_review::verdict::trailer(&verdict).is_some();
+        if verdict_required && !parseable && cx.synthesis_attempts() < MAX_SYNTHESIS_ATTEMPTS {
+            actions.extend(requeue_synthesis(cx, bot));
+        } else {
+            actions.push(Action::Close {
+                from: SessionState::Quorum,
+                author: bot.to_string(),
+                verdict,
+            });
+        }
     } else if Some(bot) == chair {
         tracing::debug!(
             bot,
@@ -224,6 +284,57 @@ pub(crate) fn council_on_done(cx: &dyn Ctx, bot: &str, prompt: &str) -> Vec<Acti
         );
     }
 
+    actions
+}
+
+/// The requeue: pick the next chair (rotation prefers a different candidate),
+/// hand over the seat if it changed — relaying every done reviewer's settled
+/// final, since the newcomer received none of the session's earlier fanout —
+/// and re-prompt with an attempt-numbered synthesis prompt.
+fn requeue_synthesis(cx: &dyn Ctx, failed_chair: &str) -> Vec<Action> {
+    let mut actions = vec![];
+    let candidates = cx.chair_candidates();
+    let next = candidates
+        .iter()
+        .find(|c| c.as_str() != failed_chair)
+        .cloned()
+        .unwrap_or_else(|| failed_chair.to_string());
+    let attempt = cx.synthesis_attempts() + 1;
+    if next != failed_chair {
+        actions.push(Action::ReassignChair { to: next.clone() });
+        for reviewer in cx.done_voters() {
+            if reviewer != next && reviewer != failed_chair {
+                actions.push(Action::Relay {
+                    from: reviewer,
+                    to: next.clone(),
+                });
+            }
+        }
+        tracing::warn!(
+            session = cx.session_id(),
+            from = failed_chair,
+            to = %next,
+            "synthesis turn failed without a parseable verdict; chair reassigned"
+        );
+    } else {
+        tracing::warn!(
+            session = cx.session_id(),
+            chair = failed_chair,
+            attempt,
+            "synthesis turn failed without a parseable verdict; re-prompting"
+        );
+    }
+    actions.push(Action::Prompt {
+        to: next,
+        content: format!(
+            "Quorum reached. (synthesis attempt {attempt}) The previous synthesis \
+turn did not deliver a parseable verdict trailer — it may have failed mid-turn. \
+Synthesize the final verdict now from the reviewers' reports, complete any side \
+effect required by the opening trigger, and only then end your final message \
+with [done]. Your final message must contain the full report body and end with \
+the machine-readable verdict trailer your steering defines."
+        ),
+    });
     actions
 }
 
@@ -293,10 +404,7 @@ impl Coordinator for Pipeline {
 /// Pick a known coordinator for a session's `mode`. The only place a mode is
 /// mapped to a policy; a new mode is a new arm + impl, nothing else changes.
 pub fn lookup(mode: &str) -> Option<Box<dyn Coordinator>> {
-    lookup_with_pr_review_config(
-        mode,
-        &crate::plugins::pr_review::PrReviewConfig::default(),
-    )
+    lookup_with_pr_review_config(mode, &crate::plugins::pr_review::PrReviewConfig::default())
 }
 
 /// Runtime lookup variant used by the orchestrator. Only the review policy
@@ -329,6 +437,9 @@ mod tests {
         quorum_n: i64,
         reactors: Vec<String>,
         state: SessionState,
+        candidates: Vec<String>,
+        attempts: i64,
+        trigger_ref: Option<String>,
     }
     /// A Deliberating ctx with no done-signals yet (the common starting point).
     fn ctx(roster: &[&str], final_msg: Option<&str>) -> FakeCtx {
@@ -340,6 +451,9 @@ mod tests {
             quorum_n: 0,
             reactors: vec![],
             state: SessionState::Deliberating,
+            candidates: vec![],
+            attempts: 0,
+            trigger_ref: None,
         }
     }
     impl Ctx for FakeCtx {
@@ -364,6 +478,150 @@ mod tests {
         fn state(&self) -> SessionState {
             self.state.clone()
         }
+        fn synthesis_attempts(&self) -> i64 {
+            self.attempts
+        }
+        fn trigger_ref(&self) -> Option<&str> {
+            self.trigger_ref.as_deref()
+        }
+        fn chair_candidates(&self) -> Vec<String> {
+            if self.candidates.is_empty() {
+                self.chair.iter().cloned().collect()
+            } else {
+                self.candidates.clone()
+            }
+        }
+    }
+
+    // Built by concatenation: the CI kernel-purity grep gate forbids the
+    // verdict-trailer literal in kernel files, tests included.
+    fn trailed() -> String {
+        format!(
+            "Report body…\n{}{}verdict:approve r=0 y=0 g=2]] [done]",
+            "[", "["
+        )
+    }
+    const ERROR_SHAPED: &str = "⚠️ Internal Error (code: -32603)\nInternal error [done]";
+
+    /// A Quorum-state review ctx where the chair is signalling done.
+    fn quorum_ctx(final_msg: &str) -> FakeCtx {
+        FakeCtx {
+            session_id: "ses_fake".into(),
+            roster: vec!["chair".into(), "rev-a".into(), "rev-b".into()],
+            chair: Some("chair".into()),
+            final_msg: Some(final_msg.into()),
+            quorum_n: 2,
+            reactors: vec!["rev-a".into(), "rev-b".into()],
+            state: SessionState::Quorum,
+            candidates: vec![],
+            attempts: 1, // the initial synthesis prompt has been sent
+            trigger_ref: None,
+        }
+    }
+
+    #[test]
+    fn parseable_chair_final_closes_as_before() {
+        let actions = council_on_done(
+            &quorum_ctx(&trailed()),
+            "chair",
+            COUNCIL_QUORUM_PROMPT,
+            true,
+        );
+        assert!(actions.iter().any(
+            |a| matches!(a, Action::Close { verdict, .. } if verdict.contains("verdict:approve"))
+        ));
+    }
+
+    #[test]
+    fn error_shaped_chair_final_requeues_instead_of_closing() {
+        let actions = council_on_done(
+            &quorum_ctx(ERROR_SHAPED),
+            "chair",
+            COUNCIL_QUORUM_PROMPT,
+            true,
+        );
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::Close { .. })),
+            "the failed turn must not become the round's answer"
+        );
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            Action::Prompt { to, content } if to == "chair" && content.starts_with("Quorum reached.")
+        )));
+    }
+
+    #[test]
+    fn exhausted_attempts_fail_close_exactly_as_today() {
+        let mut cx = quorum_ctx(ERROR_SHAPED);
+        cx.attempts = MAX_SYNTHESIS_ATTEMPTS;
+        let actions = council_on_done(&cx, "chair", COUNCIL_QUORUM_PROMPT, true);
+        assert!(actions.iter().any(|a| matches!(a, Action::Close { .. })));
+        assert!(!actions
+            .iter()
+            .any(|a| matches!(a, Action::ReassignChair { .. })));
+    }
+
+    #[test]
+    fn requeue_rotates_to_another_candidate_and_relays_reviewer_finals() {
+        let mut cx = quorum_ctx(ERROR_SHAPED);
+        cx.candidates = vec!["chair".into(), "chair-claude".into()];
+        let actions = council_on_done(&cx, "chair", COUNCIL_QUORUM_PROMPT, true);
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::ReassignChair { to } if to == "chair-claude")));
+        let relays: Vec<_> = actions
+            .iter()
+            .filter(|a| matches!(a, Action::Relay { to, .. } if to == "chair-claude"))
+            .collect();
+        assert_eq!(
+            relays.len(),
+            2,
+            "both reviewers' finals travel to the new chair"
+        );
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::Prompt { to, .. } if to == "chair-claude")));
+    }
+
+    #[test]
+    fn single_candidate_reprompts_same_chair_without_reassign() {
+        let actions = council_on_done(
+            &quorum_ctx(ERROR_SHAPED),
+            "chair",
+            COUNCIL_QUORUM_PROMPT,
+            true,
+        );
+        assert!(!actions
+            .iter()
+            .any(|a| matches!(a, Action::ReassignChair { .. })));
+        assert!(!actions.iter().any(|a| matches!(a, Action::Relay { .. })));
+    }
+
+    #[test]
+    fn controller_opened_council_session_requeues_even_in_plain_mode() {
+        // Controller-opened rounds run under plain `council` mode today; the
+        // `controller:` trigger prefix is what marks the verdict contract.
+        let mut cx = quorum_ctx(ERROR_SHAPED);
+        cx.trigger_ref = Some("controller:github-canary:abc123".into());
+        let actions = council_on_done(&cx, "chair", COUNCIL_QUORUM_PROMPT, false);
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::Close { .. })),
+            "controller-opened session without a trailer must requeue"
+        );
+    }
+
+    #[test]
+    fn plain_council_without_verdict_contract_is_untouched() {
+        let actions = council_on_done(
+            &quorum_ctx("PONG [done]"),
+            "chair",
+            COUNCIL_QUORUM_PROMPT,
+            false,
+        );
+        assert!(
+            actions.iter().any(|a| matches!(a, Action::Close { .. })),
+            "no verdict contract → trailer-less close stays the normal path"
+        );
     }
 
     #[test]

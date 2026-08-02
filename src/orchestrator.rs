@@ -273,9 +273,10 @@ pub fn emit_controller_status(
     if state.store.session(session_id)?.is_none() {
         anyhow::bail!("unknown session {session_id}");
     }
-    let message = state
-        .store
-        .add_message(session_id, None, "status", None, Some(target), body, None)?;
+    let message =
+        state
+            .store
+            .add_message(session_id, None, "status", None, Some(target), body, None)?;
     state.emit_north(
         "controller_status",
         session_id,
@@ -405,10 +406,9 @@ fn dispatch_coordinator(
     if session.mode == "review_council" {
         state.record_compatibility_use_once("legacy_review_council_dispatch", &session.id);
     }
-    if let Some(coord) = coordinator::lookup_with_pr_review_config(
-        &session.mode,
-        &state.pr_review_config,
-    ) {
+    if let Some(coord) =
+        coordinator::lookup_with_pr_review_config(&session.mode, &state.pr_review_config)
+    {
         return Ok(Some(coord));
     }
 
@@ -880,8 +880,7 @@ fn maybe_post_unavailable_notice(
         state.pr_review_config.plane_status_notice,
         has_verdict,
         trigger_ref,
-    )
-    else {
+    ) else {
         return; // notice disabled, verdict posted, or not a PR review
     };
     let Some(app) = state.github_app.clone() else {
@@ -1614,7 +1613,10 @@ fn attempt_failover(state: &Arc<AppState>, degraded_bot_id: &str) {
                 }),
             );
         }
-        Err(e) => tracing::warn!(bot = degraded_bot_id, "auto-failover roster swap failed: {e}"),
+        Err(e) => tracing::warn!(
+            bot = degraded_bot_id,
+            "auto-failover roster swap failed: {e}"
+        ),
     }
 }
 
@@ -1695,9 +1697,9 @@ fn redeliver_trigger_to_non_starter_chair(state: &Arc<AppState>, session: &Sessi
             message.author_kind == "client" && message.audience.as_deref() == Some(chair)
         })
         .or_else(|| {
-            messages.iter().find(|message| {
-                message.author_kind == "client" && message.audience.is_none()
-            })
+            messages
+                .iter()
+                .find(|message| message.author_kind == "client" && message.audience.is_none())
         });
     let Some(trigger) = trigger else {
         return Ok(());
@@ -1887,6 +1889,46 @@ impl Ctx for OrchCtx<'_> {
     fn state(&self) -> SessionState {
         SessionState::from_db_str(&self.session.state)
     }
+    fn trigger_ref(&self) -> Option<&str> {
+        self.session.trigger_ref.as_deref()
+    }
+    /// The transcript is the attempt log: every synthesis prompt (initial and
+    /// retries) is a system message starting with the quorum-prompt prefix.
+    fn synthesis_attempts(&self) -> i64 {
+        self.state
+            .store
+            .messages(&self.session.id)
+            .map(|msgs| {
+                msgs.iter()
+                    .filter(|m| {
+                        m.author_kind == "system" && m.content.starts_with("Quorum reached.")
+                    })
+                    .count() as i64
+            })
+            .unwrap_or(0)
+    }
+    /// Chair-capable pool: registered bots with the chair role that are
+    /// enabled and healthy, sorted for deterministic rotation. Where only one
+    /// chair is registered (today's lanes) this is just the current chair.
+    fn chair_candidates(&self) -> Vec<String> {
+        self.state
+            .store
+            .list_bots()
+            .map(|bots| {
+                let mut ids: Vec<String> = bots
+                    .into_iter()
+                    .filter(|b| b.role == "chair" && b.enabled && b.health == "ok")
+                    .map(|b| b.id)
+                    .collect();
+                ids.sort();
+                ids
+            })
+            .unwrap_or_else(|_| {
+                self.chair()
+                    .map(|c| vec![c.to_string()])
+                    .unwrap_or_default()
+            })
+    }
 }
 
 /// The settled result span of `author` (ADR 028): walk back from the author's
@@ -1945,6 +1987,35 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                 }
                 deliver_system_prompt(state, session, &to, &content)?;
             }
+            Action::ReassignChair { to } => {
+                // #344: hand the seat over. Membership first (delivery needs
+                // it), then the chair column; the session stays in Quorum.
+                transition_failed = false;
+                let outgoing = session.chair_bot.clone();
+                state.store.add_session_bot(&session.id, &to)?;
+                state.store.set_session_chair(&session.id, &to)?;
+                // The newcomer received none of the session's earlier fanout,
+                // and the reviewers' relayed finals carry the findings but not
+                // the AUTHORITY: repo, PR number, side-effect instructions all
+                // live in the opening chair task (council F1 on the fix PR).
+                // Hand the outgoing chair's task over verbatim — it is already
+                // recipient-rewritten for the chair ROLE, so no re-derivation.
+                let messages = state.store.messages(&session.id)?;
+                let chair_task = messages
+                    .iter()
+                    .find(|m| {
+                        m.author_kind == "client" && m.audience.as_deref() == outgoing.as_deref()
+                    })
+                    .or_else(|| {
+                        messages
+                            .iter()
+                            .find(|m| m.author_kind == "client" && m.audience.is_none())
+                    });
+                if let Some(task) = chair_task {
+                    deliver_system_prompt(state, session, &to, &task.content)?;
+                }
+                state.emit_north("chair_reassigned", &session.id, json!({ "chair": to }));
+            }
             Action::Transition { from, to } => {
                 let to_str = to.as_str();
                 let ok = state.store.advance_state(&session.id, from, to)?;
@@ -1962,10 +2033,11 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                 // ADR 013: the chair's structured verdict, parsed from the
                 // closing text. Computed BEFORE the close CAS so it lands in
                 // the same transaction (the close webhook re-reads the row).
-                let structured_verdict = if let Some(coord) = coordinator::lookup_with_pr_review_config(
-                    &session.mode,
-                    &state.pr_review_config,
-                ) {
+                let structured_verdict = if let Some(coord) =
+                    coordinator::lookup_with_pr_review_config(
+                        &session.mode,
+                        &state.pr_review_config,
+                    ) {
                     let cx = OrchCtx {
                         state,
                         session,
@@ -2937,7 +3009,11 @@ mod tests {
             edit_reply(&session.id, &stub.id, "Reviewed the diff — looks correct."),
         )
         .unwrap();
-        assert_eq!(health(&store), "ok", "settled edit content recovers the bot");
+        assert_eq!(
+            health(&store),
+            "ok",
+            "settled edit content recovers the bot"
+        );
     }
 
     fn set_provider(store: &SqliteStore, id: &str, provider: &str) {
@@ -3011,7 +3087,10 @@ mod tests {
         let (roster, _) =
             crate::plugins::pr_review::council::runtime_council_roster(&state).unwrap();
         assert_eq!(roster.first().unwrap(), &chair, "chair untouched");
-        assert!(roster.contains(&sb1.id) && roster.contains(&sb2.id), "both swaps kept");
+        assert!(
+            roster.contains(&sb1.id) && roster.contains(&sb2.id),
+            "both swaps kept"
+        );
         assert!(
             !roster.contains(&rev1) && !roster.contains(&rev2),
             "neither degraded reviewer left in-roster"
@@ -3067,8 +3146,12 @@ mod tests {
     fn standby_selection_prefers_different_provider_then_falls_back() {
         let (state, store, _session, chair, rev1, rev2, mut conns) = liveness_setup();
         let roster = vec![chair, rev1, rev2];
-        let same = store.register_bot("chair-kiro2", "chair", "h8", "t8").unwrap();
-        let diff = store.register_bot("chair-claude", "chair", "h9", "t9").unwrap();
+        let same = store
+            .register_bot("chair-kiro2", "chair", "h8", "t8")
+            .unwrap();
+        let diff = store
+            .register_bot("chair-claude", "chair", "h9", "t9")
+            .unwrap();
         connect_bot(&state, &mut conns, &same.id);
         connect_bot(&state, &mut conns, &diff.id);
         set_provider(&store, &same.id, "kiro");

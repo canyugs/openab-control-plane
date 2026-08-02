@@ -271,7 +271,9 @@ impl GitHubApp {
             .await
             .context("read collaborator permission response body")?;
         if !status.is_success() {
-            return Err(anyhow!("GitHub collaborator permission returned {status}: {raw}"));
+            return Err(anyhow!(
+                "GitHub collaborator permission returned {status}: {raw}"
+            ));
         }
         let body: Value =
             serde_json::from_str(&raw).context("parse collaborator permission response")?;
@@ -395,7 +397,10 @@ mod tests {
         // The chair sets the openab/council commit status (the single verdict
         // signal); without statuses:write that POST 403s. Reviewers never do.
         assert_eq!(Role::Chair.permissions()["statuses"], "write");
-        assert_eq!(Role::Reviewer.permissions()["statuses"], serde_json::Value::Null);
+        assert_eq!(
+            Role::Reviewer.permissions()["statuses"],
+            serde_json::Value::Null
+        );
     }
 
     #[test]
@@ -466,7 +471,11 @@ CQIDAQAB\n\
         use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
         let app = GitHubApp::from_parts("123456", TEST_RSA_PEM, 42, "https://api.github.com");
         let jwt = app.app_jwt().expect("app_jwt must sign, not panic");
-        assert_eq!(jwt.split('.').count(), 3, "a JWT is header.payload.signature");
+        assert_eq!(
+            jwt.split('.').count(),
+            3,
+            "a JWT is header.payload.signature"
+        );
 
         let key = DecodingKey::from_rsa_pem(TEST_RSA_PUBLIC_PEM.as_bytes()).unwrap();
         let mut v = Validation::new(Algorithm::RS256);
@@ -480,7 +489,12 @@ CQIDAQAB\n\
     /// mint handler maps this to 502, but the process must stay up.
     #[test]
     fn app_jwt_bad_key_errors_not_panics() {
-        let app = GitHubApp::from_parts("1", "-----BEGIN RSA PRIVATE KEY-----\nnope\n-----END RSA PRIVATE KEY-----", 1, "https://api.github.com");
+        let app = GitHubApp::from_parts(
+            "1",
+            "-----BEGIN RSA PRIVATE KEY-----\nnope\n-----END RSA PRIVATE KEY-----",
+            1,
+            "https://api.github.com",
+        );
         assert!(app.app_jwt().is_err(), "bad PEM must Err, not panic");
     }
 }

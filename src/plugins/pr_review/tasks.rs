@@ -188,7 +188,10 @@ fn render_review_chair_task_with_options(
         .replace("{{REPO}}", repo)
         .replace("{{NUM}}", pr)
         .replace("{{BOT_MENTION}}", bot_mention)
-        .replace("{{VERDICT_REVIEW}}", &verdict_review_block(review_mode, repo, pr))
+        .replace(
+            "{{VERDICT_REVIEW}}",
+            &verdict_review_block(review_mode, repo, pr),
+        )
 }
 
 pub(crate) fn render_review_reviewer_task(
@@ -320,16 +323,19 @@ mod tests {
         assert!(chair_text.contains("💬 Comment `@<bot-handle> <question>` for a follow-up"));
         assert!(chair_text.contains("gh api repos/canyugs/openab-control-plane/statuses/$SHA"));
         assert!(chair_text.contains("[[verdict:request_changes r=1 y=3 g=5]] [done]"));
-        assert!(!chair_text.contains("{{VERDICT_REVIEW}}"), "placeholder must be filled");
+        assert!(
+            !chair_text.contains("{{VERDICT_REVIEW}}"),
+            "placeholder must be filled"
+        );
     }
 
     #[test]
     fn chair_review_mode_default_is_approve_asymmetric() {
         // Default (unset) → approve mode: formal APPROVE, but NO request-changes block.
         let chair_text = render_chair_task(None);
-        assert!(chair_text.contains(
-            "gh pr review 53 --repo canyugs/openab-control-plane --approve"
-        ));
+        assert!(
+            chair_text.contains("gh pr review 53 --repo canyugs/openab-control-plane --approve")
+        );
         assert!(!chair_text.contains("--request-changes"));
     }
 
@@ -344,12 +350,11 @@ mod tests {
     #[test]
     fn chair_review_mode_enforce_is_symmetric() {
         let chair_text = render_chair_task(Some("enforce"));
-        assert!(chair_text.contains(
-            "gh pr review 53 --repo canyugs/openab-control-plane --approve"
-        ));
-        assert!(chair_text.contains(
-            "gh pr review 53 --repo canyugs/openab-control-plane --request-changes"
-        ));
+        assert!(
+            chair_text.contains("gh pr review 53 --repo canyugs/openab-control-plane --approve")
+        );
+        assert!(chair_text
+            .contains("gh pr review 53 --repo canyugs/openab-control-plane --request-changes"));
     }
 
     #[test]
@@ -408,8 +413,9 @@ mod tests {
         assert!(chair_text.contains(
             "Every council-owned PR comment body MUST start with this exact first line:\n  <!-- openab-council -->"
         ));
-        assert!(chair_text
-            .contains("<!-- openab-council -->\n     Review Council started (round N)."));
+        assert!(
+            chair_text.contains("<!-- openab-council -->\n     Review Council started (round N).")
+        );
         assert!(chair_text.contains("<!-- openab-council -->\n       LGTM"));
     }
 
@@ -437,9 +443,8 @@ mod tests {
         assert!(chair_text.contains("NEVER use --edit-last"));
         assert!(!chair_text.contains("--edit-last --create-if-none"));
         assert!(chair_text.contains("CID=${URL##*-}"));
-        assert!(chair_text.contains(
-            "gh api repos/canyugs/openab-control-plane/issues/comments/$CID -X PATCH"
-        ));
+        assert!(chair_text
+            .contains("gh api repos/canyugs/openab-control-plane/issues/comments/$CID -X PATCH"));
         assert!(chair_text.contains("post the verdict as a NEW comment with the marker instead"));
     }
 

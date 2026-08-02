@@ -360,8 +360,14 @@ pub enum ControllerActionDenial {
     /// ADR 034: a disabled registration refuses NEW work only. Actions that
     /// target a session it already opened pass; everything else lands here.
     Disabled,
-    RateQuota { limit: i64, reset_at: i64 },
-    ConcurrentSessionQuota { limit: i64, current: i64 },
+    RateQuota {
+        limit: i64,
+        reset_at: i64,
+    },
+    ConcurrentSessionQuota {
+        limit: i64,
+        current: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -459,12 +465,8 @@ pub trait Store: Send + Sync {
     ) -> Result<Vec<ReviewWaiver>>;
     /// Extend (`expires_at = Some`) and/or revoke. Returns false when the
     /// waiver does not exist.
-    fn update_review_waiver(
-        &self,
-        id: &str,
-        expires_at: Option<i64>,
-        revoke: bool,
-    ) -> Result<bool>;
+    fn update_review_waiver(&self, id: &str, expires_at: Option<i64>, revoke: bool)
+        -> Result<bool>;
     /// ADR 035 P2: a close reported these waivers as matched — bump their
     /// fired counters. Ids are deduplicated and scoped to the closing
     /// session's repo; unknown or foreign ids are ignored (the chair may
@@ -1832,8 +1834,8 @@ impl Store for SqliteStore {
                 )?;
             }
         }
-        let after = read_config(&tx, controller_id)?
-            .context("registration vanished mid-transaction")?;
+        let after =
+            read_config(&tx, controller_id)?.context("registration vanished mid-transaction")?;
         // ADR 034 §1: every PATCH lands in the audit trail with the
         // before/after of the whole mutable document.
         tx.execute(

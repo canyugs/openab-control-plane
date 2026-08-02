@@ -117,9 +117,10 @@ const REVIEW_OPT_IN_LABEL: &str = "oab-review";
 /// True if the PR's `labels` array carries the maintainer opt-in label. Distinct
 /// namespace from the `review:<preset>` labels so it never collides with a preset.
 fn has_review_opt_in_label(labels: &Value) -> bool {
-    labels
-        .as_array()
-        .is_some_and(|arr| arr.iter().any(|l| l["name"].as_str() == Some(REVIEW_OPT_IN_LABEL)))
+    labels.as_array().is_some_and(|arr| {
+        arr.iter()
+            .any(|l| l["name"].as_str() == Some(REVIEW_OPT_IN_LABEL))
+    })
 }
 
 /// ADR 019 D2 — gate `pull_request` auto-triggers on author trust. Unlike comment
@@ -287,8 +288,7 @@ fn parse_trigger_with_config(
             // `labeled` exists solely so a maintainer applying the opt-in label
             // convenes immediately (before, the opt-in only took effect on the next
             // push). Any other label application is ignored.
-            if action == "labeled" && body["label"]["name"].as_str() != Some(REVIEW_OPT_IN_LABEL)
-            {
+            if action == "labeled" && body["label"]["name"].as_str() != Some(REVIEW_OPT_IN_LABEL) {
                 return None;
             }
             let pr = &body["pull_request"];
@@ -921,24 +921,24 @@ mod tests {
 
     fn replay_fixture(name: &str) -> Value {
         let raw = match name {
-            "pull_request_opened" => include_str!(
-                "../../../tests/fixtures/github/pull_request_opened.json"
-            ),
-            "pull_request_ready_for_review" => include_str!(
-                "../../../tests/fixtures/github/pull_request_ready_for_review.json"
-            ),
-            "pull_request_draft_opened" => include_str!(
-                "../../../tests/fixtures/github/pull_request_draft_opened.json"
-            ),
-            "issue_comment_review" => include_str!(
-                "../../../tests/fixtures/github/issue_comment_review.json"
-            ),
-            "issue_comment_ask" => include_str!(
-                "../../../tests/fixtures/github/issue_comment_ask.json"
-            ),
-            "issue_comment_mention_review" => include_str!(
-                "../../../tests/fixtures/github/issue_comment_mention_review.json"
-            ),
+            "pull_request_opened" => {
+                include_str!("../../../tests/fixtures/github/pull_request_opened.json")
+            }
+            "pull_request_ready_for_review" => {
+                include_str!("../../../tests/fixtures/github/pull_request_ready_for_review.json")
+            }
+            "pull_request_draft_opened" => {
+                include_str!("../../../tests/fixtures/github/pull_request_draft_opened.json")
+            }
+            "issue_comment_review" => {
+                include_str!("../../../tests/fixtures/github/issue_comment_review.json")
+            }
+            "issue_comment_ask" => {
+                include_str!("../../../tests/fixtures/github/issue_comment_ask.json")
+            }
+            "issue_comment_mention_review" => {
+                include_str!("../../../tests/fixtures/github/issue_comment_mention_review.json")
+            }
             other => panic!("unknown replay fixture {other}"),
         };
         serde_json::from_str(raw).unwrap()
@@ -961,17 +961,12 @@ mod tests {
         .expect("ready fixture triggers");
         assert_eq!(ready.trigger_fingerprint.as_deref(), Some("sha:def456"));
 
-        assert!(parse_trigger(
-            "pull_request",
-            &replay_fixture("pull_request_draft_opened")
-        )
-        .is_none());
+        assert!(
+            parse_trigger("pull_request", &replay_fixture("pull_request_draft_opened")).is_none()
+        );
 
-        let review = parse_trigger(
-            "issue_comment",
-            &replay_fixture("issue_comment_review"),
-        )
-        .expect("review fixture triggers");
+        let review = parse_trigger("issue_comment", &replay_fixture("issue_comment_review"))
+            .expect("review fixture triggers");
         assert_eq!(review.reason, "/review");
         assert_eq!(review.trigger_fingerprint.as_deref(), Some("cmd:7001"));
         assert_eq!(review.preset.as_deref(), Some("quick"));
@@ -999,8 +994,7 @@ mod tests {
     fn external_controller_matches_embedded_open_actions_for_full_p0_corpus() {
         use crate::plugins::pr_review::council::{
             ask_open_session_action_with_roster,
-            review_open_session_action_with_roster_and_fingerprint,
-            ReviewRereviewContext,
+            review_open_session_action_with_roster_and_fingerprint, ReviewRereviewContext,
         };
         use github_pr_controller::planner;
 
@@ -1082,7 +1076,10 @@ mod tests {
                 controller.trigger_fingerprint, embedded.trigger_fingerprint,
                 "fingerprint drift for {name}"
             );
-            assert_eq!(controller.roster, embedded.roster, "roster drift for {name}");
+            assert_eq!(
+                controller.roster, embedded.roster,
+                "roster drift for {name}"
+            );
             assert_eq!(
                 controller.quorum_n, embedded.quorum_n,
                 "quorum drift for {name}"
@@ -1091,7 +1088,10 @@ mod tests {
                 controller.chair_bot, embedded.chair_bot,
                 "chair drift for {name}"
             );
-            assert_eq!(controller.prompt, embedded.prompt, "prompt drift for {name}");
+            assert_eq!(
+                controller.prompt, embedded.prompt,
+                "prompt drift for {name}"
+            );
 
             // Two fields diverge on purpose from SEI-852 P6 onward. The
             // controller asks for a generic coordinator and supplies each
@@ -1256,7 +1256,13 @@ mod tests {
         // payload alone — but the payload association hides private-org members
         // (they render as CONTRIBUTOR), so instead of dropping the event, the
         // trigger carries the login for handle_webhook's live permission check.
-        for a in ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", "MANNEQUIN", ""] {
+        for a in [
+            "CONTRIBUTOR",
+            "FIRST_TIME_CONTRIBUTOR",
+            "NONE",
+            "MANNEQUIN",
+            "",
+        ] {
             let t = parse_trigger("pull_request", &opened_pr_payload(a, json!([])))
                 .unwrap_or_else(|| panic!("{a} PR should defer, not drop"));
             assert_eq!(
@@ -1350,8 +1356,11 @@ mod tests {
         let t = parse_trigger("pull_request", &sync("NONE", json!([]))).unwrap();
         assert!(t.unverified_author.is_some());
         // opt-in label / trusted association → no live check needed
-        let t = parse_trigger("pull_request", &sync("NONE", json!([{ "name": "oab-review" }])))
-            .unwrap();
+        let t = parse_trigger(
+            "pull_request",
+            &sync("NONE", json!([{ "name": "oab-review" }])),
+        )
+        .unwrap();
         assert_eq!(t.unverified_author, None);
         let t = parse_trigger("pull_request", &sync("MEMBER", json!([]))).unwrap();
         assert_eq!(t.unverified_author, None);
@@ -1605,7 +1614,8 @@ mod tests {
     #[test]
     fn ask_command_triggers_for_write_user_and_is_gated() {
         let body = |assoc: &str, login: Option<&str>| {
-            let mut comment = json!({ "id": 555, "body": "/ask why P1?", "author_association": assoc });
+            let mut comment =
+                json!({ "id": 555, "body": "/ask why P1?", "author_association": assoc });
             if let Some(l) = login {
                 comment["user"] = json!({ "login": l });
             }
@@ -1617,12 +1627,16 @@ mod tests {
             })
         };
         // a collaborator's /ask → an ask trigger carrying the question + comment id
-        let t = parse_trigger("issue_comment", &body("COLLABORATOR", None)).expect("write user asks");
+        let t =
+            parse_trigger("issue_comment", &body("COLLABORATOR", None)).expect("write user asks");
         assert_eq!(t.reason, "ask");
         assert_eq!(t.question.as_deref(), Some("why P1?"));
         assert_eq!(t.comment_id, Some(555));
         assert_eq!(t.pr_number, 12);
-        assert_eq!(t.unverified_author, None, "trusted asker needs no live check");
+        assert_eq!(
+            t.unverified_author, None,
+            "trusted asker needs no live check"
+        );
         // an untrusted-looking /ask WITH a login → deferred to the live check; the
         // token-spend gate now lives in handle_webhook, not parse (private members).
         let t = parse_trigger("issue_comment", &body("NONE", Some("asker")))
@@ -1712,7 +1726,9 @@ mod tests {
         let mut body = issue_comment_payload(783, "@zeabur-council review fixed F1");
         body["comment"]["user"]["type"] = json!("Bot");
 
-        assert!(parse_trigger_with_handle("issue_comment", &body, Some("zeabur-council")).is_none());
+        assert!(
+            parse_trigger_with_handle("issue_comment", &body, Some("zeabur-council")).is_none()
+        );
     }
 
     #[test]
@@ -1789,7 +1805,6 @@ mod tests {
                 && frame.contains("Fixed F1 by guarding the empty diff.")
                 && frame.contains("git merge-base --is-ancestor abc123 HEAD")
         }));
-
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1825,7 +1840,6 @@ mod tests {
                 && event["payload"]["state"] == "closed"
                 && event["payload"]["reason"] == "superseded"
         }));
-
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1839,7 +1853,6 @@ mod tests {
         assert_eq!(second["session_id"].as_str(), Some(first_id.as_str()));
         assert_eq!(second["deduped"], json!(true));
         assert_eq!(state.store.messages(&first_id).unwrap().len(), 1);
-
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1869,7 +1882,6 @@ mod tests {
             SessionState::from_db_str(&state.store.session(&first_id).unwrap().unwrap().state),
             SessionState::Closed
         );
-
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1913,7 +1925,6 @@ mod tests {
                 && event["session_id"] == first_id
                 && event["payload"]["reason"] == "round_budget"
         }));
-
     }
     #[tokio::test(flavor = "current_thread")]
     async fn review_endpoint_always_supersedes() {
@@ -1992,7 +2003,6 @@ mod tests {
             "both ingresses must surface the same valve reason"
         );
         assert_eq!(rest_json["reason"], json!("round_budget"));
-
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2040,7 +2050,6 @@ mod tests {
                 .unwrap(),
             "no marker for a PR that never got a notice"
         );
-
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2063,7 +2072,6 @@ mod tests {
             .store
             .mark_once("budget_notice:github:pr/o/r#7")
             .unwrap());
-
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2078,8 +2086,7 @@ mod tests {
         // behind; keep the test off that boundary too (staleness guard is >=).
         std::thread::sleep(std::time::Duration::from_millis(2));
         // Round 2's push gets capped — and must land in pending_reviews.
-        let capped =
-            post_webhook(state.clone(), "pull_request", synchronize_payload("def")).await;
+        let capped = post_webhook(state.clone(), "pull_request", synchronize_payload("def")).await;
         assert_eq!(capped["reason"], json!("hourly_cap"));
         let pending = state.store.pending_reviews().unwrap();
         assert_eq!(pending.len(), 1);
@@ -2109,7 +2116,6 @@ mod tests {
             .list_sessions(Some("github:pr/o/r#7"), None, 10)
             .unwrap();
         assert_eq!(sessions.len(), 2, "catch-up must open the deferred round");
-
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2135,6 +2141,5 @@ mod tests {
             .list_sessions(Some("github:pr/o/r#7"), None, 10)
             .unwrap();
         assert_eq!(sessions.len(), 1, "sweep must not re-review the old head");
-
     }
 }

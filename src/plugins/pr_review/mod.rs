@@ -43,11 +43,9 @@ impl PrReviewConfig {
     /// actual environment lookup; the plugin only owns normalization/defaults.
     pub(crate) fn from_values(mut lookup: impl FnMut(&str) -> Option<String>) -> Self {
         let mut config = Self::default();
-        config.bot_handle = lookup("OABCP_BOT_HANDLE")
-            .and_then(|raw| normalize_bot_handle(&raw));
+        config.bot_handle = lookup("OABCP_BOT_HANDLE").and_then(|raw| normalize_bot_handle(&raw));
         config.allowed_repos = csv_value(lookup("OABCP_ALLOWED_REPOS")).unwrap_or_default();
-        config.review_round_budget =
-            usize_value(lookup("OABCP_REVIEW_ROUND_BUDGET"), 10);
+        config.review_round_budget = usize_value(lookup("OABCP_REVIEW_ROUND_BUDGET"), 10);
         config.review_hourly_cap = usize_value(lookup("OABCP_REVIEW_HOURLY_CAP"), 3);
         config.council_roster = csv_value(lookup("OABCP_COUNCIL_ROSTER"))
             .filter(|roster| !roster.is_empty())
@@ -170,7 +168,14 @@ impl Coordinator for ReviewCouncil {
     }
 
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<crate::coordinator::Action> {
-        QuorumCouncil.on_done(cx, bot)
+        // verdict_required: a review round's chair turn without a parseable
+        // trailer re-queues (#344) instead of closing verdict-less.
+        crate::coordinator::council_on_done(
+            cx,
+            bot,
+            crate::coordinator::COUNCIL_QUORUM_PROMPT,
+            true,
+        )
     }
 
     fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<crate::coordinator::Action> {
@@ -328,7 +333,10 @@ mod tests {
     #[test]
     fn review_council_starters_include_chair_for_status_comment() {
         let roster = vec!["chair".into(), "rev0".into(), "rev1".into()];
-        assert_eq!(ReviewCouncil::default().starters(&roster, Some("chair")), roster);
+        assert_eq!(
+            ReviewCouncil::default().starters(&roster, Some("chair")),
+            roster
+        );
     }
 
     #[test]
@@ -337,7 +345,10 @@ mod tests {
             quorum_n: 1,
             reactors: vec!["rev0".into()],
             state: SessionState::Quorum,
-            ..ctx(&["chair", "rev0"], Some("VERDICT"))
+            ..ctx(
+                &["chair", "rev0"],
+                Some("Report body\n[[verdict:approve r=0 y=0 g=1]] [done]"),
+            )
         };
         let from = ReviewCouncil::default()
             .on_done(&cx, "chair")
@@ -403,12 +414,39 @@ mod tests {
             "chair ack reaction to the quorum prompt must not close the review",
         );
 
+        // #344: a chair [done] WITHOUT a parseable trailer no longer closes —
+        // the synthesis turn re-queues (the session stays in Quorum and a
+        // fresh synthesis prompt lands in the transcript).
         crate::orchestrator::handle_reply(
             &state,
             &chair.id,
             crate::orchestrator::test_support::msg_reply(
                 &session.id,
                 "LGTM ✅ — final verdict\n[done]",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::store::SessionState::from_db_str(
+                &store.session(&session.id).unwrap().unwrap().state
+            ),
+            crate::store::SessionState::Quorum,
+            "trailer-less chair done re-queues the synthesis instead of closing",
+        );
+        let prompts = store
+            .messages(&session.id)
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.author_kind == "system" && m.content.starts_with("Quorum reached."))
+            .count();
+        assert_eq!(prompts, 2, "a retry synthesis prompt was delivered");
+
+        crate::orchestrator::handle_reply(
+            &state,
+            &chair.id,
+            crate::orchestrator::test_support::msg_reply(
+                &session.id,
+                "Final report\n[[verdict:approve r=0 y=0 g=1]] [done]",
             ),
         )
         .unwrap();
