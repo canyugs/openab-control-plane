@@ -102,15 +102,23 @@ must not write to GitHub. The implementor is not a council bot — it is an
 feature: the council reviews code it did not write, under an identity that
 cannot approve its own PR.
 
-v1: the implementor pod gets a deploy key (or fine-grained PAT) scoped to
-**one experiment repository**, dev lane only. Because the implementor
-ingests partially untrusted input while holding a write credential (the
-ADR 019 tension), the credential model is named here, not left to
-implementation: the key is **push-only to the run-owned branch namespace**
-(`panel/*`), enforced server-side (branch protection on everything else),
-and the promotion path is a controller-minted short-lived token or a write
-broker — the standing key never widens. Widening beyond that repo is a
-promotion-time decision recorded in a future amendment — not silently.
+v1: the implementor pod gets a **fine-grained PAT** scoped to **one
+experiment repository** with exactly `contents:write` (push) and
+`pull_requests:write` (open the PR) — a deploy key is not an option, since
+it cannot authenticate the REST call that creates the pull request. Pushes
+are confined to the run-owned branch namespace (`panel/*`) by server-side
+branch protection on everything else.
+
+This is a **named ADR 019 exception, not a resolution**: the implementor
+ingests partially untrusted input (plan text, prior-round findings) while
+holding a standing credential. v1 accepts that co-residency explicitly,
+bounded to the dev lane and the one sandbox repository, because the full
+blast radius is a scratch repo the council independently reviews anyway.
+The exception **expires at promotion**: leaving the sandbox repo requires
+replacing the standing PAT with controller-minted short-lived tokens or a
+write broker (the pod never holds key material) — that migration is the
+price of promotion, recorded in a future amendment, and the standing-key
+model never widens.
 
 ### 5. Deployment: dev lane, raised timeout, own installation
 
@@ -141,8 +149,10 @@ promotion-time decision recorded in a future amendment — not silently.
 - Second external controller = first real test that controller installations
   compose (tokens, grants, quotas) beyond the founding tenant.
 - The implementor credential is a new standing write capability outside the
-  App-installation boundary — scoped to one repo, but it must appear in the
-  ops key inventory and rotation schedule from day one.
+  App-installation boundary — a declared, dev-lane-scoped ADR 019 exception
+  (§4) that must appear in the ops key inventory and rotation schedule from
+  day one, and must be retired (broker / short-lived tokens) before the
+  panel leaves the sandbox repo.
 - Known debts accepted at birth: status polling (v2: terminal events),
   global dev timeout raise (escape: dedicated lane), declared-marker
   feedback routing (revisit only with evidence it misroutes).
