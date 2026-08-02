@@ -428,11 +428,7 @@ async fn handle_webhook(
                                 "round": round,
                             });
                             if let Err(error) = store
-                                .enqueue_write(
-                                    session_id,
-                                    closing::KIND_COMMENT_OPEN,
-                                    &payload,
-                                )
+                                .enqueue_write(session_id, closing::KIND_COMMENT_OPEN, &payload)
                                 .await
                             {
                                 tracing::error!(
@@ -1726,9 +1722,7 @@ mod tests {
             format!("verdict body\n\n{}", closing::round_marker("ses_1")),
             "fixture-council[bot]".into(),
         ));
-        let open_payload = |ses: &str| {
-            json!({"repo": "example/repo", "pr_number": 7, "round": 1, "session_id": ses})
-        };
+        let open_payload = |ses: &str| json!({"repo": "example/repo", "pr_number": 7, "round": 1, "session_id": ses});
         store
             .enqueue_write("ses_1", closing::KIND_COMMENT_OPEN, &open_payload("ses_1"))
             .unwrap();

@@ -141,7 +141,8 @@ impl PostgresStore {
 /// (BIGSERIAL / BIGINT / BYTEA) with the `migrate()` fixup indexes folded in,
 /// since a fresh Postgres database never needs the legacy ALTER path.
 /// Versioned via `schema_migrations` from day one.
-const PG_MIGRATIONS: &[&str] = &[r#"
+const PG_MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE IF NOT EXISTS bots (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
     token_hash TEXT NOT NULL, token_plain TEXT,
@@ -383,7 +384,8 @@ CREATE TABLE IF NOT EXISTS review_waivers (
 );
 CREATE INDEX IF NOT EXISTS idx_review_waivers_repo
     ON review_waivers(repo, expires_at);
-"#];
+"#,
+];
 
 impl Store for PostgresStore {
     fn upsert_controller_installation(

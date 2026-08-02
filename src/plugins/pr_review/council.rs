@@ -149,7 +149,10 @@ pub fn check_review_admission(
 /// Catch-up convenes still pass admission, so the cap is honored, not bypassed.
 pub async fn sweep_pending_reviews(state: &Arc<AppState>) -> Result<()> {
     for pending in state.store.pending_reviews()? {
-        if let Some(created) = state.store.latest_session_created_at(&pending.trigger_ref)? {
+        if let Some(created) = state
+            .store
+            .latest_session_created_at(&pending.trigger_ref)?
+        {
             // >= : a covering session in the same ms as the drop still counts
             // (council #247 F1 — strict > left a duplicate-round edge).
             if created >= pending.requested_at {

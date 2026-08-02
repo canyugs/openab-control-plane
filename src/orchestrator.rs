@@ -1988,8 +1988,29 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                 // #344: hand the seat over. Membership first (delivery needs
                 // it), then the chair column; the session stays in Quorum.
                 transition_failed = false;
+                let outgoing = session.chair_bot.clone();
                 state.store.add_session_bot(&session.id, &to)?;
                 state.store.set_session_chair(&session.id, &to)?;
+                // The newcomer received none of the session's earlier fanout,
+                // and the reviewers' relayed finals carry the findings but not
+                // the AUTHORITY: repo, PR number, side-effect instructions all
+                // live in the opening chair task (council F1 on the fix PR).
+                // Hand the outgoing chair's task over verbatim — it is already
+                // recipient-rewritten for the chair ROLE, so no re-derivation.
+                let messages = state.store.messages(&session.id)?;
+                let chair_task = messages
+                    .iter()
+                    .find(|m| {
+                        m.author_kind == "client" && m.audience.as_deref() == outgoing.as_deref()
+                    })
+                    .or_else(|| {
+                        messages
+                            .iter()
+                            .find(|m| m.author_kind == "client" && m.audience.is_none())
+                    });
+                if let Some(task) = chair_task {
+                    deliver_system_prompt(state, session, &to, &task.content)?;
+                }
                 state.emit_north("chair_reassigned", &session.id, json!({ "chair": to }));
             }
             Action::Transition { from, to } => {

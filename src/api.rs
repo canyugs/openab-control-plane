@@ -1715,7 +1715,10 @@ async fn bot_github_token(
     // Anything else (default) gets the JSON object for programmatic callers.
     if wants_plain_text(&headers) {
         return Ok((
-            [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
             token,
         )
             .into_response());
@@ -2271,7 +2274,10 @@ mod tests {
             .set_standing_roster(&["chair".into(), "rev1".into()])
             .unwrap();
         // The active chair gets write scope; a reviewer does not.
-        assert_eq!(super::active_chair_role(&state, "chair", "chair"), Role::Chair);
+        assert_eq!(
+            super::active_chair_role(&state, "chair", "chair"),
+            Role::Chair
+        );
         assert_eq!(
             super::active_chair_role(&state, "rev1", "reviewer"),
             Role::Reviewer
@@ -2340,7 +2346,8 @@ mod tests {
                 crate::store::now_ms() + 3_600_000,
             )
             .unwrap();
-        let app = crate::github_app::GitHubApp::from_parts("1", "dummy", 1, "https://api.github.com");
+        let app =
+            crate::github_app::GitHubApp::from_parts("1", "dummy", 1, "https://api.github.com");
         let state = AppState::new_with_options(
             store,
             None,

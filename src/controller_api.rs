@@ -304,10 +304,17 @@ pub async fn set_installation_state(
     {
         return admin_error(StatusCode::BAD_REQUEST, "empty patch: nothing to change");
     }
-    if request.max_concurrent_sessions.is_some_and(|limit| limit <= 0)
-        || request.max_actions_per_minute.is_some_and(|limit| limit <= 0)
+    if request
+        .max_concurrent_sessions
+        .is_some_and(|limit| limit <= 0)
+        || request
+            .max_actions_per_minute
+            .is_some_and(|limit| limit <= 0)
     {
-        return admin_error(StatusCode::BAD_REQUEST, "controller quotas must be positive");
+        return admin_error(
+            StatusCode::BAD_REQUEST,
+            "controller quotas must be positive",
+        );
     }
     let actions = match request.actions.as_deref().map(validate_actions).transpose() {
         Ok(actions) => actions,
@@ -2142,9 +2149,13 @@ mod tests {
             .iter()
             .find(|m| m.audience.as_deref() == Some("chair"))
             .unwrap();
-        assert!(chair_msg.content.starts_with("Inspect the external request."));
+        assert!(chair_msg
+            .content
+            .starts_with("Inspect the external request."));
         assert!(chair_msg.content.contains("ACTIVE WAIVERS"));
-        assert!(chair_msg.content.contains("accepted trade-off for the canary"));
+        assert!(chair_msg
+            .content
+            .contains("accepted trade-off for the canary"));
         let rev_msg = messages
             .iter()
             .find(|m| m.audience.as_deref() == Some("rev1"))
@@ -2285,8 +2296,7 @@ mod tests {
         );
 
         // Query strings are not JSON: ?all=1 must parse as true.
-        let query: ListReviewWaivers =
-            serde_urlencoded::from_str("all=1").expect("all=1 parses");
+        let query: ListReviewWaivers = serde_urlencoded::from_str("all=1").expect("all=1 parses");
         assert!(query.all);
         let query: ListReviewWaivers = serde_urlencoded::from_str("").unwrap();
         assert!(!query.all);
@@ -2335,7 +2345,15 @@ mod tests {
         let auth = auth_config();
         let action_token = token(7);
         install(
-            &store, &auth, "ctrl-a", "tok-a-1", &action_token, 1, SCOPE, 1, 60,
+            &store,
+            &auth,
+            "ctrl-a",
+            "tok-a-1",
+            &action_token,
+            1,
+            SCOPE,
+            1,
+            60,
         );
         let state = AppState::new_with_options_and_runtime_config(
             store.clone(),
@@ -2395,7 +2413,9 @@ mod tests {
         assert_eq!(patched_body["enabled"], true);
         assert_eq!(patched_body["max_concurrent_sessions"], 5);
         assert_eq!(patched_body["max_actions_per_minute"], 120);
-        assert!(patched_body["actions"].as_array().is_some_and(|a| !a.is_empty()));
+        assert!(patched_body["actions"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()));
         assert_eq!(
             request(
                 &state,
@@ -2438,7 +2458,10 @@ mod tests {
         ))
         .await;
         assert_eq!(denied.0, StatusCode::FORBIDDEN);
-        assert_eq!(denied.1["error"]["message"], "controller action is not granted");
+        assert_eq!(
+            denied.1["error"]["message"],
+            "controller action is not granted"
+        );
 
         // Guard rails: an empty patch and an unknown id are explicit errors.
         let empty = set_installation_state(
