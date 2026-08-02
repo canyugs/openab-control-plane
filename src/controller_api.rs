@@ -29,8 +29,6 @@ use controller_protocol::{
     ActionEnvelope, ActionResultEnvelope, ErrorCode, ErrorEnvelope, ProtocolError, CURRENT_VERSION,
 };
 use hmac::{Hmac, Mac};
-use rand::rngs::OsRng;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -685,7 +683,7 @@ fn generate_controller_token(
     not_before: i64,
 ) -> Result<(IssuedControllerToken, NewControllerActionToken)> {
     let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
+    getrandom::fill(&mut bytes).expect("OS randomness unavailable");
     let action_token = URL_SAFE_NO_PAD.encode(bytes);
     let token_id = new_id("ctok");
     let pepper_version = auth.latest_version();
