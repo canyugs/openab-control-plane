@@ -2743,7 +2743,13 @@ impl Store for PostgresStore {
         })
     }
 
-    fn close_if_active(&self, session_id: &str, event_type: &str, reason: &str) -> Result<bool> {
+    fn close_if_active(
+        &self,
+        session_id: &str,
+        event_type: &str,
+        reason: &str,
+        stale_before: Option<i64>,
+    ) -> Result<bool> {
         self.block(async {
             let mut client = self.client().await?;
             let tx = client.transaction().await?;
@@ -2751,8 +2757,12 @@ impl Store for PostgresStore {
             let n = tx
                 .execute(
                     "UPDATE sessions SET state = 'closed', closed_at = $2
-                     WHERE id = $1 AND state NOT IN ('closed', 'aborted')",
-                    &[&session_id, &closed_at],
+                     WHERE id = $1 AND state NOT IN ('closed', 'aborted')
+                       AND ($3::BIGINT IS NULL OR COALESCE(
+                             (SELECT MAX(m.created_at) FROM messages m WHERE m.session_id = sessions.id),
+                             sessions.created_at
+                           ) < $3::BIGINT)",
+                    &[&session_id, &closed_at, &stale_before],
                 )
                 .await?;
             if n == 1 {
@@ -4134,6 +4144,52 @@ mod tests {
                 .unwrap();
         });
         Some(PostgresStore::open_with_options(&url, Some(&schema)).unwrap())
+    }
+
+    #[test]
+    fn close_if_active_staleness_predicate_defers_on_fresh_activity() {
+        // #335 on the PG dialect: the $3::BIGINT staleness predicate must
+        // no-op the timeout close when a message postdates the cutoff, and
+        // still close when the session is genuinely stale (or when the
+        // predicate is absent — the non-watchdog callers).
+        let Some(s) = store("close_stale") else {
+            return;
+        };
+        let roster = vec!["chair".to_string(), "rev".to_string()];
+        let sess = s
+            .create_session("t", None, 2, Some("chair"), &roster, "council")
+            .unwrap();
+        let thread = s.upsert_thread(&sess.id, None).unwrap();
+        s.add_message(
+            &sess.id,
+            Some(&thread),
+            "bot",
+            Some("chair"),
+            None,
+            "verdict text",
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            !s.close_if_active(&sess.id, "session.timeout", "timeout", Some(0))
+                .unwrap(),
+            "fresh message defers the timeout close"
+        );
+        assert_eq!(s.session(&sess.id).unwrap().unwrap().state, "open");
+
+        assert!(s
+            .close_if_active(&sess.id, "session.timeout", "timeout", Some(i64::MAX))
+            .unwrap());
+        assert_eq!(s.session(&sess.id).unwrap().unwrap().state, "closed");
+
+        // Predicate-less close still works from any non-terminal state.
+        let sess2 = s
+            .create_session("t", None, 2, Some("chair"), &roster, "council")
+            .unwrap();
+        assert!(s
+            .close_if_active(&sess2.id, "session.terminal", "external-close", None)
+            .unwrap());
     }
 
     #[test]

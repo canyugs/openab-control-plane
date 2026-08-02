@@ -3104,7 +3104,10 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        assert!(crate::orchestrator::force_close_timeout(&ocp_state, &timeout_session).unwrap());
+        assert!(
+            crate::orchestrator::force_close_timeout(&ocp_state, &timeout_session, i64::MAX)
+                .unwrap()
+        );
         while dispatch_once(&ocp_state, now_ms()).await.unwrap() > 0 {}
 
         let summary = controller_state

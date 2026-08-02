@@ -240,7 +240,7 @@ pub fn close_session_by_controller(
     }
     if !state
         .store
-        .close_if_active(session_id, "session.terminal", reason)?
+        .close_if_active(session_id, "session.terminal", reason, None)?
     {
         return Ok(false);
     }
@@ -318,10 +318,14 @@ fn chair_latest_settled(state: &Arc<AppState>, session_id: &str, bot: &str) -> O
 /// closes with the reviews already in the thread, naming absentees in the
 /// verdict. CAS once-only — returns true iff this call performed the close (a
 /// normal close racing in wins and this becomes a no-op).
-pub fn force_close_timeout(state: &Arc<AppState>, session_id: &str) -> Result<bool> {
+pub fn force_close_timeout(
+    state: &Arc<AppState>,
+    session_id: &str,
+    stale_before: i64,
+) -> Result<bool> {
     if !state
         .store
-        .close_if_active(session_id, "session.timeout", "timeout")?
+        .close_if_active(session_id, "session.timeout", "timeout", Some(stale_before))?
     {
         return Ok(false); // already terminal
     }
@@ -424,7 +428,7 @@ fn dispatch_coordinator(
     );
     if state
         .store
-        .close_if_active(&session.id, "session.terminal", "unknown_mode")?
+        .close_if_active(&session.id, "session.terminal", "unknown_mode", None)?
     {
         purge_session_outbox_after_close(state, &session.id);
         if let Err(e) = crate::identity::revoke_session_github_tokens(
@@ -4609,6 +4613,50 @@ mod tests {
     }
 
     #[test]
+    fn a_verdict_landing_at_the_deadline_defers_the_watchdog_close() {
+        // #335: an 18-minute round's verdict settled at 18:11:50.5Z and the
+        // watchdog fired at effectively the same moment — the timeout close
+        // won the CAS and GitHub got an abandon tombstone while the plane held
+        // a valid verdict. The staleness predicate now rides inside the close
+        // transaction: any message newer than the cutoff makes the timeout
+        // close a no-op, so the in-flight normal close delivers the verdict.
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev = store.register_bot("rev", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), rev.id.clone()],
+                "council",
+            )
+            .unwrap();
+        post_client_message(&state, &session.id, "review this").unwrap();
+
+        // The watchdog scanned before the chair's verdict message landed: its
+        // cutoff predates all activity. The close must no-op and the session
+        // must stay open for the normal close that is already in flight.
+        assert!(
+            !force_close_timeout(&state, &session.id, 0).unwrap(),
+            "fresh activity inside the close transaction defers the timeout"
+        );
+        assert_ne!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Closed,
+        );
+
+        // A genuinely stale session (cutoff after all activity) still closes.
+        assert!(force_close_timeout(&state, &session.id, i64::MAX).unwrap());
+        assert_eq!(
+            SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
+            SessionState::Closed,
+        );
+    }
+
+    #[test]
     fn watchdog_close_purges_session_outbox() {
         let store = Arc::new(SqliteStore::memory().unwrap());
         let state = AppState::new(store.clone());
@@ -4631,7 +4679,7 @@ mod tests {
             "offline reviewer should hold queued session frames before watchdog close"
         );
 
-        assert!(force_close_timeout(&state, &session.id).unwrap());
+        assert!(force_close_timeout(&state, &session.id, i64::MAX).unwrap());
         assert_eq!(
             SessionState::from_db_str(&store.session(&session.id).unwrap().unwrap().state),
             SessionState::Closed,
@@ -4935,7 +4983,7 @@ mod tests {
             .unwrap()
             .contains(&session.id));
         assert!(
-            force_close_timeout(&state, &session.id).unwrap(),
+            force_close_timeout(&state, &session.id, i64::MAX).unwrap(),
             "stuck session is closed"
         );
         assert_eq!(
@@ -4945,7 +4993,7 @@ mod tests {
         // once-only: a second fire (or a normal close racing) is a no-op, and the
         // session no longer appears as a watchdog candidate
         assert!(
-            !force_close_timeout(&state, &session.id).unwrap(),
+            !force_close_timeout(&state, &session.id, i64::MAX).unwrap(),
             "second fire is a no-op"
         );
         assert!(!store
@@ -4992,7 +5040,7 @@ mod tests {
             .active_sessions_before(crate::store::now_ms() + 1)
             .unwrap()
             .contains(&session.id));
-        assert!(force_close_timeout(&state, &session.id).unwrap());
+        assert!(force_close_timeout(&state, &session.id, i64::MAX).unwrap());
     }
 
     /// The store tests inject a synthetic span; this one drives a real close and
@@ -5126,7 +5174,7 @@ mod tests {
         assert!(row.result_message_ids.is_none());
 
         // A timeout close never guesses a result — it stays null.
-        assert!(force_close_timeout(&state, &session.id).unwrap());
+        assert!(force_close_timeout(&state, &session.id, i64::MAX).unwrap());
         let row = store.session(&session.id).unwrap().unwrap();
         assert_eq!(row.state, "closed");
         assert!(row.result_author_id.is_none());
