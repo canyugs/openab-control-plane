@@ -616,7 +616,9 @@ async fn dispatch_abandoned(
             return false;
         }
     };
-    let marker = closing::round_marker(session_id);
+    // The tombstone keeps the opening post's marker: the abandon write
+    // reconciles (and replays) against the "started" comment it rewrites.
+    let marker = closing::open_marker(session_id);
     let payload = serde_json::json!({
         "repo": target.repo,
         "pr_number": target.pr_number,
@@ -811,11 +813,20 @@ async fn perform_write(
         }
         closing::KIND_COMMENT_OPEN => {
             let issue = payload["pr_number"].as_i64().unwrap_or_default();
-            let marker = closing::round_marker(&write.session_id);
-            // Create only if the session's marker is absent: a fast close (or
-            // a replay of this write) means the round comment already exists
-            // in a later state, and "started" must never overwrite it.
-            if github.find_marked_comment(repo, issue, &marker).await?.is_none() {
+            let open_marker = closing::open_marker(&write.session_id);
+            let verdict_marker = closing::round_marker(&write.session_id);
+            // Create only if neither of the session's comments exists yet: a
+            // replay must not duplicate the "started" post, and a fast close
+            // (verdict already up) must not gain a stale "started" after it.
+            if github
+                .find_marked_comment(repo, issue, &open_marker)
+                .await?
+                .is_none()
+                && github
+                    .find_marked_comment(repo, issue, &verdict_marker)
+                    .await?
+                    .is_none()
+            {
                 let round = payload["round"].as_i64().unwrap_or(1);
                 let baseline = github
                     .pull_baseline(repo, issue)
@@ -825,8 +836,9 @@ async fn perform_write(
                     "<!-- openab-council -->\n\
                      Review Council started (round {round}).\n\n\
                      {baseline}\n\n\
-                     The council is reviewing this pull request; this comment \
-                     will be updated with this round's verdict.\n\n{marker}"
+                     The council is reviewing this pull request; the verdict \
+                     will follow as a separate comment when the round \
+                     closes.\n\n{open_marker}"
                 );
                 github.create_comment(repo, issue, &body).await?;
             }
@@ -834,10 +846,11 @@ async fn perform_write(
         }
         closing::KIND_COMMENT_ABANDON => {
             let issue = payload["pr_number"].as_i64().unwrap_or_default();
-            let marker = closing::round_marker(&write.session_id);
-            // Update only if the marker exists. A session gets exactly one
-            // terminal state, so the found comment can only be this round's
-            // own "started" post — never a verdict.
+            let marker = closing::open_marker(&write.session_id);
+            // Update only if the opening post exists — a round that never
+            // managed to post "started" gets no tombstone either. The verdict
+            // comment lives under a different marker, so this can never touch
+            // a verdict.
             if let Some(existing) = github.find_marked_comment(repo, issue, &marker).await? {
                 let body = payload["body"].as_str().unwrap_or_default();
                 github.update_comment(repo, existing, body).await?;
@@ -1537,7 +1550,7 @@ mod tests {
             .expect("abandon write queued");
         let body = abandon.payload["body"].as_str().unwrap();
         assert!(body.contains("without a verdict"));
-        assert!(body.contains(&closing::round_marker("ses_1")));
+        assert!(body.contains(&closing::open_marker("ses_1")));
     }
 
     #[tokio::test]
@@ -1628,6 +1641,123 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(store.pending_writes(10).await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_started_post_skips_when_the_verdict_already_landed() {
+        // Fast close: the verdict comment can beat the queued "started" write
+        // out of the outbox. The open write must then do nothing — a fresh
+        // "started" after the verdict reads as a phantom extra round.
+        use axum::routing::{get as axum_get, post as axum_post};
+
+        #[derive(Clone, Default)]
+        struct Github {
+            comments: Arc<std::sync::Mutex<Vec<(i64, String, String)>>>,
+        }
+        let gh = Github::default();
+        let app = Router::new()
+            .route(
+                "/app/installations/:id/access_tokens",
+                axum_post(|| async { Json(json!({"token": "ghs_test"})) }),
+            )
+            .route(
+                "/repos/:o/:n/issues/:num/comments",
+                axum_get({
+                    let gh = gh.clone();
+                    move || {
+                        let gh = gh.clone();
+                        async move {
+                            let list: Vec<Value> = gh
+                                .comments
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .rev()
+                                .map(|(id, body, login)| {
+                                    json!({"id": id, "body": body, "user": {"login": login}})
+                                })
+                                .collect();
+                            Json(Value::Array(list))
+                        }
+                    }
+                })
+                .post({
+                    let gh = gh.clone();
+                    move |Json(body): Json<Value>| {
+                        let gh = gh.clone();
+                        async move {
+                            let mut comments = gh.comments.lock().unwrap();
+                            let id = 1000 + comments.len() as i64;
+                            comments.push((
+                                id,
+                                body["body"].as_str().unwrap_or_default().into(),
+                                "fixture-council[bot]".into(),
+                            ));
+                            Json(json!({"id": id}))
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut config = Config::from_values(|_| None);
+        config.mode = OperatingMode::ExternalCanary;
+        config.enable_writes = true;
+        config.canary_repository = Some("example/repo".into());
+        config.github_api_base = format!("http://{addr}");
+        config.bot_handle = Some("fixture-council".into());
+        config.github_app = config::GitHubAppConfig {
+            app_id: Some("1".into()),
+            installation_id: Some("2".into()),
+            private_key: Some("unused".into()),
+        };
+        let client =
+            github::GitHubClient::from_config(&config).expect("writes enabled builds a client");
+        client.seed_test_token("ghs_test");
+        let store = SqliteStore::memory().unwrap();
+
+        // The fast close already put the verdict up.
+        gh.comments.lock().unwrap().push((
+            900,
+            format!("verdict body\n\n{}", closing::round_marker("ses_1")),
+            "fixture-council[bot]".into(),
+        ));
+        let open_payload = |ses: &str| {
+            json!({"repo": "example/repo", "pr_number": 7, "round": 1, "session_id": ses})
+        };
+        store
+            .enqueue_write("ses_1", closing::KIND_COMMENT_OPEN, &open_payload("ses_1"))
+            .unwrap();
+        // Control: a session with no verdict up still posts its "started"
+        // (pull_baseline has no route here, so it falls back — the skip in
+        // ses_1 must come from the marker check, not general failure).
+        store
+            .enqueue_write("ses_2", closing::KIND_COMMENT_OPEN, &open_payload("ses_2"))
+            .unwrap();
+        for write in store.claim_writes(10).unwrap() {
+            perform_write(&client, &store, &write).await.unwrap();
+        }
+        {
+            let comments = gh.comments.lock().unwrap();
+            assert_eq!(comments.len(), 2, "verdict + ses_2's started, no more");
+            assert!(
+                comments[1].1.contains(&closing::open_marker("ses_2")),
+                "the surviving create is ses_2's opening post"
+            );
+        }
+
+        // Replaying the opens (crash before mark-done) adds nothing: ses_1
+        // still sees its verdict, ses_2 reconciles on its open marker.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        for write in store.claim_writes_for_test_after_lease(10).unwrap() {
+            perform_write(&client, &store, &write).await.unwrap();
+            store.mark_write_done(write.id).unwrap();
+        }
+        assert_eq!(gh.comments.lock().unwrap().len(), 2);
     }
 
     #[tokio::test]
