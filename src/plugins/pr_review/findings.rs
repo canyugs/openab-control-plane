@@ -210,6 +210,66 @@ mod tests {
     }
 
     #[test]
+    fn controller_council_close_feeds_ledger_and_waiver_counters() {
+        // Controller-opened sessions use the generic "council" mode with a
+        // hashed trigger_ref — the close hook must still parse the chair's
+        // block (found live: OCP#333 round 2 landed "waived" on GitHub while
+        // the plane ledger and fired counter stayed empty).
+        let store = std::sync::Arc::new(crate::store::SqliteStore::memory().unwrap());
+        let state = crate::state::AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let waiver = store
+            .create_review_waiver(
+                "o/r",
+                None,
+                "accepted eval trade-off",
+                None,
+                "operator",
+                crate::store::now_ms() + 86_400_000,
+            )
+            .unwrap();
+        let session = store
+            .create_session(
+                "review",
+                Some("controller:github-canary:deadbeef"),
+                0,
+                Some(&chair.id),
+                std::slice::from_ref(&chair.id),
+                "council",
+            )
+            .unwrap();
+        store
+            .advance_state(
+                &session.id,
+                crate::store::SessionState::Open,
+                crate::store::SessionState::Quorum,
+            )
+            .unwrap();
+
+        let verdict = format!(
+            "report\n<!-- openab-findings\n{{\"findings\":[\
+             {{\"id\":\"F1\",\"severity\":\"yellow\",\"status\":\"waived\",\
+              \"title\":\"waived eval\",\"waiver_id\":\"{}\"}}]}}\n-->\n\
+             [[verdict:approve r=0 y=0 g=0]] [done]",
+            waiver.id
+        );
+        crate::orchestrator::handle_reply(
+            &state,
+            &chair.id,
+            crate::orchestrator::test_support::msg_reply(&session.id, &verdict),
+        )
+        .unwrap();
+
+        let rows = store.review_findings(None, None, None, None, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "waived");
+        let waivers = store
+            .list_review_waivers(Some("o/r"), true, crate::store::now_ms())
+            .unwrap();
+        assert_eq!(waivers[0].fired_count, 1, "hashed-ref council close bumps");
+    }
+
+    #[test]
     fn block_split_across_two_chair_messages_still_lands_in_ledger() {
         // Live failure (zeabur.com#702 round 4): the transport's message-length
         // split put the block opener in one chair message and the JSON tail +
