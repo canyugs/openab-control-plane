@@ -1896,6 +1896,14 @@ async fn candidate_plan(
     else {
         return Err("not_a_trigger");
     };
+    if !state.config.allowed_repos.is_empty()
+        && !state.config.allowed_repos.contains(&trigger.repository)
+    {
+        return Err("repo_not_allowed");
+    }
+    if !trigger.author_trusted {
+        return Err("author_not_trusted");
+    }
     // #326: a plain `/review` (no notes, not from-scratch, not an ask) is an
     // idempotent "make sure a round runs on the current head" — but its
     // comment-id fingerprint is unique by construction, so it always
@@ -1903,7 +1911,9 @@ async fn candidate_plan(
     // deaths compounded: the predecessor's agent sessions were still busy, so
     // the successor's prompts bounced too. Resolve it to the head sha so the
     // kernel dedupes into the running round instead. Notes and from-scratch
-    // keep the comment fingerprint: those are deliberate restarts.
+    // keep the comment fingerprint: those are deliberate restarts. Runs after
+    // the allowlist and trust gates: no outbound lookup on behalf of a repo
+    // or commenter this controller would refuse anyway.
     if trigger.reason == "/review"
         && trigger.question.is_none()
         && !trigger.review_from_scratch
@@ -1926,14 +1936,6 @@ async fn candidate_plan(
                 ),
             }
         }
-    }
-    if !state.config.allowed_repos.is_empty()
-        && !state.config.allowed_repos.contains(&trigger.repository)
-    {
-        return Err("repo_not_allowed");
-    }
-    if !trigger.author_trusted {
-        return Err("author_not_trusted");
     }
     // The round number is ours to know: `review_rounds` counts what this
     // controller actually closed on this pull request.
@@ -3511,6 +3513,7 @@ mod tests {
         const MENTION: &str =
             include_str!("../../../tests/fixtures/github/issue_comment_mention_review.json");
         let response = app
+            .clone()
             .oneshot(signed_owned_request(
                 "mention-review-1",
                 "issue_comment",
@@ -3520,17 +3523,104 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
 
+        // A bare mention ("@bot review", no notes) is also a plain re-review.
+        let mut bare: Value = serde_json::from_str(MENTION).unwrap();
+        bare["comment"]["body"] = json!("@fixture-council review");
+        bare["comment"]["id"] = json!(7004);
+        let response = app
+            .clone()
+            .oneshot(signed_owned_request(
+                "bare-mention-1",
+                "issue_comment",
+                bare.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        {
+            let calls = calls.lock().unwrap();
+            assert_eq!(calls.len(), 3);
+            assert_eq!(
+                calls[0].1.trigger_fingerprint.as_deref(),
+                Some("sha:abc999"),
+                "plain /review resolves to the current head sha"
+            );
+            assert_eq!(
+                calls[1].1.trigger_fingerprint.as_deref(),
+                Some("cmd:7003"),
+                "a mention review with notes keeps its comment fingerprint"
+            );
+            assert_eq!(
+                calls[2].1.trigger_fingerprint.as_deref(),
+                Some("sha:abc999"),
+                "a bare mention review also resolves to the head sha"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_head_sha_lookup_falls_back_to_the_comment_fingerprint() {
+        // #326 F2: the sha resolution is an optimization, not a gate — a
+        // GitHub hiccup must degrade to the old cmd:<id> behavior, not drop
+        // the trigger.
+        use axum::routing::post as axum_post;
+        // Token mints fine; the pulls route does not exist → lookup fails.
+        let gh_app = Router::new().route(
+            "/app/installations/:id/access_tokens",
+            axum_post(|| async { Json(json!({"token": "ghs_test"})) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, gh_app).await;
+        });
+
+        let event_secret = vec![8; 32];
+        let mut config = external_config(&event_secret);
+        config.enable_writes = true;
+        config.github_api_base = format!("http://{addr}");
+        config.github_app = config::GitHubAppConfig {
+            app_id: Some("1".into()),
+            installation_id: Some("2".into()),
+            private_key: Some("unused".into()),
+        };
+        let verifier = runtime_events::RuntimeEventVerifier::new(
+            "github-canary",
+            config.event_signing_secret.as_deref().unwrap(),
+        )
+        .unwrap();
+        let (client, calls) = RecordingActionClient::new([false]);
+        let state = Arc::new(AppState::with_components(
+            config,
+            SqliteStore::memory().unwrap(),
+            Some(Arc::new(client)),
+            Some(Arc::new(verifier)),
+        ));
+        state
+            .github
+            .as_ref()
+            .expect("writes enabled builds a client")
+            .seed_test_token("ghs_test");
+
+        const REVIEW: &str =
+            include_str!("../../../tests/fixtures/github/issue_comment_review.json");
+        let response = router(state)
+            .oneshot(signed_owned_request(
+                "plain-review-fallback",
+                "issue_comment",
+                REVIEW.into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
         let calls = calls.lock().unwrap();
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0].1.trigger_fingerprint.as_deref(),
-            Some("sha:abc999"),
-            "plain /review resolves to the current head sha"
-        );
-        assert_eq!(
-            calls[1].1.trigger_fingerprint.as_deref(),
-            Some("cmd:7003"),
-            "a mention review with notes keeps its comment fingerprint"
+            Some("cmd:7001"),
+            "lookup failure keeps the comment fingerprint"
         );
     }
 
