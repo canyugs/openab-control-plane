@@ -4,49 +4,70 @@ OpenAB Control Plane is a gateway-native runtime for coordinating multiple stock
 OpenAB pods. PR review is the first product profile on top of it.
 
 ```text
-                         GitHub
-          pull_request / issue_comment webhooks
-                           |
-                           v
-North API / SSE  <->  OpenAB Control Plane  <->  SQLite
-(CLI, operators)      - PR-review webhook shim   bots / sessions
-                       - Coordinator policy      messages / reactions
-                       - roster + fanout         outbox / scoped tokens
-                       - durable delivery
-                       - liveness watchdog
-                           |
+                    GitHub
+     pull_request / issue_comment webhooks
+                      |
+                      v
+          github-pr-controller  ----- the ONLY GitHub writer:
+          webhook auth, dedupe,       round comments, verdict,
+          admission, SessionPlan,     openab/council status,
+          durable write outbox        formal PR review
+                      |
+        versioned action API (installation token)
+        signed runtime events back
+                      v
+North API / SSE  <->  OpenAB Control Plane  <->  SQLite or Postgres
+(CLI, operators)      - sessions / roster / fanout   (ADR 033)
+                      - coordinator policy, quorum
+                      - findings ledger, waivers
+                      - durable delivery, watchdog
+                      |
              gateway /ws (per-bot OCP tokens)
-                           |
-                           v
-        stock OpenAB pods (mounted config + steering)
-          chair  -- gh write --> PR comment / review / status
-          rev*   -- gh read  --> PR diff / files
+                      v
+        stock OpenAB pods (config via configUrl or mount)
+          chair, rev* -- read-only PR context; NO GitHub
+                         write credentials (ADR 031)
 ```
 
-The plane does not run an LLM and does not post PR comments itself. Bots do that
-from their pods. The plane's job is to make the session deterministic: who is in
-the room, who is prompted, when quorum is reached, when the chair may close, and
-how a stuck session terminates.
+The plane does not run an LLM and does not touch GitHub. Bots deliberate; the
+controller writes. The plane's job is to make the session deterministic: who is
+in the room, who is prompted, when quorum is reached, when the chair may close,
+and how a stuck session terminates. (The published quickstart templates still
+run the older embedded profile where the plane receives webhooks directly and
+the chair posts from its pod — see Deploy below.)
 
 ## Current PR Review Flow
 
-The dogfood path is GitHub webhook driven:
+The production path is controller-driven (ADR 031, live since 2026-07-31):
 
-1. GitHub sends `pull_request` or `issue_comment` to
-   `POST /api/v1/github_webhooks`.
-2. OCP opens a `review_council` session with `chair`, `rev1`, `rev2`.
-3. The trigger is a PR pointer, not an inlined diff. Bots self-fetch the PR.
-4. The chair and reviewers are mentioned. The chair posts/updates a short
-   "Review Council started" PR status comment from its pod; reviewers
-   produce findings.
-5. Reviewer `[done]` / `🆗` counts toward quorum.
-6. After reviewer quorum, OCP prompts the chair.
-7. The chair updates the same PR comment with the verdict, then sends `[done]`.
-8. OCP closes the session. If bots stall, the watchdog force-closes later.
+1. GitHub sends `pull_request` / `issue_comment` webhooks to the
+   **github-pr-controller**, which authenticates, dedupes, applies
+   repository/author admission, and builds a `SessionPlan`.
+2. The controller calls the plane's action API to open a `council` session
+   (chair + reviewers). The controller then posts the round's
+   **"Review Council started"** comment (round number + PR baseline) — it
+   stays in the thread for the round's lifetime.
+3. The trigger is a PR pointer, not an inlined diff. Bots self-fetch PR
+   context with the read-only tools their pods are given.
+4. Reviewers post findings and signal done with `[done]` / `🆗`; the plane
+   relays each settled review to the chair.
+5. At reviewer quorum the plane prompts the chair to synthesize. Active
+   operator waivers (ADR 035) were injected into the chair's opening input;
+   matching findings land in a `Waived` row instead of blocking.
+6. The chair's final message carries the human report, a machine findings
+   block (ADR 020), and a `[[verdict:…]]` trailer. A synthesis turn without a
+   parseable verdict re-queues (bounded, with chair-pool rotation) instead of
+   closing verdict-less.
+7. The plane closes the session, records the findings ledger and waiver
+   counters, and emits a signed terminal event. The controller turns it into
+   the GitHub writes: the **verdict as its own comment**, the
+   `openab/council` commit status (pinned to the webhook head sha), and the
+   formal PR review. A round that ends without a verdict (superseded /
+   timeout) gets its started comment rewritten into a tombstone instead.
 
-A chair `[done]` before reviewer quorum is intentionally ignored. This prevents
-an opening-trigger chair response from closing the session before reviewers or PR
-side effects happen.
+A chair `[done]` before reviewer quorum is intentionally ignored, and every
+GitHub write goes through the controller's durable outbox with round-marker
+reconciliation, so crash replays never double-post.
 
 ## Comment Interaction
 
@@ -54,15 +75,25 @@ PR comments are an interaction surface:
 
 | Comment | Result |
 |---|---|
-| `/review` | Opens or dedupes a full review council for the PR |
-| `/ask <question>` | Opens a comment-scoped `solo` session; the chair answers as a new PR comment |
-| `@<bot-handle> <question>` | Same as `/ask`, when `OABCP_BOT_HANDLE` is configured |
+| `/review` | Opens or dedupes a full review council for the PR (new started comment; verdict follows as its own comment) |
+| `/ask <question>` | Opens a comment-scoped `solo` session; the answer arrives as a new PR comment (no round comment) |
+| `@<bot-handle> review <notes>` | Re-runs the council with the notes relayed as author fix notes |
+| `@<bot-handle> <question>` | Same as `/ask`, when the bot handle is configured |
 
 Comment commands are accepted only from write-ish GitHub users
 (`OWNER`, `MEMBER`, or `COLLABORATOR`). `OABCP_ALLOWED_REPOS` can restrict which
 repositories the webhook will serve.
 
 ## Deploy
+
+> **Template honesty:** the published templates deploy the **embedded
+> profile** — one control plane plus three pods, webhooks straight to the
+> plane, the chair posting from its pod. That profile works and stays
+> supported for quickstarts, but it is NOT the production architecture above:
+> the controller-owned write path (ADR 031) is installed separately via
+> [docs/controller-action-api.md](docs/controller-action-api.md) and
+> [docs/github-pr-controller.md](docs/github-pr-controller.md). A
+> controller-included template is on the roadmap.
 
 The templates deploy one control plane plus three stock OpenAB pods: one chair
 and two reviewers. The pod image/config chooses the agent CLI; the control plane

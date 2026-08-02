@@ -1,29 +1,43 @@
 # GitHub PR controller
 
-> **Write posture updated (2026-08-02).** The write-disabled statements below
-> ("does not … perform GitHub writes", "write client disabled", App key
-> "forbidden") describe the P7 shadow deployment and are superseded. Since the
-> closing half (SEI-852) and the cutover, `external` / `external_canary` modes
-> require `GITHUB_CONTROLLER_ENABLE_WRITES=1` with the controller's own
-> GitHub App credentials (`GITHUB_CONTROLLER_GITHUB_APP_*`, `config.rs`), and
-> the controller performs all GitHub writes — trigger comments, verdict
-> comment, `openab/council` status, and the formal PR review (`closing.rs`).
-> Prod runs installation-wide `external`; the chair and reviewers hold no
-> GitHub credentials. `plan_only` retains the legacy write-disabled posture.
+The GitHub PR controller is an independently deployable product adapter and,
+since the 2026-07-31 cutover, **the only component that touches GitHub**. It
+owns webhook authentication, delivery deduplication, repository and author
+admission, trigger parsing, `SessionPlan` construction, and — in the external
+modes — every GitHub write: the round's "started" comment, the verdict
+comment, the `openab/council` commit status, and the formal PR review. It does
+not link to OCP internals or open OCP's database; it speaks only the versioned
+OCP action API with an installation-scoped token and receives signed
+provider-neutral runtime events (ADR 008 / 031).
 
-The GitHub PR controller is an independently deployable product adapter. It
-owns GitHub webhook authentication, delivery deduplication, repository and
-author admission, trigger parsing, and `SessionPlan` construction. It does not
-link to OCP internals, open OCP's database, or perform GitHub writes. In
-`external_canary` mode it can call only the versioned OCP action API with an
-installation-scoped token and receive signed provider-neutral runtime events.
+Three operating modes:
 
-The default `plan_only` mode is the P7 shadow state: requests are planned and
-stored but never sent to OCP. P8's `external_canary` mode owns raw ingress for
-exactly one configured repository and sends its `open_session` plan through the
-generic action API. There is no fallback to embedded ingress. Both modes keep
-the GitHub write client disabled; compatibility findings and write ownership
-remain with OCP until later migration phases.
+| Mode | Ingress | Writes | Use |
+|---|---|---|---|
+| `plan_only` (default) | none — plans are stored for comparison | disabled | shadow validation |
+| `external_canary` | one configured repository | with `GITHUB_CONTROLLER_ENABLE_WRITES=1` | staged rollout |
+| `external` | installation-wide | with `GITHUB_CONTROLLER_ENABLE_WRITES=1` | production |
+
+In the write-enabled modes the controller carries its own GitHub App
+credentials (`GITHUB_CONTROLLER_GITHUB_APP_*`); the chair and reviewers hold
+no GitHub credentials at all. There is no fallback to embedded ingress.
+
+## Round comment lifecycle
+
+- **Open** — accepted review triggers queue a "Review Council started
+  (round N)" comment with a PR baseline, posted from the `open_session`
+  action result (never from the racy `session.opened` event). `/ask`
+  sessions get no round comment.
+- **Close** — the signed `session.terminal` event becomes queued writes:
+  the verdict as a **new comment** (since 2026-08-02; the started post stays
+  in the thread), the commit status pinned to the webhook head sha (never a
+  sha the chair merely claims), and the formal PR review.
+- **Abandon** — `session.superseded` / `session.timeout` rewrite the round's
+  started post into a "closed without a verdict" tombstone.
+- Every write goes through a durable outbox with per-session round-marker
+  reconciliation: a crash between send and mark-done replays the write, which
+  adopts its earlier success instead of double-posting — and never adopts a
+  marker planted by another author.
 
 ## Run
 
@@ -46,8 +60,9 @@ The container listens on port 8091 and stores delivery records in
 
 - `GET /healthz` is process liveness and always returns the component report.
 - `GET /readyz` gates ingress on webhook HMAC configuration, product-store
-  availability, mode-specific ownership/action/event configuration, and the
-  absence of GitHub App credentials.
+  availability, and mode-specific ownership/action/event/write-credential
+  configuration (App credentials are forbidden in `plan_only`, required for
+  writes in the external modes).
 - `POST /api/v1/github/webhooks` accepts at most 1 MiB and requires
   `x-hub-signature-256`, `x-github-delivery`, and `x-github-event`.
 - `POST /api/v1/shadow/compare` accepts a wrapper signed with
@@ -79,17 +94,19 @@ The controller recognizes non-draft PR `opened`, `reopened`,
 `COLLABORATOR` associations are trusted. The `oab-review` label is the
 maintainer opt-in for other PR authors.
 
-GitHub's webhook association can hide private organization membership. P7 has
-no GitHub permission client, so such events are acknowledged and ignored
-fail-closed instead of spending tokens. A later phase can verify them with a
-read-only GitHub App client.
+GitHub's webhook association can hide private organization membership. The
+controller does not verify membership beyond the delivered association, so
+such events are acknowledged and ignored fail-closed (`author_not_trusted`)
+instead of spending tokens; the `oab-review` label is the maintainer
+override.
 
 An accepted trigger returns `202` with a deterministic `SessionPlan`. The plan
 contains the exact generic `open_session` fields plus dedupe/supersede policy,
 terminal projection inputs, and proposed GitHub write intents. In `plan_only`
-these remain comparison data. In `external_canary`, the controller submits only
-the generic `open_session` action and records the action result; proposed
-GitHub writes remain data and are not executed by this binary.
+these remain comparison data. In the external modes the controller submits the
+generic `open_session` action, records the action result, and — with writes
+enabled — executes the GitHub writes itself when the session reaches a
+terminal state (see "Round comment lifecycle").
 
 The OCP action id is deterministically derived from the GitHub delivery id.
 Replaying an accepted delivery therefore creates at most one OCP session. An
@@ -133,7 +150,7 @@ read the authenticated aggregate gate.
 |----------|---------|-------------|
 | `GITHUB_CONTROLLER_ADDR` | `0.0.0.0:8091` | Listen address |
 | `GITHUB_CONTROLLER_DB` | `github-controller.db` | Controller-owned database: a `postgres://…` URL selects the Postgres backend (ADR 033), any other value is a SQLite path. Postgres connections use verified TLS (platform trust store) by default; `?sslmode=disable` is the explicit plaintext opt-out for lane-internal instances |
-| `GITHUB_CONTROLLER_MODE` | `plan_only` | `plan_only` or `external_canary` |
+| `GITHUB_CONTROLLER_MODE` | `plan_only` | `plan_only`, `external_canary`, or `external` |
 | `GITHUB_CONTROLLER_WEBHOOK_SECRET` | _(missing)_ | GitHub webhook HMAC secret; missing is not-ready and fail-closed |
 | `GITHUB_CONTROLLER_SHADOW_SECRET` | _(disabled)_ | HMAC secret for trusted shadow comparison wrappers; not an OCP action credential |
 | `GITHUB_CONTROLLER_OBSERVER_SECRET` | _(disabled)_ | Separate HMAC secret for the aggregate canary summary; required in `external_canary` |
@@ -148,9 +165,10 @@ read the authenticated aggregate gate.
 | `GITHUB_CONTROLLER_OCP_SCOPE` | _(disabled)_ | Exact controller scope sent with every action |
 | `GITHUB_CONTROLLER_ID` | _(disabled)_ | Installed controller id; must match signed runtime events |
 | `GITHUB_CONTROLLER_EVENT_SIGNING_SECRET` | _(disabled)_ | Base64url per-controller event secret issued by OCP; minimum 32 decoded bytes |
-| `GITHUB_CONTROLLER_GITHUB_APP_ID` | _(must be absent)_ | Future GitHub App client configuration; setting any App credential makes readiness fail |
-| `GITHUB_CONTROLLER_GITHUB_APP_INSTALLATION_ID` | _(disabled)_ | Future GitHub App installation |
-| `GITHUB_CONTROLLER_GITHUB_APP_PRIVATE_KEY` | _(must be absent)_ | Future GitHub App key; forbidden in the P7 shadow deployment |
+| `GITHUB_CONTROLLER_ENABLE_WRITES` | _(off)_ | Required `1` in `external`/`external_canary` for the controller to perform GitHub writes |
+| `GITHUB_CONTROLLER_GITHUB_APP_ID` | _(disabled)_ | Controller-owned GitHub App id (write client); forbidden only in `plan_only` |
+| `GITHUB_CONTROLLER_GITHUB_APP_INSTALLATION_ID` | _(disabled)_ | GitHub App installation id |
+| `GITHUB_CONTROLLER_GITHUB_APP_PRIVATE_KEY` | _(disabled)_ | GitHub App private key (multiline — deliver via API/secret store, never CLI args) |
 
 The controller deliberately ignores all `OABCP_*` variables. Run OCP and this
 controller with separate databases, environment groups, images, and health
