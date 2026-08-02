@@ -39,6 +39,7 @@ use store::SqliteStore;
 type HmacSha256 = Hmac<Sha256>;
 const MAX_WEBHOOK_BODY_BYTES: usize = 1024 * 1024;
 const DELIVERY_PRUNE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const WRITE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 const AUDIT_MAX_TIMESTAMP_SKEW_SECS: u64 = 5 * 60;
 /// Writes drained per pass. One closed round queues at most three.
 const WRITE_DRAIN_BATCH: i64 = 32;
@@ -335,6 +336,23 @@ pub fn spawn_maintenance(state: &Arc<AppState>) {
         EXTENDED_RETENTION_DAYS,
     )
     .max(retention_days);
+    // Outbox sweep: the event-driven drain only fires when a round closes, so
+    // writes stranded by a wedged worker or a restart would otherwise sit
+    // forever. The first tick fires immediately — that is the boot replay.
+    if let Some(github) = state.github.clone() {
+        let store = store.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(WRITE_SWEEP_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                let drained = drain_outbox_batch(&store, &github).await;
+                if drained > 0 {
+                    tracing::info!(drained, "outbox sweep claimed stranded github writes");
+                }
+            }
+        });
+    }
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(DELIVERY_PRUNE_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1385,15 +1403,28 @@ fn spawn_write_drain(state: &Arc<AppState>) {
         return;
     };
     tokio::spawn(async move {
+        drain_outbox_batch(&store, &github).await;
+    });
+}
+
+/// Claim and deliver one batch of outbox writes. Returns how many writes were
+/// claimed, so the periodic sweep can log when it picks up work the
+/// event-driven drain missed (wedged worker, restart with pending rows).
+async fn drain_outbox_batch(
+    store: &Arc<dyn ProductStore>,
+    github: &Arc<github::GitHubClient>,
+) -> usize {
+    {
         let pending = match store.claim_writes(WRITE_DRAIN_BATCH).await {
             Ok(pending) => pending,
             Err(error) => {
                 tracing::error!(%error, "outbox read failed");
-                return;
+                return 0;
             }
         };
+        let claimed = pending.len();
         for write in pending {
-            match perform_write_with_receipt(&github, store.as_ref(), &write).await {
+            match perform_write_with_receipt(github, store.as_ref(), &write).await {
                 Ok(_) => {
                     if let Err(error) = store.mark_write_done(write.id).await {
                         tracing::error!(%error, id = write.id, "outbox completion failed");
@@ -1445,7 +1476,8 @@ fn spawn_write_drain(state: &Arc<AppState>) {
                 }
             }
         }
-    });
+        claimed
+    }
 }
 
 #[cfg(test)]
@@ -2651,6 +2683,112 @@ mod tests {
             store.mark_write_done(write.id).unwrap();
         }
         assert_eq!(gh.comments.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn stranded_outbox_writes_drain_through_the_sweep_entry_point() {
+        // #341 defect 2: rows queued before a restart were never replayed,
+        // because only round-close events kicked a drain. The maintenance
+        // sweep now calls drain_outbox_batch on an interval whose first tick
+        // fires at boot; this drives that entry point against a store that
+        // already holds pending writes and nothing else to trigger them.
+        use axum::routing::{get as axum_get, post as axum_post};
+
+        #[derive(Clone, Default)]
+        struct Github {
+            comments: Arc<std::sync::Mutex<Vec<(i64, String, String)>>>,
+        }
+        let gh = Github::default();
+        let app = Router::new()
+            .route(
+                "/app/installations/:id/access_tokens",
+                axum_post(|| async { Json(json!({"token": "ghs_test"})) }),
+            )
+            .route(
+                "/repos/:o/:n/issues/:num/comments",
+                axum_get({
+                    let gh = gh.clone();
+                    move || {
+                        let gh = gh.clone();
+                        async move {
+                            let list: Vec<Value> = gh
+                                .comments
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .rev()
+                                .map(|(id, body, login)| {
+                                    json!({"id": id, "body": body, "user": {"login": login}})
+                                })
+                                .collect();
+                            Json(Value::Array(list))
+                        }
+                    }
+                })
+                .post({
+                    let gh = gh.clone();
+                    move |Json(body): Json<Value>| {
+                        let gh = gh.clone();
+                        async move {
+                            let mut comments = gh.comments.lock().unwrap();
+                            let id = 1000 + comments.len() as i64;
+                            comments.push((
+                                id,
+                                body["body"].as_str().unwrap_or_default().into(),
+                                "fixture-council[bot]".into(),
+                            ));
+                            Json(json!({"id": id}))
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut config = Config::from_values(|_| None);
+        config.mode = OperatingMode::ExternalCanary;
+        config.enable_writes = true;
+        config.canary_repository = Some("example/repo".into());
+        config.github_api_base = format!("http://{addr}");
+        config.bot_handle = Some("fixture-council".into());
+        config.github_app = config::GitHubAppConfig {
+            app_id: Some("1".into()),
+            installation_id: Some("2".into()),
+            private_key: Some("unused".into()),
+        };
+        let client =
+            github::GitHubClient::from_config(&config).expect("writes enabled builds a client");
+        client.seed_test_token("ghs_test");
+
+        let store = SqliteStore::memory().unwrap();
+        let open_payload = |ses: &str| json!({"repo": "example/repo", "pr_number": 7, "round": 1, "session_id": ses});
+        store
+            .enqueue_write("ses_1", closing::KIND_COMMENT_OPEN, &open_payload("ses_1"))
+            .unwrap();
+        store
+            .enqueue_write("ses_2", closing::KIND_COMMENT_OPEN, &open_payload("ses_2"))
+            .unwrap();
+
+        let store: Arc<dyn ProductStore> = Arc::new(store);
+        let github = Arc::new(client);
+        assert_eq!(
+            drain_outbox_batch(&store, &github).await,
+            2,
+            "the sweep claims both stranded writes"
+        );
+        assert_eq!(gh.comments.lock().unwrap().len(), 2, "both delivered");
+        assert!(
+            store.pending_writes(10).await.unwrap().is_empty(),
+            "delivered writes are marked done, not re-claimable"
+        );
+        assert_eq!(
+            drain_outbox_batch(&store, &github).await,
+            0,
+            "an empty outbox makes the next sweep tick a no-op"
+        );
     }
 
     #[tokio::test]
