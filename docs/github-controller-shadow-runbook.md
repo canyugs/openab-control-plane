@@ -1,5 +1,9 @@
 # GitHub controller shadow runbook
 
+> **Executed / historical (2026-08-02).** The shadow phase (P7) completed and
+> the controller has since taken authoritative GitHub ingress installation-wide.
+> Kept for the method; do not operate from this document.
+
 P7 compares plans only. OCP remains the only raw-ingress owner, continues using
 the in-process interpreter, and remains the findings owner. The controller must
 receive a selected replay/copy, never the authoritative GitHub route.

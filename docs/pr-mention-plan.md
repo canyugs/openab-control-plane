@@ -1,5 +1,11 @@
 # PR Mention & Re-review Plan — grammar, supersession (M1), delta context (M2), findings ledger (M4)
 
+> **Largely executed (2026-08-02).** M1 supersession is live in the kernel
+> (`session.superseded`), M4 became the findings ledger (ADR 020) and now
+> lives controller-side post-cutover. Statuses inside are frozen at the
+> proposal date; remaining unshipped pieces belong to the ADR backlog, not
+> this document.
+
 Status: **proposed** · 2026-07-08 · builds on the boundary-review-2026-07
 Addendum (findings M1–M4), [ADR 011](adr/011-conversational-followup.md)
 (mention → solo ask), [ADR 008](adr/008-external-controller-protocol.md)

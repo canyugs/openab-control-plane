@@ -1,5 +1,11 @@
 # Install With PAT
 
+> **Legacy path (2026-08-02).** Production installs use the GitHub App +
+> external controller path — see
+> [install-github-app-quickstart.md](install-github-app-quickstart.md). The
+> PAT path remains for quick experiments only and no longer matches how the
+> hosted lanes run.
+
 Use this path for the quickest external-repo setup. A copied GitHub Action in the
 target repo triggers OCP, and the chair posts as the owner of your fine-grained
 PAT.

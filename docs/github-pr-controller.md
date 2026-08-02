@@ -1,5 +1,16 @@
 # GitHub PR controller
 
+> **Write posture updated (2026-08-02).** The write-disabled statements below
+> ("does not … perform GitHub writes", "write client disabled", App key
+> "forbidden") describe the P7 shadow deployment and are superseded. Since the
+> closing half (SEI-852) and the cutover, `external` / `external_canary` modes
+> require `GITHUB_CONTROLLER_ENABLE_WRITES=1` with the controller's own
+> GitHub App credentials (`GITHUB_CONTROLLER_GITHUB_APP_*`, `config.rs`), and
+> the controller performs all GitHub writes — trigger comments, verdict
+> comment, `openab/council` status, and the formal PR review (`closing.rs`).
+> Prod runs installation-wide `external`; the chair and reviewers hold no
+> GitHub credentials. `plan_only` retains the legacy write-disabled posture.
+
 The GitHub PR controller is an independently deployable product adapter. It
 owns GitHub webhook authentication, delivery deduplication, repository and
 author admission, trigger parsing, and `SessionPlan` construction. It does not

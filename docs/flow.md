@@ -1,5 +1,13 @@
 # PR Review Council — end-to-end flow
 
+> **Superseded on the GitHub half (2026-08-02).** This flow predates the
+> external-controller cutover (2026-07-29 → 08-01). Today the external
+> `github-pr-controller` owns GitHub ingress AND all GitHub writes (trigger
+> comments, verdict comment, `openab/council` status, the formal PR review);
+> the chair and reviewers hold no GitHub credentials at all. The in-council
+> mechanics (roster, quorum, deliberation, close) below remain accurate. See
+> [github-pr-controller.md](github-pr-controller.md) and ADR 031.
+
 What happens when the council reviews a PR, as built and dogfooded in the webhook
 path. Install commands live in `install-pat.md` and `install-github-app.md`; this
 file describes the runtime flow.

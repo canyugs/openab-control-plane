@@ -1,5 +1,11 @@
 # Boundary review 2026-07 — OCP ↔ OAB separation of responsibilities
 
+> **Historical record (2026-08-02).** This July audit drove the Stage 0–4
+> program; the stages have since been executed (Stage 3 extraction, external
+> controller, findings ledger) and its findings graduated into ADRs 019–022
+> and the pr-mention plan. Kept as the evidence base — statuses inside are
+> frozen at 2026-07-07.
+
 Status: review · 2026-07-07 · method: 4 independent code/doc/history mappers →
 4 critics → dedupe → per-finding adversarial verification (15 confirmed /
 9 confirmed-with-corrections / 0 refuted). Planning only — no implementation.

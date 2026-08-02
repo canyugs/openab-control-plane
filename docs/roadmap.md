@@ -1,5 +1,15 @@
 # openab-control-plane — Roadmap
 
+> **State as of 2026-08-02.** Item statuses below were last updated 2026-07-09
+> and describe the embedded-webhook era. Since then: the external
+> `github-pr-controller` took over GitHub ingress and writes installation-wide
+> (ADR 008→031, cutover executed 2026-07-29 → 08-01), the kernel gained a
+> Postgres backing store (ADR 033, dev cutover 2026-08-01, prod gated on soak),
+> and ADRs 030–035 landed (finder tier, provider-neutral kernel, calibration
+> loops, mutable registrations, review-memory waivers). Read the ADR series
+> from 030 up for current direction; treat unchecked items below as 07-09
+> snapshot, not live backlog.
+
 Generic multi-agent coordination engine. Code review is the first app, not the product.
 
 > Ordering lives in [route.md](route.md) (2026-07-08): Phase 1 = run
