@@ -30,6 +30,8 @@ and supports one exact external-canary repository. See
 | `OABCP_BOT_DISCOVERY_TOKEN` | _(disabled)_ | Scoped bootstrap token for `POST /v1/bots/discover`. When unset, discovery registration returns `403`. This token only registers/refreshes bot inventory metadata; it cannot open sessions or change rosters |
 | `OABCP_CONFIG_BASE_URL` | `http://control-plane.zeabur.internal:8090` | Base URL read at startup and used in discovery responses when returning a `/bot-config/<id>` URL |
 | `OABCP_SESSION_TIMEOUT_SECS` | `600` | Liveness watchdog deadline. A session still active this many seconds after creation is force-closed with a `TIMEOUT` verdict and a north `timeout` event so a silent/dead reviewer can't hang it forever. Anchored on `created_at` (no last-activity reset) — raise for legitimately long councils |
+| `OABCP_AUDIT_RETENTION_DAYS` | `90` | Normal first-party investigation-journal retention. The sweep deletes only audit rows; sessions, messages, findings, and provider receipts are untouched |
+| `OABCP_AUDIT_EXTENDED_RETENTION_DAYS` | `365` | Retention for audit failures, security/configuration/operator events, dead letters, and uncertain/reconciled external effects. Values below `OABCP_AUDIT_RETENTION_DAYS` are raised to the normal window |
 | `OABCP_LIVENESS_GRACE_SECS` | `60` | Liveness policy sweep. A roster member disconnected longer than this is flipped to `unreachable` and replaced from the inventory (connected, healthy, same-role spare); with no spare, a reviewer that hasn't voted is trimmed and the quorum shrunk so the session converges on the survivors. The chair is replace-only. Must exceed the OAB reconnect backoff (1–30s); `0` disables the sweep, leaving the `OABCP_SESSION_TIMEOUT_SECS` watchdog as the only backstop |
 | `OABCP_SESSION_CLOSE_WEBHOOK` | _(off)_ | Optional URL POSTed a `session.closed` JSON payload (trigger_ref, mode, verdict, reason `normal`/`timeout`, roster) when a session closes on either path. Fire-and-forget: no retry, no HMAC in v1 — validate the receiver by network policy ([ADR 012](adr/012-session-close-webhook.md)) |
 | `OABCP_MAX_ROSTER` | `16` | Admission quota — max bots in a session roster. Mid-session adds (`POST /v1/sessions/:id/roster`) beyond this are rejected (`409`). Bounds roster growth; applies to dynamic adds, not the initial roster at open |
@@ -52,6 +54,32 @@ and supports one exact external-canary repository. See
 The controller installation management endpoints additionally require
 `OABCP_API_KEY` to be set; unlike the legacy north API, they never run open in
 development. See [Controller Action API](controller-action-api.md).
+
+The GitHub controller uses the same two-window audit policy with its own
+namespace: `GITHUB_CONTROLLER_AUDIT_RETENTION_DAYS` (default `90`) and
+`GITHUB_CONTROLLER_AUDIT_EXTENDED_RETENTION_DAYS` (default `365`). Its audit
+query endpoint requires the observer secret and a request-bound
+`x-canary-audit-signature-256` HMAC plus `x-canary-audit-timestamp`. The
+signature covers `v1`, the Unix timestamp, `GET`, and the exact path/query;
+timestamps outside a five-minute clock-skew window are rejected.
+
+### Read-only investigation bundle
+
+The workspace binary composes both service-local audit streams without opening
+either database:
+
+```text
+openabctl investigate --session ses_...
+openabctl investigate --delivery d-...
+openabctl investigate --trigger-ref github:pr/owner/repo#123
+```
+
+Set `OPENABCTL_OCP_URL` (default `http://127.0.0.1:8090`),
+`OPENABCTL_CONTROLLER_URL` (default `http://127.0.0.1:8091`),
+`OPENABCTL_OCP_API_KEY` when north auth is enabled, and
+`OPENABCTL_CONTROLLER_OBSERVER_SECRET` for the controller's query-bound HMAC.
+The JSON bundle includes a causally expanded, ordered `events` list and
+explicit `gaps` for unavailable services or missing correlations.
 
 ### Verdict decision is derived, not trusted (0.1.41)
 

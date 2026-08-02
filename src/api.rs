@@ -17,6 +17,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
+use controller_protocol::audit::{AuditCursor, AuditEventQuery};
 use futures::Stream;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -31,6 +32,7 @@ use tokio_stream::StreamExt;
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/stats", get(stats))
+        .route("/v1/audit/events", get(audit_events))
         .route("/v1/compatibility-usage", get(compatibility_usage))
         .route(
             "/v1/controller/actions",
@@ -207,6 +209,54 @@ async fn stats(
         })).collect::<Vec<_>>(),
     });
     Ok(Json(snapshot))
+}
+
+#[derive(Debug, Deserialize)]
+struct AuditEventsParams {
+    delivery_id: Option<String>,
+    controller_id: Option<String>,
+    action_id: Option<String>,
+    runtime_event_id: Option<String>,
+    session_id: Option<String>,
+    message_id: Option<String>,
+    write_id: Option<String>,
+    trigger_ref: Option<String>,
+    kind: Option<String>,
+    since: Option<i64>,
+    until: Option<i64>,
+    cursor: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn audit_events(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<AuditEventsParams>,
+) -> Result<Json<controller_protocol::audit::AuditEventPage>, StatusCode> {
+    check_auth(&state, &headers)?;
+    let cursor = match params.cursor.as_deref() {
+        Some(value) => Some(AuditCursor::decode(value).ok_or(StatusCode::BAD_REQUEST)?),
+        None => None,
+    };
+    let page = state
+        .store
+        .audit_events(&AuditEventQuery {
+            delivery_id: params.delivery_id,
+            controller_id: params.controller_id,
+            action_id: params.action_id,
+            runtime_event_id: params.runtime_event_id,
+            session_id: params.session_id,
+            message_id: params.message_id,
+            write_id: params.write_id,
+            trigger_ref: params.trigger_ref,
+            kind: params.kind,
+            since: params.since,
+            until: params.until,
+            cursor,
+            limit: params.limit.unwrap_or_default(),
+        })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(page))
 }
 
 /// Temporary operator surface for evidence-based compatibility removal. It is

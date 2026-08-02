@@ -1,3 +1,4 @@
+use controller_protocol::audit::{AuditCorrelation, AuditEvent, AuditOutcome, AUDIT_EVENT_VERSION};
 use openab_control_plane::store::{now_ms, Store};
 use openab_control_plane::{
     build_router, identity, ops::seed_roster, orchestrator, state::AppState,
@@ -27,6 +28,7 @@ async fn main() -> anyhow::Result<()> {
     spawn_watchdog(state.clone());
     spawn_liveness(state.clone());
     spawn_review_catchup(state.clone());
+    spawn_audit_retention(state.clone());
     openab_control_plane::controller_events::spawn_dispatcher(state.clone());
     let app = build_router(state);
 
@@ -104,6 +106,74 @@ fn spawn_review_catchup(state: Arc<AppState>) {
             }
         }
     });
+}
+
+/// Keep investigation history independently from domain retention. Ordinary
+/// events use the configurable 90-day window; failures, security/configuration
+/// facts, dead letters, and uncertain/reconciled external effects use the
+/// configurable extended window. The aggregate is written after the delete so
+/// the sweep itself remains visible outside the removed range.
+fn spawn_audit_retention(state: Arc<AppState>) {
+    let retention_days = configured_positive_days(
+        "OABCP_AUDIT_RETENTION_DAYS",
+        controller_protocol::audit::DEFAULT_RETENTION_DAYS,
+    );
+    let extended_days = configured_positive_days(
+        "OABCP_AUDIT_EXTENDED_RETENTION_DAYS",
+        controller_protocol::audit::EXTENDED_RETENTION_DAYS,
+    )
+    .max(retention_days);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(60 * 60));
+        loop {
+            tick.tick().await;
+            let now = now_ms();
+            let before = now.saturating_sub(retention_days.saturating_mul(86_400_000));
+            let extended_before = now.saturating_sub(extended_days.saturating_mul(86_400_000));
+            match state.store.prune_audit_events(before, extended_before) {
+                Ok(pruned) if pruned > 0 => {
+                    let event_key = format!("audit.retention_pruned:{now}:{pruned}");
+                    let event = AuditEvent {
+                        version: AUDIT_EVENT_VERSION,
+                        event_id: format!("aud:openab-control-plane:{event_key}"),
+                        event_key,
+                        occurred_at: now,
+                        recorded_at: now,
+                        service: "openab-control-plane".into(),
+                        kind: "audit.retention_pruned".into(),
+                        outcome: AuditOutcome::Succeeded,
+                        caused_by: None,
+                        correlation: AuditCorrelation::default(),
+                        actor: None,
+                        target: None,
+                        detail: serde_json::json!({
+                            "pruned": pruned,
+                            "retention_days": retention_days,
+                            "extended_retention_days": extended_days,
+                            "before": before,
+                            "extended_before": extended_before,
+                        }),
+                        error: None,
+                    };
+                    if let Err(error) = state.store.append_audit_event(&event) {
+                        tracing::warn!(%error, pruned, "audit retention evidence append failed");
+                    } else {
+                        tracing::info!(pruned, "pruned expired audit events");
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "audit retention sweep failed"),
+            }
+        }
+    });
+}
+
+fn configured_positive_days(name: &str, default: i64) -> i64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|days: &i64| *days > 0)
+        .unwrap_or(default)
 }
 
 /// Liveness policy sweep (A3): disconnected roster member past the grace window

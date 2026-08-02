@@ -10,6 +10,10 @@
 pub mod postgres;
 pub mod sqlite;
 
+use controller_protocol::audit::{
+    AuditCorrelation, AuditError, AuditEvent, AuditEventPage, AuditEventQuery, AuditEventRecord,
+    AuditOutcome, AUDIT_EVENT_VERSION,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -34,6 +38,52 @@ pub(crate) fn now_unix() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+pub(crate) fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+/// The controller's existing product tables use Unix seconds, while the
+/// shared investigation contract uses Unix milliseconds. Keep the conversion
+/// at this boundary so legacy store timestamps cannot leak into the journal.
+pub(crate) fn audit_timestamp(value: i64) -> i64 {
+    if value < 10_000_000_000 {
+        value.saturating_mul(1_000)
+    } else {
+        value
+    }
+}
+
+pub(crate) fn new_audit_event(
+    event_key: impl Into<String>,
+    kind: &str,
+    outcome: AuditOutcome,
+    occurred_at: i64,
+    correlation: AuditCorrelation,
+    detail: Value,
+    error: Option<AuditError>,
+) -> AuditEvent {
+    let event_key = event_key.into();
+    AuditEvent {
+        version: AUDIT_EVENT_VERSION,
+        event_id: format!("aud:github-pr-controller:{event_key}"),
+        event_key,
+        occurred_at: audit_timestamp(occurred_at),
+        recorded_at: now_ms(),
+        service: "github-pr-controller".into(),
+        kind: kind.into(),
+        outcome,
+        caused_by: None,
+        correlation,
+        actor: None,
+        target: None,
+        detail,
+        error,
+    }
 }
 
 /// One error type across backends so callers stay driver-agnostic.
@@ -164,6 +214,9 @@ pub struct PendingWrite {
     pub kind: String,
     pub payload: Value,
     pub attempts: i64,
+    /// True when a previous process claimed the write and its lease expired
+    /// before the local completion state was recorded.
+    pub was_reclaimed: bool,
 }
 
 /// The store boundary (ADR 033 step zero). Semantics are the SQLite
@@ -288,6 +341,12 @@ pub trait ProductStore: Send + Sync {
     /// Count the attempt and keep the row retryable until it has burned
     /// through `WRITE_MAX_ATTEMPTS`, then park it as `failed`.
     async fn mark_write_failed(&self, id: i64, error: &str) -> StoreResult<()>;
+
+    /// Append/query the provider-controller half of the ADR 036 investigation
+    /// journal. `(service, event_key)` is the retry-safe idempotency boundary.
+    async fn append_audit_event(&self, event: &AuditEvent) -> StoreResult<AuditEventRecord>;
+    async fn audit_events(&self, query: &AuditEventQuery) -> StoreResult<AuditEventPage>;
+    async fn prune_audit_events(&self, before: i64, extended_before: i64) -> StoreResult<usize>;
 }
 
 /// True when the configured database location selects the Postgres backend.
