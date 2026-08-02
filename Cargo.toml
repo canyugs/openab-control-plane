@@ -30,7 +30,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 # build self-contained; base64 decodes a base64-wrapped private key from env.
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-base64 = "0.22"
+base64 = "0.23"
 # Webhook signature verification (x-hub-signature-256). sha2 is already a dep.
 hmac = "0.12"
 getrandom = "0.4"
