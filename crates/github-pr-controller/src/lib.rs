@@ -616,7 +616,9 @@ async fn dispatch_abandoned(
             return false;
         }
     };
-    let marker = closing::round_marker(session_id);
+    // The tombstone keeps the opening post's marker: the abandon write
+    // reconciles (and replays) against the "started" comment it rewrites.
+    let marker = closing::open_marker(session_id);
     let payload = serde_json::json!({
         "repo": target.repo,
         "pr_number": target.pr_number,
@@ -811,11 +813,20 @@ async fn perform_write(
         }
         closing::KIND_COMMENT_OPEN => {
             let issue = payload["pr_number"].as_i64().unwrap_or_default();
-            let marker = closing::round_marker(&write.session_id);
-            // Create only if the session's marker is absent: a fast close (or
-            // a replay of this write) means the round comment already exists
-            // in a later state, and "started" must never overwrite it.
-            if github.find_marked_comment(repo, issue, &marker).await?.is_none() {
+            let open_marker = closing::open_marker(&write.session_id);
+            let verdict_marker = closing::round_marker(&write.session_id);
+            // Create only if neither of the session's comments exists yet: a
+            // replay must not duplicate the "started" post, and a fast close
+            // (verdict already up) must not gain a stale "started" after it.
+            if github
+                .find_marked_comment(repo, issue, &open_marker)
+                .await?
+                .is_none()
+                && github
+                    .find_marked_comment(repo, issue, &verdict_marker)
+                    .await?
+                    .is_none()
+            {
                 let round = payload["round"].as_i64().unwrap_or(1);
                 let baseline = github
                     .pull_baseline(repo, issue)
@@ -825,8 +836,9 @@ async fn perform_write(
                     "<!-- openab-council -->\n\
                      Review Council started (round {round}).\n\n\
                      {baseline}\n\n\
-                     The council is reviewing this pull request; this comment \
-                     will be updated with this round's verdict.\n\n{marker}"
+                     The council is reviewing this pull request; the verdict \
+                     will follow as a separate comment when the round \
+                     closes.\n\n{open_marker}"
                 );
                 github.create_comment(repo, issue, &body).await?;
             }
@@ -834,10 +846,11 @@ async fn perform_write(
         }
         closing::KIND_COMMENT_ABANDON => {
             let issue = payload["pr_number"].as_i64().unwrap_or_default();
-            let marker = closing::round_marker(&write.session_id);
-            // Update only if the marker exists. A session gets exactly one
-            // terminal state, so the found comment can only be this round's
-            // own "started" post — never a verdict.
+            let marker = closing::open_marker(&write.session_id);
+            // Update only if the opening post exists — a round that never
+            // managed to post "started" gets no tombstone either. The verdict
+            // comment lives under a different marker, so this can never touch
+            // a verdict.
             if let Some(existing) = github.find_marked_comment(repo, issue, &marker).await? {
                 let body = payload["body"].as_str().unwrap_or_default();
                 github.update_comment(repo, existing, body).await?;
@@ -1537,7 +1550,7 @@ mod tests {
             .expect("abandon write queued");
         let body = abandon.payload["body"].as_str().unwrap();
         assert!(body.contains("without a verdict"));
-        assert!(body.contains(&closing::round_marker("ses_1")));
+        assert!(body.contains(&closing::open_marker("ses_1")));
     }
 
     #[tokio::test]

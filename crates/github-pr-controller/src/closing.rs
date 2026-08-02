@@ -39,6 +39,16 @@ pub fn round_marker(session_id: &str) -> String {
     format!("<!-- openab-round:{session_id} -->")
 }
 
+/// The opening post's own identity, distinct from the verdict's
+/// `round_marker` so the two are separate comments: the verdict's pre-send
+/// reconcile must never adopt the "started" post (operator decision
+/// 2026-08-02 — keep the started notice in the timeline instead of
+/// rewriting it in place). The abandon tombstone still rewrites the
+/// opening post, so it reconciles on this marker too.
+pub fn open_marker(session_id: &str) -> String {
+    format!("<!-- openab-round-open:{session_id} -->")
+}
+
 /// What a terminal event turns into. `round` is persisted first; `writes` are
 /// queued in this order and drained independently.
 #[derive(Debug, Clone, PartialEq)]
