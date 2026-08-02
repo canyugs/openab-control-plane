@@ -1644,6 +1644,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_started_post_skips_when_the_verdict_already_landed() {
+        // Fast close: the verdict comment can beat the queued "started" write
+        // out of the outbox. The open write must then do nothing — a fresh
+        // "started" after the verdict reads as a phantom extra round.
+        use axum::routing::{get as axum_get, post as axum_post};
+
+        #[derive(Clone, Default)]
+        struct Github {
+            comments: Arc<std::sync::Mutex<Vec<(i64, String, String)>>>,
+        }
+        let gh = Github::default();
+        let app = Router::new()
+            .route(
+                "/app/installations/:id/access_tokens",
+                axum_post(|| async { Json(json!({"token": "ghs_test"})) }),
+            )
+            .route(
+                "/repos/:o/:n/issues/:num/comments",
+                axum_get({
+                    let gh = gh.clone();
+                    move || {
+                        let gh = gh.clone();
+                        async move {
+                            let list: Vec<Value> = gh
+                                .comments
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .rev()
+                                .map(|(id, body, login)| {
+                                    json!({"id": id, "body": body, "user": {"login": login}})
+                                })
+                                .collect();
+                            Json(Value::Array(list))
+                        }
+                    }
+                })
+                .post({
+                    let gh = gh.clone();
+                    move |Json(body): Json<Value>| {
+                        let gh = gh.clone();
+                        async move {
+                            let mut comments = gh.comments.lock().unwrap();
+                            let id = 1000 + comments.len() as i64;
+                            comments.push((
+                                id,
+                                body["body"].as_str().unwrap_or_default().into(),
+                                "fixture-council[bot]".into(),
+                            ));
+                            Json(json!({"id": id}))
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut config = Config::from_values(|_| None);
+        config.mode = OperatingMode::ExternalCanary;
+        config.enable_writes = true;
+        config.canary_repository = Some("example/repo".into());
+        config.github_api_base = format!("http://{addr}");
+        config.bot_handle = Some("fixture-council".into());
+        config.github_app = config::GitHubAppConfig {
+            app_id: Some("1".into()),
+            installation_id: Some("2".into()),
+            private_key: Some("unused".into()),
+        };
+        let client =
+            github::GitHubClient::from_config(&config).expect("writes enabled builds a client");
+        client.seed_test_token("ghs_test");
+        let store = SqliteStore::memory().unwrap();
+
+        // The fast close already put the verdict up.
+        gh.comments.lock().unwrap().push((
+            900,
+            format!("verdict body\n\n{}", closing::round_marker("ses_1")),
+            "fixture-council[bot]".into(),
+        ));
+        let open_payload = |ses: &str| {
+            json!({"repo": "example/repo", "pr_number": 7, "round": 1, "session_id": ses})
+        };
+        store
+            .enqueue_write("ses_1", closing::KIND_COMMENT_OPEN, &open_payload("ses_1"))
+            .unwrap();
+        // Control: a session with no verdict up still posts its "started"
+        // (pull_baseline has no route here, so it falls back — the skip in
+        // ses_1 must come from the marker check, not general failure).
+        store
+            .enqueue_write("ses_2", closing::KIND_COMMENT_OPEN, &open_payload("ses_2"))
+            .unwrap();
+        for write in store.claim_writes(10).unwrap() {
+            perform_write(&client, &store, &write).await.unwrap();
+        }
+        {
+            let comments = gh.comments.lock().unwrap();
+            assert_eq!(comments.len(), 2, "verdict + ses_2's started, no more");
+            assert!(
+                comments[1].1.contains(&closing::open_marker("ses_2")),
+                "the surviving create is ses_2's opening post"
+            );
+        }
+
+        // Replaying the opens (crash before mark-done) adds nothing: ses_1
+        // still sees its verdict, ses_2 reconciles on its open marker.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        for write in store.claim_writes_for_test_after_lease(10).unwrap() {
+            perform_write(&client, &store, &write).await.unwrap();
+            store.mark_write_done(write.id).unwrap();
+        }
+        assert_eq!(gh.comments.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
     async fn a_replayed_write_reconciles_instead_of_posting_twice() {
         // Council F5 on #305, the P7 gate: a crash between sending and marking
         // done replays the write after the claim lease lapses, and neither a
