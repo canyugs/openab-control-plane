@@ -35,7 +35,7 @@ impl Coordinator for TriageCouncil {
     }
 
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action> {
-        council_on_done(cx, bot, TRIAGE_QUORUM_PROMPT)
+        council_on_done(cx, bot, TRIAGE_QUORUM_PROMPT, false)
     }
 
     fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<Action> {
