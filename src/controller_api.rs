@@ -2809,13 +2809,19 @@ mod tests {
         crate::orchestrator::handle_reply(
             &ocp_state,
             "rev1",
-            bot_reply(&active_session, "review one [done]"),
+            bot_reply(
+                &active_session,
+                "Review one: the changed path is covered and has no blocking issue. [done]",
+            ),
         )
         .unwrap();
         crate::orchestrator::handle_reply(
             &ocp_state,
             "rev2",
-            bot_reply(&active_session, "review two [done]"),
+            bot_reply(
+                &active_session,
+                "Review two: the changed path is covered and has no blocking issue. [done]",
+            ),
         )
         .unwrap();
         // #344: a controller-opened session's chair close must carry a

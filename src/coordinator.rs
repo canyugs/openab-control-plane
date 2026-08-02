@@ -74,6 +74,9 @@ pub enum Action {
     /// Relays of the reviewers' finals (the new chair received none of the
     /// session's earlier fanout) and a synthesis Prompt.
     ReassignChair { to: String },
+    /// Remove a reviewer whose done-signal did not carry a delivered report.
+    /// The orchestrator prefers a same-role spare before shrinking the roster.
+    TrimReviewer { bot: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +91,17 @@ pub trait Coordinator: Send + Sync {
     fn kind(&self) -> &'static str;
     /// A settled done-signal (🆗 add) arrived from `bot`. Return actions.
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<Action>;
+    /// Done handling with the current bot's transcript-backed report retry
+    /// count. The default preserves existing coordinators; only the
+    /// report-contract coordinator needs the extra input.
+    fn on_done_with_reviewer_rerequest_attempts(
+        &self,
+        cx: &dyn Ctx,
+        bot: &str,
+        _rerequest_attempts: i64,
+    ) -> Vec<Action> {
+        self.on_done(cx, bot)
+    }
     /// Roster members *prompted to act* on the opening trigger (i.e. @mentioned).
     /// A9: before the topic exists, non-starters are skipped by the stock OAB
     /// mention gate and the event is dropped, not deferred. The orchestrator
@@ -145,9 +159,21 @@ pub trait Coordinator: Send + Sync {
 /// `prompt` is per-coordinator — a review chair completes GitHub side effects,
 /// a triage chair must post the report and nothing else.
 pub(crate) fn quorum_actions(cx: &dyn Ctx, prompt: &str) -> Vec<Action> {
+    quorum_actions_with_contract(cx, prompt, false)
+}
+
+/// Shared quorum policy with the optional report-delivery contract. The
+/// controller trigger remains the second key because controller rounds use the
+/// ordinary council coordinator today.
+pub(crate) fn quorum_actions_with_contract(
+    cx: &dyn Ctx,
+    prompt: &str,
+    verdict_required: bool,
+) -> Vec<Action> {
     let mut actions = vec![];
     let chair = cx.chair();
-    if quorum_reached(cx.roster(), chair, &cx.done_voters(), cx.quorum_n()) {
+    let done = counted_done_voters(cx, verdict_required);
+    if quorum_reached(cx.roster(), chair, &done, cx.quorum_n()) {
         actions.push(Action::Transition {
             from: SessionState::Deliberating,
             to: SessionState::Quorum,
@@ -160,6 +186,53 @@ pub(crate) fn quorum_actions(cx: &dyn Ctx, prompt: &str) -> Vec<Action> {
         }
     }
     actions
+}
+
+fn verdict_contract(cx: &dyn Ctx, explicit: bool) -> bool {
+    explicit
+        || cx
+            .trigger_ref()
+            .is_some_and(|t| t.starts_with("controller:"))
+}
+
+fn counted_done_voters(cx: &dyn Ctx, explicit: bool) -> Vec<String> {
+    let done = cx.done_voters();
+    if !verdict_contract(cx, explicit) {
+        return done;
+    }
+    done.into_iter()
+        .filter(|bot| {
+            cx.latest_settled(bot)
+                .as_deref()
+                .is_some_and(crate::plugins::pr_review::report_delivered)
+        })
+        .collect()
+}
+
+pub(crate) const REVIEWER_REREQUEST_PREFIX: &str = "[report-delivery re-request]";
+pub(crate) const MAX_REVIEWER_REREQUESTS: i64 = 2;
+
+fn reviewer_report_delivered(cx: &dyn Ctx, bot: &str, explicit: bool) -> bool {
+    !verdict_contract(cx, explicit)
+        || cx
+            .latest_settled(bot)
+            .as_deref()
+            .is_some_and(crate::plugins::pr_review::report_delivered)
+}
+
+fn invalid_reviewer_action(bot: &str, attempts: i64) -> Action {
+    if attempts >= MAX_REVIEWER_REREQUESTS {
+        return Action::TrimReviewer {
+            bot: bot.to_string(),
+        };
+    }
+    let attempt = attempts + 1;
+    Action::Prompt {
+        to: bot.to_string(),
+        content: format!(
+            "{REVIEWER_REREQUEST_PREFIX} attempt {attempt}. Your previous completion did not deliver a report. Reply with your concise findings and end the message with [done]."
+        ),
+    }
 }
 
 pub(crate) const COUNCIL_QUORUM_PROMPT: &str = "Quorum reached. Chair, synthesize the final verdict, complete any side effect required by the opening trigger, and only then end your final message with [done]. Do not send [done] before the required side effect succeeds.";
@@ -195,6 +268,21 @@ impl Coordinator for QuorumCouncil {
         council_on_done(cx, bot, COUNCIL_QUORUM_PROMPT, false)
     }
 
+    fn on_done_with_reviewer_rerequest_attempts(
+        &self,
+        cx: &dyn Ctx,
+        bot: &str,
+        rerequest_attempts: i64,
+    ) -> Vec<Action> {
+        council_on_done_with_reviewer_rerequest_attempts(
+            cx,
+            bot,
+            COUNCIL_QUORUM_PROMPT,
+            false,
+            rerequest_attempts,
+        )
+    }
+
     fn structured_verdict(&self, cx: &dyn Ctx, verdict_text: &str) -> Option<StructuredVerdict> {
         parse_structured_verdict(cx, verdict_text)
     }
@@ -226,12 +314,25 @@ pub(crate) fn council_on_done(
     prompt: &str,
     verdict_required: bool,
 ) -> Vec<Action> {
+    council_on_done_with_reviewer_rerequest_attempts(cx, bot, prompt, verdict_required, 0)
+}
+
+pub(crate) fn council_on_done_with_reviewer_rerequest_attempts(
+    cx: &dyn Ctx,
+    bot: &str,
+    prompt: &str,
+    verdict_required: bool,
+    rerequest_attempts: i64,
+) -> Vec<Action> {
     let mut actions = vec![];
     let chair = cx.chair();
+    let contract = verdict_contract(cx, verdict_required);
 
     // 1. relay a reviewer's settled final to the chair (was share_final_with_chair)
     if Some(bot) != chair {
-        if let Some(c) = chair {
+        if contract && !reviewer_report_delivered(cx, bot, verdict_required) {
+            actions.push(invalid_reviewer_action(bot, rerequest_attempts));
+        } else if let Some(c) = chair {
             actions.push(Action::Relay {
                 from: bot.to_string(),
                 to: c.to_string(),
@@ -242,7 +343,7 @@ pub(crate) fn council_on_done(
     // 2. quorum reached → enter Quorum + prompt the chair (was maybe_quorum).
     //    The Transition CAS + Prompt-after-failed-Transition suppression make
     //    this fire exactly once, on the call that actually transitions.
-    actions.extend(quorum_actions(cx, prompt));
+    actions.extend(quorum_actions_with_contract(cx, prompt, verdict_required));
 
     // 3. The chair's own done closes only after reviewer quorum. This prevents
     //    an opening-trigger chair response from closing the PR review before
@@ -262,12 +363,8 @@ pub(crate) fn council_on_done(
         // prefix) — controller rounds run under plain `council` mode today
         // and fail-closed error statuses are exactly what this path
         // prevents. Smoke tests and manual sessions carry neither marker.
-        let verdict_required = verdict_required
-            || cx
-                .trigger_ref()
-                .is_some_and(|t| t.starts_with("controller:"));
         let parseable = crate::plugins::pr_review::verdict::trailer(&verdict).is_some();
-        if verdict_required && !parseable && cx.synthesis_attempts() < MAX_SYNTHESIS_ATTEMPTS {
+        if contract && !parseable && cx.synthesis_attempts() < MAX_SYNTHESIS_ATTEMPTS {
             actions.extend(requeue_synthesis(cx, bot));
         } else {
             actions.push(Action::Close {
@@ -428,12 +525,14 @@ pub fn lookup_with_pr_review_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     struct FakeCtx {
         session_id: String,
         roster: Vec<String>,
         chair: Option<String>,
         final_msg: Option<String>,
+        settled: HashMap<String, String>,
         quorum_n: i64,
         reactors: Vec<String>,
         state: SessionState,
@@ -448,6 +547,7 @@ mod tests {
             roster: roster.iter().map(|s| s.to_string()).collect(),
             chair: roster.first().map(|s| s.to_string()),
             final_msg: final_msg.map(String::from),
+            settled: HashMap::new(),
             quorum_n: 0,
             reactors: vec![],
             state: SessionState::Deliberating,
@@ -472,8 +572,12 @@ mod tests {
         fn done_voters(&self) -> Vec<String> {
             self.reactors.clone()
         }
-        fn latest_settled(&self, _: &str) -> Option<String> {
-            self.final_msg.clone()
+        fn latest_settled(&self, bot: &str) -> Option<String> {
+            if self.settled.is_empty() {
+                self.final_msg.clone()
+            } else {
+                self.settled.get(bot).cloned()
+            }
         }
         fn state(&self) -> SessionState {
             self.state.clone()
@@ -510,6 +614,17 @@ mod tests {
             roster: vec!["chair".into(), "rev-a".into(), "rev-b".into()],
             chair: Some("chair".into()),
             final_msg: Some(final_msg.into()),
+            settled: HashMap::from([
+                ("chair".into(), final_msg.into()),
+                (
+                    "rev-a".into(),
+                    "Reviewer report with enough substance".into(),
+                ),
+                (
+                    "rev-b".into(),
+                    "Another reviewer report with enough substance".into(),
+                ),
+            ]),
             quorum_n: 2,
             reactors: vec!["rev-a".into(), "rev-b".into()],
             state: SessionState::Quorum,
@@ -530,6 +645,91 @@ mod tests {
         assert!(actions.iter().any(
             |a| matches!(a, Action::Close { verdict, .. } if verdict.contains("verdict:approve"))
         ));
+    }
+
+    #[test]
+    fn contract_reviewer_blank_is_not_relayed_or_counted() {
+        let mut cx = quorum_ctx(&trailed());
+        cx.settled.insert("rev-a".into(), "PONG [done]".into());
+        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, true);
+
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            Action::Prompt { to, content }
+                if to == "rev-a" && content.starts_with(REVIEWER_REREQUEST_PREFIX)
+        )));
+        assert!(!actions.iter().any(|action| matches!(
+            action,
+            Action::Relay { from, .. } if from == "rev-a"
+        )));
+        assert!(!actions
+            .iter()
+            .any(|action| matches!(action, Action::Transition { .. })));
+    }
+
+    #[test]
+    fn contract_reviewer_rerequest_exhaustion_trims_the_reviewer() {
+        let mut cx = quorum_ctx(&trailed());
+        cx.settled.insert("rev-a".into(), "PONG [done]".into());
+        let actions = council_on_done_with_reviewer_rerequest_attempts(
+            &cx,
+            "rev-a",
+            COUNCIL_QUORUM_PROMPT,
+            true,
+            MAX_REVIEWER_REREQUESTS,
+        );
+
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            Action::TrimReviewer { bot } if bot == "rev-a"
+        )));
+        assert!(!actions.iter().any(|action| matches!(
+            action,
+            Action::Prompt { to, .. } if to == "rev-a"
+        )));
+    }
+
+    #[test]
+    fn reviewer_retry_budget_is_scoped_to_the_voter() {
+        let mut cx = quorum_ctx(&trailed());
+        cx.settled.insert("rev-a".into(), "PONG [done]".into());
+        cx.settled.insert("rev-b".into(), "PONG [done]".into());
+
+        let actions = council_on_done_with_reviewer_rerequest_attempts(
+            &cx,
+            "rev-b",
+            COUNCIL_QUORUM_PROMPT,
+            true,
+            0,
+        );
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            Action::Prompt { to, .. } if to == "rev-b"
+        )));
+        assert!(!actions.iter().any(|action| matches!(
+            action,
+            Action::TrimReviewer { bot } if bot == "rev-b"
+        )));
+    }
+
+    #[test]
+    fn plain_council_reviewer_path_keeps_the_unfiltered_behavior() {
+        let mut cx = quorum_ctx(&trailed());
+        cx.settled.insert("rev-a".into(), "PONG [done]".into());
+        let actions = council_on_done(&cx, "rev-a", COUNCIL_QUORUM_PROMPT, false);
+
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            Action::Relay { from, to } if from == "rev-a" && to == "chair"
+        )));
+        assert!(!actions.iter().any(|action| matches!(
+            action,
+            Action::Prompt { to, .. } if to == "rev-a"
+        )));
+        assert!(!actions.iter().any(|action| matches!(
+            action,
+            Action::TrimReviewer { bot } if bot == "rev-a"
+        )));
     }
 
     #[test]

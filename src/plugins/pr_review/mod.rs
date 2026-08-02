@@ -4,7 +4,35 @@ pub mod tasks;
 pub mod verdict;
 pub mod webhook;
 
-use crate::coordinator::{Coordinator, Ctx, QuorumCouncil, StructuredVerdict};
+use crate::coordinator::{
+    quorum_actions_with_contract, Coordinator, Ctx, QuorumCouncil, StructuredVerdict,
+};
+
+/// The v1 report gate only rejects the two shapes that are unambiguously not a
+/// report: a very short settled turn and a bare tool/error echo. It deliberately
+/// does not impose a report grammar; a concise human finding remains valid.
+pub const MIN_REPORT_CHARS: usize = 20;
+
+pub fn report_delivered(text: &str) -> bool {
+    let text = text.trim();
+    text.chars().count() >= MIN_REPORT_CHARS && !is_bare_tool_echo(text)
+}
+
+fn is_bare_tool_echo(text: &str) -> bool {
+    let first_line = text.lines().next().unwrap_or_default().trim();
+    let lower = text.to_ascii_lowercase();
+    let first_lower = lower.lines().next().unwrap_or_default().trim();
+    let tool_marker = first_lower.starts_with("tool result")
+        || first_lower.starts_with("tool output")
+        || first_lower.starts_with("tool_result")
+        || first_lower.starts_with("<tool_result")
+        || first_lower.starts_with("{\"tool_result\"")
+        || first_lower.starts_with("{\"type\":\"tool_result\"");
+    let json_error = first_line.starts_with('{')
+        && lower.contains("\"error\"")
+        && (lower.contains("jsonrpc") || lower.contains("\"code\""));
+    (tool_marker || json_error) && text.lines().count() <= 4
+}
 
 /// Immutable PR-review policy assembled once at the process boundary.
 ///
@@ -168,18 +196,28 @@ impl Coordinator for ReviewCouncil {
     }
 
     fn on_done(&self, cx: &dyn Ctx, bot: &str) -> Vec<crate::coordinator::Action> {
+        self.on_done_with_reviewer_rerequest_attempts(cx, bot, 0)
+    }
+
+    fn on_done_with_reviewer_rerequest_attempts(
+        &self,
+        cx: &dyn Ctx,
+        bot: &str,
+        rerequest_attempts: i64,
+    ) -> Vec<crate::coordinator::Action> {
         // verdict_required: a review round's chair turn without a parseable
         // trailer re-queues (#344) instead of closing verdict-less.
-        crate::coordinator::council_on_done(
+        crate::coordinator::council_on_done_with_reviewer_rerequest_attempts(
             cx,
             bot,
             crate::coordinator::COUNCIL_QUORUM_PROMPT,
             true,
+            rerequest_attempts,
         )
     }
 
     fn on_roster_change(&self, cx: &dyn Ctx) -> Vec<crate::coordinator::Action> {
-        QuorumCouncil.on_roster_change(cx)
+        quorum_actions_with_contract(cx, crate::coordinator::COUNCIL_QUORUM_PROMPT, true)
     }
 
     fn structured_verdict(&self, cx: &dyn Ctx, verdict_text: &str) -> Option<StructuredVerdict> {
@@ -194,6 +232,31 @@ mod tests {
     use crate::store::SessionState;
     use crate::store::Store as _;
     use std::collections::HashMap;
+
+    #[test]
+    fn report_delivery_rejects_short_echoes_but_keeps_concise_findings() {
+        assert!(!report_delivered("PONG [done]"));
+        assert!(report_delivered("Nil input can panic."));
+        assert!(report_delivered(
+            "Risk: nil input can panic; add a guard before dereferencing."
+        ));
+        assert!(report_delivered(
+            "One short finding: the retry path drops the request id."
+        ));
+    }
+
+    #[test]
+    fn report_delivery_rejects_bare_tool_echo_shapes() {
+        assert!(!report_delivered(
+            "tool_result: command completed successfully but returned no report"
+        ));
+        assert!(!report_delivered(
+            r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal Error"}}"#
+        ));
+        assert!(!report_delivered(
+            "{\n  \"jsonrpc\": \"2.0\",\n  \"error\": {\"code\": -32603}\n}"
+        ));
+    }
 
     #[test]
     fn explicit_config_source_normalizes_every_review_policy_value() {
@@ -239,6 +302,7 @@ mod tests {
         roster: Vec<String>,
         chair: Option<String>,
         final_msg: Option<String>,
+        settled: HashMap<String, String>,
         quorum_n: i64,
         reactors: Vec<String>,
         state: SessionState,
@@ -250,6 +314,7 @@ mod tests {
             roster: roster.iter().map(|s| s.to_string()).collect(),
             chair: roster.first().map(|s| s.to_string()),
             final_msg: final_msg.map(String::from),
+            settled: HashMap::new(),
             quorum_n: 0,
             reactors: vec![],
             state: SessionState::Deliberating,
@@ -271,8 +336,12 @@ mod tests {
         fn done_voters(&self) -> Vec<String> {
             self.reactors.clone()
         }
-        fn latest_settled(&self, _: &str) -> Option<String> {
-            self.final_msg.clone()
+        fn latest_settled(&self, bot: &str) -> Option<String> {
+            if self.settled.is_empty() {
+                self.final_msg.clone()
+            } else {
+                self.settled.get(bot).cloned()
+            }
         }
         fn state(&self) -> SessionState {
             self.state.clone()
