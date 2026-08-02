@@ -59,12 +59,24 @@ task (REST) ─► PLAN (solo) ─► IMPLEMENT (solo → branch + PR) ─► CO
   PLAN session. No LLM routing decision in the controller — it reads
   declared markers, mirroring the verdict-trailer philosophy (B4).
 
-### 2. Gate signal: poll the GitHub status in v1
+### 2. Gate signal: poll the GitHub status in v1 — bound to the run, not the message
 
 v1 polls the PR's `openab/council` status (approve / request_changes /
 error). It is the product-facing contract, survives plane restarts, and
 needs no event grant. Consuming signed `session.terminal` events instead is
 a v2 refinement, not a correctness requirement.
+
+**Binding invariant (the pointer is a hint, never an authority).** The
+implementor's final message ingests partially untrusted content (plan text,
+prior-round findings), so its PR pointer could be substituted for an
+unrelated PR that already carries a green status. The controller therefore
+resolves the gate target independently: the run owns the branch name (the
+controller assigns it in the IMPLEMENT opening input), and the gate PR must
+(a) live in the run's configured repository, (b) have the run-owned branch
+as its head, (c) be authored by the implementor identity, and (d) carry the
+`openab/council` status on the exact head SHA the controller captured when
+it observed the PR — the implementor's message is used only to speed up
+discovery, and any mismatch parks the run as `needs_human`.
 
 ### 3. Loop discipline: cap, journal, idempotency
 
@@ -77,7 +89,10 @@ a v2 refinement, not a correctness requirement.
   are deduped by `trigger_fingerprint = hash(run_id, stage, iteration)`.
 - **Human gate (optional)**: `require_plan_approval` pauses the run after
   PLAN until `POST /runs/:id/approve`. Off by default in v1; the mechanism
-  is the controller's, per ADR 022 D7.
+  is the controller's, per ADR 022 D7. Task submission and approval require
+  authenticated operator authority (bearer key held by operators only), are
+  scoped to the named run, and are idempotent per run — a replayed approve
+  is a no-op, never a second advance.
 
 ### 4. Write-side-effect policy: the implementor writes as an author
 
@@ -88,9 +103,14 @@ feature: the council reviews code it did not write, under an identity that
 cannot approve its own PR.
 
 v1: the implementor pod gets a deploy key (or fine-grained PAT) scoped to
-**one experiment repository**, dev lane only. Widening beyond that repo, or
-routing writes through a broker, is a promotion-time decision recorded in a
-future amendment — not silently.
+**one experiment repository**, dev lane only. Because the implementor
+ingests partially untrusted input while holding a write credential (the
+ADR 019 tension), the credential model is named here, not left to
+implementation: the key is **push-only to the run-owned branch namespace**
+(`panel/*`), enforced server-side (branch protection on everything else),
+and the promotion path is a controller-minted short-lived token or a write
+broker — the standing key never widens. Widening beyond that repo is a
+promotion-time decision recorded in a future amendment — not silently.
 
 ### 5. Deployment: dev lane, raised timeout, own installation
 
