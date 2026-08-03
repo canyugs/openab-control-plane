@@ -37,14 +37,12 @@ fn is_bare_tool_echo(text: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrReviewConfig {
     pub council_roster: Vec<String>,
-    pub plane_status_notice: bool,
 }
 
 impl Default for PrReviewConfig {
     fn default() -> Self {
         Self {
             council_roster: vec!["chair".into(), "rev1".into(), "rev2".into()],
-            plane_status_notice: false,
         }
     }
 }
@@ -57,10 +55,6 @@ impl PrReviewConfig {
         config.council_roster = csv_value(lookup("OABCP_COUNCIL_ROSTER"))
             .filter(|roster| !roster.is_empty())
             .unwrap_or_else(|| config.council_roster.clone());
-        config.plane_status_notice = matches!(
-            lookup("OABCP_PLANE_STATUS_NOTICE").as_deref(),
-            Some("1") | Some("true")
-        );
         config
     }
 }
@@ -122,7 +116,6 @@ mod tests {
     fn explicit_config_source_normalizes_every_review_policy_value() {
         let values = HashMap::from([
             ("OABCP_COUNCIL_ROSTER", "chair, security, tests"),
-            ("OABCP_PLANE_STATUS_NOTICE", "true"),
             // Retired with the embedded ingress — reading them must not
             // resurrect a field or panic.
             ("OABCP_BOT_HANDLE", " @nellen "),
@@ -133,14 +126,12 @@ mod tests {
         let config = PrReviewConfig::from_values(|name| values.get(name).map(|v| v.to_string()));
 
         assert_eq!(config.council_roster, vec!["chair", "security", "tests"]);
-        assert!(config.plane_status_notice);
     }
 
     #[test]
     fn invalid_explicit_config_preserves_safe_defaults() {
         let values = HashMap::from([
             ("OABCP_COUNCIL_ROSTER", " , "),
-            ("OABCP_PLANE_STATUS_NOTICE", "yes"),
         ]);
         let config = PrReviewConfig::from_values(|name| values.get(name).map(|v| v.to_string()));
 

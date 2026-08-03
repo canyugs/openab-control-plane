@@ -166,12 +166,14 @@ mod tests {
         .unwrap();
 
         let rows = store
-            .review_findings(Some("o/r"), Some(7), None, None, 10)
+            .review_findings(None, None, None, None, 10)
             .unwrap();
         assert_eq!(rows.len(), 2);
         // Newest-first: F2 has the higher rowid.
         let f1 = rows.iter().find(|r| r.stable_id == "F1").unwrap();
         assert_eq!(f1.session_id, session.id);
+        // repo/pr are the controller's to record — the kernel writes NULL.
+        assert_eq!((f1.repo.as_deref(), f1.pr_number), (None, None));
         assert_eq!((f1.severity.as_str(), f1.status.as_str()), ("red", "open"));
         assert_eq!(f1.head_sha.as_deref(), Some("abc123"));
         assert_eq!(f1.raised_by.as_deref(), Some("rev1"));
@@ -310,7 +312,7 @@ mod tests {
         .unwrap();
 
         let rows = store
-            .review_findings(Some("o/r"), Some(8), None, None, 10)
+            .review_findings(None, None, None, None, 10)
             .unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows.iter().filter(|r| r.stable_id == "F1").count(), 1);
