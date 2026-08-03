@@ -22,6 +22,11 @@ const REPORT_PART_1: &str = "REPORT-PART-1: The outage began at 09:00 with eleva
 const REPORT_PART_2: &str = "REPORT-PART-2: The root cause was a misconfigured cache layer.";
 const REPORT_PART_3: &str = "REPORT-PART-3: Mitigation is deployed and traffic recovered. [done]";
 
+const TIMEOUT_TRIGGER_REF: &str = "forum:s16-watchdog-timeout-proof";
+const TIMEOUT_PROMPT: &str = "TIMEOUT-PROMPT: Two responders, one of whom will go silent.";
+const TIMEOUT_PARTIAL_REPORT: &str =
+    "TIMEOUT-PARTIAL: The cache layer looks misconfigured; check the TTL. [done]";
+
 #[tokio::test]
 async fn forum_shaped_second_consumer_flow_uses_only_north_surface_and_defaults() {
     let (addr, state) = spawn_server().await;
@@ -151,6 +156,167 @@ async fn chunked_answer_result_is_identified_at_close_and_joinable() {
         result["result"]["text"], full_text,
         "result text is immutable after close"
     );
+}
+
+/// ADR 031 invariant #10, timeout half: a consumer that never touches GitHub
+/// must be able to see a watchdog close, and everything it needs must be on
+/// the north surface. The success/terminal/reopen halves are above; this is
+/// the path where a bot goes silent and only the plane can end the session.
+#[tokio::test]
+async fn watchdog_timeout_is_legible_on_the_north_surface_alone() {
+    let (addr, state) = spawn_server().await;
+    let base = addr.to_string();
+    let mut north_rx = state.north_tx.subscribe();
+
+    let (chair_id, chair_token) = register_bot(&base, "forum-chair", "chair").await;
+    let (speaker_id, speaker_token) = register_bot(&base, "forum-speaker", "reviewer").await;
+    let (silent_id, silent_token) = register_bot(&base, "forum-silent", "reviewer").await;
+
+    // Connect all three first: a bot that never joined would be absent for an
+    // uninteresting reason. These are live and simply do not all finish.
+    let mut chair_ws = connect(addr, &chair_token).await;
+    let mut speaker_ws = connect(addr, &speaker_token).await;
+    let mut silent_ws = connect(addr, &silent_token).await;
+
+    let session_id = open_council_session(
+        &base,
+        &[&chair_id, &speaker_id, &silent_id],
+        &chair_id,
+        TIMEOUT_PROMPT,
+    )
+    .await;
+    for ws in [&mut chair_ws, &mut speaker_ws, &mut silent_ws] {
+        let event = read_bot_event(ws).await;
+        assert_eq!(event["event_type"], "message");
+    }
+
+    // One reviewer delivers, the other never does — the session cannot reach
+    // quorum on its own and would hang forever without the watchdog.
+    speaker_ws
+        .send(reply(&session_id, TIMEOUT_PARTIAL_REPORT))
+        .await
+        .unwrap();
+    wait_for_state(&base, &session_id, "deliberating").await;
+
+    // Drive the watchdog's own entry point rather than waiting out a real
+    // deadline. A cutoff that predates the report must NOT close: the staleness
+    // predicate in the close CAS is what lets a landing verdict beat the
+    // watchdog, and it has to hold on the provider-neutral path too.
+    let deferred = openab_control_plane::orchestrator::force_close_timeout(
+        &state,
+        &session_id,
+        openab_control_plane::store::now_ms() - 60_000,
+    )
+    .unwrap();
+    assert!(
+        !deferred,
+        "a session with activity newer than the cutoff is not stale"
+    );
+    assert_eq!(
+        get_session(&base, &session_id).await["session"]["state"],
+        "deliberating",
+        "the deferred scan left the session running"
+    );
+
+    let closed = openab_control_plane::orchestrator::force_close_timeout(
+        &state,
+        &session_id,
+        openab_control_plane::store::now_ms() + 1,
+    )
+    .unwrap();
+    assert!(closed, "the watchdog performed the close");
+
+    let event = wait_for_north_event(&mut north_rx, &session_id, "timeout").await;
+    let payload = &event["payload"];
+    assert_eq!(payload["reason"], "timeout");
+    assert_eq!(payload["done"], 1);
+    assert_eq!(payload["total"], 3);
+    assert_eq!(
+        payload["absent"],
+        json!([chair_id, silent_id]),
+        "the chair never synthesized and the silent reviewer never reported"
+    );
+    assert_eq!(payload["trigger_ref"], TIMEOUT_TRIGGER_REF);
+
+    let session = get_session(&base, &session_id).await;
+    assert_eq!(session["session"]["state"], "closed");
+    // The close reason lives on the north event, not on the session row — a
+    // consumer learns why a session ended by subscribing, which is the whole
+    // point of the surface being sufficient.
+    let verdict = payload["verdict"].as_str().unwrap();
+    assert!(
+        verdict.starts_with("TIMEOUT: session closed by watchdog"),
+        "verdict names the close reason: {verdict}"
+    );
+    assert!(
+        verdict.contains(&silent_id),
+        "the silent bot is named as absent: {verdict}"
+    );
+    assert!(
+        !verdict.contains(&speaker_id),
+        "a bot that delivered is not listed absent: {verdict}"
+    );
+    assert!(
+        verdict.contains("1/3 signaled done"),
+        "the verdict counts the delivered reports: {verdict}"
+    );
+    assert!(
+        verdict.contains("No verdict synthesized"),
+        "no chair synthesis is claimed: {verdict}"
+    );
+
+    // A timeout never guesses a result — the delivered report stays in the
+    // thread, but nothing is promoted to the session result.
+    assert!(
+        session["result"].is_null(),
+        "timeout close records no result: {}",
+        session["result"]
+    );
+    let messages = session["messages"].as_array().unwrap();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m["content"].as_str().unwrap_or_default() == TIMEOUT_PARTIAL_REPORT),
+        "the one delivered report survives the close"
+    );
+
+    // Once-only: a second scan (or a normal close racing in) is a no-op.
+    let again = openab_control_plane::orchestrator::force_close_timeout(
+        &state,
+        &session_id,
+        openab_control_plane::store::now_ms() + 1,
+    )
+    .unwrap();
+    assert!(!again, "the close CAS fires exactly once");
+
+    // Nothing in this flow named a provider: the trigger_ref is forum-shaped
+    // and every read above came from the north API or the event stream.
+    assert_eq!(session["session"]["trigger_ref"], TIMEOUT_TRIGGER_REF);
+}
+
+async fn open_council_session(
+    base: &str,
+    roster: &[&str],
+    chair_bot: &str,
+    prompt: &str,
+) -> String {
+    let response = reqwest::Client::new()
+        .post(format!("http://{base}/v1/sessions"))
+        .json(&json!({
+            "title": "forum-shaped council that never finishes",
+            "trigger_ref": TIMEOUT_TRIGGER_REF,
+            "roster": roster,
+            "chair_bot": chair_bot,
+            "quorum_n": 2,
+            "mode": "council",
+            "prompt": prompt,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let value: Value = response.json().await.unwrap();
+    value["session_id"].as_str().unwrap().to_string()
 }
 
 async fn spawn_server() -> (SocketAddr, Arc<AppState>) {
