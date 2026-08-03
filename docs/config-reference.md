@@ -37,7 +37,6 @@ and supports one exact external-canary repository. See
 | `OABCP_MAX_ROSTER` | `16` | Admission quota — max bots in a session roster. Mid-session adds (`POST /v1/sessions/:id/roster`) beyond this are rejected (`409`). Bounds roster growth; applies to dynamic adds, not the initial roster at open |
 | `OABCP_COUNCIL_ROSTER` | `chair,rev1,rev2` | Standing council roster — the fallback the liveness/failover swap reads (comma-separated; `[0]` is the chair, the rest review). Should match the bots seeded via `OABCP_BOTS` **The standing roster does not follow `OABCP_BOTS`.** A fresh plane seeds the bots from `OABCP_BOTS` but its roster falls back to this default, so a lane whose bots are named anything else comes up rostering names that do not exist — convening then fails with `unknown bot`. Override it with `PUT /v1/council/roster` after first boot (`source` flips from `config` to `override`). Bit two rebuilt lanes on 2026-07-27. |
 | `OABCP_AUTO_FAILOVER` | _(off)_ | `1` enables ADR 023 Phase 4 auto-failover: a session whose roster member goes `unreachable` mid-round is repaired from the inventory instead of only converging via quorum shrink. Default-off; enable on dev first |
-| `OABCP_PLANE_STATUS_NOTICE` | _(off)_ | `1` enables the plane's canned PR notices via the App (its only direct GitHub writes; default-off): the ADR 025 "review could not complete" comment when a session dies verdict-less, and the SEI-820 "round budget exhausted" comment when an explicit `/review` is refused on budget (once per PR) |
 | `OABCP_HEALTH_ERROR_THRESHOLD` | `3` | Consecutive agent-run errors before a connected bot's health flips to `degraded` (ADR 023 passive detection) — degraded bots are avoided when rosters are drawn |
 | `OABCP_RECRUIT_SESSION_CAP` | `3` | Max distinct recruit (provision) directives accepted per session — bounds the unknown-target provisioning signal surface |
 | `GH_OUTPUT` | _(off)_ | Set to `1` to enable GitHub PR side-effects (comment, label, review) via `gh` CLI |
@@ -55,7 +54,8 @@ are read by nothing and their behaviour now belongs to `github-pr-controller`:
 | `OABCP_BOT_HANDLE` | `GITHUB_CONTROLLER_BOT_HANDLE` |
 | `OABCP_COUNCIL_PRESET` | `GITHUB_CONTROLLER_COUNCIL_PRESET` |
 | `OABCP_COUNCIL_REVIEW_MODE` | `GITHUB_CONTROLLER_REVIEW_MODE` |
-| `OABCP_REVIEW_ROUND_BUDGET`, `OABCP_REVIEW_HOURLY_CAP`, `OABCP_REVIEW_CATCHUP_SECS` | **nothing** — the controller has no per-PR cost valve. These stopped taking effect the moment a lane cut over to controller ingress, not when they were deleted |
+| `OABCP_REVIEW_ROUND_BUDGET`, `OABCP_REVIEW_HOURLY_CAP`, `OABCP_REVIEW_CATCHUP_SECS` | **nothing** — the controller has no per-PR cost valve. These stopped taking effect the moment a lane cut over to controller ingress, not when they were deleted (SEI-890) |
+| `OABCP_PLANE_STATUS_NOTICE` | **nothing** — the ADR 025 notice was the plane's last direct PR write and could only target a `github:pr/…` trigger_ref, which no ingress produces any more. The controller owns every GitHub write |
 
 Setting a retired variable is inert, not an error: the plane ignores it.
 
