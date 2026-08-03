@@ -669,7 +669,7 @@ mod tests {
             "solo",
             "council",
             "pipeline",
-            "review_council",
+            "council",
             "triage_council",
         ] {
             let session_id = terminal_session(&state, mode, SessionState::Closed);
@@ -1416,7 +1416,6 @@ mod tests {
 
         for mode in [
             "council",
-            "review_council",
             "triage_council",
             "solo",
             "pipeline",

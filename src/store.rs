@@ -5349,7 +5349,7 @@ mod tests {
             )
             .unwrap());
         let s = store
-            .create_session("t", None, 0, None, &[], "review_council")
+            .create_session("t", None, 0, None, &[], "council")
             .unwrap();
         {
             let c = store.conn.lock().unwrap();
@@ -5417,7 +5417,7 @@ mod tests {
             )
             .unwrap());
         let s = store
-            .create_session("t", None, 0, None, &[], "review_council")
+            .create_session("t", None, 0, None, &[], "council")
             .unwrap();
         {
             let c = store.conn.lock().unwrap();
@@ -5484,7 +5484,7 @@ mod tests {
             )
             .unwrap());
         let s = store
-            .create_session("t", None, 0, None, &[], "review_council")
+            .create_session("t", None, 0, None, &[], "council")
             .unwrap();
         {
             let c = store.conn.lock().unwrap();

@@ -407,12 +407,7 @@ fn dispatch_coordinator(
     state: &Arc<AppState>,
     session: &Session,
 ) -> Result<Option<Box<dyn Coordinator>>> {
-    if session.mode == "review_council" {
-        state.record_compatibility_use_once("legacy_review_council_dispatch", &session.id);
-    }
-    if let Some(coord) =
-        coordinator::lookup_with_pr_review_config(&session.mode, &state.pr_review_config)
-    {
+    if let Some(coord) = coordinator::lookup(&session.mode) {
         return Ok(Some(coord));
     }
 
@@ -1603,7 +1598,7 @@ fn attempt_failover(state: &Arc<AppState>, degraded_bot_id: &str) {
     // roster is (re-)read below *inside* this lock, so each swap sees the prior
     // one. Cheap — failover is rare — and the path is fully synchronous.
     let _swap = state.failover_lock.lock().unwrap();
-    let Ok((roster, _)) = crate::plugins::pr_review::council::runtime_council_roster(state) else {
+    let Ok((roster, _)) = crate::plugins::pr_review::runtime_council_roster(state) else {
         return;
     };
     // Only route around a bot that is actually in the standing roster — an
@@ -2131,10 +2126,8 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                 // closing text. Computed BEFORE the close CAS so it lands in
                 // the same transaction (the close webhook re-reads the row).
                 let structured_verdict = if let Some(coord) =
-                    coordinator::lookup_with_pr_review_config(
-                        &session.mode,
-                        &state.pr_review_config,
-                    ) {
+                    coordinator::lookup(&session.mode)
+                {
                     let cx = OrchCtx {
                         state,
                         session,
@@ -2203,14 +2196,11 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     // joined settled span, not just the closing message: the
                     // block can straddle a message-length split (live case:
                     // zeabur.com#702 round 4 lost its whole round to this).
-                    // Controller-opened reviews use the generic "council"
-                    // mode (the embedded plugin owns "review_council"), so
-                    // gate on a chair being present instead — without this,
-                    // controller rounds never fed the ledger or bumped
-                    // waiver fired-counters (found live, OCP#333 round 2).
-                    if session.mode == "review_council"
-                        || (session.mode == "council" && session.chair_bot.is_some())
-                    {
+                    // Reviews are controller-opened and use the generic
+                    // "council" mode, so gate on a chair being present —
+                    // without this, controller rounds never fed the ledger or
+                    // bumped waiver fired-counters (found live, OCP#333 r2).
+                    if session.mode == "council" && session.chair_bot.is_some() {
                         let joined = messages
                             .iter()
                             .filter(|m| span.contains(&m.id))
@@ -2884,14 +2874,14 @@ mod tests {
 
     #[test]
     fn close_webhook_payload_shape() {
-        let mut s = test_session(Some("chair"), "review_council");
+        let mut s = test_session(Some("chair"), "council");
         s.trigger_ref = Some("github:pr/o/r#1".into());
         let roster = vec!["chair".to_string(), "rev1".to_string()];
         let p = close_webhook_payload(Some(&s), &s.id, &roster, "LGTM", "normal");
         assert_eq!(p["event"], "session.closed");
         assert_eq!(p["session_id"], "ses_1");
         assert_eq!(p["trigger_ref"], "github:pr/o/r#1");
-        assert_eq!(p["mode"], "review_council");
+        assert_eq!(p["mode"], "council");
         assert_eq!(p["verdict"], "LGTM");
         assert_eq!(p["reason"], "normal");
         assert_eq!(p["roster"], serde_json::json!(["chair", "rev1"]));
@@ -3112,7 +3102,7 @@ mod tests {
                 2,
                 Some(&chair.id),
                 &[chair.id.clone(), rev1.id.clone(), rev2.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -3243,7 +3233,7 @@ mod tests {
         }
 
         let (roster, source) =
-            crate::plugins::pr_review::council::runtime_council_roster(&state).unwrap();
+            crate::plugins::pr_review::runtime_council_roster(&state).unwrap();
         assert_eq!(source, "override");
         assert_eq!(
             roster.first().unwrap(),
@@ -3281,7 +3271,7 @@ mod tests {
         }
 
         let (roster, _) =
-            crate::plugins::pr_review::council::runtime_council_roster(&state).unwrap();
+            crate::plugins::pr_review::runtime_council_roster(&state).unwrap();
         assert_eq!(roster.first().unwrap(), &chair, "chair untouched");
         assert!(
             roster.contains(&sb1.id) && roster.contains(&sb2.id),
@@ -3308,7 +3298,7 @@ mod tests {
         }
 
         let (roster, _) =
-            crate::plugins::pr_review::council::runtime_council_roster(&state).unwrap();
+            crate::plugins::pr_review::runtime_council_roster(&state).unwrap();
         assert_eq!(roster.first().unwrap(), &chair, "no standby → chair stays");
         assert_eq!(
             store.bot_inventory(&chair).unwrap().unwrap().health,
@@ -3333,7 +3323,7 @@ mod tests {
         }
 
         let (roster, _) =
-            crate::plugins::pr_review::council::runtime_council_roster(&state).unwrap();
+            crate::plugins::pr_review::runtime_council_roster(&state).unwrap();
         assert_eq!(roster.first().unwrap(), &chair, "disabled → no auto-swap");
         assert!(!roster.contains(&standby.id));
     }
@@ -3387,7 +3377,7 @@ mod tests {
                 2,
                 Some(&chair.id),
                 &[chair.id.clone(), rev1.id.clone(), rev2.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -3435,7 +3425,7 @@ mod tests {
                 2,
                 Some(&chair.id),
                 &[chair.id.clone(), rev1.id.clone(), rev2.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -3468,7 +3458,7 @@ mod tests {
                 1,
                 Some(&chair.id),
                 &[chair.id.clone(), rev.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -3664,11 +3654,11 @@ mod tests {
         let session = store
             .create_session(
                 "review round",
-                Some("github:pr/example/repo#349"),
+                Some("controller:pr/example/repo#349"),
                 1,
                 Some(&chair.id),
                 &[chair.id.clone(), reviewer.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -3777,7 +3767,7 @@ mod tests {
                 2,
                 Some(&chair.id),
                 &[chair.id.clone(), rev1.id.clone(), rev2.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -3860,7 +3850,7 @@ mod tests {
                 1,
                 Some(&chair.id),
                 &[chair.id.clone(), rev.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -4070,7 +4060,7 @@ mod tests {
                 1,
                 None,
                 &[from.id.clone(), to.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -4481,34 +4471,6 @@ mod tests {
             })
             .count();
         assert_eq!(duplicate_count, 1);
-
-        let review_session = store
-            .create_session(
-                "review",
-                None,
-                1,
-                Some(&chair.id),
-                &[chair.id.clone(), rev.id.clone()],
-                "review_council",
-            )
-            .unwrap();
-        let review_trigger =
-            post_client_message(&state, &review_session.id, "review the PR").unwrap();
-        handle_reply(
-            &state,
-            &rev.id,
-            create_topic_reply(&review_session.id, &review_trigger.id),
-        )
-        .unwrap();
-        assert_eq!(
-            store
-                .messages(&review_session.id)
-                .unwrap()
-                .iter()
-                .filter(|m| m.author_kind == "system" && m.content.contains("review the PR"))
-                .count(),
-            0
-        );
     }
 
     #[test]
