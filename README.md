@@ -81,18 +81,17 @@ PR comments are an interaction surface:
 | `@<bot-handle> <question>` | Same as `/ask`, when the bot handle is configured |
 
 Comment commands are accepted only from write-ish GitHub users
-(`OWNER`, `MEMBER`, or `COLLABORATOR`). `OABCP_ALLOWED_REPOS` can restrict which
-repositories the webhook will serve.
+(`OWNER`, `MEMBER`, or `COLLABORATOR`). `GITHUB_CONTROLLER_ALLOWED_REPOS`
+restricts which repositories the controller will serve.
 
 ## Deploy
 
-> **Template honesty:** the published templates deploy the **embedded
-> profile** — one control plane plus three pods, webhooks straight to the
-> plane, the chair posting from its pod. That profile works and stays
-> supported for quickstarts, but it is NOT the production architecture above:
-> the controller-owned write path (ADR 031) is installed separately via
-> [docs/controller-action-api.md](docs/controller-action-api.md) and
-> [docs/github-pr-controller.md](docs/github-pr-controller.md). A
+> **Template status:** the published templates deploy the control plane and
+> three pods only. The embedded GitHub ingress they used to rely on was
+> removed in v0.1.67 (ADR 031 invariant #9), so a template deploy reviews
+> nothing until you also run `github-pr-controller` and point the App at it —
+> see [docs/github-pr-controller.md](docs/github-pr-controller.md) and
+> [docs/controller-action-api.md](docs/controller-action-api.md). A
 > controller-included template is on the roadmap.
 
 The templates deploy one control plane plus three stock OpenAB pods: one chair
@@ -152,14 +151,13 @@ PLANE=https://my-council.zeabur.app KEY=<OABCP_API_KEY> \
 
 Automatic review through GitHub:
 
-- Use exactly one automatic trigger per repository: webhook or copied Action, not both.
-- For the PAT track, copy `examples/pr-review.yml` into the target repo and set
-  `COUNCIL_PLANE` / `COUNCIL_KEY` secrets. It runs on PR open/update/reopen/ready,
-  a write-ish user's `/review` PR comment, or `workflow_dispatch`.
-- For the webhook track, configure `GITHUB_WEBHOOK_SECRET`, point the GitHub App
-  or repo webhook at `https://<domain>/api/v1/github_webhooks`, and subscribe to
-  Pull requests and Issue comments. It runs on PR open/reopen/ready-for-review and
-  a write-ish user's `/review` PR comment.
+- Configure `GITHUB_CONTROLLER_WEBHOOK_SECRET`, point the GitHub App at
+  `https://<controller-domain>/api/v1/github/webhooks`, and subscribe to Pull
+  requests and Issue comments. Reviews run on PR open/reopen/ready-for-review
+  and on a write-ish user's `/review` PR comment.
+- The CI/PAT track (`examples/pr-review.yml`, `POST /v1/review`) was retired
+  with the embedded ingress — the controller has no manual convene endpoint
+  yet. A signed webhook is the only trigger.
 
 Review depth is controlled by labels:
 
@@ -170,7 +168,7 @@ Review depth is controlled by labels:
 | `review:standard` | 5 |
 | `review:full` | 7 |
 
-The default is `lite`, unless `OABCP_COUNCIL_PRESET` overrides it.
+The default is `lite`, unless `GITHUB_CONTROLLER_COUNCIL_PRESET` overrides it.
 
 ## Debug A Session
 
@@ -206,7 +204,6 @@ POST /v1/sessions/:id/roster/replace
 GET  /v1/council/roster
 PUT  /v1/council/roster
 POST /v1/council/roster/replace
-POST /v1/review
 GET  /v1/review/findings?repo=...&pr=...&status=...&severity=...&limit=50
 ```
 
@@ -248,7 +245,6 @@ external controller protocol.
 | `scripts/dev-tunnel-k8s.sh` | local Kubernetes cloudflared tunnel to OCP |
 | `scripts/dev-sync-gh-token-secret.sh` | local GitHub token Secret helper for bot pod tests |
 | `scripts/dev-sync-gh-app-secret.sh` | local GitHub App key/minter Secret helper for chair tests |
-| `examples/pr-review.yml` | copied Action option for external repos |
 
 ## Docs
 

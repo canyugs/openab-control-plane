@@ -321,7 +321,7 @@ The script prints:
 
 ```text
 tunnel URL: https://<host>.trycloudflare.com
-webhook URL: https://<host>.trycloudflare.com/api/v1/github_webhooks
+webhook URL: https://<host>.trycloudflare.com/api/v1/github/webhooks
 ```
 
 Cloudflare quick tunnel DNS can take a few seconds to reach your local resolver.
@@ -331,7 +331,7 @@ Patch the GitHub App webhook to that URL:
 
 ```sh
 scripts/dev-webhook.sh \
-  --url https://<host>.trycloudflare.com/api/v1/github_webhooks \
+  --url https://<host>.trycloudflare.com/api/v1/github/webhooks \
   --key-path /Users/can/Downloads/zeabur-council.2026-06-27.private-key.pem
 ```
 
@@ -339,7 +339,7 @@ Then probe the same public route GitHub will use:
 
 ```sh
 scripts/dev-webhook-ready.sh \
-  --url https://<host>.trycloudflare.com/api/v1/github_webhooks \
+  --url https://<host>.trycloudflare.com/api/v1/github/webhooks \
   --repo canyugs/openab-control-plane \
   --pr 53
 ```
@@ -389,7 +389,7 @@ cloudflared tunnel --url http://localhost:8090
 GitHub App or repository webhook to:
 
 ```text
-https://<cloudflared-host>/api/v1/github_webhooks
+https://<cloudflared-host>/api/v1/github/webhooks
 ```
 
 Use the same `WEBHOOK_SECRET` value in your GitHub webhook settings. Subscribe
@@ -407,7 +407,7 @@ route GitHub will use. For a Cloudflare tunnel URL:
 
 ```sh
 scripts/dev-webhook-ready.sh \
-  --url https://<cloudflared-host>/api/v1/github_webhooks \
+  --url https://<cloudflared-host>/api/v1/github/webhooks \
   --repo canyugs/openab-control-plane \
   --pr 53
 ```

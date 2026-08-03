@@ -35,21 +35,29 @@ and supports one exact external-canary repository. See
 | `OABCP_LIVENESS_GRACE_SECS` | `60` | Liveness policy sweep. A roster member disconnected longer than this is flipped to `unreachable` and replaced from the inventory (connected, healthy, same-role spare); with no spare, a reviewer that hasn't voted is trimmed and the quorum shrunk so the session converges on the survivors. The chair is replace-only. Must exceed the OAB reconnect backoff (1–30s); `0` disables the sweep, leaving the `OABCP_SESSION_TIMEOUT_SECS` watchdog as the only backstop |
 | `OABCP_SESSION_CLOSE_WEBHOOK` | _(off)_ | Optional URL POSTed a `session.closed` JSON payload (trigger_ref, mode, verdict, reason `normal`/`timeout`, roster) when a session closes on either path. Fire-and-forget: no retry, no HMAC in v1 — validate the receiver by network policy ([ADR 012](adr/012-session-close-webhook.md)) |
 | `OABCP_MAX_ROSTER` | `16` | Admission quota — max bots in a session roster. Mid-session adds (`POST /v1/sessions/:id/roster`) beyond this are rejected (`409`). Bounds roster growth; applies to dynamic adds, not the initial roster at open |
-| `OABCP_COUNCIL_ROSTER` | `chair,rev1,rev2` | Webhook-convened council roster (comma-separated; `[0]` is the chair, the rest review). Should match the bots seeded via `OABCP_BOTS` **The standing roster does not follow `OABCP_BOTS`.** A fresh plane seeds the bots from `OABCP_BOTS` but its roster falls back to this default, so a lane whose bots are named anything else comes up rostering names that do not exist — convening then fails with `unknown bot`. Override it with `PUT /v1/council/roster` after first boot (`source` flips from `config` to `override`). Bit two rebuilt lanes on 2026-07-27. |
-| `OABCP_COUNCIL_PRESET` | `lite` | Default webhook-convened review preset: `lite` (1 angle), `quick` (3), `standard` (5), `full` (7). Angles are round-robined onto the reviewers (extras trimmed, quorum = participants). A per-PR `review:<preset>` label overrides this. Mirrors `open-council.sh --preset`; `open-council.sh` itself stays generic unless `--preset` is passed |
-| `OABCP_COUNCIL_REVIEW_MODE` | `approve` | How the chair turns a verdict into a GitHub review. `status`: comment + `openab/council` commit status only, no formal `gh pr review`. `approve` (default): an approve verdict also submits a formal **APPROVE** review (counts toward branch-protection required approvals, like a human reviewer); a request_changes verdict stays comment + failure status, no hard merge block. `enforce`: symmetric — approve → APPROVE, request_changes → **REQUEST_CHANGES** (blocks merge until dismissed). The chair token already carries `pull_requests:write`; the target repo must enable "Require approvals" for an APPROVE to count. Read at plane boot (restart to change) |
-| `OABCP_REVIEW_HOURLY_CAP` | `3` | Per-PR cost valve for **auto-triggered** (`synchronize`) reviews: at most this many rounds per rolling hour. A capped push is queued in `pending_reviews` and the catch-up sweep convenes the newest dropped head once the window clears (SEI-819). Explicit `/review` comments and `POST /v1/review` bypass this cap. `0` = drop every synchronize (still queued for catch-up) |
-| `OABCP_REVIEW_ROUND_BUDGET` | `10` | Hard per-PR ceiling on total review rounds, all trigger paths included. Exhausted budget refuses even `/review`, and refusals are NOT queued for catch-up — ten rounds without convergence means the PR needs a human, not an eleventh round |
-| `OABCP_REVIEW_CATCHUP_SECS` | `60` | Tick interval of the cap catch-up sweep (convenes cap-dropped synchronize reviews once admission clears; emits north `github_review_catchup`). `0` disables the sweep — capped pushes then stay dropped until the next push or a manual `/review` |
+| `OABCP_COUNCIL_ROSTER` | `chair,rev1,rev2` | Standing council roster — the fallback the liveness/failover swap reads (comma-separated; `[0]` is the chair, the rest review). Should match the bots seeded via `OABCP_BOTS` **The standing roster does not follow `OABCP_BOTS`.** A fresh plane seeds the bots from `OABCP_BOTS` but its roster falls back to this default, so a lane whose bots are named anything else comes up rostering names that do not exist — convening then fails with `unknown bot`. Override it with `PUT /v1/council/roster` after first boot (`source` flips from `config` to `override`). Bit two rebuilt lanes on 2026-07-27. |
 | `OABCP_AUTO_FAILOVER` | _(off)_ | `1` enables ADR 023 Phase 4 auto-failover: a session whose roster member goes `unreachable` mid-round is repaired from the inventory instead of only converging via quorum shrink. Default-off; enable on dev first |
 | `OABCP_PLANE_STATUS_NOTICE` | _(off)_ | `1` enables the plane's canned PR notices via the App (its only direct GitHub writes; default-off): the ADR 025 "review could not complete" comment when a session dies verdict-less, and the SEI-820 "round budget exhausted" comment when an explicit `/review` is refused on budget (once per PR) |
 | `OABCP_HEALTH_ERROR_THRESHOLD` | `3` | Consecutive agent-run errors before a connected bot's health flips to `degraded` (ADR 023 passive detection) — degraded bots are avoided when rosters are drawn |
 | `OABCP_RECRUIT_SESSION_CAP` | `3` | Max distinct recruit (provision) directives accepted per session — bounds the unknown-target provisioning signal surface |
-| `OABCP_BOT_HANDLE` | _(none)_ | The App bot's GitHub handle (e.g. `zeabur-council`) for conversational follow-ups (ADR 011). When set, a PR comment that `@mention`s it is answered by a solo session. Unset → only the explicit `/ask` command works, not `@mention` |
-| `OABCP_ALLOWED_REPOS` | _(allow all)_ | Comma-separated `owner/repo` allowlist for webhook triggers. Unset/empty = allow all; when set, a webhook from any other repo is acked and ignored. Comment commands (`/review`, `/ask`, `@mention`) are additionally gated to write-ish commenters by `author_association`. |
-| `GITHUB_WEBHOOK_SECRET` | _(none)_ | HMAC secret for `POST /api/v1/github_webhooks`. **Fail-closed**: unset = every webhook is rejected. Opens a session on a PR `opened`/`reopened`/`ready_for_review`, or a write-ish user's `/review` comment on a PR |
 | `GH_OUTPUT` | _(off)_ | Set to `1` to enable GitHub PR side-effects (comment, label, review) via `gh` CLI |
 | `RUST_LOG` | `info` | Log level filter (standard `tracing` env filter syntax) |
+
+### Retired with the embedded GitHub ingress
+
+The plane stopped ingesting GitHub in v0.1.67 (ADR 031 invariant #9), so these
+are read by nothing and their behaviour now belongs to `github-pr-controller`:
+
+| Retired | Replaced by |
+|---|---|
+| `GITHUB_WEBHOOK_SECRET` | `GITHUB_CONTROLLER_WEBHOOK_SECRET` |
+| `OABCP_ALLOWED_REPOS` | `GITHUB_CONTROLLER_ALLOWED_REPOS` |
+| `OABCP_BOT_HANDLE` | `GITHUB_CONTROLLER_BOT_HANDLE` |
+| `OABCP_COUNCIL_PRESET` | `GITHUB_CONTROLLER_COUNCIL_PRESET` |
+| `OABCP_COUNCIL_REVIEW_MODE` | `GITHUB_CONTROLLER_REVIEW_MODE` |
+| `OABCP_REVIEW_ROUND_BUDGET`, `OABCP_REVIEW_HOURLY_CAP`, `OABCP_REVIEW_CATCHUP_SECS` | **nothing** — the controller has no per-PR cost valve. These stopped taking effect the moment a lane cut over to controller ingress, not when they were deleted |
+
+Setting a retired variable is inert, not an error: the plane ignores it.
 
 The controller installation management endpoints additionally require
 `OABCP_API_KEY` to be set; unlike the legacy north API, they never run open in
@@ -269,7 +277,7 @@ platform; the properties below hold on k8s, compose, or a bare process.
 | Change | Applies | How |
 |---|---|---|
 | **Roster** (`/v1/council/roster` PUT/replace) | **live, no restart** | plane's own API; DB overrides `OABCP_COUNCIL_ROSTER`; in-flight sessions unaffected |
-| **Env var** (`OABCP_COUNCIL_PRESET`, `OABCP_*`) | needs a plane restart | the process environment is frozen at exec — the running plane won't see the new value until it re-execs |
+| **Env var** (`OABCP_*`) | needs a plane restart | the process environment is frozen at exec — the running plane won't see the new value until it re-execs |
 | **Plane image** (tag) | needs a plane restart | new binary only runs on a fresh process |
 | **Per-PR `review:<preset>` label** | live, no restart | read from the webhook payload at convene; no storage |
 
@@ -285,7 +293,7 @@ live in the ops repo's `docs/platform-ops.md`.
 
 Three things carry a bot's name and **must stay aligned**: `OABCP_BOTS` (seeds the
 identity), the pod's `/bot-config/<name>` fetch URL (the running container), and
-`OABCP_COUNCIL_ROSTER` (who the webhook actually convenes). `OABCP_BOTS` ≠
+`OABCP_COUNCIL_ROSTER` (the standing roster failover falls back to). `OABCP_BOTS` ≠
 `OABCP_COUNCIL_ROSTER`: the first decides *which identities exist*, the second
 *which of them form a council*.
 
@@ -328,7 +336,7 @@ see [install-pat.md](install-pat.md) or
 [install-github-app.md](install-github-app.md).
 
 **Just want fewer bots on a small PR** — don't change composition; use a smaller
-preset (`review:lite` label or `OABCP_COUNCIL_PRESET`). Idle reviewers are trimmed
+preset (`review:lite` label or `GITHUB_CONTROLLER_COUNCIL_PRESET`). Idle reviewers are trimmed
 automatically (quorum = participants).
 
 **Mid-session (runtime) add** — `POST /v1/sessions/:id/roster {bot_id}` or chair

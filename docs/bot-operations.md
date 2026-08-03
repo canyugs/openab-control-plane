@@ -234,7 +234,7 @@ For a single PR, add one of these labels:
 For all webhook-triggered reviews, set the control-plane env:
 
 ```text
-OABCP_COUNCIL_PRESET=lite
+GITHUB_CONTROLLER_COUNCIL_PRESET=lite
 ```
 
 Restart the control-plane after changing the env. This does not change which bots
