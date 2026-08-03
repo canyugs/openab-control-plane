@@ -194,6 +194,41 @@ pub struct RecordedRound {
     pub first_time: bool,
 }
 
+/// A stored finding as an operator reads it back: the write struct plus the
+/// identity the controller supplies at insert time. Field names and types
+/// mirror the kernel's `ReviewFinding` exactly, because the ops reporting
+/// scripts were written against that JSON and this is where they move to
+/// (SEI-895 — the kernel's copy has NULL repo/pr for every controller-opened
+/// session, since only the deleted webhook produced a parseable trigger_ref).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReviewFindingRow {
+    pub id: i64,
+    pub session_id: String,
+    pub repo: Option<String>,
+    pub pr_number: Option<i64>,
+    pub stable_id: String,
+    pub severity: String,
+    pub status: String,
+    pub title: String,
+    pub path: Option<String>,
+    pub line: Option<i64>,
+    pub raised_by: Option<String>,
+    pub angle: Option<String>,
+    pub head_sha: Option<String>,
+    pub created_at: i64,
+}
+
+/// Filters for [`ProductStore::review_findings`]. Every field is optional and
+/// ANDed; `limit` is clamped by the caller.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewFindingQuery {
+    pub repo: Option<String>,
+    pub pr_number: Option<i64>,
+    pub status: Option<String>,
+    pub severity: Option<String>,
+    pub limit: usize,
+}
+
 /// Port of the kernel's `pr_review_findings` row, same columns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewFinding {
@@ -308,6 +343,11 @@ pub trait ProductStore: Send + Sync {
         head_sha: Option<&str>,
         findings: &[ReviewFinding],
     ) -> StoreResult<usize>;
+
+    /// Read the findings ledger back, newest first. The reporting surface the
+    /// ops scripts join against.
+    async fn review_findings(&self, query: &ReviewFindingQuery)
+        -> StoreResult<Vec<ReviewFindingRow>>;
 
     /// Queue a GitHub write. Returns false when this (session, kind) is
     /// already queued — the guarantee that at-least-once delivery cannot
