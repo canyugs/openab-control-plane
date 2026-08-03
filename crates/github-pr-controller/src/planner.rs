@@ -24,6 +24,10 @@ pub struct Trigger {
     pub review_notes: Option<String>,
     pub review_from_scratch: bool,
     pub author_trusted: bool,
+    /// Who to ask GitHub about when `author_trusted` is false: the payload's
+    /// `author_association` is rendered against PUBLIC org membership only, so
+    /// a private member arrives as CONTRIBUTOR and needs the API probe.
+    pub author_login: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -323,6 +327,7 @@ fn parse_pull_request(body: &Value) -> Option<Trigger> {
         review_notes: None,
         review_from_scratch: false,
         author_trusted: can_command(association) || has_label(labels, REVIEW_OPT_IN_LABEL),
+        author_login: pr["user"]["login"].as_str().map(str::to_string),
     })
 }
 
@@ -360,6 +365,9 @@ fn parse_issue_comment(body: &Value, bot_handle: Option<&str>) -> Option<Trigger
                 .as_str()
                 .unwrap_or_default(),
         ),
+        author_login: body["comment"]["user"]["login"]
+            .as_str()
+            .map(str::to_string),
     })
 }
 
@@ -648,6 +656,7 @@ mod tests {
         assert_eq!(opened.trigger_fingerprint.as_deref(), Some("sha:abc123"));
         assert_eq!(opened.preset.as_deref(), Some("full"));
         assert!(opened.author_trusted);
+        assert_eq!(opened.author_login.as_deref(), Some("octocat"));
         assert!(parse_trigger("pull_request", &fixture("ready"), None).is_some());
         assert!(parse_trigger("pull_request", &fixture("draft"), None).is_none());
 

@@ -1885,6 +1885,32 @@ async fn shadow_summary(State(state): State<Arc<AppState>>, headers: HeaderMap) 
     }
 }
 
+/// The payload said the author is not trusted — but payload
+/// `author_association` reflects PUBLIC org membership only (observed on
+/// prod, 2026-08-03: a private member of the installation org arrives as
+/// CONTRIBUTOR while the same App sees MEMBER over REST). Ask the membership
+/// endpoint, which does honor the App's `members: read` grant, before
+/// rejecting. Fail closed: no GitHub client (writes off), no login in the
+/// payload, or a probe error all leave the author untrusted.
+async fn org_membership_fallback(state: &AppState, trigger: &planner::Trigger) -> bool {
+    let Some(github) = state.github.as_ref() else {
+        return false;
+    };
+    let Some(login) = trigger.author_login.as_deref() else {
+        return false;
+    };
+    let Some((org, _)) = trigger.repository.split_once('/') else {
+        return false;
+    };
+    match github.is_org_member(org, login).await {
+        Ok(member) => member,
+        Err(error) => {
+            tracing::warn!(%error, org, login, "org membership probe failed; author stays untrusted");
+            false
+        }
+    }
+}
+
 async fn candidate_plan(
     state: &AppState,
     delivery_id: &str,
@@ -1901,7 +1927,7 @@ async fn candidate_plan(
     {
         return Err("repo_not_allowed");
     }
-    if !trigger.author_trusted {
+    if !trigger.author_trusted && !org_membership_fallback(state, &trigger).await {
         return Err("author_not_trusted");
     }
     // #326: a plain `/review` (no notes, not from-scratch, not an ask) is an
@@ -2822,6 +2848,106 @@ mod tests {
             0,
             "an empty outbox makes the next sweep tick a no-op"
         );
+    }
+
+    #[tokio::test]
+    async fn a_private_org_member_passes_trust_via_the_membership_probe() {
+        // Webhook payloads render `author_association` against PUBLIC org
+        // membership only: a private member arrives as CONTRIBUTOR. The
+        // membership endpoint honors the App's `members: read` grant, so the
+        // controller must ask it before rejecting — and stay closed when the
+        // probe says no or cannot run at all.
+        use axum::routing::{get as axum_get, post as axum_post};
+
+        let app =
+            Router::new()
+                .route(
+                    "/app/installations/:id/access_tokens",
+                    axum_post(|| async { Json(json!({"token": "ghs_test"})) }),
+                )
+                .route(
+                    "/orgs/:org/members/:login",
+                    axum_get(
+                        |axum::extract::Path((org, login)): axum::extract::Path<(
+                            String,
+                            String,
+                        )>| async move {
+                            if org == "example" && login == "private-member" {
+                                StatusCode::NO_CONTENT
+                            } else {
+                                StatusCode::NOT_FOUND
+                            }
+                        },
+                    ),
+                );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut config = test_config();
+        config.mode = OperatingMode::ExternalCanary;
+        config.enable_writes = true;
+        config.canary_repository = Some("example/repo".into());
+        config.github_api_base = format!("http://{addr}");
+        config.github_app = config::GitHubAppConfig {
+            app_id: Some("1".into()),
+            installation_id: Some("2".into()),
+            private_key: Some("unused".into()),
+        };
+        let client =
+            github::GitHubClient::from_config(&config).expect("writes enabled builds a client");
+        client.seed_test_token("ghs_test");
+        let state = AppState {
+            config,
+            store: None,
+            store_error: None,
+            action_client: None,
+            action_client_error: None,
+            event_verifier: None,
+            event_verifier_error: None,
+            github: Some(Arc::new(client)),
+        };
+
+        let payload = |login: &str| {
+            json!({
+                "action": "synchronize",
+                "repository": {"full_name": "example/repo"},
+                "pull_request": {
+                    "author_association": "CONTRIBUTOR",
+                    "number": 7,
+                    "draft": false,
+                    "head": {"sha": "abc123"},
+                    "labels": [],
+                    "user": {"login": login}
+                }
+            })
+        };
+
+        let plan = candidate_plan(&state, "d1", "pull_request", &payload("private-member"))
+            .await
+            .expect("the probe's 204 makes the author trusted");
+        assert_eq!(plan.repository, "example/repo");
+
+        let denied = candidate_plan(&state, "d2", "pull_request", &payload("stranger")).await;
+        assert_eq!(denied.unwrap_err(), "author_not_trusted");
+
+        // No GitHub client (writes off) means no probe — fail closed, exactly
+        // the pre-fallback behavior.
+        let closed = AppState {
+            config: test_config(),
+            store: None,
+            store_error: None,
+            action_client: None,
+            action_client_error: None,
+            event_verifier: None,
+            event_verifier_error: None,
+            github: None,
+        };
+        let denied =
+            candidate_plan(&closed, "d3", "pull_request", &payload("private-member")).await;
+        assert_eq!(denied.unwrap_err(), "author_not_trusted");
     }
 
     #[tokio::test]
