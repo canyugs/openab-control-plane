@@ -1288,18 +1288,6 @@ async fn dynamic_replace_api_updates_session_and_standing_roster() {
         json!([chair_id.clone(), new_id.clone()])
     );
 
-    let review: Value = reqwest::Client::new()
-        .post(format!("http://{base}/v1/review"))
-        .json(&json!({ "repo": "o/r", "pr": 99 }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let review_session = review["session_id"].as_str().unwrap();
-    let opened = get_session(&base, review_session).await;
-    assert_eq!(opened["roster"], json!([chair_id, new_id]));
 }
 
 /// The live `openabdev/openab#1187` fix: real bots signal completion in message

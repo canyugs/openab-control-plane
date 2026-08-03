@@ -107,8 +107,8 @@ bot in that session so an offline bot cannot reconnect and continue stale work.
 Conversational follow-up is separate from a full review:
 
 1. A write-ish commenter posts `/ask <question>`, or `@mentions` the bot when
-   `OABCP_BOT_HANDLE` is configured.
-2. The webhook opens a comment-scoped `solo` session with
+   `GITHUB_CONTROLLER_BOT_HANDLE` is configured.
+2. The controller opens a comment-scoped `solo` session with
    `trigger_ref="github:ask/owner/repo#N@comment_id"`.
 3. The chair self-fetches PR context and writes the answer in-session.
 4. The chair sends `[done]`; `Solo` closes and the controller posts the
@@ -133,14 +133,14 @@ curl -H "Authorization: Bearer $KEY" \
 `GET /v1/sessions/:id/log` returns a text timeline useful for quick dogfood
 investigation.
 
-## Embedded quickstart profile (legacy)
+## Embedded quickstart profile (removed)
 
-The published Zeabur templates predate the controller: webhooks go straight to
-the plane's `POST /api/v1/github_webhooks`, sessions open as `review_council`,
-and the chair posts the round comment and verdict from its own pod (PAT or
-App credentials on the pod). That profile still works and remains the fastest
-way to try the council, but it is not the production write path — migrating it
-to the controller is tracked on the roadmap.
+Until v0.1.67 the plane carried its own GitHub ingress: webhooks went to
+`POST /api/v1/github_webhooks`, sessions opened as `review_council`, and the
+chair posted the round comment and verdict from its own pod. Both owned lanes
+stopped dispatching through it after the 2026-07-31 cutover, and it was
+deleted under ADR 031 invariant #9. There is one review path now: GitHub App →
+`github-pr-controller` → controller actions → plane.
 
 ## Boundary
 

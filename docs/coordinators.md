@@ -26,7 +26,7 @@ The split is already clean in `orchestrator.rs`:
 | roster auth, closed-gate, command dispatch (`handle_reply`) | what a done-signal (🆗) means |
 | store message, emit north, ack (`on_send`) | when/whether to relay a bot's final to another |
 | thread upsert (`on_create_topic`) | when quorum is reached + what message prompts whom |
-| deliver the trigger to the roster (`post_client_message`) | *who is mentioned* (prompted to act) on the trigger — `starters` (council: reviewers first; review_council: chair + reviewers; solo: lone bot; pipeline: stage 0) |
+| deliver the trigger to the roster (`post_client_message`) | *who is mentioned* (prompted to act) on the trigger — `starters` (council: reviewers first; solo: lone bot; pipeline: stage 0) |
 | store reaction, emit, ack (`on_reaction`) | what closes the session + what the verdict is |
 | edit (`on_edit`), backfill (`add_to_roster`), `deliver_event` | — |
 

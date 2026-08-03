@@ -10,6 +10,13 @@
 > **Non-technical quick start (繁體中文，一頁):**
 > [install-github-app-quickstart.md](install-github-app-quickstart.md)
 
+> ⚠️ **The webhook target moved.** Since v0.1.67 the plane has no GitHub
+> ingress (ADR 031 invariant #9). Webhooks go to `github-pr-controller`, which
+> this SOP does not install — deploy it first from
+> [github-pr-controller.md](github-pr-controller.md), then follow the steps
+> below with `$CONTROLLER_URL` as the webhook host. The template referenced
+> here still deploys the plane and pods; it does not deploy the controller.
+
 ## 1. Purpose
 
 Install the **GitHub App track** for OCP: no per-repo copied GitHub Action required.
@@ -25,7 +32,7 @@ on the same repository — one PR event would convene two councils.
 
 - Deploy control plane + chair + reviewers (Zeabur or local K8s).
 - Create, install, and wire a GitHub App.
-- Configure webhook HMAC secret, chair App identity, and `OABCP_BOT_HANDLE`.
+- Configure webhook HMAC secret, chair App identity, and `GITHUB_CONTROLLER_BOT_HANDLE`.
 
 **Out of scope**
 
@@ -47,7 +54,7 @@ on the same repository — one PR event would convene two councils.
 Complete before starting. Record values in the [artifact worksheet](#12-artifact-worksheet).
 
 - [ ] `PLANE_URL` — public HTTPS base URL (e.g. `https://my-council.zeabur.app`), or local URL + dev tunnel plan
-- [ ] `WEBHOOK_SECRET` — `openssl rand -hex 32`; will be plane `GITHUB_WEBHOOK_SECRET`
+- [ ] `WEBHOOK_SECRET` — `openssl rand -hex 32`; will be controller `GITHUB_CONTROLLER_WEBHOOK_SECRET`
 - [ ] `gh` CLI installed and authenticated (`gh auth login`)
 - [ ] Clone of this repo (for `scripts/`)
 - [ ] All four services running: `control-plane`, `chair`, `rev1`, `rev2`
@@ -110,7 +117,6 @@ npx zeabur@latest template deploy -c 1E1Y97 \
   --project-id <PROJECT_ID> \
   --var PUBLIC_DOMAIN=my-council \
   --var CLAUDE_CODE_OAUTH_TOKEN=<CLAUDE_CODE_OAUTH_TOKEN> \
-  --var GITHUB_WEBHOOK_SECRET=$WEBHOOK_SECRET \
   --var BOT_TOKEN_CHAIR=$(openssl rand -hex 32) \
   --var BOT_TOKEN_REV1=$(openssl rand -hex 32) \
   --var BOT_TOKEN_REV2=$(openssl rand -hex 32)
@@ -144,7 +150,7 @@ Follow the printed checklist in GitHub. Required settings:
 | Setting | Value |
 |---------|--------|
 | Homepage URL | `$PLANE_URL` |
-| Webhook URL | `$PLANE_URL/api/v1/github_webhooks` |
+| Webhook URL | `$CONTROLLER_URL/api/v1/github/webhooks` |
 | Webhook secret | `$WEBHOOK_SECRET` (same as plane) |
 | Pull requests | Read and write |
 | Contents | Read-only |
@@ -158,7 +164,7 @@ Generate and download a **private key** (`.pem`).
 
 - [ ] App ID recorded
 - [ ] PEM saved (e.g. `./<slug>.private-key.pem`)
-- [ ] App slug recorded (becomes `OABCP_BOT_HANDLE` and `<slug>[bot]`)
+- [ ] App slug recorded (becomes `GITHUB_CONTROLLER_BOT_HANDLE` and `<slug>[bot]`)
 
 **Common failure:** `Default events are not supported by permissions: issue_comment` → add **Issues: Read and write**.
 
@@ -249,9 +255,9 @@ Run exactly one delivery mode from §7.
 **Verify (all modes)**
 
 - [ ] `setup-github-app.sh` exits 0
-- [ ] GitHub App webhook URL is `$PLANE_URL/api/v1/github_webhooks`
-- [ ] Plane `OABCP_BOT_HANDLE` = App slug
-- [ ] Plane `GITHUB_WEBHOOK_SECRET` matches App webhook secret
+- [ ] GitHub App webhook URL is `$CONTROLLER_URL/api/v1/github/webhooks`
+- [ ] Controller `GITHUB_CONTROLLER_BOT_HANDLE` = App slug
+- [ ] Controller `GITHUB_CONTROLLER_WEBHOOK_SECRET` matches App webhook secret
 - [ ] Chair `gh auth status` shows `<slug>[bot]` (§8)
 
 ## 7. Wiring delivery modes
@@ -371,7 +377,7 @@ kubectl exec -n oabcp-local deploy/chair -- \
 ### 8.2 Webhook path
 
 In GitHub → App → Advanced → Recent deliveries: delivery to
-`/api/v1/github_webhooks` returns **200** (after a test event or PR activity).
+`/api/v1/github/webhooks` returns **200** (after a test event or PR activity).
 
 **Pass:** no persistent 401; plane logs show webhook accepted.
 
@@ -381,13 +387,13 @@ In GitHub → App → Advanced → Recent deliveries: delivery to
 |------|----------------|
 | Open / reopen PR on installed repo | Council convenes; chair posts in-progress then verdict comment |
 | Comment `/review` as MEMBER+ | Manual review runs |
-| Comment `@<slug> explain this hunk` | Solo follow-up answer (requires `OABCP_BOT_HANDLE`) |
+| Comment `@<slug> explain this hunk` | Solo follow-up answer (requires `GITHUB_CONTROLLER_BOT_HANDLE`) |
 
 ## 9. Rollback
 
 | Step to undo | Action |
 |--------------|--------|
-| Wrong webhook secret | Align plane `GITHUB_WEBHOOK_SECRET` and App webhook secret; restart plane |
+| Wrong webhook secret | Align controller `GITHUB_CONTROLLER_WEBHOOK_SECRET` and App webhook secret; restart the controller |
 | Wrong chair identity | Re-run §7 with correct PEM / IDs; remove `GH_TOKEN` |
 | App installed on wrong repos | GitHub → App → Install → Configure → adjust repositories |
 | Decommission council | Uninstall App; remove webhook URL; delete Zeabur project |
@@ -410,7 +416,7 @@ In GitHub → App → Advanced → Recent deliveries: delivery to
 | Webhook 401 | Secret mismatch | Sync `WEBHOOK_SECRET` plane ↔ App |
 | Chair posts as human / wrong bot | Stale `GH_TOKEN` or old PEM | §7.5 + re-run §7 |
 | `/review` ignored | User not MEMBER+; or comment on non-PR issue | Check `author_association` and PR thread |
-| `@mention` ignored | `OABCP_BOT_HANDLE` unset or wrong | Match App slug exactly |
+| `@mention` ignored | `GITHUB_CONTROLLER_BOT_HANDLE` unset or wrong | Match App slug exactly |
 
 ## 12. Artifact worksheet
 
@@ -418,10 +424,10 @@ Copy and fill during install:
 
 ```text
 PLANE_URL=________________________
-WEBHOOK_SECRET=__________________     # plane GITHUB_WEBHOOK_SECRET
+WEBHOOK_SECRET=__________________     # controller GITHUB_CONTROLLER_WEBHOOK_SECRET
 APP_NAME=________________________
 APP_ID=__________________________
-APP_SLUG=________________________     # → OABCP_BOT_HANDLE
+APP_SLUG=________________________     # → GITHUB_CONTROLLER_BOT_HANDLE
 INSTALLATION_ID=__________________
 PEM_PATH=_________________________
 CHAIR_SERVICE_ID=_________________    # Zeabur only

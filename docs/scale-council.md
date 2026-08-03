@@ -18,7 +18,7 @@ Production scaling is the same knobs applied to Zeabur service env — see
 | --- | --- | --- |
 | **A. Reviewer identities + pods** | `POST /v1/bots` or `POST /v1/bots/discover` + one running pod per bot; `OABCP_BOTS` only seeds an empty first-boot DB | Which reviewers *exist* |
 | **B. Convened roster** | webhook: runtime `PUT /v1/council/roster`, env fallback; manual driver: `open-council.sh`'s `ROSTER` | Which of them a given council *invites* |
-| **C. Preset angles** | webhook: `OABCP_COUNCIL_PRESET`; manual: `open-council.sh --preset` | How many invited reviewers actually deliberate |
+| **C. Preset angles** | controller: `GITHUB_CONTROLLER_COUNCIL_PRESET`; manual: `open-council.sh --preset` | How many invited reviewers actually deliberate |
 
 `assign_angles` (src/council.rs) round-robins preset angles onto reviewers:
 angles ≤ reviewers → the first N take one each, extras are **trimmed** (quorum
@@ -51,10 +51,10 @@ truth; raising one alone silently does nothing:
 2. **`dev-deploy-bots.sh` takes the bot list from `--bots`, not `--bot-agents`**
    (default `chair,rev1,rev2`). Passing only `--bot-agents rev3=…,rev4=…` deploys
    nothing new — you must also pass `--bots rev3,rev4` (or the full list).
-3. **`dev-deploy-k8s.sh` does NOT forward `OABCP_COUNCIL_PRESET`**. To set a
+3. **`dev-deploy-k8s.sh` does NOT forward `GITHUB_CONTROLLER_COUNCIL_PRESET`**. To set a
    webhook-path preset, apply it separately:
    `kubectl -n oabcp-local set env deploy/control-plane
-   OABCP_COUNCIL_PRESET=standard`. For the manual dogfood path, use
+   GITHUB_CONTROLLER_COUNCIL_PRESET=standard`. For the manual dogfood path, use
    `open-council.sh --preset` instead — the plane env is irrelevant there.
 
 ## Baseline (as shipped locally)

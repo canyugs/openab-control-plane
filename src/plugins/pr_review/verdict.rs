@@ -215,7 +215,7 @@ mod tests {
                 0,
                 Some(&chair.id),
                 std::slice::from_ref(&chair.id),
-                "review_council",
+                "council",
             )
             .unwrap();
         store

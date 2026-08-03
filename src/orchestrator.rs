@@ -363,18 +363,10 @@ pub fn force_close_timeout(
         .as_ref()
         .and_then(|s| s.chair_bot.clone())
         .and_then(|chair| chair_latest_settled(state, session_id, &chair));
-    let has_verdict = chair_final.is_some();
     let verdict = match chair_final {
         Some(v) => format!("{note}\n\n{v}"),
         None => format!("{note} (No verdict synthesized; reviews are in the thread.)"),
     };
-    // ADR 025: a verdict-less close means nobody posted to the PR — the chair that
-    // would have is the thing that died. Tell the requester (opt-in, canned).
-    maybe_post_unavailable_notice(
-        state,
-        session.as_ref().and_then(|s| s.trigger_ref.as_deref()),
-        has_verdict,
-    );
     state.emit_north(
         "timeout",
         session_id,
@@ -407,12 +399,7 @@ fn dispatch_coordinator(
     state: &Arc<AppState>,
     session: &Session,
 ) -> Result<Option<Box<dyn Coordinator>>> {
-    if session.mode == "review_council" {
-        state.record_compatibility_use_once("legacy_review_council_dispatch", &session.id);
-    }
-    if let Some(coord) =
-        coordinator::lookup_with_pr_review_config(&session.mode, &state.pr_review_config)
-    {
+    if let Some(coord) = coordinator::lookup(&session.mode) {
         return Ok(Some(coord));
     }
 
@@ -758,11 +745,6 @@ fn fire_close_webhook(state: &Arc<AppState>, session_id: &str, verdict: &str, re
     });
 }
 
-/// Marker anchoring the plane's operational status notice (ADR 025). Distinct
-/// from the review comment's `<!-- openab-council -->` so a notice never clobbers
-/// a real review and a future upsert (#226) can find its own prior notice.
-const STATUS_NOTICE_MARKER: &str = "<!-- openab-council-status -->";
-
 /// ADR 020: parse the chair's hidden `<!-- openab-findings … -->` block out of
 /// the closing verdict text and append ledger rows. Best-effort — a missing or
 /// malformed block never affects the close; the ledger simply gets no rows.
@@ -781,11 +763,12 @@ fn record_review_findings(state: &Arc<AppState>, session: &Session, verdict_text
         }
         return;
     };
-    let repo_pr = session
-        .trigger_ref
-        .as_deref()
-        .and_then(parse_pr_trigger_ref)
-        .and_then(|(repo, num)| num.parse::<i64>().ok().map(|n| (repo, n)));
+    // repo/pr are not the kernel's to know. They used to be scraped from the
+    // embedded webhook's `github:pr/{repo}#{n}` trigger_ref; controller sessions
+    // carry an opaque `controller:{id}:{hash}` and have written NULL here since
+    // the cutover. `github-pr-controller` records the same findings WITH repo,
+    // pr and head_sha — that copy is the one to read (SEI-895).
+    let repo_pr: Option<(String, i64)> = None;
     let rows: Vec<crate::store::NewReviewFinding> = block
         .findings
         .iter()
@@ -812,9 +795,8 @@ fn record_review_findings(state: &Arc<AppState>, session: &Session, verdict_text
         state.record_compatibility_use("review_findings_write", rows.len() as i64);
     }
     // ADR 035 P2: waived findings bump the matched waivers' fired counters —
-    // the hygiene report's signal for "still earning its keep". Repo-scoped
-    // (the chair cannot bump another repo's ledger) and best-effort, like
-    // everything else in this function.
+    // the hygiene report's signal for "still earning its keep". Best-effort,
+    // like everything else in this function.
     let fired: Vec<String> = block
         .findings
         .iter()
@@ -822,150 +804,24 @@ fn record_review_findings(state: &Arc<AppState>, session: &Session, verdict_text
         .filter_map(|f| f.waiver_id.clone())
         .collect();
     if !fired.is_empty() {
-        // External-controller sessions carry a hashed trigger_ref, so the
-        // repo is unknown here; waiver ids are 128-bit random capabilities,
-        // so an id-only bump is acceptable there. When the repo IS known
-        // (embedded path), it stays enforced.
-        let repo = repo_pr.as_ref().map(|(r, _)| r.as_str());
-        if let Err(e) = state.store.record_waiver_fired(repo, &fired) {
+        // The repo is never known here any more: only the embedded webhook
+        // ever produced a parseable trigger_ref, so the repo-scoped variant
+        // has been dead since the cutover. Waiver ids are 128-bit random
+        // capabilities and the chair only ever sees its own repo's ids in the
+        // injected ACTIVE WAIVERS block, so an id-only bump is the contract.
+        // Restoring repo scoping means moving the waiver ledger to the
+        // controller, which owns the repo (SEI-895).
+        if let Err(e) = state.store.record_waiver_fired(None, &fired) {
             tracing::warn!("waiver fired-count update for {} failed: {e}", session.id);
         }
     }
 }
 
-/// Parse a PR `trigger_ref` (`github:pr/{owner}/{name}#{num}`) back into
-/// `(owner/name, num)`. Returns None for any non-PR or malformed ref, so a
-/// non-review session simply gets no notice.
-fn parse_pr_trigger_ref(trigger_ref: &str) -> Option<(String, String)> {
-    let rest = trigger_ref.strip_prefix("github:pr/")?;
-    let (repo, num) = rest.rsplit_once('#')?;
-    if repo.is_empty() || num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    Some((repo.to_string(), num.to_string()))
-}
 
-/// The post decision (ADR 025), factored out for testing: a notice targets a PR
-/// only when the feature is enabled, the review closed *without* a verdict, and
-/// the trigger is a well-formed PR ref. Returns `(owner/name, num)` or None.
-fn notice_target(
-    enabled: bool,
-    has_verdict: bool,
-    trigger_ref: Option<&str>,
-) -> Option<(String, String)> {
-    if !enabled || has_verdict {
-        return None;
-    }
-    trigger_ref.and_then(parse_pr_trigger_ref)
-}
 
-/// The canned notice body (ADR 025 Decision 1): fixed operational status only —
-/// no review content, nothing derived from the PR diff.
-fn unavailable_notice_body() -> String {
-    format!(
-        "{STATUS_NOTICE_MARKER}\n\n⚠️ **Code review could not complete.** The review \
-         service is temporarily unavailable — the review agent did not respond. An \
-         operator has been alerted. Once service is restored, re-request a review or \
-         push a new commit to retrigger."
-    )
-}
 
-/// The canned round-budget notice (SEI-820): a `/review` refused because the
-/// per-PR round budget is exhausted was previously silent on the PR — the
-/// author's view was "council is broken". Same ADR 025 decisions apply: fixed
-/// operational text only, App mode only, behind the status-notice flag.
-fn budget_notice_body(budget: usize) -> String {
-    format!(
-        "{STATUS_NOTICE_MARKER}\n\n⚠️ **Review round budget exhausted.** This PR has \
-         used all {budget} council review rounds, so the council will not convene \
-         here again. A maintainer can raise `OABCP_REVIEW_ROUND_BUDGET` on the \
-         control plane, or proceed with human review."
-    )
-}
 
-/// Post the budget notice for an explicit-command refusal — once per PR
-/// (atomic `mark_once` dedup), flag-gated, fire-and-forget (SEI-820).
-/// Synchronize refusals stay silent: nobody is watching for a reply to a push.
-pub fn maybe_post_budget_notice(state: &Arc<AppState>, trigger_ref: &str, budget: usize) {
-    if !state.pr_review_config.plane_status_notice {
-        return;
-    }
-    let Some((repo, pr)) = parse_pr_trigger_ref(trigger_ref) else {
-        return;
-    };
-    match state
-        .store
-        .mark_once(&format!("budget_notice:{trigger_ref}"))
-    {
-        Ok(true) => {}
-        Ok(false) => return, // already told this PR once
-        Err(e) => {
-            tracing::warn!(trigger_ref, "budget notice dedup failed: {e}");
-            return;
-        }
-    }
-    let Some(app) = state.github_app.clone() else {
-        return; // PAT mode — no App to post as
-    };
-    let body = budget_notice_body(budget);
-    tokio::spawn(async move {
-        let token = match app
-            .mint_installation_token(crate::github_app::Role::Chair)
-            .await
-        {
-            Ok(t) => t.token,
-            Err(e) => {
-                tracing::warn!(repo, pr, "budget notice: mint token failed: {e}");
-                return;
-            }
-        };
-        match app.post_pr_comment(&repo, &pr, &token, &body).await {
-            Ok(()) => tracing::info!(repo, pr, "posted round-budget-exhausted notice"),
-            Err(e) => tracing::warn!(repo, pr, "budget notice: post failed: {e}"),
-        }
-        let _ = app.revoke_installation_token(&token).await; // one-off token, drop it
-    });
-}
 
-/// When a PR-review session closes with no synthesized verdict, tell the
-/// requester on the PR (ADR 025) — the one silent-failure the operator-facing
-/// `WARN` (ADR 023) and failover (Phase 4) don't reach. Fire-and-forget on a
-/// spawned task with a freshly minted chair-scoped token (never the session
-/// tokens, which the close revokes); a failed post is a WARN, never blocks close.
-fn maybe_post_unavailable_notice(
-    state: &Arc<AppState>,
-    trigger_ref: Option<&str>,
-    has_verdict: bool,
-) {
-    let Some((repo, pr)) = notice_target(
-        state.pr_review_config.plane_status_notice,
-        has_verdict,
-        trigger_ref,
-    ) else {
-        return; // notice disabled, verdict posted, or not a PR review
-    };
-    let Some(app) = state.github_app.clone() else {
-        return; // PAT mode — no App to post as
-    };
-    let body = unavailable_notice_body();
-    tokio::spawn(async move {
-        let token = match app
-            .mint_installation_token(crate::github_app::Role::Chair)
-            .await
-        {
-            Ok(t) => t.token,
-            Err(e) => {
-                tracing::warn!(repo, pr, "status notice: mint token failed: {e}");
-                return;
-            }
-        };
-        match app.post_pr_comment(&repo, &pr, &token, &body).await {
-            Ok(()) => tracing::info!(repo, pr, "posted review-unavailable status notice"),
-            Err(e) => tracing::warn!(repo, pr, "status notice: post failed: {e}"),
-        }
-        let _ = app.revoke_installation_token(&token).await; // one-off token, drop it
-    });
-}
 
 /// Reconstruct the sender of a stored message (for history backfill).
 fn sender_for(state: &AppState, m: &Message) -> SenderInfo {
@@ -1603,7 +1459,7 @@ fn attempt_failover(state: &Arc<AppState>, degraded_bot_id: &str) {
     // roster is (re-)read below *inside* this lock, so each swap sees the prior
     // one. Cheap — failover is rare — and the path is fully synchronous.
     let _swap = state.failover_lock.lock().unwrap();
-    let Ok((roster, _)) = crate::plugins::pr_review::council::runtime_council_roster(state) else {
+    let Ok((roster, _)) = crate::plugins::pr_review::runtime_council_roster(state) else {
         return;
     };
     // Only route around a bot that is actually in the standing roster — an
@@ -2131,10 +1987,8 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                 // closing text. Computed BEFORE the close CAS so it lands in
                 // the same transaction (the close webhook re-reads the row).
                 let structured_verdict = if let Some(coord) =
-                    coordinator::lookup_with_pr_review_config(
-                        &session.mode,
-                        &state.pr_review_config,
-                    ) {
+                    coordinator::lookup(&session.mode)
+                {
                     let cx = OrchCtx {
                         state,
                         session,
@@ -2203,14 +2057,11 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     // joined settled span, not just the closing message: the
                     // block can straddle a message-length split (live case:
                     // zeabur.com#702 round 4 lost its whole round to this).
-                    // Controller-opened reviews use the generic "council"
-                    // mode (the embedded plugin owns "review_council"), so
-                    // gate on a chair being present instead — without this,
-                    // controller rounds never fed the ledger or bumped
-                    // waiver fired-counters (found live, OCP#333 round 2).
-                    if session.mode == "review_council"
-                        || (session.mode == "council" && session.chair_bot.is_some())
-                    {
+                    // Reviews are controller-opened and use the generic
+                    // "council" mode, so gate on a chair being present —
+                    // without this, controller rounds never fed the ledger or
+                    // bumped waiver fired-counters (found live, OCP#333 r2).
+                    if session.mode == "council" && session.chair_bot.is_some() {
                         let joined = messages
                             .iter()
                             .filter(|m| span.contains(&m.id))
@@ -2618,12 +2469,16 @@ mod tests {
             "duplicate ids in one close count once"
         );
         assert!(rows[0].last_fired_at.is_some());
+        // The kernel no longer knows the repo, so scoping is by capability id
+        // alone: a close that names a foreign waiver id DOES bump it. This is
+        // the documented consequence of the ledger outliving the ingress that
+        // supplied the repo — it moves to the controller in SEI-895.
         let foreign_rows = store
             .list_review_waivers(Some("o/other"), true, crate::store::now_ms())
             .unwrap();
         assert_eq!(
-            foreign_rows[0].fired_count, 0,
-            "a repo-known close cannot bump another repo's waiver"
+            foreign_rows[0].fired_count, 1,
+            "id-only bump: the kernel has no repo to scope by"
         );
 
         // External path: hashed trigger_ref means repo unknown — the id-only
@@ -2651,46 +2506,6 @@ mod tests {
             .list_review_waivers(Some("o/r"), true, crate::store::now_ms())
             .unwrap();
         assert_eq!(rows[0].fired_count, 2, "hashed-ref close still counts");
-    }
-
-    #[test]
-    fn pr_trigger_ref_parses_only_well_formed_pr_refs() {
-        assert_eq!(
-            parse_pr_trigger_ref("github:pr/zeabur/dashboard#1714"),
-            Some(("zeabur/dashboard".to_string(), "1714".to_string()))
-        );
-        // Not a PR ref / malformed → None (no notice).
-        assert_eq!(parse_pr_trigger_ref("terminal"), None);
-        assert_eq!(parse_pr_trigger_ref("github:issue/o/r#1"), None);
-        assert_eq!(parse_pr_trigger_ref("github:pr/o/r#"), None);
-        assert_eq!(parse_pr_trigger_ref("github:pr/o/r#notanum"), None);
-        // A comment-scoped ask ref (extra suffix past the number) isn't a plain PR.
-        assert_eq!(parse_pr_trigger_ref("github:pr/o/r#5:cmd:9"), None);
-    }
-
-    #[test]
-    fn notice_targets_only_verdictless_pr_closes_when_enabled() {
-        let pr = Some("github:pr/o/r#7");
-        // The one firing case: enabled + no verdict + a PR ref.
-        assert_eq!(
-            notice_target(true, false, pr),
-            Some(("o/r".to_string(), "7".to_string()))
-        );
-        // Suppressed: a verdict was posted, the feature is off, or non-PR trigger.
-        assert_eq!(notice_target(true, true, pr), None);
-        assert_eq!(notice_target(false, false, pr), None);
-        assert_eq!(notice_target(true, false, Some("terminal")), None);
-        assert_eq!(notice_target(true, false, None), None);
-    }
-
-    #[test]
-    fn unavailable_notice_is_canned_and_marker_anchored() {
-        let body = unavailable_notice_body();
-        // Carries its own marker (distinct from the review comment's), and is a
-        // fixed operational string — no PR-derived content (ADR 025 C3 line).
-        assert!(body.starts_with(STATUS_NOTICE_MARKER));
-        assert_ne!(STATUS_NOTICE_MARKER, "<!-- openab-council -->");
-        assert!(body.contains("could not complete"));
     }
 
     #[test]
@@ -2884,14 +2699,14 @@ mod tests {
 
     #[test]
     fn close_webhook_payload_shape() {
-        let mut s = test_session(Some("chair"), "review_council");
+        let mut s = test_session(Some("chair"), "council");
         s.trigger_ref = Some("github:pr/o/r#1".into());
         let roster = vec!["chair".to_string(), "rev1".to_string()];
         let p = close_webhook_payload(Some(&s), &s.id, &roster, "LGTM", "normal");
         assert_eq!(p["event"], "session.closed");
         assert_eq!(p["session_id"], "ses_1");
         assert_eq!(p["trigger_ref"], "github:pr/o/r#1");
-        assert_eq!(p["mode"], "review_council");
+        assert_eq!(p["mode"], "council");
         assert_eq!(p["verdict"], "LGTM");
         assert_eq!(p["reason"], "normal");
         assert_eq!(p["roster"], serde_json::json!(["chair", "rev1"]));
@@ -3112,7 +2927,7 @@ mod tests {
                 2,
                 Some(&chair.id),
                 &[chair.id.clone(), rev1.id.clone(), rev2.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -3243,7 +3058,7 @@ mod tests {
         }
 
         let (roster, source) =
-            crate::plugins::pr_review::council::runtime_council_roster(&state).unwrap();
+            crate::plugins::pr_review::runtime_council_roster(&state).unwrap();
         assert_eq!(source, "override");
         assert_eq!(
             roster.first().unwrap(),
@@ -3281,7 +3096,7 @@ mod tests {
         }
 
         let (roster, _) =
-            crate::plugins::pr_review::council::runtime_council_roster(&state).unwrap();
+            crate::plugins::pr_review::runtime_council_roster(&state).unwrap();
         assert_eq!(roster.first().unwrap(), &chair, "chair untouched");
         assert!(
             roster.contains(&sb1.id) && roster.contains(&sb2.id),
@@ -3308,7 +3123,7 @@ mod tests {
         }
 
         let (roster, _) =
-            crate::plugins::pr_review::council::runtime_council_roster(&state).unwrap();
+            crate::plugins::pr_review::runtime_council_roster(&state).unwrap();
         assert_eq!(roster.first().unwrap(), &chair, "no standby → chair stays");
         assert_eq!(
             store.bot_inventory(&chair).unwrap().unwrap().health,
@@ -3333,7 +3148,7 @@ mod tests {
         }
 
         let (roster, _) =
-            crate::plugins::pr_review::council::runtime_council_roster(&state).unwrap();
+            crate::plugins::pr_review::runtime_council_roster(&state).unwrap();
         assert_eq!(roster.first().unwrap(), &chair, "disabled → no auto-swap");
         assert!(!roster.contains(&standby.id));
     }
@@ -3387,7 +3202,7 @@ mod tests {
                 2,
                 Some(&chair.id),
                 &[chair.id.clone(), rev1.id.clone(), rev2.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -3435,7 +3250,7 @@ mod tests {
                 2,
                 Some(&chair.id),
                 &[chair.id.clone(), rev1.id.clone(), rev2.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -3468,7 +3283,7 @@ mod tests {
                 1,
                 Some(&chair.id),
                 &[chair.id.clone(), rev.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -3664,11 +3479,11 @@ mod tests {
         let session = store
             .create_session(
                 "review round",
-                Some("github:pr/example/repo#349"),
+                Some("controller:pr/example/repo#349"),
                 1,
                 Some(&chair.id),
                 &[chair.id.clone(), reviewer.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -3777,7 +3592,7 @@ mod tests {
                 2,
                 Some(&chair.id),
                 &[chair.id.clone(), rev1.id.clone(), rev2.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -3860,7 +3675,7 @@ mod tests {
                 1,
                 Some(&chair.id),
                 &[chair.id.clone(), rev.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -4070,7 +3885,7 @@ mod tests {
                 1,
                 None,
                 &[from.id.clone(), to.id.clone()],
-                "review_council",
+                "council",
             )
             .unwrap();
         store
@@ -4481,34 +4296,6 @@ mod tests {
             })
             .count();
         assert_eq!(duplicate_count, 1);
-
-        let review_session = store
-            .create_session(
-                "review",
-                None,
-                1,
-                Some(&chair.id),
-                &[chair.id.clone(), rev.id.clone()],
-                "review_council",
-            )
-            .unwrap();
-        let review_trigger =
-            post_client_message(&state, &review_session.id, "review the PR").unwrap();
-        handle_reply(
-            &state,
-            &rev.id,
-            create_topic_reply(&review_session.id, &review_trigger.id),
-        )
-        .unwrap();
-        assert_eq!(
-            store
-                .messages(&review_session.id)
-                .unwrap()
-                .iter()
-                .filter(|m| m.author_kind == "system" && m.content.contains("review the PR"))
-                .count(),
-            0
-        );
     }
 
     #[test]

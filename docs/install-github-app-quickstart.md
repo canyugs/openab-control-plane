@@ -38,7 +38,7 @@
 記下兩個值（之後會用到）：
 
 - **網址**：`https://<你的網域>.zeabur.app`
-- **Webhook 密鑰**：部署時產生的 `GITHUB_WEBHOOK_SECRET`（一串隨機 hex）
+- **Webhook 密鑰**：controller 的 `GITHUB_CONTROLLER_WEBHOOK_SECRET`（一串隨機 hex）
 
 等 `control-plane`、`chair`、`rev1`、`rev2` 四個服務都顯示運行中。
 
@@ -62,7 +62,7 @@
 2. 依照畫面上印出的清單，在 GitHub 網頁填寫設定。
 3. **一定要開的權限**：Pull requests（讀寫）、Contents（唯讀）、Commit statuses（讀寫）、**Issues（讀寫）**。
 4. **一定要訂閱的事件**：Pull requests、Issue comments。
-5. Webhook 網址填：`https://<你的網域>.zeabur.app/api/v1/github_webhooks`
+5. Webhook 網址填：`https://<controller 網域>.zeabur.app/api/v1/github/webhooks`（**不是 plane 的網域** —— v0.1.67 起 plane 不再接 GitHub webhook,要先另外部署 `github-pr-controller`）
 6. Webhook 密鑰填：步驟 1 記下的那串。
 7. 產生並**下載私鑰**（`.pem` 檔），記下 **App ID**。
 

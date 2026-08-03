@@ -92,12 +92,6 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/v1/council/roster/replace", post(replace_council_roster))
         .route("/v1/sessions/:id/stream", get(stream_session))
         // Convene a PR review by ref — the trivial primitive a droppable GitHub
-        // Action (or any CI) calls: POST {repo, pr, preset?}. Same convene as the
-        // webhook (pointer trigger, bots self-fetch); idempotent per PR.
-        .route(
-            "/v1/review",
-            post(crate::plugins::pr_review::webhook::review_pr),
-        )
         // ADR 020 findings ledger, read-only. The offline adoption script joins
         // against this instead of scraping PR comments.
         .route("/v1/review/findings", get(list_review_findings))
@@ -108,12 +102,6 @@ pub fn router() -> Router<Arc<AppState>> {
         // served on the internal network to stock OAB pods (like openab-hub's
         // /bot-config); no client auth — the token IS the bot's credential.
         .route("/bot-config/:id", get(bot_config))
-        // GitHub webhook ingress — auth is the x-hub-signature-256 HMAC, not the
-        // north bearer key, so it's deliberately outside check_auth.
-        .route(
-            "/api/v1/github_webhooks",
-            post(crate::plugins::pr_review::webhook::handle_webhook),
-        )
 }
 
 pub(crate) fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
@@ -326,7 +314,7 @@ async fn list_bots(
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
     let (standing_roster, source) =
-        crate::plugins::pr_review::council::runtime_council_roster(&state)
+        crate::plugins::pr_review::runtime_council_roster(&state)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let standing: BTreeSet<_> = standing_roster.iter().cloned().collect();
     let standing_chair = standing_roster.first().cloned();
@@ -532,7 +520,7 @@ async fn patch_bot(
         .bot_inventory(&id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    let (standing_roster, _) = crate::plugins::pr_review::council::runtime_council_roster(&state)
+    let (standing_roster, _) = crate::plugins::pr_review::runtime_council_roster(&state)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let standing: BTreeSet<_> = standing_roster.iter().cloned().collect();
     let standing_chair = standing_roster.first().cloned();
@@ -554,7 +542,7 @@ async fn delete_bot(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let (standing_roster, _) = crate::plugins::pr_review::council::runtime_council_roster(&state)
+    let (standing_roster, _) = crate::plugins::pr_review::runtime_council_roster(&state)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if standing_roster.iter().any(|bot| bot == &id) {
         return Ok((
@@ -1041,7 +1029,7 @@ async fn get_council_roster(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
-    let (roster, source) = crate::plugins::pr_review::council::runtime_council_roster(&state)
+    let (roster, source) = crate::plugins::pr_review::runtime_council_roster(&state)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(json!({ "roster": roster, "source": source })))
 }
@@ -1068,14 +1056,14 @@ async fn replace_council_roster(
 ) -> Result<axum::response::Response, StatusCode> {
     check_auth(&state, &headers)?;
     if req.old_bot_id == req.new_bot_id {
-        let (roster, source) = crate::plugins::pr_review::council::runtime_council_roster(&state)
+        let (roster, source) = crate::plugins::pr_review::runtime_council_roster(&state)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         return Ok(Json(
             json!({ "replaced": false, "noop": true, "roster": roster, "source": source }),
         )
         .into_response());
     }
-    let (mut roster, _) = crate::plugins::pr_review::council::runtime_council_roster(&state)
+    let (mut roster, _) = crate::plugins::pr_review::runtime_council_roster(&state)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some(idx) = roster.iter().position(|bot| bot == &req.old_bot_id) else {
         return Ok((
@@ -1713,7 +1701,7 @@ fn active_chair_role(
     bot_role: &str,
 ) -> crate::github_app::Role {
     let is_active_slot = matches!(
-        crate::plugins::pr_review::council::runtime_council_roster(state),
+        crate::plugins::pr_review::runtime_council_roster(state),
         Ok((roster, _)) if roster.first().map(String::as_str) == Some(bot_id)
     );
     if is_active_slot && bot_role == "chair" {

@@ -1,10 +1,12 @@
 # Install With PAT
 
-> **Legacy path (2026-08-02).** Production installs use the GitHub App +
-> external controller path — see
+> ⛔ **Retired (v0.1.67).** This path convened reviews through the plane's
+> `POST /v1/review`, which was deleted with the embedded GitHub ingress (ADR
+> 031 invariant #9). The copied Action has no endpoint to call and
+> `github-pr-controller` has no manual convene endpoint yet, so there is no
+> PAT track today — use the GitHub App + controller path in
 > [install-github-app-quickstart.md](install-github-app-quickstart.md). The
-> PAT path remains for quick experiments only and no longer matches how the
-> hosted lanes run.
+> steps below are kept as the record of what the track was.
 
 Use this path for the quickest external-repo setup. A copied GitHub Action in the
 target repo triggers OCP, and the chair posts as the owner of your fine-grained
