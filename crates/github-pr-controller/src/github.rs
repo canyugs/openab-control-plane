@@ -277,6 +277,31 @@ impl GitHubClient {
         ))
     }
 
+    /// Is `login` a member of `org`, as far as this installation can see?
+    /// Webhook payloads render `author_association` against PUBLIC membership
+    /// only, so a private org member arrives as CONTRIBUTOR no matter what the
+    /// App is allowed to see — but this endpoint does honor the App's
+    /// `members: read` grant. 204 is a member, 404 is not (or the grant is
+    /// missing, which must read as untrusted, not as an error).
+    pub async fn is_org_member(&self, org: &str, login: &str) -> Result<bool> {
+        let token = self.installation_token().await?;
+        let response = self
+            .http
+            .get(format!("{}/orgs/{org}/members/{login}", self.api_base))
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await
+            .context("github request failed")?;
+        match response.status().as_u16() {
+            204 => Ok(true),
+            302 | 404 => Ok(false),
+            status => bail!("github orgs/{org}/members/{login} returned {status}"),
+        }
+    }
+
     pub async fn find_marked_comment(
         &self,
         repo: &str,
