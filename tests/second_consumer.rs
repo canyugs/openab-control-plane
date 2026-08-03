@@ -196,7 +196,10 @@ async fn watchdog_timeout_is_legible_on_the_north_surface_alone() {
         .send(reply(&session_id, TIMEOUT_PARTIAL_REPORT))
         .await
         .unwrap();
-    wait_for_state(&base, &session_id, "deliberating").await;
+    // Wait for the report to be *processed*, not merely sent: the session is
+    // already `deliberating` before the reply, so gating on state races the
+    // done-vote and the close would count 0/3 (caught by CI, not locally).
+    wait_for_message(&base, &session_id, TIMEOUT_PARTIAL_REPORT).await;
 
     // Drive the watchdog's own entry point rather than waiting out a real
     // deadline. A cutoff that predates the report must NOT close: the staleness
@@ -403,6 +406,31 @@ async fn wait_for_state(base: &str, session_id: &str, state: &str) -> Value {
             "session did not reach state {state}: {last}"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Poll until a message with this exact content is visible on the session.
+/// The done-vote is recorded in the same handler, so its arrival means the
+/// reply has been fully applied.
+async fn wait_for_message(base: &str, session_id: &str, content: &str) -> Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    loop {
+        let session = get_session(base, session_id).await;
+        if session["messages"]
+            .as_array()
+            .is_some_and(|messages| {
+                messages
+                    .iter()
+                    .any(|m| m["content"].as_str() == Some(content))
+            })
+        {
+            return session;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for message to be applied: {content}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
