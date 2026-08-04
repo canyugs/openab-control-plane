@@ -215,25 +215,8 @@ CREATE TABLE IF NOT EXISTS installation_tokens (
     token TEXT NOT NULL, expires_at BIGINT NOT NULL,
     PRIMARY KEY (session_id, role)
 );
--- ADR 020 findings ledger (PR-review plugin-owned). One row per finding per
--- review round; a session IS a round, so history across rounds = rows across
--- sessions of the same repo/pr. Append-only.
--- ponytail: no rounds/events tables yet — sessions already carries round
--- metadata; add pr_review_finding_events when resolve/dismiss commands land.
-CREATE TABLE IF NOT EXISTS pr_review_findings (
-    id BIGSERIAL PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    repo TEXT, pr_number BIGINT,
-    stable_id TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    status TEXT NOT NULL,
-    title TEXT NOT NULL,
-    path TEXT, line BIGINT,
-    raised_by TEXT, angle TEXT,
-    head_sha TEXT,
-    created_at BIGINT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_prf_repo_pr ON pr_review_findings(repo, pr_number, id);
+-- The pr_review_findings ledger moved to the controller (SEI-895); existing
+-- databases keep the old table as inert data until a cleanup migration drops it.
 -- Reviews the hourly cap dropped (SEI-819). One row per trigger_ref; a later
 -- drop overwrites so the newest dropped head wins. The catch-up sweep convenes
 -- and deletes once the cap window clears.
@@ -2954,93 +2937,6 @@ impl Store for PostgresStore {
         })
     }
 
-    fn insert_review_findings(
-        &self,
-        session_id: &str,
-        repo: Option<&str>,
-        pr_number: Option<i64>,
-        head_sha: Option<&str>,
-        findings: &[NewReviewFinding],
-    ) -> Result<()> {
-        let now = now_ms();
-        self.block(async {
-            let mut client = self.client().await?;
-            let tx = client.transaction().await?;
-            for f in findings {
-                tx.execute(
-                    "INSERT INTO pr_review_findings
-                        (session_id, repo, pr_number, stable_id, severity, status,
-                         title, path, line, raised_by, angle, head_sha, created_at)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
-                    &[
-                        &session_id,
-                        &repo,
-                        &pr_number,
-                        &f.stable_id,
-                        &f.severity,
-                        &f.status,
-                        &f.title,
-                        &f.path,
-                        &f.line,
-                        &f.raised_by,
-                        &f.angle,
-                        &head_sha,
-                        &now,
-                    ],
-                )
-                .await?;
-            }
-            tx.commit().await?;
-            Ok(())
-        })
-    }
-
-    fn review_findings(
-        &self,
-        repo: Option<&str>,
-        pr_number: Option<i64>,
-        status: Option<&str>,
-        severity: Option<&str>,
-        limit: i64,
-    ) -> Result<Vec<ReviewFinding>> {
-        self.block(async {
-            let client = self.client().await?;
-            // Same fixed-slot "IS NULL OR" shape as SQLite; Postgres just needs
-            // explicit casts so NULL params carry a type.
-            Ok(client
-                .query(
-                    "SELECT id, session_id, repo, pr_number, stable_id, severity, status,
-                            title, path, line, raised_by, angle, head_sha, created_at
-                     FROM pr_review_findings
-                     WHERE ($1::text IS NULL OR repo = $1)
-                       AND ($2::bigint IS NULL OR pr_number = $2)
-                       AND ($3::text IS NULL OR status = $3)
-                       AND ($4::text IS NULL OR severity = $4)
-                     ORDER BY id DESC LIMIT $5",
-                    &[&repo, &pr_number, &status, &severity, &limit],
-                )
-                .await?
-                .iter()
-                .map(|r| ReviewFinding {
-                    id: r.get(0),
-                    session_id: r.get(1),
-                    repo: r.get(2),
-                    pr_number: r.get(3),
-                    stable_id: r.get(4),
-                    severity: r.get(5),
-                    status: r.get(6),
-                    title: r.get(7),
-                    path: r.get(8),
-                    line: r.get(9),
-                    raised_by: r.get(10),
-                    angle: r.get(11),
-                    head_sha: r.get(12),
-                    created_at: r.get(13),
-                })
-                .collect())
-        })
-    }
-
     fn mark_once(&self, key: &str) -> Result<bool> {
         self.block(async {
             let client = self.client().await?;
@@ -4643,50 +4539,8 @@ mod tests {
     }
 
     #[test]
-    fn findings_ledger_filters_and_pending_reviews() {
+    fn pending_reviews_upsert_and_delete() {
         let Some(s) = store("findings") else { return };
-        s.insert_review_findings(
-            "ses_1",
-            Some("o/r"),
-            Some(7),
-            Some("sha"),
-            &[
-                NewReviewFinding {
-                    stable_id: "f1".into(),
-                    severity: "red".into(),
-                    status: "open".into(),
-                    title: "bug".into(),
-                    path: None,
-                    line: None,
-                    raised_by: Some("rev".into()),
-                    angle: None,
-                },
-                NewReviewFinding {
-                    stable_id: "f2".into(),
-                    severity: "green".into(),
-                    status: "open".into(),
-                    title: "praise".into(),
-                    path: None,
-                    line: None,
-                    raised_by: None,
-                    angle: None,
-                },
-            ],
-        )
-        .unwrap();
-        assert_eq!(
-            s.review_findings(Some("o/r"), Some(7), None, None, 10)
-                .unwrap()
-                .len(),
-            2
-        );
-        assert_eq!(
-            s.review_findings(None, None, None, Some("red"), 10)
-                .unwrap()
-                .len(),
-            1,
-            "NULL slots pass, bound slots filter"
-        );
         s.upsert_pending_review("pr#7", "o/r", 7, Some("sha:a"), None)
             .unwrap();
         s.upsert_pending_review("pr#7", "o/r", 7, Some("sha:b"), Some("quick"))

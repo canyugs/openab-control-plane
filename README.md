@@ -204,13 +204,13 @@ POST /v1/sessions/:id/roster/replace
 GET  /v1/council/roster
 PUT  /v1/council/roster
 POST /v1/council/roster/replace
-GET  /v1/review/findings?repo=...&pr=...&status=...&severity=...&limit=50
 ```
 
-`/v1/review/findings` is the ADR 020 findings ledger: one row per finding per
-review round (stable id, severity, status, path/line, raising reviewer and
-angle) — the audit substrate for adoption-rate and per-angle signal/noise
-measurement.
+The ADR 020 findings ledger moved to `github-pr-controller`
+(`GET /api/v1/review/findings`, signed-observation auth): the controller
+records each finding with the repo/PR/head_sha it learned from the webhook,
+which the kernel never knows — its own copy had written NULL identity columns
+since the controller cutover (SEI-895).
 
 ## Core Concepts
 

@@ -749,54 +749,24 @@ fn fire_close_webhook(state: &Arc<AppState>, session_id: &str, verdict: &str, re
 /// the closing verdict text and append ledger rows. Best-effort — a missing or
 /// malformed block never affects the close; the ledger simply gets no rows.
 fn record_review_findings(state: &Arc<AppState>, session: &Session, verdict_text: &str) {
+    // The findings LEDGER lives on the controller now (SEI-895): it records
+    // every finding with repo/pr/head_sha from the webhook payload, which the
+    // kernel never knows (controller trigger_refs are opaque). What remains
+    // the kernel's is ADR 035 P2: waived findings bump the matched waivers'
+    // fired counters — the hygiene report's signal for "still earning its
+    // keep". Best-effort, like the rest of the close path.
     let Some(block) = crate::plugins::pr_review::findings::parse_findings_block(verdict_text)
     else {
-        // Distinguish the two ledger-gap causes in the log (SEI-807): the
-        // close itself is never affected, but a silent gap is unauditable.
+        // Distinguish the two causes in the log (SEI-807): the close itself
+        // is never affected, but a silent gap is unauditable.
         if verdict_text.contains("<!-- openab-findings") {
             tracing::warn!(
-                "findings block present but unparseable at close of {}; ledger row dropped",
+                "findings block present but unparseable at close of {}; waiver bumps skipped",
                 session.id
             );
-        } else {
-            tracing::warn!("no findings block at close of {}; ledger gap", session.id);
         }
         return;
     };
-    // repo/pr are not the kernel's to know. They used to be scraped from the
-    // embedded webhook's `github:pr/{repo}#{n}` trigger_ref; controller sessions
-    // carry an opaque `controller:{id}:{hash}` and have written NULL here since
-    // the cutover. `github-pr-controller` records the same findings WITH repo,
-    // pr and head_sha — that copy is the one to read (SEI-895).
-    let repo_pr: Option<(String, i64)> = None;
-    let rows: Vec<crate::store::NewReviewFinding> = block
-        .findings
-        .iter()
-        .map(|f| crate::store::NewReviewFinding {
-            stable_id: f.id.clone(),
-            severity: f.severity.clone(),
-            status: f.status.clone(),
-            title: f.title.clone(),
-            path: f.path.clone(),
-            line: f.line,
-            raised_by: f.raised_by.clone(),
-            angle: f.angle.clone(),
-        })
-        .collect();
-    if let Err(e) = state.store.insert_review_findings(
-        &session.id,
-        repo_pr.as_ref().map(|(r, _)| r.as_str()),
-        repo_pr.as_ref().map(|(_, n)| *n),
-        block.head_sha.as_deref(),
-        &rows,
-    ) {
-        tracing::warn!("record findings for {} failed: {e}", session.id);
-    } else if !rows.is_empty() {
-        state.record_compatibility_use("review_findings_write", rows.len() as i64);
-    }
-    // ADR 035 P2: waived findings bump the matched waivers' fired counters —
-    // the hygiene report's signal for "still earning its keep". Best-effort,
-    // like everything else in this function.
     let fired: Vec<String> = block
         .findings
         .iter()
@@ -804,24 +774,15 @@ fn record_review_findings(state: &Arc<AppState>, session: &Session, verdict_text
         .filter_map(|f| f.waiver_id.clone())
         .collect();
     if !fired.is_empty() {
-        // The repo is never known here any more: only the embedded webhook
-        // ever produced a parseable trigger_ref, so the repo-scoped variant
-        // has been dead since the cutover. Waiver ids are 128-bit random
-        // capabilities and the chair only ever sees its own repo's ids in the
-        // injected ACTIVE WAIVERS block, so an id-only bump is the contract.
-        // Restoring repo scoping means moving the waiver ledger to the
-        // controller, which owns the repo (SEI-895).
+        // Id-only on purpose: waiver ids are 128-bit random capabilities and
+        // the chair only ever sees its own repo's ids in the injected ACTIVE
+        // WAIVERS block. Repo scoping returns when the waiver ledger itself
+        // moves to the controller (SEI-895 item 5).
         if let Err(e) = state.store.record_waiver_fired(None, &fired) {
             tracing::warn!("waiver fired-count update for {} failed: {e}", session.id);
         }
     }
 }
-
-
-
-
-
-
 
 /// Reconstruct the sender of a stored message (for history backfill).
 fn sender_for(state: &AppState, m: &Message) -> SenderInfo {
