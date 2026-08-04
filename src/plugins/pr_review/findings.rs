@@ -136,87 +136,12 @@ mod tests {
     }
 
     #[test]
-    fn review_close_populates_findings_ledger() {
-        let store = std::sync::Arc::new(crate::store::SqliteStore::memory().unwrap());
-        let state = crate::state::AppState::new(store.clone());
-        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
-        let session = store
-            .create_session(
-                "review",
-                Some("github:pr/o/r#7"),
-                0,
-                Some(&chair.id),
-                std::slice::from_ref(&chair.id),
-                "council",
-            )
-            .unwrap();
-        store
-            .advance_state(
-                &session.id,
-                crate::store::SessionState::Open,
-                crate::store::SessionState::Quorum,
-            )
-            .unwrap();
-
-        crate::orchestrator::handle_reply(
-            &state,
-            &chair.id,
-            crate::orchestrator::test_support::msg_reply(&session.id, BLOCK),
-        )
-        .unwrap();
-
-        let rows = store
-            .review_findings(None, None, None, None, 10)
-            .unwrap();
-        assert_eq!(rows.len(), 2);
-        // Newest-first: F2 has the higher rowid.
-        let f1 = rows.iter().find(|r| r.stable_id == "F1").unwrap();
-        assert_eq!(f1.session_id, session.id);
-        // repo/pr are the controller's to record — the kernel writes NULL.
-        assert_eq!((f1.repo.as_deref(), f1.pr_number), (None, None));
-        assert_eq!((f1.severity.as_str(), f1.status.as_str()), ("red", "open"));
-        assert_eq!(f1.head_sha.as_deref(), Some("abc123"));
-        assert_eq!(f1.raised_by.as_deref(), Some("rev1"));
-        assert_eq!(f1.angle.as_deref(), Some("correctness"));
-        assert_eq!((f1.path.as_deref(), f1.line), (Some("src/a.rs"), Some(7)));
-        assert_eq!(
-            rows.iter()
-                .find(|r| r.stable_id == "F2")
-                .map(|r| r.status.as_str()),
-            Some("resolved")
-        );
-
-        // Filters narrow.
-        assert_eq!(
-            store
-                .review_findings(None, None, Some("resolved"), None, 10)
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(
-            store
-                .review_findings(Some("other/repo"), None, None, None, 10)
-                .unwrap()
-                .len(),
-            0
-        );
-        let usage = store.compatibility_usage().unwrap();
-        assert_eq!(
-            usage
-                .iter()
-                .find(|row| row.surface == "review_findings_write")
-                .map(|row| row.uses),
-            Some(2)
-        );
-    }
-
-    #[test]
-    fn controller_council_close_feeds_ledger_and_waiver_counters() {
+    fn controller_council_close_bumps_waiver_counters() {
         // Controller-opened sessions use the generic "council" mode with a
         // hashed trigger_ref — the close hook must still parse the chair's
         // block (found live: OCP#333 round 2 landed "waived" on GitHub while
-        // the plane ledger and fired counter stayed empty).
+        // the fired counter stayed empty). The findings LEDGER now lives on
+        // the controller; the waiver bump is what remains kernel-side.
         let store = std::sync::Arc::new(crate::store::SqliteStore::memory().unwrap());
         let state = crate::state::AppState::new(store.clone());
         let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
@@ -262,9 +187,6 @@ mod tests {
         )
         .unwrap();
 
-        let rows = store.review_findings(None, None, None, None, 10).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].status, "waived");
         let waivers = store
             .list_review_waivers(Some("o/r"), true, crate::store::now_ms())
             .unwrap();
@@ -272,17 +194,29 @@ mod tests {
     }
 
     #[test]
-    fn block_split_across_two_chair_messages_still_lands_in_ledger() {
+    fn block_split_across_two_chair_messages_still_bumps_waivers() {
         // Live failure (zeabur.com#702 round 4): the transport's message-length
         // split put the block opener in one chair message and the JSON tail +
-        // verdict in the next. The close must parse the joined settled span.
+        // verdict in the next. The close must parse the joined settled span —
+        // with the ledger on the controller, the kernel-side casualty of
+        // getting this wrong is a silently skipped waiver bump.
         let store = std::sync::Arc::new(crate::store::SqliteStore::memory().unwrap());
         let state = crate::state::AppState::new(store.clone());
         let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let waiver = store
+            .create_review_waiver(
+                "o/r",
+                None,
+                "split-block trade-off",
+                None,
+                "operator",
+                crate::store::now_ms() + 86_400_000,
+            )
+            .unwrap();
         let session = store
             .create_session(
                 "review",
-                Some("github:pr/o/r#8"),
+                Some("controller:github-canary:cafef00d"),
                 0,
                 Some(&chair.id),
                 std::slice::from_ref(&chair.id),
@@ -297,7 +231,14 @@ mod tests {
             )
             .unwrap();
 
-        let (part1, part2) = BLOCK.split_at(BLOCK.find("\"findings\":[").unwrap() + 12);
+        let verdict = format!(
+            "report\n<!-- openab-findings\n{{\"findings\":[\
+             {{\"id\":\"F1\",\"severity\":\"yellow\",\"status\":\"waived\",\
+              \"title\":\"waived across the split\",\"waiver_id\":\"{}\"}}]}}\n-->\n\
+             [[verdict:approve r=0 y=0 g=0]] [done]",
+            waiver.id
+        );
+        let (part1, part2) = verdict.split_at(verdict.find("\"findings\":[").unwrap() + 12);
         crate::orchestrator::handle_reply(
             &state,
             &chair.id,
@@ -311,18 +252,30 @@ mod tests {
         )
         .unwrap();
 
-        let rows = store
-            .review_findings(None, None, None, None, 10)
+        let waivers = store
+            .list_review_waivers(Some("o/r"), true, crate::store::now_ms())
             .unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows.iter().filter(|r| r.stable_id == "F1").count(), 1);
+        assert_eq!(waivers[0].fired_count, 1, "joined-span parse still fires");
     }
 
     #[test]
-    fn solo_close_writes_no_ledger_rows_even_with_block() {
+    fn solo_close_does_not_bump_waivers_even_with_block() {
+        // The harvest gate is "council mode with a chair": a solo session's
+        // block must not fire waiver counters (it used to be "must not write
+        // ledger rows" — the ledger moved to the controller, the gate stays).
         let store = std::sync::Arc::new(crate::store::SqliteStore::memory().unwrap());
         let state = crate::state::AppState::new(store.clone());
         let bot = store.register_bot("solo", "reviewer", "h1", "t1").unwrap();
+        let waiver = store
+            .create_review_waiver(
+                "o/r",
+                None,
+                "should not fire",
+                None,
+                "operator",
+                crate::store::now_ms() + 86_400_000,
+            )
+            .unwrap();
         let session = store
             .create_session("solo", None, 0, None, std::slice::from_ref(&bot.id), "solo")
             .unwrap();
@@ -334,17 +287,23 @@ mod tests {
             )
             .unwrap();
 
+        let block = format!(
+            "<!-- openab-findings\n{{\"findings\":[\
+             {{\"id\":\"F1\",\"severity\":\"yellow\",\"status\":\"waived\",\
+              \"title\":\"x\",\"waiver_id\":\"{}\"}}]}}\n-->\n[done]",
+            waiver.id
+        );
         crate::orchestrator::handle_reply(
             &state,
             &bot.id,
-            crate::orchestrator::test_support::msg_reply(&session.id, BLOCK),
+            crate::orchestrator::test_support::msg_reply(&session.id, &block),
         )
         .unwrap();
 
-        assert!(store
-            .review_findings(None, None, None, None, 10)
-            .unwrap()
-            .is_empty());
+        let waivers = store
+            .list_review_waivers(Some("o/r"), true, crate::store::now_ms())
+            .unwrap();
+        assert_eq!(waivers[0].fired_count, 0, "solo close must not harvest");
     }
 
     #[test]

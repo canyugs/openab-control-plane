@@ -204,29 +204,6 @@ pub struct Reaction {
     pub emoji: String,
 }
 
-/// One findings-ledger row (ADR 020): a finding as reported by one review
-/// round. Written once at session close from the chair's hidden
-/// `<!-- openab-findings … -->` block; the kernel stores plain rows and knows
-/// nothing about the block format (that parse lives in the pr_review plugin).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReviewFinding {
-    pub id: i64,
-    pub session_id: String,
-    pub repo: Option<String>,
-    pub pr_number: Option<i64>,
-    /// PR-scoped stable id, e.g. `F1` (monotonic across rounds per steering).
-    pub stable_id: String,
-    pub severity: String, // red | yellow | green
-    pub status: String,   // open | resolved | dismissed
-    pub title: String,
-    pub path: Option<String>,
-    pub line: Option<i64>,
-    pub raised_by: Option<String>,
-    pub angle: Option<String>,
-    pub head_sha: Option<String>,
-    pub created_at: i64,
-}
-
 /// A review the hourly cap dropped, awaiting catch-up (SEI-819).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingReview {
@@ -236,20 +213,6 @@ pub struct PendingReview {
     pub fingerprint: Option<String>,
     pub preset: Option<String>,
     pub requested_at: i64,
-}
-
-/// Insert shape for `insert_review_findings` — everything but the row id and
-/// the shared per-call fields (session, repo/pr, head_sha, timestamp).
-#[derive(Debug, Clone)]
-pub struct NewReviewFinding {
-    pub stable_id: String,
-    pub severity: String,
-    pub status: String,
-    pub title: String,
-    pub path: Option<String>,
-    pub line: Option<i64>,
-    pub raised_by: Option<String>,
-    pub angle: Option<String>,
 }
 
 /// Durable use count for a deprecated compatibility surface. The key is opaque
@@ -783,25 +746,6 @@ pub trait Store: Send + Sync {
     /// previous turn's span must not survive as the reopened session's result
     /// (ADR 028). Returns true iff the CAS won.
     fn reopen_session(&self, session_id: &str, from: SessionState) -> Result<bool>;
-    /// Append findings-ledger rows for a closed review round (ADR 020). Called
-    /// at most once per session (guarded by the close CAS upstream).
-    fn insert_review_findings(
-        &self,
-        session_id: &str,
-        repo: Option<&str>,
-        pr_number: Option<i64>,
-        head_sha: Option<&str>,
-        findings: &[NewReviewFinding],
-    ) -> Result<()>;
-    /// Read the findings ledger, newest rows first. All filters optional.
-    fn review_findings(
-        &self,
-        repo: Option<&str>,
-        pr_number: Option<i64>,
-        status: Option<&str>,
-        severity: Option<&str>,
-        limit: i64,
-    ) -> Result<Vec<ReviewFinding>>;
     /// Atomic once-marker on the settings table: true exactly once per key
     /// (INSERT OR IGNORE). Used for once-per-PR notices (SEI-820).
     fn mark_once(&self, key: &str) -> Result<bool>;
@@ -990,21 +934,8 @@ CREATE TABLE IF NOT EXISTS installation_tokens (
 -- review round; a session IS a round, so history across rounds = rows across
 -- sessions of the same repo/pr. Append-only.
 -- ponytail: no rounds/events tables yet — sessions already carries round
--- metadata; add pr_review_finding_events when resolve/dismiss commands land.
-CREATE TABLE IF NOT EXISTS pr_review_findings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    repo TEXT, pr_number INTEGER,
-    stable_id TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    status TEXT NOT NULL,
-    title TEXT NOT NULL,
-    path TEXT, line INTEGER,
-    raised_by TEXT, angle TEXT,
-    head_sha TEXT,
-    created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_prf_repo_pr ON pr_review_findings(repo, pr_number, id);
+-- The pr_review_findings ledger moved to the controller (SEI-895); existing
+-- databases keep the old table as inert data until a cleanup migration drops it.
 -- Reviews the hourly cap dropped (SEI-819). One row per trigger_ref; a later
 -- drop overwrites so the newest dropped head wins. The catch-up sweep convenes
 -- and deletes once the cap window clears.
@@ -4150,44 +4081,6 @@ impl Store for SqliteStore {
         Ok(n == 1)
     }
 
-    fn insert_review_findings(
-        &self,
-        session_id: &str,
-        repo: Option<&str>,
-        pr_number: Option<i64>,
-        head_sha: Option<&str>,
-        findings: &[NewReviewFinding],
-    ) -> Result<()> {
-        let mut c = self.conn.lock().unwrap();
-        let now = now_ms();
-        let tx = c.transaction()?;
-        for f in findings {
-            tx.execute(
-                "INSERT INTO pr_review_findings
-                    (session_id, repo, pr_number, stable_id, severity, status,
-                     title, path, line, raised_by, angle, head_sha, created_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-                params![
-                    session_id,
-                    repo,
-                    pr_number,
-                    f.stable_id,
-                    f.severity,
-                    f.status,
-                    f.title,
-                    f.path,
-                    f.line,
-                    f.raised_by,
-                    f.angle,
-                    head_sha,
-                    now
-                ],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
     fn mark_once(&self, key: &str) -> Result<bool> {
         let c = self.conn.lock().unwrap();
         let n = c.execute(
@@ -4253,47 +4146,6 @@ impl Store for SqliteStore {
         let mut stmt = c.prepare("SELECT MAX(created_at) FROM sessions WHERE trigger_ref = ?1")?;
         let v: Option<i64> = stmt.query_row(params![trigger_ref], |r| r.get(0))?;
         Ok(v)
-    }
-
-    fn review_findings(
-        &self,
-        repo: Option<&str>,
-        pr_number: Option<i64>,
-        status: Option<&str>,
-        severity: Option<&str>,
-        limit: i64,
-    ) -> Result<Vec<ReviewFinding>> {
-        let c = self.conn.lock().unwrap();
-        // ponytail: fixed ?-slots with "IS NULL OR" per filter beats dynamic SQL.
-        let mut stmt = c.prepare(
-            "SELECT id, session_id, repo, pr_number, stable_id, severity, status,
-                    title, path, line, raised_by, angle, head_sha, created_at
-             FROM pr_review_findings
-             WHERE (?1 IS NULL OR repo = ?1)
-               AND (?2 IS NULL OR pr_number = ?2)
-               AND (?3 IS NULL OR status = ?3)
-               AND (?4 IS NULL OR severity = ?4)
-             ORDER BY id DESC LIMIT ?5",
-        )?;
-        let rows = stmt.query_map(params![repo, pr_number, status, severity, limit], |r| {
-            Ok(ReviewFinding {
-                id: r.get(0)?,
-                session_id: r.get(1)?,
-                repo: r.get(2)?,
-                pr_number: r.get(3)?,
-                stable_id: r.get(4)?,
-                severity: r.get(5)?,
-                status: r.get(6)?,
-                title: r.get(7)?,
-                path: r.get(8)?,
-                line: r.get(9)?,
-                raised_by: r.get(10)?,
-                angle: r.get(11)?,
-                head_sha: r.get(12)?,
-                created_at: r.get(13)?,
-            })
-        })?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     fn active_sessions_before(&self, cutoff_ms: i64) -> Result<Vec<String>> {
