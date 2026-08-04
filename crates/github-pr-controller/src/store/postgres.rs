@@ -15,7 +15,7 @@
 
 use super::{
     now_unix, CanarySummary, DeliveryAdmission, PendingWrite, ProductStore, RecordedRound,
-    ReviewFinding, ReviewRound, RuntimeEventAdmission, SessionTarget, ShadowAdmission,
+    ReviewFinding, ReviewFindingQuery, ReviewFindingRow, ReviewRound, RuntimeEventAdmission, SessionTarget, ShadowAdmission,
     ShadowSummary, StoreError, StoreResult, COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS,
     WRITE_CLAIM_LEASE_SECS, WRITE_MAX_ATTEMPTS,
 };
@@ -889,6 +889,55 @@ impl ProductStore for PostgresStore {
             )
             .await?;
         Ok(())
+    }
+
+    /// Same predicate shape as SQLite: NULL filters do not constrain. Postgres
+    /// needs the explicit casts because a NULL parameter is otherwise of
+    /// unknown type at plan time.
+    async fn review_findings(
+        &self,
+        query: &ReviewFindingQuery,
+    ) -> StoreResult<Vec<ReviewFindingRow>> {
+        let client = self.client().await?;
+        let rows = client
+            .query(
+                "SELECT id, session_id, repo, pr_number, stable_id, severity, status,
+                        title, path, line, raised_by, angle, head_sha, created_at
+                   FROM review_findings
+                  WHERE ($1::TEXT IS NULL OR repo = $1)
+                    AND ($2::BIGINT IS NULL OR pr_number = $2)
+                    AND ($3::TEXT IS NULL OR status = $3)
+                    AND ($4::TEXT IS NULL OR severity = $4)
+                  ORDER BY id DESC
+                  LIMIT $5",
+                &[
+                    &query.repo,
+                    &query.pr_number,
+                    &query.status,
+                    &query.severity,
+                    &(query.limit as i64),
+                ],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|row| ReviewFindingRow {
+                id: row.get(0),
+                session_id: row.get(1),
+                repo: row.get(2),
+                pr_number: row.get(3),
+                stable_id: row.get(4),
+                severity: row.get(5),
+                status: row.get(6),
+                title: row.get(7),
+                path: row.get(8),
+                line: row.get(9),
+                raised_by: row.get(10),
+                angle: row.get(11),
+                head_sha: row.get(12),
+                created_at: row.get(13),
+            })
+            .collect())
     }
 
     async fn record_review_findings(

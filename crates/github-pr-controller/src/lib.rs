@@ -29,7 +29,8 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use store::{
-    audit_timestamp, now_ms, DeliveryAdmission, ProductStore, RuntimeEventAdmission,
+    audit_timestamp, now_ms, DeliveryAdmission, ProductStore, ReviewFindingQuery,
+    RuntimeEventAdmission,
     ShadowAdmission, WRITE_MAX_ATTEMPTS,
 };
 
@@ -318,6 +319,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/shadow/summary", get(shadow_summary))
         .route("/api/v1/openab/events", post(handle_runtime_event))
         .route("/api/v1/audit/events", get(handle_audit_events))
+        .route("/api/v1/review/findings", get(handle_review_findings))
         .route("/api/v1/canary/summary", get(canary_summary))
         .layer(DefaultBodyLimit::max(MAX_WEBHOOK_BODY_BYTES))
         .with_state(state)
@@ -1221,6 +1223,87 @@ async fn handle_audit_events(
             response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({"ok": false, "error": "audit_store_failed"}),
+            )
+        }
+    }
+}
+
+/// Query params for the findings read. Same names the kernel's
+/// `/v1/review/findings` took, so the ops scripts only change host and auth.
+#[derive(Debug, serde::Deserialize)]
+struct ReviewFindingsParams {
+    repo: Option<String>,
+    pr: Option<i64>,
+    status: Option<String>,
+    severity: Option<String>,
+    limit: Option<usize>,
+}
+
+/// `GET /api/v1/review/findings` — the reporting read for the findings ledger.
+///
+/// The kernel kept a copy of this ledger, but it can only fill `repo`/`pr` for
+/// sessions whose trigger_ref it can parse, which no controller session has;
+/// its rows have been NULL there since the cutover (SEI-895). The controller
+/// records both from the webhook payload, so this is the copy worth reading.
+///
+/// Auth is the same signed-observation scheme as the audit read, not a bearer:
+/// one credential shape for every operator read on this service.
+async fn handle_review_findings(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Query(params): Query<ReviewFindingsParams>,
+) -> Response {
+    let Some(secret) = state.config.observer_secret.as_deref() else {
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "observation_hmac_not_configured"}),
+        );
+    };
+    let target = uri
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or(uri.path());
+    if !verify_audit_signature(
+        secret,
+        target,
+        header(&headers, "x-canary-audit-timestamp"),
+        header(&headers, "x-canary-audit-signature-256"),
+        now_unix(),
+    ) {
+        return response(
+            StatusCode::FORBIDDEN,
+            json!({"ok": false, "error": "invalid_observation_signature"}),
+        );
+    }
+    let Some(store) = state.store.as_ref() else {
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "product_store_unavailable"}),
+        );
+    };
+    // Clamped, not rejected: a reporting script asking for everything should
+    // get a bounded page rather than a 400.
+    let limit = params.limit.unwrap_or(100).clamp(1, 5000);
+    match store
+        .review_findings(&ReviewFindingQuery {
+            repo: params.repo,
+            pr_number: params.pr,
+            status: params.status,
+            severity: params.severity,
+            limit,
+        })
+        .await
+    {
+        Ok(findings) => response(
+            StatusCode::OK,
+            json!({ "findings": findings, "limit": limit }),
+        ),
+        Err(error) => {
+            tracing::error!(%error, "review findings query failed");
+            response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"ok": false, "error": "findings_store_failed"}),
             )
         }
     }
@@ -2370,6 +2453,162 @@ mod tests {
         assert_eq!(body["mode"], "plan_only");
         assert_eq!(body["components"]["ocp"]["enabled"], false);
         assert_eq!(body["components"]["github"]["enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn findings_read_is_signed_filtered_and_shaped_like_the_kernel_route() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .record_review_findings(
+                "ses_read_1",
+                "example/repo",
+                7,
+                Some("deadbeef"),
+                &[
+                    store::ReviewFinding {
+                        stable_id: "F1".into(),
+                        severity: "red".into(),
+                        status: "open".into(),
+                        title: "first".into(),
+                        path: Some("src/a.rs".into()),
+                        line: Some(12),
+                        raised_by: Some("rev1".into()),
+                        angle: Some("correctness".into()),
+                    },
+                    store::ReviewFinding {
+                        stable_id: "F2".into(),
+                        severity: "green".into(),
+                        status: "resolved".into(),
+                        title: "second".into(),
+                        path: None,
+                        line: None,
+                        raised_by: Some("rev2".into()),
+                        angle: None,
+                    },
+                ],
+            )
+            .unwrap();
+        store
+            .record_review_findings(
+                "ses_read_2",
+                "other/repo",
+                9,
+                None,
+                &[store::ReviewFinding {
+                    stable_id: "F1".into(),
+                    severity: "red".into(),
+                    status: "open".into(),
+                    title: "elsewhere".into(),
+                    path: None,
+                    line: None,
+                    raised_by: None,
+                    angle: None,
+                }],
+            )
+            .unwrap();
+
+        let mut config = test_config();
+        config.observer_secret = Some("observer-secret".into());
+        let state = Arc::new(AppState {
+            config,
+            store: Some(Arc::new(store)),
+            store_error: None,
+            action_client: None,
+            action_client_error: None,
+            event_verifier: None,
+            event_verifier_error: None,
+            github: None,
+        });
+
+        let signed = |target: &str| {
+            let timestamp = now_unix();
+            let mut mac = HmacSha256::new_from_slice(b"observer-secret").unwrap();
+            mac.update(audit_signature_payload(timestamp, target).as_bytes());
+            Request::get(target)
+                .header("x-canary-audit-timestamp", timestamp.to_string())
+                .header(
+                    "x-canary-audit-signature-256",
+                    format!("sha256={}", hex::encode(mac.finalize().into_bytes())),
+                )
+                .body(Body::empty())
+                .unwrap()
+        };
+        let read = |request: Request<Body>| async {
+            let response = router(state.clone()).oneshot(request).await.unwrap();
+            let status = response.status();
+            let body: Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            (status, body)
+        };
+
+        // Unfiltered: newest first, and the identity columns the kernel's copy
+        // cannot fill for controller sessions are populated here.
+        let (status, body) = read(signed("/api/v1/review/findings?limit=10")).await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = body["findings"].as_array().unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["title"], "elsewhere");
+        let f1 = rows.iter().find(|r| r["title"] == "first").unwrap();
+        assert_eq!(f1["repo"], "example/repo");
+        assert_eq!(f1["pr_number"], 7);
+        assert_eq!(f1["head_sha"], "deadbeef");
+        assert_eq!(f1["session_id"], "ses_read_1");
+        assert_eq!(f1["stable_id"], "F1");
+        assert_eq!(f1["severity"], "red");
+        assert_eq!(f1["status"], "open");
+        assert_eq!(f1["path"], "src/a.rs");
+        assert_eq!(f1["line"], 12);
+        assert_eq!(f1["raised_by"], "rev1");
+        assert_eq!(f1["angle"], "correctness");
+        assert!(f1["created_at"].is_number());
+
+        // The filter `review-escapes.py` needs, and the one it gets nothing
+        // from on the kernel's copy today.
+        let (_, body) = read(signed("/api/v1/review/findings?repo=example/repo&limit=10")).await;
+        assert_eq!(body["findings"].as_array().unwrap().len(), 2);
+        let (_, body) = read(signed(
+            "/api/v1/review/findings?repo=example/repo&status=open&limit=10",
+        ))
+        .await;
+        assert_eq!(body["findings"].as_array().unwrap().len(), 1);
+        let (_, body) = read(signed("/api/v1/review/findings?severity=red&limit=10")).await;
+        assert_eq!(body["findings"].as_array().unwrap().len(), 2);
+        let (_, body) = read(signed("/api/v1/review/findings?pr=9&limit=10")).await;
+        assert_eq!(body["findings"].as_array().unwrap().len(), 1);
+
+        // Bounded rather than rejected, and the bound is reported back.
+        let (_, body) = read(signed("/api/v1/review/findings?limit=99999")).await;
+        assert_eq!(body["limit"], 5000);
+
+        // A signature bound to a different query cannot be replayed onto this
+        // one — the same property the audit read has.
+        let wrong = {
+            let timestamp = now_unix();
+            let mut mac = HmacSha256::new_from_slice(b"observer-secret").unwrap();
+            mac.update(
+                audit_signature_payload(timestamp, "/api/v1/review/findings?repo=other/repo")
+                    .as_bytes(),
+            );
+            Request::get("/api/v1/review/findings?repo=example/repo")
+                .header("x-canary-audit-timestamp", timestamp.to_string())
+                .header(
+                    "x-canary-audit-signature-256",
+                    format!("sha256={}", hex::encode(mac.finalize().into_bytes())),
+                )
+                .body(Body::empty())
+                .unwrap()
+        };
+        let (status, _) = read(wrong).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, _) = read(
+            Request::get("/api/v1/review/findings")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "unsigned reads are refused");
     }
 
     #[tokio::test]
