@@ -4,7 +4,8 @@
 
 use super::{
     now_unix, CanarySummary, DeliveryAdmission, PendingWrite, ProductStore, RecordedRound,
-    ReviewFinding, ReviewFindingQuery, ReviewFindingRow, ReviewRound, RuntimeEventAdmission, SessionTarget, ShadowAdmission,
+    ReviewFinding, ReviewFindingQuery, ReviewFindingRow, ReviewRound, ReviewWaiver,
+    RuntimeEventAdmission, SessionTarget, ShadowAdmission,
     ShadowSummary, StoreError, StoreResult, COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS,
     WRITE_CLAIM_LEASE_SECS, WRITE_MAX_ATTEMPTS,
 };
@@ -164,6 +165,23 @@ const MIGRATIONS: &[&str] = &[
      CREATE INDEX IF NOT EXISTS idx_audit_events_write ON audit_events(write_id);
      CREATE INDEX IF NOT EXISTS idx_audit_events_trigger ON audit_events(trigger_ref);
      CREATE INDEX IF NOT EXISTS idx_audit_events_recorded ON audit_events(recorded_at, seq);",
+    // 5 — ADR 035 waiver ledger, ported from the kernel (SEI-895 item 5).
+    // Timestamps in unix seconds like every other table here (the kernel's
+    // copy used ms; the data migration converts).
+    "CREATE TABLE IF NOT EXISTS review_waivers (
+       id TEXT PRIMARY KEY,
+       repo TEXT NOT NULL,
+       path_class TEXT,
+       text TEXT NOT NULL,
+       origin_pr TEXT,
+       created_by TEXT NOT NULL,
+       created_at INTEGER NOT NULL,
+       expires_at INTEGER NOT NULL,
+       revoked_at INTEGER,
+       fired_count INTEGER NOT NULL DEFAULT 0,
+       last_fired_at INTEGER
+     );
+     CREATE INDEX IF NOT EXISTS idx_review_waivers_repo ON review_waivers(repo, expires_at);",
 ];
 
 pub struct SqliteStore {
@@ -1189,6 +1207,116 @@ impl ProductStore for SqliteStore {
         query: &ReviewFindingQuery,
     ) -> StoreResult<Vec<ReviewFindingRow>> {
         Ok(SqliteStore::review_findings(self, query)?)
+    }
+
+    async fn create_review_waiver(
+        &self,
+        repo: &str,
+        path_class: Option<&str>,
+        text: &str,
+        origin_pr: Option<&str>,
+        created_by: &str,
+        expires_at: i64,
+    ) -> StoreResult<ReviewWaiver> {
+        let waiver = ReviewWaiver {
+            id: super::new_waiver_id(),
+            repo: repo.into(),
+            path_class: path_class.map(Into::into),
+            text: text.into(),
+            origin_pr: origin_pr.map(Into::into),
+            created_by: created_by.into(),
+            created_at: now_unix(),
+            expires_at,
+            revoked_at: None,
+            fired_count: 0,
+            last_fired_at: None,
+        };
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection.execute(
+            "INSERT INTO review_waivers
+                (id, repo, path_class, text, origin_pr, created_by, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                waiver.id,
+                waiver.repo,
+                waiver.path_class,
+                waiver.text,
+                waiver.origin_pr,
+                waiver.created_by,
+                waiver.created_at,
+                waiver.expires_at
+            ],
+        )?;
+        Ok(waiver)
+    }
+
+    async fn list_review_waivers(
+        &self,
+        repo: Option<&str>,
+        include_inactive: bool,
+        now: i64,
+    ) -> StoreResult<Vec<ReviewWaiver>> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let mut statement = connection.prepare(
+            "SELECT id, repo, path_class, text, origin_pr, created_by,
+                    created_at, expires_at, revoked_at, fired_count, last_fired_at
+               FROM review_waivers
+              WHERE (?1 IS NULL OR repo = ?1)
+                AND (?2 OR (revoked_at IS NULL AND expires_at > ?3))
+              ORDER BY created_at",
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![repo, include_inactive, now],
+            |row| {
+                Ok(ReviewWaiver {
+                    id: row.get(0)?,
+                    repo: row.get(1)?,
+                    path_class: row.get(2)?,
+                    text: row.get(3)?,
+                    origin_pr: row.get(4)?,
+                    created_by: row.get(5)?,
+                    created_at: row.get(6)?,
+                    expires_at: row.get(7)?,
+                    revoked_at: row.get(8)?,
+                    fired_count: row.get(9)?,
+                    last_fired_at: row.get(10)?,
+                })
+            },
+        )?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    async fn update_review_waiver(
+        &self,
+        id: &str,
+        expires_at: Option<i64>,
+        revoke: bool,
+    ) -> StoreResult<bool> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let updated = connection.execute(
+            "UPDATE review_waivers SET
+                expires_at = COALESCE(?2, expires_at),
+                revoked_at = CASE WHEN ?3 THEN COALESCE(revoked_at, ?4) ELSE revoked_at END
+             WHERE id = ?1",
+            rusqlite::params![id, expires_at, revoke, now_unix()],
+        )?;
+        Ok(updated == 1)
+    }
+
+    async fn record_waiver_fired(&self, repo: &str, ids: &[String]) -> StoreResult<usize> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let now = now_unix();
+        let unique: std::collections::BTreeSet<&String> = ids.iter().collect();
+        let mut bumped = 0;
+        for id in unique {
+            bumped += connection.execute(
+                "UPDATE review_waivers
+                    SET fired_count = fired_count + 1, last_fired_at = ?3
+                  WHERE id = ?1 AND repo = ?2",
+                rusqlite::params![id, repo, now],
+            )?;
+        }
+        Ok(bumped)
     }
 
     async fn record_review_findings(

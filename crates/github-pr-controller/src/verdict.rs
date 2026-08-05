@@ -48,9 +48,15 @@ pub struct Finding {
     pub id: String,
     /// `red` | `yellow` | `green`.
     pub severity: String,
-    /// `open` | `resolved` | `dismissed`. Defaults to `open`.
+    /// `open` | `resolved` | `dismissed` | `waived`. Defaults to `open`.
     #[serde(default = "default_status")]
     pub status: String,
+    /// ADR 035: set when `status == "waived"` — the operator waiver this
+    /// finding matched. Until SEI-895 the controller REJECTED the whole block
+    /// on a `waived` status (unknown enum ⇒ block dropped), so a waiving
+    /// round lost its entire ledger entry.
+    #[serde(default)]
+    pub waiver_id: Option<String>,
     pub title: String,
     #[serde(default)]
     pub path: Option<String>,
@@ -179,7 +185,10 @@ pub fn parse_findings_block(text: &str) -> Option<FindingsBlock> {
         .find_map(|(end, _)| serde_json::from_str(rest[..end].trim()).ok())?;
     let valid = block.findings.iter().all(|f| {
         matches!(f.severity.as_str(), "red" | "yellow" | "green")
-            && matches!(f.status.as_str(), "open" | "resolved" | "dismissed")
+            && matches!(
+                f.status.as_str(),
+                "open" | "resolved" | "dismissed" | "waived"
+            )
             && !f.id.trim().is_empty()
             && !f.title.trim().is_empty()
     });

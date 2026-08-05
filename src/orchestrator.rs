@@ -745,44 +745,6 @@ fn fire_close_webhook(state: &Arc<AppState>, session_id: &str, verdict: &str, re
     });
 }
 
-/// ADR 020: parse the chair's hidden `<!-- openab-findings … -->` block out of
-/// the closing verdict text and append ledger rows. Best-effort — a missing or
-/// malformed block never affects the close; the ledger simply gets no rows.
-fn record_review_findings(state: &Arc<AppState>, session: &Session, verdict_text: &str) {
-    // The findings LEDGER lives on the controller now (SEI-895): it records
-    // every finding with repo/pr/head_sha from the webhook payload, which the
-    // kernel never knows (controller trigger_refs are opaque). What remains
-    // the kernel's is ADR 035 P2: waived findings bump the matched waivers'
-    // fired counters — the hygiene report's signal for "still earning its
-    // keep". Best-effort, like the rest of the close path.
-    let Some(block) = crate::plugins::pr_review::findings::parse_findings_block(verdict_text)
-    else {
-        // Distinguish the two causes in the log (SEI-807): the close itself
-        // is never affected, but a silent gap is unauditable.
-        if verdict_text.contains("<!-- openab-findings") {
-            tracing::warn!(
-                "findings block present but unparseable at close of {}; waiver bumps skipped",
-                session.id
-            );
-        }
-        return;
-    };
-    let fired: Vec<String> = block
-        .findings
-        .iter()
-        .filter(|f| f.status == "waived")
-        .filter_map(|f| f.waiver_id.clone())
-        .collect();
-    if !fired.is_empty() {
-        // Id-only on purpose: waiver ids are 128-bit random capabilities and
-        // the chair only ever sees its own repo's ids in the injected ACTIVE
-        // WAIVERS block. Repo scoping returns when the waiver ledger itself
-        // moves to the controller (SEI-895 item 5).
-        if let Err(e) = state.store.record_waiver_fired(None, &fired) {
-            tracing::warn!("waiver fired-count update for {} failed: {e}", session.id);
-        }
-    }
-}
 
 /// Reconstruct the sender of a stored message (for history backfill).
 fn sender_for(state: &AppState, m: &Message) -> SenderInfo {
@@ -2012,26 +1974,10 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     ) {
                         tracing::warn!("revoke github tokens for {} failed: {e}", session.id);
                     }
-                    // ADR 020: populate the findings ledger from the chair's
-                    // hidden block. Same trust policy as the trailer — only the
-                    // review-council chair's final is authoritative. Parse the
-                    // joined settled span, not just the closing message: the
-                    // block can straddle a message-length split (live case:
-                    // zeabur.com#702 round 4 lost its whole round to this).
-                    // Reviews are controller-opened and use the generic
-                    // "council" mode, so gate on a chair being present —
-                    // without this, controller rounds never fed the ledger or
-                    // bumped waiver fired-counters (found live, OCP#333 r2).
-                    if session.mode == "council" && session.chair_bot.is_some() {
-                        let joined = messages
-                            .iter()
-                            .filter(|m| span.contains(&m.id))
-                            .map(|m| m.content.as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        let text = if joined.is_empty() { &verdict } else { &joined };
-                        record_review_findings(state, session, text);
-                    }
+                    // The chair's findings block is no longer the kernel's to
+                    // read: the ledger AND the ADR 035 waiver counters live on
+                    // the controller, which parses its own join of the
+                    // terminal event's final_messages (SEI-895).
                     state.emit_north(
                         "verdict",
                         &session.id,
@@ -2374,100 +2320,6 @@ mod tests {
     use tokio::sync::mpsc;
 
     static BACKFILL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[test]
-    fn waived_findings_bump_fired_counters_and_unknown_ids_are_ignored() {
-        let store = Arc::new(SqliteStore::memory().unwrap());
-        let state = AppState::new(store.clone());
-        let waiver = store
-            .create_review_waiver(
-                "o/r",
-                None,
-                "accepted trade-off",
-                None,
-                "operator",
-                crate::store::now_ms() + 86_400_000,
-            )
-            .unwrap();
-        let session = store
-            .create_session("council", Some("github:pr/o/r#7"), 1, None, &[], "council")
-            .unwrap();
-        // A foreign-repo waiver: same ledger, different repo — the close on
-        // o/r must not be able to bump it.
-        let foreign = store
-            .create_review_waiver(
-                "o/other",
-                None,
-                "foreign repo trade-off",
-                None,
-                "operator",
-                crate::store::now_ms() + 86_400_000,
-            )
-            .unwrap();
-        let verdict = format!(
-            "verdict body\n<!-- openab-findings\n{{\"findings\":[\
-             {{\"id\":\"F1\",\"severity\":\"yellow\",\"status\":\"waived\",\
-              \"title\":\"waived one\",\"waiver_id\":\"{id}\"}},\
-             {{\"id\":\"F4\",\"severity\":\"yellow\",\"status\":\"waived\",\
-              \"title\":\"duplicate match\",\"waiver_id\":\"{id}\"}},\
-             {{\"id\":\"F2\",\"severity\":\"yellow\",\"status\":\"waived\",\
-              \"title\":\"phantom\",\"waiver_id\":\"wvr_nope\"}},\
-             {{\"id\":\"F5\",\"severity\":\"yellow\",\"status\":\"waived\",\
-              \"title\":\"cross-repo bump attempt\",\"waiver_id\":\"{foreign}\"}},\
-             {{\"id\":\"F3\",\"severity\":\"green\",\"title\":\"normal\"}}]}}\n-->\n\
-             {lb}{lb}verdict:approve r=0 y=0 g=1]]",
-            id = waiver.id,
-            foreign = foreign.id,
-            lb = "["
-        );
-        record_review_findings(&state, &session, &verdict);
-        let rows = store
-            .list_review_waivers(Some("o/r"), true, crate::store::now_ms())
-            .unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            rows[0].fired_count, 1,
-            "duplicate ids in one close count once"
-        );
-        assert!(rows[0].last_fired_at.is_some());
-        // The kernel no longer knows the repo, so scoping is by capability id
-        // alone: a close that names a foreign waiver id DOES bump it. This is
-        // the documented consequence of the ledger outliving the ingress that
-        // supplied the repo — it moves to the controller in SEI-895.
-        let foreign_rows = store
-            .list_review_waivers(Some("o/other"), true, crate::store::now_ms())
-            .unwrap();
-        assert_eq!(
-            foreign_rows[0].fired_count, 1,
-            "id-only bump: the kernel has no repo to scope by"
-        );
-
-        // External path: hashed trigger_ref means repo unknown — the id-only
-        // bump must still land (ids are unguessable capabilities).
-        let external = store
-            .create_session(
-                "council",
-                Some("controller:github-canary:deadbeef"),
-                1,
-                None,
-                &[],
-                "council",
-            )
-            .unwrap();
-        let verdict2 = format!(
-            "verdict body\n<!-- openab-findings\n{{\"findings\":[\
-             {{\"id\":\"F1\",\"severity\":\"yellow\",\"status\":\"waived\",\
-              \"title\":\"waived again\",\"waiver_id\":\"{}\"}}]}}\n-->\n\
-             {lb}{lb}verdict:approve r=0 y=0 g=0]]",
-            waiver.id,
-            lb = "["
-        );
-        record_review_findings(&state, &external, &verdict2);
-        let rows = store
-            .list_review_waivers(Some("o/r"), true, crate::store::now_ms())
-            .unwrap();
-        assert_eq!(rows[0].fired_count, 2, "hashed-ref close still counts");
-    }
 
     #[test]
     fn agent_error_frame_recognized_but_prose_is_not() {
