@@ -355,11 +355,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_active_trigger_ref
     ON sessions(trigger_ref)
     WHERE trigger_ref IS NOT NULL AND state NOT IN ('closed', 'aborted');
 "#,
-    // 2 — ADR 035 P1: the waiver ledger. Written only by operators, read by
-    // nothing until P2; expiry is mandatory so blindness cannot fossilize.
-    r#"
-    ON review_waivers(repo, expires_at);
-"#,
+    // 2 — was the ADR 035 waiver ledger, which moved to the controller
+    // (SEI-895 item 5). A no-op placeholder keeps the recorded migration
+    // numbering intact for databases that already applied it; existing
+    // review_waivers tables stay as inert data until a cleanup migration.
+    r#"SELECT 1;"#,
     // 3 — ADR 036 first-party investigation journal. Domain payloads remain in
     // their owning tables; this table stores the bounded, provider-neutral
     // correlation envelope and indexed joins.
