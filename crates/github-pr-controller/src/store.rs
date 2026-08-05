@@ -10,6 +10,15 @@
 pub mod postgres;
 pub mod sqlite;
 
+/// `wvr_` + 128 random bits, hex. The id doubles as the bump capability, so
+/// it must be unguessable; matches the kernel's format so migrated ids and
+/// new ones are indistinguishable to the chair.
+pub(crate) fn new_waiver_id() -> String {
+    let mut raw = [0u8; 16];
+    getrandom::fill(&mut raw).expect("os rng");
+    format!("wvr_{}", hex::encode(raw))
+}
+
 use controller_protocol::audit::{
     AuditCorrelation, AuditError, AuditEvent, AuditEventPage, AuditEventQuery, AuditEventRecord,
     AuditOutcome, AUDIT_EVENT_VERSION,
@@ -218,6 +227,26 @@ pub struct ReviewFindingRow {
     pub created_at: i64,
 }
 
+/// An ADR 035 waiver: an operator-recorded accepted trade-off, injected into
+/// the chair's opening input for its repo and bumped when a round waives a
+/// matching finding. Ported from the kernel (SEI-895 item 5) — the controller
+/// owns the repo, which restores repo scoping the kernel had lost.
+/// Timestamps are unix SECONDS (controller convention; the kernel used ms).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReviewWaiver {
+    pub id: String,
+    pub repo: String,
+    pub path_class: Option<String>,
+    pub text: String,
+    pub origin_pr: Option<String>,
+    pub created_by: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub revoked_at: Option<i64>,
+    pub fired_count: i64,
+    pub last_fired_at: Option<i64>,
+}
+
 /// Filters for [`ProductStore::review_findings`]. Every field is optional and
 /// ANDed; `limit` is clamped by the caller.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -348,6 +377,40 @@ pub trait ProductStore: Send + Sync {
     /// ops scripts join against.
     async fn review_findings(&self, query: &ReviewFindingQuery)
         -> StoreResult<Vec<ReviewFindingRow>>;
+
+    /// ADR 035 P1: record an operator-accepted trade-off. The id is minted
+    /// here (`wvr_` + 128-bit random) — it is a capability, never guessable.
+    async fn create_review_waiver(
+        &self,
+        repo: &str,
+        path_class: Option<&str>,
+        text: &str,
+        origin_pr: Option<&str>,
+        created_by: &str,
+        expires_at: i64,
+    ) -> StoreResult<ReviewWaiver>;
+
+    /// Active waivers for a repo (unexpired, unrevoked), or everything when
+    /// `include_inactive`. Ordered oldest first, like the kernel did.
+    async fn list_review_waivers(
+        &self,
+        repo: Option<&str>,
+        include_inactive: bool,
+        now: i64,
+    ) -> StoreResult<Vec<ReviewWaiver>>;
+
+    /// Extend or revoke. Returns false for an unknown id.
+    async fn update_review_waiver(
+        &self,
+        id: &str,
+        expires_at: Option<i64>,
+        revoke: bool,
+    ) -> StoreResult<bool>;
+
+    /// ADR 035 P2: bump fired counters for waivers a closed round matched.
+    /// Repo-scoped — a chair cannot bump another repo's ledger, the guarantee
+    /// the kernel lost when trigger_refs went opaque.
+    async fn record_waiver_fired(&self, repo: &str, ids: &[String]) -> StoreResult<usize>;
 
     /// Queue a GitHub write. Returns false when this (session, kind) is
     /// already queued — the guarantee that at-least-once delivery cannot

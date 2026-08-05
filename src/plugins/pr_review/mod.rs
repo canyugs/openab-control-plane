@@ -1,4 +1,3 @@
-pub mod findings;
 pub mod verdict;
 
 /// The v1 report gate only rejects the two shapes that are unambiguously not a

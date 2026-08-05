@@ -14,7 +14,7 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, OriginalUri, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use config::{ComponentReadiness, Config, OperatingMode};
 use controller_protocol::audit::{
@@ -320,6 +320,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/openab/events", post(handle_runtime_event))
         .route("/api/v1/audit/events", get(handle_audit_events))
         .route("/api/v1/review/findings", get(handle_review_findings))
+        .route(
+            "/api/v1/review/waivers",
+            get(handle_list_waivers).post(handle_create_waiver),
+        )
+        .route("/api/v1/review/waivers/:id", patch(handle_update_waiver))
         .route("/api/v1/canary/summary", get(canary_summary))
         .layer(DefaultBodyLimit::max(MAX_WEBHOOK_BODY_BYTES))
         .with_state(state)
@@ -775,8 +780,26 @@ async fn handle_webhook(
                 let _ = store.release_delivery_for_retry(delivery_id, &result).await;
                 return response(StatusCode::SERVICE_UNAVAILABLE, result);
             };
+            let mut open_action = plan.open_session_action();
+            // ADR 035 P2: the chair — and only the chair — sees the repo's
+            // active waivers in its opening input. This side knows the repo
+            // natively; no trigger_ref parsing, no hashed-ref blindness (the
+            // kernel's version died of exactly that). Council opens only: an
+            // ask session is a solo answer, and the block is synthesis
+            // instruction — noise there (the kernel's ref parser skipped ask
+            // refs by accident of format; this makes it deliberate).
+            if plan.mode == "council" {
+                if let Some(block) = waiver_block_for_repo(store.as_ref(), &plan.repository).await {
+                    let fallback = open_action.prompt.clone();
+                    open_action
+                        .recipient_inputs
+                        .entry(plan.chair_bot.clone())
+                        .or_insert(fallback)
+                        .push_str(&block);
+                }
+            }
             match client
-                .open_session(action_id.clone(), plan.open_session_action())
+                .open_session(action_id.clone(), open_action)
                 .await
             {
                 Ok(action_result) => {
@@ -1309,6 +1332,397 @@ async fn handle_review_findings(
     }
 }
 
+/// v2 operator-write signature: same secret as observation reads, but the
+/// canonical payload binds the METHOD and the body hash too —
+/// `v2\n{ts}\n{METHOD}\n{target}\n{hex(sha256(body))}` — so a captured GET
+/// signature can never be replayed as a write, nor one body as another.
+fn verify_operator_write_signature(
+    secret: &str,
+    method: &str,
+    target: &str,
+    body: &[u8],
+    timestamp_header: Option<&str>,
+    signature_header: Option<&str>,
+    now_secs: i64,
+) -> bool {
+    let Some(timestamp) = timestamp_header.and_then(|value| value.parse::<i64>().ok()) else {
+        return false;
+    };
+    if now_secs.abs_diff(timestamp) > AUDIT_MAX_TIMESTAMP_SKEW_SECS {
+        return false;
+    }
+    let canonical = format!(
+        "v2\n{timestamp}\n{method}\n{target}\n{}",
+        hex::encode(Sha256::digest(body))
+    );
+    verify_signature(secret, canonical.as_bytes(), signature_header)
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ListWaiversParams {
+    repo: Option<String>,
+    /// Query strings are not JSON booleans (the kernel's lesson): accept
+    /// `1`/`true`/`yes`, treat anything else — or absence — as false.
+    #[serde(default, deserialize_with = "flag_from_query")]
+    all: bool,
+}
+
+fn flag_from_query<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    let raw = Option::<String>::deserialize(deserializer)?;
+    Ok(matches!(raw.as_deref(), Some("1") | Some("true") | Some("yes")))
+}
+
+/// `GET /api/v1/review/waivers` — same signed-observation auth as the other
+/// operator reads.
+async fn handle_list_waivers(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Query(params): Query<ListWaiversParams>,
+) -> Response {
+    let Some(secret) = state.config.observer_secret.as_deref() else {
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "observation_hmac_not_configured"}),
+        );
+    };
+    let target = uri
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or(uri.path());
+    if !verify_audit_signature(
+        secret,
+        target,
+        header(&headers, "x-canary-audit-timestamp"),
+        header(&headers, "x-canary-audit-signature-256"),
+        now_unix(),
+    ) {
+        return response(
+            StatusCode::FORBIDDEN,
+            json!({"ok": false, "error": "invalid_observation_signature"}),
+        );
+    }
+    let Some(store) = state.store.as_ref() else {
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "product_store_unavailable"}),
+        );
+    };
+    match store
+        .list_review_waivers(params.repo.as_deref(), params.all, now_unix())
+        .await
+    {
+        Ok(waivers) => response(StatusCode::OK, json!({ "waivers": waivers })),
+        Err(error) => {
+            tracing::error!(%error, "waiver list failed");
+            response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"ok": false, "error": "waiver_store_failed"}),
+            )
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CreateWaiverBody {
+    repo: String,
+    #[serde(default)]
+    path_class: Option<String>,
+    text: String,
+    #[serde(default)]
+    origin_pr: Option<String>,
+    created_by: String,
+    /// Unix SECONDS (controller convention; the kernel's API took ms).
+    expires_at: i64,
+}
+
+/// `POST /api/v1/review/waivers` — ADR 035 P1, the human gate. Only the
+/// operator secret writes waivers; PR content never does.
+async fn handle_create_waiver(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(secret) = state.config.operator_write_secret.as_deref() else {
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "operator_write_secret_not_configured"}),
+        );
+    };
+    let target = uri
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or(uri.path());
+    if !verify_operator_write_signature(
+        secret,
+        "POST",
+        target,
+        &body,
+        header(&headers, "x-canary-audit-timestamp"),
+        header(&headers, "x-canary-audit-signature-256"),
+        now_unix(),
+    ) {
+        return response(
+            StatusCode::FORBIDDEN,
+            json!({"ok": false, "error": "invalid_operator_signature"}),
+        );
+    }
+    let Ok(request) = serde_json::from_slice::<CreateWaiverBody>(&body) else {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "invalid_waiver_body"}),
+        );
+    };
+    // The kernel's exact caps, ported with the surface: trimmed before
+    // storage (an untrimmed repo would break exact-match scoping) and
+    // bounded (this text is injected into the chair's opening input).
+    let repo = request.repo.trim();
+    let text = request.text.trim();
+    let created_by = request.created_by.trim();
+    let path_class = request.path_class.as_deref().map(str::trim);
+    let origin_pr = request.origin_pr.as_deref().map(str::trim);
+    if repo.is_empty() || repo.len() > 200 {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "repo_must_be_1_to_200_bytes"}),
+        );
+    }
+    if text.is_empty() || text.len() > 2000 {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "text_must_be_1_to_2000_bytes"}),
+        );
+    }
+    if created_by.is_empty() || created_by.len() > 100 {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "created_by_must_be_1_to_100_bytes"}),
+        );
+    }
+    if path_class.is_some_and(|v| v.len() > 300) {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "path_class_must_be_at_most_300_bytes"}),
+        );
+    }
+    if origin_pr.is_some_and(|v| v.len() > 200) {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "origin_pr_must_be_at_most_200_bytes"}),
+        );
+    }
+    if request.expires_at <= now_unix() {
+        // The kernel said it best: waivers without expiry are how blindness
+        // fossilizes.
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "expires_at_must_be_future"}),
+        );
+    }
+    let Some(store) = state.store.as_ref() else {
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "product_store_unavailable"}),
+        );
+    };
+    match store
+        .create_review_waiver(repo, path_class, text, origin_pr, created_by, request.expires_at)
+        .await
+    {
+        Ok(waiver) => {
+            let _ = append_controller_audit(
+                store.as_ref(),
+                controller_audit_event(
+                    format!("waiver.created:{}", waiver.id),
+                    "waiver.created",
+                    AuditOutcome::Succeeded,
+                    now_unix(),
+                    AuditCorrelation {
+                        controller_id: state.config.ocp_action.controller_id.clone(),
+                        ..Default::default()
+                    },
+                    json!({"waiver_id": waiver.id, "repo": waiver.repo,
+                           "created_by": waiver.created_by,
+                           "expires_at": waiver.expires_at}),
+                    None,
+                ),
+            )
+            .await;
+            response(StatusCode::CREATED, json!({ "waiver": waiver }))
+        }
+        Err(error) => {
+            tracing::error!(%error, "waiver create failed");
+            response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"ok": false, "error": "waiver_store_failed"}),
+            )
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct UpdateWaiverBody {
+    #[serde(default)]
+    expires_at: Option<i64>,
+    #[serde(default)]
+    revoke: bool,
+}
+
+/// `PATCH /api/v1/review/waivers/:id` — extend or revoke.
+async fn handle_update_waiver(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    axum::extract::Path(waiver_id): axum::extract::Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(secret) = state.config.operator_write_secret.as_deref() else {
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "operator_write_secret_not_configured"}),
+        );
+    };
+    let target = uri
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or(uri.path());
+    if !verify_operator_write_signature(
+        secret,
+        "PATCH",
+        target,
+        &body,
+        header(&headers, "x-canary-audit-timestamp"),
+        header(&headers, "x-canary-audit-signature-256"),
+        now_unix(),
+    ) {
+        return response(
+            StatusCode::FORBIDDEN,
+            json!({"ok": false, "error": "invalid_operator_signature"}),
+        );
+    }
+    let Ok(request) = serde_json::from_slice::<UpdateWaiverBody>(&body) else {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "invalid_waiver_body"}),
+        );
+    };
+    // The kernel's two PATCH guards, ported with the surface: a patch that
+    // changes nothing is a caller bug, and an extension into the past would
+    // be a silent revoke wearing the wrong name.
+    if request.expires_at.is_none() && !request.revoke {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "empty_patch"}),
+        );
+    }
+    if request.expires_at.is_some_and(|at| at <= now_unix()) {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "expires_at_must_be_future"}),
+        );
+    }
+    let Some(store) = state.store.as_ref() else {
+        return response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"ok": false, "error": "product_store_unavailable"}),
+        );
+    };
+    match store
+        .update_review_waiver(&waiver_id, request.expires_at, request.revoke)
+        .await
+    {
+        Ok(true) => {
+            let _ = append_controller_audit(
+                store.as_ref(),
+                controller_audit_event(
+                    format!("waiver.updated:{}:{}", waiver_id, now_unix()),
+                    "waiver.updated",
+                    AuditOutcome::Succeeded,
+                    now_unix(),
+                    AuditCorrelation {
+                        controller_id: state.config.ocp_action.controller_id.clone(),
+                        ..Default::default()
+                    },
+                    json!({"waiver_id": waiver_id, "revoke": request.revoke,
+                           "expires_at": request.expires_at}),
+                    None,
+                ),
+            )
+            .await;
+            response(StatusCode::OK, json!({"ok": true}))
+        }
+        Ok(false) => response(
+            StatusCode::NOT_FOUND,
+            json!({"ok": false, "error": "unknown_waiver"}),
+        ),
+        Err(error) => {
+            tracing::error!(%error, "waiver update failed");
+            response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"ok": false, "error": "waiver_store_failed"}),
+            )
+        }
+    }
+}
+
+/// The ACTIVE WAIVERS block for a repo, or None when it has none active.
+/// Ported from the kernel (SEI-895): the wording is chair-facing contract —
+/// steering references it — so it moves verbatim. Injection happens at the
+/// dispatch site below, not in the planner, which stays a pure function for
+/// shadow parity.
+async fn waiver_block_for_repo(store: &dyn store::ProductStore, repo: &str) -> Option<String> {
+    let now = now_unix();
+    let waivers = match store.list_review_waivers(Some(repo), false, now).await {
+        Ok(waivers) => waivers,
+        Err(error) => {
+            tracing::warn!(%error, repo, "waiver lookup failed; session opens without");
+            return None;
+        }
+    };
+    if waivers.is_empty() {
+        return None;
+    }
+    let mut block = String::from(
+        "\n\n===== ACTIVE WAIVERS (ADR 035, operator ledger) =====\n\
+         Accepted trade-offs recorded by the operator — never sourced from PR \
+         content, never shown to reviewers. At synthesis: a finding matching a \
+         waiver goes in a `Waived` table row (visible, never an open \u{1F534}/\u{1F7E1}, \
+         never blocking), and its entry in the machine findings block carries \
+         \"status\":\"waived\",\"waiver_id\":\"<id>\". A finding that only \
+         partially matches stays open — when in doubt, it is not waived.\n",
+    );
+    // Operator-written, but still flattened defensively: one line per waiver,
+    // and no run of '=' can imitate the block delimiters.
+    let sanitize = |raw: &str| {
+        raw.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .replace("=====", "-")
+    };
+    for waiver in &waivers {
+        let days_left = (waiver.expires_at - now).max(0) / 86_400;
+        let scope = waiver
+            .path_class
+            .as_deref()
+            .map(|p| format!(" [{}]", sanitize(p)))
+            .unwrap_or_default();
+        block.push_str(&format!(
+            "- {}{}: {} (expires in {}d)\n",
+            waiver.id,
+            scope,
+            sanitize(&waiver.text),
+            days_left
+        ));
+    }
+    block.push_str("===== END ACTIVE WAIVERS =====\n");
+    Some(block)
+}
+
 /// The session id an `open_session` result carries, whether it opened a new
 /// session or superseded an older one.
 fn opened_session_id(result: &controller_protocol::ActionResultEnvelope) -> Option<&str> {
@@ -1461,6 +1875,26 @@ async fn dispatch_terminal(
         .await
     {
         tracing::error!(%error, session_id, "findings persistence failed");
+    }
+    // ADR 035 P2: waived findings bump their waivers' fired counters —
+    // repo-scoped, because unlike the kernel this side KNOWS the repo. A
+    // foreign id in the block bumps nothing. Guarded by `first_time` above,
+    // so a redelivered terminal event cannot double-bump.
+    let fired = &plan.fired_waivers;
+    if !fired.is_empty() {
+        match store.record_waiver_fired(&target.repo, fired).await {
+            Ok(bumped) if bumped < fired.len() => tracing::warn!(
+                session_id,
+                repo = %target.repo,
+                named = fired.len(),
+                bumped,
+                "some waiver ids in the block matched nothing in this repo"
+            ),
+            Ok(_) => {}
+            Err(error) => {
+                tracing::error!(%error, session_id, "waiver fired-count update failed");
+            }
+        }
     }
     for (kind, payload) in &plan.writes {
         if let Err(error) = store.enqueue_write(session_id, kind, payload).await {
@@ -2298,6 +2732,7 @@ mod tests {
             webhook_secret: Some("fixture-secret".into()),
             shadow_secret: Some("shadow-secret".into()),
             observer_secret: None,
+            operator_write_secret: None,
             canary_repository: None,
             allowed_repos: BTreeSet::from(["example/repo".into()]),
             bot_handle: Some("fixture-council".into()),
@@ -2609,6 +3044,328 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "unsigned reads are refused");
+    }
+
+    #[tokio::test]
+    async fn waived_findings_reach_the_plan_and_bump_repo_scoped_counters() {
+        let store = SqliteStore::memory().unwrap();
+        let own = store
+            .create_review_waiver("example/repo", None, "accepted eval", None, "op", now_unix() + 86_400)
+            .await
+            .unwrap();
+        let foreign = store
+            .create_review_waiver("other/repo", None, "elsewhere", None, "op", now_unix() + 86_400)
+            .await
+            .unwrap();
+
+        // The chair's block: one waived finding naming the own-repo waiver and
+        // one naming the foreign repo's — the second must bump nothing.
+        let body = format!(
+            "report\n<!-- openab-findings\n{{\"findings\":[\
+             {{\"id\":\"F1\",\"severity\":\"yellow\",\"status\":\"waived\",\
+              \"title\":\"waived one\",\"waiver_id\":\"{}\"}},\
+             {{\"id\":\"F2\",\"severity\":\"yellow\",\"status\":\"waived\",\
+              \"title\":\"cross-repo attempt\",\"waiver_id\":\"{}\"}}]}}\n-->\n\
+             [[verdict:approve r=0 y=0 g=1]] [done]",
+            own.id, foreign.id
+        );
+        let parsed = verdict::parse_final_messages(&[body]);
+        assert!(
+            parsed.findings.is_some(),
+            "a waived status must not reject the block — it did before SEI-895"
+        );
+        let target = store::SessionTarget {
+            repo: "example/repo".into(),
+            pr_number: 7,
+            head_sha: None,
+        };
+        let plan = closing::plan_close(&target, &parsed, None, "ses_waiver_test");
+        assert_eq!(plan.fired_waivers.len(), 2);
+        assert_eq!(plan.findings.iter().filter(|f| f.status == "waived").count(), 2);
+
+        let bumped = store
+            .record_waiver_fired("example/repo", &plan.fired_waivers)
+            .await
+            .unwrap();
+        assert_eq!(bumped, 1, "only the own-repo waiver fires");
+        let own_after = store
+            .list_review_waivers(Some("example/repo"), true, now_unix())
+            .await
+            .unwrap();
+        assert_eq!(own_after[0].fired_count, 1);
+        assert!(own_after[0].last_fired_at.is_some());
+        let foreign_after = store
+            .list_review_waivers(Some("other/repo"), true, now_unix())
+            .await
+            .unwrap();
+        assert_eq!(
+            foreign_after[0].fired_count, 0,
+            "a chair cannot bump another repo's ledger — restored from the kernel"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_dispatch_appends_active_waivers_to_the_chair_alone() {
+        const BODY: &str = include_str!("../../../tests/fixtures/github/pull_request_opened.json");
+        let event_secret = vec![8; 32];
+        let config = external_config(&event_secret);
+        let verifier = runtime_events::RuntimeEventVerifier::new(
+            "github-canary",
+            config.event_signing_secret.as_deref().unwrap(),
+        )
+        .unwrap();
+        let (client, calls) = RecordingActionClient::new([false]);
+        let state = Arc::new(AppState::with_components(
+            config,
+            SqliteStore::memory().unwrap(),
+            Some(Arc::new(client)),
+            Some(Arc::new(verifier)),
+        ));
+        let store = state.store.clone().unwrap();
+        let live = store
+            .create_review_waiver(
+                "example/repo",
+                Some("src/**"),
+                "flaky ===== timing\nassertions accepted",
+                Some("example/repo#1"),
+                "op",
+                now_unix() + 3 * 86_400,
+            )
+            .await
+            .unwrap();
+        // Inactive ones must not appear: one expired, one revoked.
+        let expired = store
+            .create_review_waiver("example/repo", None, "expired", None, "op", now_unix() + 1)
+            .await
+            .unwrap();
+        store
+            .update_review_waiver(&expired.id, Some(now_unix() - 1), false)
+            .await
+            .unwrap();
+        let revoked = store
+            .create_review_waiver("example/repo", None, "revoked", None, "op", now_unix() + 86_400)
+            .await
+            .unwrap();
+        store
+            .update_review_waiver(&revoked.id, None, true)
+            .await
+            .unwrap();
+
+        let response = router(state)
+            .oneshot(signed_owned_request(
+                "waiver-delivery-1",
+                "pull_request",
+                BODY.into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        let action = &calls[0].1;
+        let chair = action.chair_bot.clone().unwrap();
+        let chair_input = action.recipient_inputs.get(&chair).unwrap();
+        assert!(chair_input.contains("===== ACTIVE WAIVERS"));
+        assert!(chair_input.contains(&live.id));
+        assert!(
+            chair_input.contains("flaky - timing assertions accepted"),
+            "text flattened and delimiter runs defanged: {chair_input}"
+        );
+        assert!(chair_input.contains("[src/**]"));
+        assert!(!chair_input.contains(&expired.id), "expired never injected");
+        assert!(!chair_input.contains(&revoked.id), "revoked never injected");
+        for (bot, input) in action.recipient_inputs.iter().filter(|(b, _)| **b != chair) {
+            assert!(
+                !input.contains("ACTIVE WAIVERS"),
+                "reviewer {bot} must never see the waiver ledger"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn waiver_crud_requires_the_v2_write_signature() {
+        let mut config = test_config();
+        config.observer_secret = Some("observer-secret".into());
+        config.operator_write_secret = Some("operator-write-secret".into());
+        let state = Arc::new(AppState {
+            config,
+            store: Some(Arc::new(SqliteStore::memory().unwrap())),
+            store_error: None,
+            action_client: None,
+            action_client_error: None,
+            event_verifier: None,
+            event_verifier_error: None,
+            github: None,
+        });
+
+        let sign_write = |method: &str, target: &str, body: &[u8]| {
+            let ts = now_unix();
+            let canonical = format!(
+                "v2\n{ts}\n{method}\n{target}\n{}",
+                hex::encode(Sha256::digest(body))
+            );
+            let mut mac = HmacSha256::new_from_slice(b"operator-write-secret").unwrap();
+            mac.update(canonical.as_bytes());
+            (
+                ts.to_string(),
+                format!("sha256={}", hex::encode(mac.finalize().into_bytes())),
+            )
+        };
+        let call = |request: Request<Body>| {
+            let state = state.clone();
+            async move {
+                let response = router(state).oneshot(request).await.unwrap();
+                let status = response.status();
+                let body: Value = serde_json::from_slice(
+                    &response.into_body().collect().await.unwrap().to_bytes(),
+                )
+                .unwrap();
+                (status, body)
+            }
+        };
+
+        let body = serde_json::to_vec(&json!({
+            "repo": "example/repo", "text": "ok trade-off",
+            "created_by": "op", "expires_at": now_unix() + 86_400,
+        }))
+        .unwrap();
+
+        // A v1 GET-style signature over the same target must not authorize a write.
+        let ts = now_unix();
+        let mut mac = HmacSha256::new_from_slice(b"observer-secret").unwrap();
+        mac.update(audit_signature_payload(ts, "/api/v1/review/waivers").as_bytes());
+        let v1_sig = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        let (status, _) = call(
+            Request::post("/api/v1/review/waivers")
+                .header("x-canary-audit-timestamp", ts.to_string())
+                .header("x-canary-audit-signature-256", v1_sig)
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "read signature cannot write");
+
+        // A v2-shaped signature made with the OBSERVATION secret must also be
+        // refused: reads and writes are separate credentials, the boundary
+        // the kernel kept and round 1 of this PR's review flagged.
+        let ts = now_unix();
+        let canonical = format!(
+            "v2\n{ts}\nPOST\n/api/v1/review/waivers\n{}",
+            hex::encode(Sha256::digest(&body))
+        );
+        let mut mac = HmacSha256::new_from_slice(b"observer-secret").unwrap();
+        mac.update(canonical.as_bytes());
+        let observer_v2 = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        let (status, _) = call(
+            Request::post("/api/v1/review/waivers")
+                .header("x-canary-audit-timestamp", ts.to_string())
+                .header("x-canary-audit-signature-256", observer_v2)
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "the observation secret must not authorize writes"
+        );
+
+        let (ts, sig) = sign_write("POST", "/api/v1/review/waivers", &body);
+        let (status, created) = call(
+            Request::post("/api/v1/review/waivers")
+                .header("x-canary-audit-timestamp", ts)
+                .header("x-canary-audit-signature-256", sig)
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let id = created["waiver"]["id"].as_str().unwrap().to_string();
+        assert!(id.starts_with("wvr_"));
+
+        // A signature over one body must not authorize another.
+        let tampered = serde_json::to_vec(&json!({
+            "repo": "example/repo", "text": "different",
+            "created_by": "op", "expires_at": now_unix() + 86_400,
+        }))
+        .unwrap();
+        let (ts, sig) = sign_write("POST", "/api/v1/review/waivers", &body);
+        let (status, _) = call(
+            Request::post("/api/v1/review/waivers")
+                .header("x-canary-audit-timestamp", ts)
+                .header("x-canary-audit-signature-256", sig)
+                .body(Body::from(tampered))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "body is bound by the signature");
+
+        // The kernel's PATCH guards: an empty patch and a past expiry 400.
+        let empty = serde_json::to_vec(&json!({})).unwrap();
+        let target = format!("/api/v1/review/waivers/{id}");
+        let (ts, sig) = sign_write("PATCH", &target, &empty);
+        let (status, _) = call(
+            Request::patch(&target)
+                .header("x-canary-audit-timestamp", ts)
+                .header("x-canary-audit-signature-256", sig)
+                .body(Body::from(empty))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "empty patch is a caller bug");
+        let past = serde_json::to_vec(&json!({"expires_at": now_unix() - 60})).unwrap();
+        let (ts, sig) = sign_write("PATCH", &target, &past);
+        let (status, _) = call(
+            Request::patch(&target)
+                .header("x-canary-audit-timestamp", ts)
+                .header("x-canary-audit-signature-256", sig)
+                .body(Body::from(past))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "a past expiry is a silent revoke wearing the wrong name"
+        );
+
+        // Revoke, then confirm the active list is empty but --all still sees it.
+        let patch_body = serde_json::to_vec(&json!({"revoke": true})).unwrap();
+        let (ts, sig) = sign_write("PATCH", &target, &patch_body);
+        let (status, _) = call(
+            Request::patch(&target)
+                .header("x-canary-audit-timestamp", ts)
+                .header("x-canary-audit-signature-256", sig)
+                .body(Body::from(patch_body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let signed_get = |target: &str| {
+            let ts = now_unix();
+            let mut mac = HmacSha256::new_from_slice(b"observer-secret").unwrap();
+            mac.update(audit_signature_payload(ts, target).as_bytes());
+            Request::get(target)
+                .header("x-canary-audit-timestamp", ts.to_string())
+                .header(
+                    "x-canary-audit-signature-256",
+                    format!("sha256={}", hex::encode(mac.finalize().into_bytes())),
+                )
+                .body(Body::empty())
+                .unwrap()
+        };
+        let (status, body) = call(signed_get("/api/v1/review/waivers?repo=example/repo")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["waivers"].as_array().unwrap().len(), 0, "revoked is inactive");
+        // Both spellings of the flag work — query strings are not JSON
+        // booleans, and waiver-candidates.py sends `all=1`.
+        let (_, body) = call(signed_get("/api/v1/review/waivers?repo=example/repo&all=true")).await;
+        assert_eq!(body["waivers"].as_array().unwrap().len(), 1);
+        assert!(body["waivers"][0]["revoked_at"].is_number());
+        let (_, body) = call(signed_get("/api/v1/review/waivers?repo=example/repo&all=1")).await;
+        assert_eq!(body["waivers"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]

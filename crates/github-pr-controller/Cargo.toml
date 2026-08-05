@@ -11,6 +11,7 @@ axum = "0.7"
 deadpool-postgres = "0.14"
 base64 = "0.23"
 controller-protocol = { path = "../controller-protocol" }
+getrandom = "0.4"
 hex = "0.4"
 hmac = "0.12"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }

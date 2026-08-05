@@ -59,15 +59,6 @@ pub fn router() -> Router<Arc<AppState>> {
             post(crate::controller_api::configure_installation_events),
         )
         .route(
-            "/v1/review-waivers",
-            get(crate::controller_api::list_review_waivers)
-                .post(crate::controller_api::create_review_waiver),
-        )
-        .route(
-            "/v1/review-waivers/:id",
-            patch(crate::controller_api::update_review_waiver),
-        )
-        .route(
             "/v1/controller-installations/:id/event-audit",
             get(crate::controller_api::installation_event_audit),
         )

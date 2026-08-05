@@ -61,6 +61,9 @@ pub struct ClosingPlan {
     /// findings. NOT what the commit status is posted against; see `plan_close`.
     pub head_sha: Option<String>,
     pub findings: Vec<ReviewFinding>,
+    /// ADR 035: waiver ids named by `status:"waived"` findings — the terminal
+    /// path bumps their repo-scoped fired counters once per first-time round.
+    pub fired_waivers: Vec<String>,
     pub writes: Vec<(&'static str, Value)>,
 }
 
@@ -132,6 +135,18 @@ pub fn plan_close(
                 .collect()
         })
         .unwrap_or_default();
+    let fired_waivers: Vec<String> = parsed
+        .findings
+        .as_ref()
+        .map(|block| {
+            block
+                .findings
+                .iter()
+                .filter(|f| f.status == "waived")
+                .filter_map(|f| f.waiver_id.clone())
+                .collect()
+        })
+        .unwrap_or_default();
 
     let mut writes = vec![(
         KIND_COMMENT,
@@ -181,6 +196,7 @@ pub fn plan_close(
         green,
         head_sha: reviewed_sha,
         findings,
+        fired_waivers,
         writes,
     }
 }
