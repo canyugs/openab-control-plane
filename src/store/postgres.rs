@@ -207,14 +207,6 @@ CREATE INDEX IF NOT EXISTS idx_outbox_bot ON outbox(bot_id, seq);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY, value TEXT NOT NULL
 );
--- KNOWN GAP (#4): `token` is stored in plaintext. GitHub installation tokens are
--- short-lived (≤1h) bearer credentials; until encryption-at-rest lands (AES-GCM with
--- a KMS-derived key) the DB file itself must be access-controlled. Fast-follow.
-CREATE TABLE IF NOT EXISTS installation_tokens (
-    session_id TEXT NOT NULL, role TEXT NOT NULL,
-    token TEXT NOT NULL, expires_at BIGINT NOT NULL,
-    PRIMARY KEY (session_id, role)
-);
 -- The pr_review_findings ledger moved to the controller (SEI-895); existing
 -- databases keep the old table as inert data until a cleanup migration drops it.
 -- Reviews the hourly cap dropped (SEI-819). One row per trigger_ref; a later
@@ -404,6 +396,18 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_write ON audit_events(write_id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_trigger ON audit_events(trigger_ref);
 CREATE INDEX IF NOT EXISTS idx_audit_events_recorded ON audit_events(recorded_at, seq);
 "#,
+    // 4 — kernel-slim cleanup: the findings ledger and waiver ledger moved to
+    // the controller (SEI-895), and the GitHub installation-token cache left
+    // with the token-mint routes. Databases created before those releases
+    // still carry the tables as inert data; drop them. DROP needs table
+    // ownership — under the least-privilege roles the plane connects as the
+    // owner (plane_rw), which is exactly why ownership (not just grants) was
+    // kept with the runtime role.
+    r#"
+DROP TABLE IF EXISTS pr_review_findings;
+DROP TABLE IF EXISTS review_waivers;
+DROP TABLE IF EXISTS installation_tokens;
+"#,
 ];
 
 impl Store for PostgresStore {
@@ -526,8 +530,6 @@ impl Store for PostgresStore {
                 == 1)
         })
     }
-
-
 
     fn patch_controller_installation(
         &self,
@@ -3287,70 +3289,6 @@ impl Store for PostgresStore {
         })
     }
 
-    fn cache_installation_token(
-        &self,
-        session_id: &str,
-        role: &str,
-        token: &str,
-        expires_at: i64,
-    ) -> Result<()> {
-        self.block(async {
-            let client = self.client().await?;
-            client
-                .execute(
-                    "INSERT INTO installation_tokens (session_id, role, token, expires_at)
-                     VALUES ($1, $2, $3, $4)
-                     ON CONFLICT (session_id, role)
-                     DO UPDATE SET token = excluded.token, expires_at = excluded.expires_at",
-                    &[&session_id, &role, &token, &expires_at],
-                )
-                .await?;
-            Ok(())
-        })
-    }
-
-    fn installation_token(&self, session_id: &str, role: &str) -> Result<Option<(String, i64)>> {
-        self.block(async {
-            let client = self.client().await?;
-            Ok(client
-                .query_opt(
-                    "SELECT token, expires_at FROM installation_tokens
-                     WHERE session_id = $1 AND role = $2",
-                    &[&session_id, &role],
-                )
-                .await?
-                .map(|r| (r.get(0), r.get(1))))
-        })
-    }
-
-    fn session_installation_tokens(&self, session_id: &str) -> Result<Vec<String>> {
-        self.block(async {
-            let client = self.client().await?;
-            Ok(client
-                .query(
-                    "SELECT token FROM installation_tokens WHERE session_id = $1",
-                    &[&session_id],
-                )
-                .await?
-                .iter()
-                .map(|r| r.get(0))
-                .collect())
-        })
-    }
-
-    fn purge_installation_tokens(&self, session_id: &str) -> Result<()> {
-        self.block(async {
-            let client = self.client().await?;
-            client
-                .execute(
-                    "DELETE FROM installation_tokens WHERE session_id = $1",
-                    &[&session_id],
-                )
-                .await?;
-            Ok(())
-        })
-    }
-
     fn record_compatibility_use(&self, surface: &str, amount: i64) -> Result<()> {
         if surface.is_empty() || amount <= 0 {
             anyhow::bail!("compatibility usage needs a non-empty surface and positive amount");
@@ -4415,22 +4353,10 @@ mod tests {
     }
 
     #[test]
-    fn installation_tokens_compat_usage_and_stats() {
+    fn compat_usage_and_stats() {
         let Some(s) = store("tokens_stats") else {
             return;
         };
-        s.cache_installation_token("ses_1", "reviewer", "ghs_a", 111)
-            .unwrap();
-        s.cache_installation_token("ses_1", "reviewer", "ghs_b", 222)
-            .unwrap();
-        assert_eq!(
-            s.installation_token("ses_1", "reviewer").unwrap(),
-            Some(("ghs_b".into(), 222))
-        );
-        assert_eq!(s.session_installation_tokens("ses_1").unwrap().len(), 1);
-        s.purge_installation_tokens("ses_1").unwrap();
-        assert!(s.installation_token("ses_1", "reviewer").unwrap().is_none());
-
         s.record_compatibility_use("surface-x", 2).unwrap();
         s.record_compatibility_use("surface-x", 3).unwrap();
         let usage = s.compatibility_usage().unwrap();

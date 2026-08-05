@@ -105,20 +105,18 @@ while nothing enforced it:
 
 Escalating never needs the full picture; clearing always does.
 
-## Plane-minted GitHub App tokens (optional)
+## Plane-minted GitHub App tokens — retired (v0.1.70)
 
-Optional operator capability — lets the **plane** mint per-role scoped installation
-tokens through `POST /v1/sessions/:id/github-token` (chair `pull_requests:write`,
-reviewers read-only). This is not required for the dogfood pod-local App posting path
-in [install-github-app.md](install-github-app.md); that path stores the App key on the chair pod's
-`/home/node` volume and authenticates `gh` in the chair's `pre_boot` hook.
+The plane no longer holds any GitHub App credential. The token-mint routes
+(`POST /v1/sessions/:id/github-token`, `POST /v1/bots/github-token`) were
+deleted after the `github_token_route` compatibility counter sat at zero for a
+full week on both lanes — the controller owns every GitHub credential and
+write. These are read by nothing:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GITHUB_APP_ID` | _(none)_ | GitHub App id. The plane mints a short-lived App JWT → per-role installation token; a pod fetches its scoped token via `/v1/sessions/:id/github-token` |
-| `GITHUB_APP_INSTALLATION_ID` | _(none)_ | Installation the tokens are minted against (single-install today) |
-| `GITHUB_APP_PRIVATE_KEY` | _(none)_ | The App's PEM private key — held only by the plane; pods never see it |
-| `GITHUB_API_BASE` | `https://api.github.com` | Override the GitHub API base URL (e.g. GitHub Enterprise Server, or a test endpoint) |
+| Retired | Replaced by |
+|---|---|
+| `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY` | `GITHUB_CONTROLLER_GITHUB_APP_ID`, `GITHUB_CONTROLLER_GITHUB_APP_INSTALLATION_ID`, `GITHUB_CONTROLLER_GITHUB_APP_PRIVATE_KEY` on `github-pr-controller` |
+| `GITHUB_API_BASE` | `GITHUB_CONTROLLER_GITHUB_API_BASE` |
 
 ## Bot pods (set on OpenAB containers, not the plane)
 

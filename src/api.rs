@@ -64,7 +64,6 @@ pub fn router() -> Router<Arc<AppState>> {
         )
         .route("/v1/bots", get(list_bots).post(register_bot))
         .route("/v1/bots/discover", post(discover_bot))
-        .route("/v1/bots/github-token", post(bot_github_token))
         .route("/v1/bots/:id", patch(patch_bot).delete(delete_bot))
         .route("/v1/sessions", get(list_sessions).post(open_session))
         .route("/v1/session-log", get(session_log_by_query))
@@ -82,12 +81,7 @@ pub fn router() -> Router<Arc<AppState>> {
         )
         .route("/v1/council/roster/replace", post(replace_council_roster))
         .route("/v1/sessions/:id/stream", get(stream_session))
-        // Convene a PR review by ref — the trivial primitive a droppable GitHub
-        // Option A: the plane mints a per-role scoped GitHub installation token for a
-        // pod, bound to this session. The pod calls GitHub with it instead of the
-        // shared PAT. Closing the session purges it (central revoke).
-        .route("/v1/sessions/:id/github-token", post(github_token))
-        // served on the internal network to stock OAB pods (like openab-hub's
+        // Served on the internal network to stock OAB pods (like openab-hub's
         // /bot-config); no client auth — the token IS the bot's credential.
         .route("/bot-config/:id", get(bot_config))
 }
@@ -301,9 +295,8 @@ async fn list_bots(
     Query(params): Query<ListBots>,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
-    let (standing_roster, source) =
-        crate::plugins::pr_review::runtime_council_roster(&state)
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (standing_roster, source) = crate::plugins::council::runtime_council_roster(&state)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let standing: BTreeSet<_> = standing_roster.iter().cloned().collect();
     let standing_chair = standing_roster.first().cloned();
     let bots = state
@@ -508,7 +501,7 @@ async fn patch_bot(
         .bot_inventory(&id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    let (standing_roster, _) = crate::plugins::pr_review::runtime_council_roster(&state)
+    let (standing_roster, _) = crate::plugins::council::runtime_council_roster(&state)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let standing: BTreeSet<_> = standing_roster.iter().cloned().collect();
     let standing_chair = standing_roster.first().cloned();
@@ -530,7 +523,7 @@ async fn delete_bot(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let (standing_roster, _) = crate::plugins::pr_review::runtime_council_roster(&state)
+    let (standing_roster, _) = crate::plugins::council::runtime_council_roster(&state)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if standing_roster.iter().any(|bot| bot == &id) {
         return Ok((
@@ -983,7 +976,7 @@ async fn get_council_roster(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
-    let (roster, source) = crate::plugins::pr_review::runtime_council_roster(&state)
+    let (roster, source) = crate::plugins::council::runtime_council_roster(&state)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(json!({ "roster": roster, "source": source })))
 }
@@ -1010,14 +1003,14 @@ async fn replace_council_roster(
 ) -> Result<axum::response::Response, StatusCode> {
     check_auth(&state, &headers)?;
     if req.old_bot_id == req.new_bot_id {
-        let (roster, source) = crate::plugins::pr_review::runtime_council_roster(&state)
+        let (roster, source) = crate::plugins::council::runtime_council_roster(&state)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         return Ok(Json(
             json!({ "replaced": false, "noop": true, "roster": roster, "source": source }),
         )
         .into_response());
     }
-    let (mut roster, _) = crate::plugins::pr_review::runtime_council_roster(&state)
+    let (mut roster, _) = crate::plugins::council::runtime_council_roster(&state)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some(idx) = roster.iter().position(|bot| bot == &req.old_bot_id) else {
         return Ok((
@@ -1554,178 +1547,6 @@ remove_after_reply = false
     ))
 }
 
-#[derive(Deserialize)]
-struct GithubTokenReq {
-    /// Which bot is asking. Required: the token scope is derived from this bot's
-    /// stored role, never from a caller-supplied role string — otherwise any caller
-    /// could request `{"role":"chair"}` and receive a write token (role escalation).
-    bot_id: String,
-}
-
-/// Mint (or reuse) a per-role scoped GitHub installation token for this session.
-/// 501 if the plane is in PAT mode (no App configured); 404 for an unknown session
-/// or bot. The role is always derived from the bot's stored role, so a reviewer can
-/// never obtain a write token by asking for one.
-async fn github_token(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(req): Json<GithubTokenReq>,
-) -> Result<axum::response::Response, StatusCode> {
-    check_auth(&state, &headers)?;
-    let session = state
-        .store
-        .session(&id)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    if matches!(
-        crate::store::SessionState::from_db_str(&session.state),
-        crate::store::SessionState::Closed | crate::store::SessionState::Aborted
-    ) {
-        return Err(StatusCode::GONE);
-    }
-    // Authoritative from the bot record — the request carries no role.
-    let bot = state
-        .store
-        .bot(&req.bot_id)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    // The bot must belong to *this* session — otherwise a caller could mint a token
-    // for session B using a bot from session A. (Role is still bounded to the bot's
-    // stored role, so this is defense-in-depth, not the only guard.)
-    let roster = state
-        .store
-        .roster(&id)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !roster.iter().any(|b| b == &req.bot_id) {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    let role = crate::github_app::Role::from_bot_role(&bot.role);
-    // Count a valid consumer before App availability/minting: a PAT-mode 501 or
-    // mint 502 still proves this legacy route is depended on and blocks removal.
-    state.record_compatibility_use("github_token_route", 1);
-    let Some(app) = state.github_app.as_ref() else {
-        // PAT mode — no App provisioned yet. The pod keeps using the shared GH_TOKEN.
-        return Err(StatusCode::NOT_IMPLEMENTED);
-    };
-    let token = identity::github_token_for(
-        state.store.as_ref(),
-        app,
-        &state.github_mint_lock,
-        &id,
-        role,
-    )
-    .await
-    .map_err(|_| StatusCode::BAD_GATEWAY)?;
-    Ok(Json(json!({ "token": token, "role": role.as_str() })).into_response())
-}
-
-/// Pod-level scoped GitHub token — the ADR 019 D1 path. A bot pod (chair or
-/// reviewer) authenticates with its **own WS token** (`OABCP_BOT_TOKEN`, already on
-/// the pod) and gets a role-scoped installation token: chair → `pull_requests:write`,
-/// reviewer → read-only. This replaces the on-pod App private key + local minter so
-/// the `.pem` never sits next to an agent that ingests untrusted PR content.
-///
-/// Why a separate route from `github_token`: that one is session-scoped and
-/// plane-API-key authed — putting the plane key on an untrusted pod would be a
-/// *bigger* crown jewel than the `.pem`. Here the credential is the bot's own token
-/// and the role is derived from the bot record (never caller-supplied), so a
-/// reviewer pod physically cannot obtain a write token.
-///
-/// 501 in PAT mode (no App). 401 for a missing/invalid bot token. The token is
-/// cached under a `bot:<id>` key (not a real session), so it lives out its ≤1h TTL
-/// and the pod's refresh loop re-mints — there is no session-close revoke, which is
-/// the intended pod-level posture (matches the pre-D1 long-lived refreshed token).
-/// Chair write scope follows the active chair *slot*, not the `role` label alone
-/// (ADR 024 Decision 1). A bot gets `Role::Chair` (→ `pull_requests:write`) only
-/// while it is BOTH `roster[0]` of the standing roster AND itself a `role="chair"`
-/// bot; every other bot — including a connected-but-off-roster standby chair — is
-/// `Role::Reviewer` (read-only).
-///
-/// The `role == "chair"` conjunct matters because `runtime_council_roster` may
-/// return the **unvalidated** `OABCP_COUNCIL_ROSTER` env fallback (the DB standing
-/// roster is validated by `validate_standing_roster`, the env one is not). Without
-/// this conjunct a misordered env roster with a reviewer at index 0 would be handed
-/// write scope — a privilege escalation this function must not introduce. Requiring
-/// both keeps the grant strictly ≤ the pre-slot-binding `from_bot_role` behavior.
-/// Fails safe to read-only if the roster can't be resolved.
-fn active_chair_role(
-    state: &Arc<AppState>,
-    bot_id: &str,
-    bot_role: &str,
-) -> crate::github_app::Role {
-    let is_active_slot = matches!(
-        crate::plugins::pr_review::runtime_council_roster(state),
-        Ok((roster, _)) if roster.first().map(String::as_str) == Some(bot_id)
-    );
-    if is_active_slot && bot_role == "chair" {
-        crate::github_app::Role::Chair
-    } else {
-        crate::github_app::Role::Reviewer
-    }
-}
-
-async fn bot_github_token(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<axum::response::Response, StatusCode> {
-    let presented = bearer(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    // Split store failure (500) from an unknown token (401) — mirrors the
-    // session-scoped `github_token` handler, so an unreachable token store surfaces
-    // as 500 instead of masquerading as a bad credential.
-    let bot = state
-        .store
-        .bot_by_token_hash(&identity::hash_token(presented))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-    // Chair write scope is bound to the active chair *slot*, not the `role`
-    // label (ADR 024 Decision 1). A bot earns `pull_requests:write` only while
-    // it is `roster[0]` of the standing roster; otherwise it is read-only. So a
-    // connected-but-off-roster standby chair (blue-green, #227) holds no latent
-    // write power until a promotion `PUT` makes it the active chair — and even a
-    // single-chair deployment is tightened, since write follows the live slot.
-    let role = active_chair_role(&state, &bot.id, &bot.role);
-    // Count a valid consumer before App availability/minting: a PAT-mode 501 or
-    // mint 502 still proves this legacy route is depended on and blocks removal.
-    state.record_compatibility_use("github_token_route", 1);
-    let Some(app) = state.github_app.as_ref() else {
-        // PAT mode — no App provisioned. The pod keeps using its shared GH_TOKEN.
-        return Err(StatusCode::NOT_IMPLEMENTED);
-    };
-    let token = identity::github_token_for(
-        state.store.as_ref(),
-        app,
-        &state.github_mint_lock,
-        &format!("bot:{}", bot.id),
-        role,
-    )
-    .await
-    .map_err(|_| StatusCode::BAD_GATEWAY)?;
-    // A pod's `pre_boot` hook pipes the token straight into `gh auth login`, so it
-    // asks for `Accept: text/plain` and gets the bare token — no shell JSON parsing
-    // (a brittle `sed` that silently disables auth on any response-format drift).
-    // Anything else (default) gets the JSON object for programmatic callers.
-    if wants_plain_text(&headers) {
-        return Ok((
-            [(
-                axum::http::header::CONTENT_TYPE,
-                "text/plain; charset=utf-8",
-            )],
-            token,
-        )
-            .into_response());
-    }
-    Ok(Json(json!({ "token": token, "role": role.as_str() })).into_response())
-}
-
-/// True when the request's `Accept` header prefers `text/plain` (the pod hook).
-fn wants_plain_text(headers: &HeaderMap) -> bool {
-    headers
-        .get(axum::http::header::ACCEPT)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|a| a.contains("text/plain"))
-}
-
 async fn stream_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1816,8 +1637,6 @@ mod tests {
             store,
             Some("operator-key".into()),
             None,
-            None,
-            None,
             "http://control-plane.test".into(),
             None,
         );
@@ -1851,15 +1670,7 @@ mod tests {
         store
             .seed_bot("rev2", "rev2", "reviewer", "h3", "t3")
             .unwrap();
-        AppState::new_with_options(
-            store,
-            None,
-            None,
-            None,
-            None,
-            "http://control-plane.test".into(),
-            None,
-        )
+        AppState::new_with_options(store, None, None, "http://control-plane.test".into(), None)
     }
 
     fn restore_env(key: &str, old: Option<String>) {
@@ -2150,216 +1961,6 @@ mod tests {
             .unwrap()
             .contains("does not reopen on client messages"));
         assert!(state.store.messages(&session.id).unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn github_token_refused_for_closed_session() {
-        let store = Arc::new(SqliteStore::memory().unwrap());
-        store
-            .seed_bot("chair", "chair", "chair", "h1", "t1")
-            .unwrap();
-        let session = store
-            .create_session(
-                "closed",
-                Some("github:pr/o/r#9"),
-                0,
-                Some("chair"),
-                &["chair".into()],
-                "solo",
-            )
-            .unwrap();
-        store.set_state(&session.id, SessionState::Closed).unwrap();
-        let state = AppState::new_with_options(
-            store,
-            None,
-            None,
-            None,
-            None,
-            "http://control-plane.test".into(),
-            None,
-        );
-
-        let err = super::github_token(
-            State(state),
-            HeaderMap::new(),
-            Path(session.id),
-            Json(super::GithubTokenReq {
-                bot_id: "chair".into(),
-            }),
-        )
-        .await
-        .unwrap_err();
-
-        assert_eq!(err, StatusCode::GONE);
-    }
-
-    #[tokio::test]
-    async fn bot_github_token_rejects_missing_and_bad_tokens() {
-        let store = Arc::new(SqliteStore::memory().unwrap());
-        let state = AppState::new_with_options(
-            store,
-            None,
-            None,
-            None,
-            None,
-            "http://control-plane.test".into(),
-            None,
-        );
-
-        // No Authorization header at all.
-        let err = super::bot_github_token(State(state.clone()), HeaderMap::new())
-            .await
-            .unwrap_err();
-        assert_eq!(err, StatusCode::UNAUTHORIZED);
-
-        // Bearer with a token that maps to no bot.
-        let mut headers = HeaderMap::new();
-        headers.insert("authorization", "Bearer oabct_nope".parse().unwrap());
-        let err = super::bot_github_token(State(state), headers)
-            .await
-            .unwrap_err();
-        assert_eq!(err, StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn bot_github_token_authed_bot_in_pat_mode_is_not_implemented() {
-        // A valid bot token passes auth; with no App configured (PAT mode) the
-        // mint is correctly gated at 501 — proving auth is by the bot's OWN token,
-        // not the plane API key, and that the role-derivation path is reached.
-        let store = Arc::new(SqliteStore::memory().unwrap());
-        let (_bot, token) = identity::issue(store.as_ref(), "chair", "chair", None).unwrap();
-        let state = AppState::new_with_options(
-            store,
-            None,
-            None,
-            None,
-            None,
-            "http://control-plane.test".into(),
-            None,
-        );
-
-        let mut headers = HeaderMap::new();
-        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
-        let err = super::bot_github_token(State(state.clone()), headers)
-            .await
-            .unwrap_err();
-        assert_eq!(err, StatusCode::NOT_IMPLEMENTED);
-        let usage = state.store.compatibility_usage().unwrap();
-        assert_eq!(usage.len(), 1);
-        assert_eq!(usage[0].surface, "github_token_route");
-        assert_eq!(usage[0].uses, 1);
-    }
-
-    #[test]
-    fn chair_write_scope_follows_active_slot_not_role_label() {
-        use crate::github_app::Role;
-        // chair(role=chair) + rev1 + rev2, plus a standby chair on another provider.
-        let state = state_with_review_bots();
-        state
-            .store
-            .seed_bot("chair2", "chair2", "chair", "h9", "t9")
-            .unwrap();
-
-        // Active roster: `chair` sits at slot 0.
-        state
-            .store
-            .set_standing_roster(&["chair".into(), "rev1".into()])
-            .unwrap();
-        // The active chair gets write scope; a reviewer does not.
-        assert_eq!(
-            super::active_chair_role(&state, "chair", "chair"),
-            Role::Chair
-        );
-        assert_eq!(
-            super::active_chair_role(&state, "rev1", "reviewer"),
-            Role::Reviewer
-        );
-        // The crux (ADR 024): a connected-but-off-roster standby chair holds NO
-        // write power despite `role == "chair"` — it isn't the active slot.
-        assert_eq!(
-            super::active_chair_role(&state, "chair2", "chair"),
-            Role::Reviewer
-        );
-
-        // Promote the standby: write capability moves with the slot, atomically.
-        state
-            .store
-            .set_standing_roster(&["chair2".into(), "rev1".into()])
-            .unwrap();
-        assert_eq!(
-            super::active_chair_role(&state, "chair2", "chair"),
-            Role::Chair
-        );
-        // ...and the demoted primary is now read-only even though its stored
-        // `role` is still "chair".
-        assert_eq!(
-            super::active_chair_role(&state, "chair", "chair"),
-            Role::Reviewer
-        );
-    }
-
-    #[test]
-    fn active_slot_grants_chair_only_to_a_chair_role_bot() {
-        // Council F6: `runtime_council_roster` can return the UNVALIDATED
-        // `OABCP_COUNCIL_ROSTER` env fallback. If that roster seats a reviewer-role
-        // bot at index 0, slot membership alone must NOT grant write scope — the
-        // `role == "chair"` conjunct keeps the grant ≤ the pre-slot-binding behavior.
-        use crate::github_app::Role;
-        let state = state_with_review_bots();
-        // A reviewer bot occupying slot 0 (the misordered-env-fallback scenario).
-        state
-            .store
-            .set_standing_roster(&["rev1".into(), "rev2".into()])
-            .unwrap();
-        assert_eq!(
-            super::active_chair_role(&state, "rev1", "reviewer"),
-            Role::Reviewer,
-            "a reviewer at slot 0 must never receive write scope"
-        );
-    }
-
-    #[tokio::test]
-    async fn bot_github_token_ignores_cache_and_attempts_fresh_mint() {
-        // SEI-810: the pod refresh loop only re-asks every ~50min, so a cached
-        // token — however "fresh" by the session-path margin — can die in the
-        // pod's hands. The bot-level handler must always attempt a fresh mint;
-        // with the dummy (unmintable) App that surfaces as 502, never the
-        // cached token.
-        let store = Arc::new(SqliteStore::memory().unwrap());
-        let (bot, token) = identity::issue(store.as_ref(), "chair", "chair", None).unwrap();
-        store
-            .set_standing_roster(std::slice::from_ref(&bot.id))
-            .unwrap();
-        store
-            .cache_installation_token(
-                &format!("bot:{}", bot.id),
-                "chair",
-                "ghs_cached_token",
-                crate::store::now_ms() + 3_600_000,
-            )
-            .unwrap();
-        let app =
-            crate::github_app::GitHubApp::from_parts("1", "dummy", 1, "https://api.github.com");
-        let state = AppState::new_with_options(
-            store,
-            None,
-            Some(app),
-            None,
-            None,
-            "http://control-plane.test".into(),
-            None,
-        );
-
-        let mut headers = HeaderMap::new();
-        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
-        let err = super::bot_github_token(State(state.clone()), headers)
-            .await
-            .expect_err("must attempt a mint (502 with dummy app), not serve the cache");
-        assert_eq!(err, StatusCode::BAD_GATEWAY);
-        let usage = state.store.compatibility_usage().unwrap();
-        assert_eq!(usage.len(), 1);
-        assert_eq!(usage[0].surface, "github_token_route");
-        assert_eq!(usage[0].uses, 1);
     }
 
     #[tokio::test]

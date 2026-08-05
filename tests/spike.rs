@@ -30,8 +30,6 @@ async fn spawn_server_with_discovery_token(token: &str) -> SocketAddr {
     let state = AppState::new_with_options(
         store,
         None,
-        None,
-        None,
         Some(token.to_string()),
         "http://control-plane.zeabur.internal:8090".to_string(),
         None,
@@ -44,8 +42,6 @@ async fn spawn_server_with_ping_secs(secs: u64) -> (SocketAddr, Arc<AppState>) {
     let store: Arc<dyn Store> = Arc::new(SqliteStore::memory().unwrap());
     let state = AppState::new_with_options_and_ws_ping_secs(
         store,
-        None,
-        None,
         None,
         None,
         "http://control-plane.zeabur.internal:8090".to_string(),
@@ -1287,7 +1283,6 @@ async fn dynamic_replace_api_updates_session_and_standing_roster() {
         standing["roster"],
         json!([chair_id.clone(), new_id.clone()])
     );
-
 }
 
 /// The live `openabdev/openab#1187` fix: real bots signal completion in message

@@ -204,7 +204,7 @@ fn counted_done_voters(cx: &dyn Ctx, explicit: bool) -> Vec<String> {
         .filter(|bot| {
             cx.latest_settled(bot)
                 .as_deref()
-                .is_some_and(crate::plugins::pr_review::report_delivered)
+                .is_some_and(crate::plugins::council::report_delivered)
         })
         .collect()
 }
@@ -217,7 +217,7 @@ fn reviewer_report_delivered(cx: &dyn Ctx, bot: &str, explicit: bool) -> bool {
         || cx
             .latest_settled(bot)
             .as_deref()
-            .is_some_and(crate::plugins::pr_review::report_delivered)
+            .is_some_and(crate::plugins::council::report_delivered)
 }
 
 fn invalid_reviewer_action(bot: &str, attempts: i64) -> Action {
@@ -289,7 +289,7 @@ impl Coordinator for QuorumCouncil {
 }
 
 fn parse_structured_verdict(cx: &dyn Ctx, verdict_text: &str) -> Option<StructuredVerdict> {
-    match crate::plugins::pr_review::verdict::trailer(verdict_text) {
+    match crate::plugins::council::verdict::trailer(verdict_text) {
         Some(t) => Some(StructuredVerdict {
             decision: t.decision,
             red: t.red,
@@ -363,7 +363,7 @@ pub(crate) fn council_on_done_with_reviewer_rerequest_attempts(
         // prefix) — controller rounds run under plain `council` mode today
         // and fail-closed error statuses are exactly what this path
         // prevents. Smoke tests and manual sessions carry neither marker.
-        let parseable = crate::plugins::pr_review::verdict::trailer(&verdict).is_some();
+        let parseable = crate::plugins::council::verdict::trailer(&verdict).is_some();
         if contract && !parseable && cx.synthesis_attempts() < MAX_SYNTHESIS_ATTEMPTS {
             actions.extend(requeue_synthesis(cx, bot));
         } else {

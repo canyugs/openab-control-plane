@@ -487,12 +487,10 @@ mod tests {
             store,
             None,
             None,
-            None,
-            None,
             "http://control-plane.test".into(),
             None,
             0,
-            crate::plugins::pr_review::PrReviewConfig::default(),
+            crate::plugins::council::CouncilConfig::default(),
             None,
             Some(Arc::new(ControllerEventRuntime::new(keys(), transport))),
         )

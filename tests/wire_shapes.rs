@@ -109,8 +109,6 @@ async fn spawn_server_with_close_webhook(close_webhook_url: String) -> (SocketAd
     let state = AppState::new_with_options(
         store,
         None,
-        None,
-        None,
         Some(DISCOVERY_TOKEN.to_string()),
         "http://control-plane.zeabur.internal:8090".to_string(),
         Some(close_webhook_url),

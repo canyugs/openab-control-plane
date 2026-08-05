@@ -2,8 +2,7 @@
 //! We own the gateway side, so we replace OpenAB's single-shared-token model:
 //! each bot gets its own token; the connection maps to a bot_id by token hash.
 
-use crate::github_app::{GitHubApp, Role, REFRESH_MARGIN_MS};
-use crate::store::{now_ms, Bot, Store};
+use crate::store::{Bot, Store};
 use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
 
@@ -154,93 +153,6 @@ pub fn verify(store: &dyn Store, token: &str) -> Result<Bot> {
     store
         .bot_by_token_hash(&hash_token(token))?
         .ok_or_else(|| anyhow!("invalid bot token"))
-}
-
-// ---------------------------------------------------------------------------
-// External identity (GitHub App) — the other "face" of the identity model
-// (ROADMAP §Agent Identity). The plane mints per-`session × role` GitHub tokens
-// and owns their lifecycle, mirroring how it owns the internal bot tokens above.
-// ---------------------------------------------------------------------------
-
-/// Return a valid, non-expired, **role-scoped** GitHub installation token for this
-/// session — the "plane mints `session × role` tokens" path. Reuses the cached
-/// token unless it's absent or within the refresh margin, otherwise mints a fresh
-/// one (chair → write, reviewer → read-only) and caches it. The pod calls GitHub
-/// with the returned token instead of the old broad shared PAT.
-///
-/// `mint_lock` serializes the mint section: without it, concurrent callers for the
-/// same (session, role) each pass the freshness check and each mint a distinct live
-/// token (check-then-act race).
-pub async fn github_token_for(
-    store: &dyn Store,
-    app: &GitHubApp,
-    mint_lock: &tokio::sync::Mutex<()>,
-    session_id: &str,
-    role: Role,
-) -> Result<String> {
-    // Bot-level fetches (`bot:*` keys) come from the pod's pre_boot refresh
-    // loop, which re-asks only every ~50 minutes — a cached token with less
-    // remaining life than that dies in the pod's hands and every GitHub call
-    // 401s until the next refresh (SEI-810, live on prod: a pod restarted
-    // mid-token-life got a ~20-minutes-left token and ran two blind rounds).
-    // These fetches are rare (per pod per ~50min), so always mint fresh.
-    // Session-level fetches are frequent and short-lived; they keep the cache.
-    let cacheable = !session_id.starts_with("bot:");
-    if cacheable {
-        if let Some(token) = fresh_cached(store, session_id, role)? {
-            return Ok(token); // cache hit, comfortably fresh — no GitHub round-trip
-        }
-    }
-    // Serialize mints, then re-check: another task may have minted while we waited.
-    let _guard = mint_lock.lock().await;
-    if cacheable {
-        if let Some(token) = fresh_cached(store, session_id, role)? {
-            return Ok(token);
-        }
-    }
-    let minted = app.mint_installation_token(role).await?;
-    store.cache_installation_token(session_id, role.as_str(), &minted.token, minted.expires_at)?;
-    Ok(minted.token)
-}
-
-/// Cached token for (session, role) iff it stays valid past the refresh margin.
-/// Written as `expires_at > now + margin` (not `expires_at - now > margin`) so an
-/// already-expired token reads as a plain miss.
-fn fresh_cached(store: &dyn Store, session_id: &str, role: Role) -> Result<Option<String>> {
-    Ok(store
-        .installation_token(session_id, role.as_str())?
-        .filter(|(_, expires_at)| *expires_at > now_ms() + REFRESH_MARGIN_MS)
-        .map(|(token, _)| token))
-}
-
-/// Central revoke (ROADMAP): when a session closes, drop its scoped GitHub tokens so
-/// a pod can't keep acting on the PR after the verdict. Call from every close path.
-///
-/// Two layers: (1) purge the plane's cache so no future call hands the token out;
-/// (2) revoke it GitHub-side via `DELETE /installation/token` so a token already in
-/// a pod dies immediately instead of living out its ≤1h TTL. Layer 2 is async and
-/// best-effort — the close paths are sync, so each revoke is spawned and the TTL
-/// stays the backstop if the call fails. Fires only in App mode (`app` = Some);
-/// PAT mode has no per-role installation tokens to revoke.
-pub fn revoke_session_github_tokens(
-    store: &dyn Store,
-    app: Option<&GitHubApp>,
-    session_id: &str,
-) -> Result<()> {
-    // Read live tokens before the purge wipes them.
-    let tokens = store.session_installation_tokens(session_id)?;
-    store.purge_installation_tokens(session_id)?;
-    if let Some(app) = app {
-        for token in tokens {
-            let app = app.clone(); // clones the PEM string; fine at 1–2 tokens per close
-            tokio::spawn(async move {
-                if let Err(e) = app.revoke_installation_token(&token).await {
-                    tracing::warn!("server-side github token revoke failed: {e}");
-                }
-            });
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -406,77 +318,6 @@ mod tests {
             verify(&store, &t1).unwrap().id,
             verify(&store, &t2).unwrap().id
         );
-    }
-
-    // A throwaway App whose private key is invalid — fine for cache-hit tests where
-    // minting is never reached. (Network minting can't run in unit tests.)
-    fn dummy_app() -> GitHubApp {
-        GitHubApp::from_parts("1", "not-a-key", 42, "https://api.github.com")
-    }
-
-    #[tokio::test]
-    async fn cached_token_is_reused_without_minting() {
-        let store = SqliteStore::memory().unwrap();
-        // Seed a token that expires far in the future → comfortably fresh.
-        let far_future = now_ms() + 60 * 60 * 1000;
-        store
-            .cache_installation_token("ses_1", "chair", "ghs_cached", far_future)
-            .unwrap();
-        // dummy_app would err if minting were attempted (bad key) — the cache hit
-        // must short-circuit before that.
-        let lock = tokio::sync::Mutex::new(());
-        let got = github_token_for(&store, &dummy_app(), &lock, "ses_1", Role::Chair)
-            .await
-            .unwrap();
-        assert_eq!(got, "ghs_cached");
-    }
-
-    #[tokio::test]
-    async fn bot_level_key_always_mints_fresh_even_with_fresh_cache() {
-        // SEI-810: the pod's refresh loop re-asks only every ~50min, so handing
-        // back a cached token (however "fresh" by the 5-minute margin) can leave
-        // the pod holding a token that dies mid-cycle. bot:* keys must mint.
-        let store = SqliteStore::memory().unwrap();
-        let far_future = now_ms() + 60 * 60 * 1000;
-        store
-            .cache_installation_token("bot:chair", "chair", "ghs_cached", far_future)
-            .unwrap();
-        let lock = tokio::sync::Mutex::new(());
-        // dummy_app errors on mint — reaching the mint IS the assertion: the
-        // fresh cached row above must NOT short-circuit a bot-level fetch.
-        let err = github_token_for(&store, &dummy_app(), &lock, "bot:chair", Role::Chair).await;
-        assert!(err.is_err(), "bot:* fetch must attempt a fresh mint");
-    }
-
-    #[tokio::test]
-    async fn revoke_purges_session_tokens() {
-        let store = SqliteStore::memory().unwrap();
-        let far_future = now_ms() + 60 * 60 * 1000;
-        store
-            .cache_installation_token("ses_1", "chair", "ghs_c", far_future)
-            .unwrap();
-        store
-            .cache_installation_token("ses_1", "reviewer", "ghs_r", far_future)
-            .unwrap();
-        // revoke reads the live tokens (for server-side DELETE) before purging.
-        let live = store.session_installation_tokens("ses_1").unwrap();
-        assert_eq!(live.len(), 2);
-        assert!(live.contains(&"ghs_c".to_string()) && live.contains(&"ghs_r".to_string()));
-        // app=None → cache-only revoke, no network (PAT-mode path); server-side
-        // DELETE needs a live GitHub and is covered by the plane integration run.
-        revoke_session_github_tokens(&store, None, "ses_1").unwrap();
-        assert!(store
-            .session_installation_tokens("ses_1")
-            .unwrap()
-            .is_empty());
-        assert!(store
-            .installation_token("ses_1", "chair")
-            .unwrap()
-            .is_none());
-        assert!(store
-            .installation_token("ses_1", "reviewer")
-            .unwrap()
-            .is_none());
     }
 
     fn restore_env(key: &str, old: Option<String>) {
