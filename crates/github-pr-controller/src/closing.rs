@@ -252,7 +252,12 @@ const REPORT_START: &str = "<!-- openab-council -->";
 /// round self-describing.
 fn comment_body(parsed: &ParsedResult, trailer: Option<&VerdictTrailer>) -> String {
     let text = parsed.source.trim_end();
-    let text = match text.find(REPORT_START) {
+    // LAST anchor, not first: the working noise can itself contain the anchor
+    // (nuphos#725 round 3 — a Kiro task echo of the report template opened the
+    // settled text, and anchoring there published 4KB of tool transcript), and
+    // the protocol puts the real report last. A re-draft supersedes its draft
+    // the same way.
+    let text = match text.rfind(REPORT_START) {
         Some(at) => &text[at..],
         // No anchor, nothing to trust as "the report" — keep everything.
         None => text,
@@ -264,9 +269,16 @@ fn comment_body(parsed: &ParsedResult, trailer: Option<&VerdictTrailer>) -> Stri
         );
     }
     let mut lines: Vec<&str> = text.lines().collect();
+    // The report ends at its trailer. Anything after that line is working
+    // noise the chair emitted past the verdict (nuphos#725 round 6 carried
+    // octobroker transcript between the trailer and a second draft), so the
+    // cut is at the first trailer line, not just trailing machine lines.
+    if let Some(at) = lines.iter().position(|line| line.contains("[[verdict:")) {
+        lines.truncate(at);
+    }
     while let Some(last) = lines.last() {
         let stripped = last.trim();
-        if stripped.is_empty() || stripped == "[done]" || stripped.contains("[[verdict:") {
+        if stripped.is_empty() || stripped == "[done]" {
             lines.pop();
         } else {
             break;
@@ -416,6 +428,78 @@ mod tests {
         assert!(
             body.contains("openab-findings") && !body.contains("[[verdict:"),
             "findings block stays, trailer goes: {body}"
+        );
+    }
+
+    #[test]
+    fn noise_containing_the_anchor_cannot_steal_the_report() {
+        // Shape of nuphos#725 round 3: a Kiro task echo QUOTES the report
+        // template — anchor string included — before the tool transcript, so
+        // anchoring on the first occurrence published the whole transcript.
+        // The real report is the last anchor.
+        let noisy = "<!-- openab-council --> ; CHANGES REQUESTED ⚠️ — draft title ; R...`\n\
+             ✅ `Running: /home/agent/bin/octobroker-mcp comment zeabur nuphos 725 < /tmp/verdict.md`\n\
+             Now I need to verify the finding myself before writing the verdict.\n\
+             <!-- openab-council -->\n\
+             CHANGES REQUESTED ⚠️ — the real report.\n\n\
+             ## Findings\n\n| F1 | 🟡 | real |\n\n\
+             [[verdict:request_changes r=0 y=1 g=0]] [done]";
+        let parsed = parse_final_messages(&[noisy.into()]);
+        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
+        assert!(
+            body.starts_with("<!-- openab-council -->\nCHANGES REQUESTED ⚠️ — the real report."),
+            "the LAST anchor opens the comment: {body}"
+        );
+        assert!(
+            !body.contains("octobroker") && !body.contains("Now I need"),
+            "the quoted-anchor noise is dropped: {body}"
+        );
+    }
+
+    #[test]
+    fn nothing_past_the_trailer_is_published() {
+        // Shape of nuphos#725 round 6: the chair emitted a full report, its
+        // trailer, MORE tool transcript, then a second draft. Everything from
+        // the first trailer line on is machine tail, except that a re-draft
+        // with its own anchor supersedes the lot.
+        let one_draft_then_noise = "<!-- openab-council -->\n\
+             CHANGES REQUESTED ⚠️ — the report.\n\n\
+             [[verdict:request_changes r=0 y=2 g=1]] [done]\n\
+             ✅ `Running: printf '%s' '{\"pullNumber\":725}' | /home/agent/bin/octobroker-mcp call pull_request_read`\n\
+             Let me fetch the head SHA again.";
+        let parsed = parse_final_messages(&[
+            one_draft_then_noise.into(),
+            "footer\n[[verdict:request_changes r=0 y=2 g=1]] [done]".into(),
+        ]);
+        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
+        assert!(
+            !body.contains("octobroker") && !body.contains("Let me fetch"),
+            "post-trailer transcript is dropped: {body}"
+        );
+        assert!(
+            body.contains("CHANGES REQUESTED ⚠️ — the report.\n\n<!-- openab-round:"),
+            "the report ends at its trailer, then the round marker: {body}"
+        );
+
+        let redraft = "<!-- openab-council -->\n\
+             CHANGES REQUESTED ⚠️ — superseded draft.\n\
+             [[verdict:request_changes r=0 y=2 g=1]] [done]\n\
+             ✅ `Running: octobroker-mcp call pull_request_read`\n\
+             <!-- openab-council -->\n\
+             CHANGES REQUESTED ⚠️ — the final draft.\n\
+             [[verdict:request_changes r=0 y=2 g=1]] [done]";
+        let parsed = parse_final_messages(&[redraft.into()]);
+        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
+        assert!(
+            body.contains("the final draft") && !body.contains("superseded draft"),
+            "a re-draft with its own anchor supersedes the lot: {body}"
+        );
+        assert!(
+            !body.contains("octobroker"),
+            "transcript between drafts is dropped: {body}"
         );
     }
 
