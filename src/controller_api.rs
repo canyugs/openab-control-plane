@@ -2597,6 +2597,7 @@ mod tests {
             webhook_secret: Some("fixture-secret".into()),
             shadow_secret: None,
             observer_secret: Some("observer-secret".into()),
+            operator_write_secret: None,
             canary_repository: Some("example/repo".into()),
             allowed_repos: std::collections::BTreeSet::from(["example/repo".into()]),
             bot_handle: Some("fixture-council".into()),

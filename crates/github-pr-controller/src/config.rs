@@ -77,6 +77,11 @@ pub struct Config {
     pub webhook_secret: Option<String>,
     pub shadow_secret: Option<String>,
     pub observer_secret: Option<String>,
+    /// ADR 035 writes (waiver CRUD). Deliberately distinct from
+    /// `observer_secret`: observation is read-only telemetry access, waiver
+    /// writes change what the chair is told — the kernel kept these as
+    /// separate credentials and so does this side. Unset = writes 503.
+    pub operator_write_secret: Option<String>,
     pub canary_repository: Option<String>,
     pub allowed_repos: BTreeSet<String>,
     pub bot_handle: Option<String>,
@@ -124,6 +129,7 @@ impl Config {
             webhook_secret: nonempty(value("GITHUB_CONTROLLER_WEBHOOK_SECRET")),
             shadow_secret: nonempty(value("GITHUB_CONTROLLER_SHADOW_SECRET")),
             observer_secret: nonempty(value("GITHUB_CONTROLLER_OBSERVER_SECRET")),
+            operator_write_secret: nonempty(value("GITHUB_CONTROLLER_OPERATOR_WRITE_SECRET")),
             canary_repository: nonempty(value("GITHUB_CONTROLLER_CANARY_REPOSITORY")),
             allowed_repos,
             bot_handle: nonempty(value("GITHUB_CONTROLLER_BOT_HANDLE"))

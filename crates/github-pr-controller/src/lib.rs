@@ -784,14 +784,19 @@ async fn handle_webhook(
             // ADR 035 P2: the chair — and only the chair — sees the repo's
             // active waivers in its opening input. This side knows the repo
             // natively; no trigger_ref parsing, no hashed-ref blindness (the
-            // kernel's version died of exactly that).
-            if let Some(block) = waiver_block_for_repo(store.as_ref(), &plan.repository).await {
-                let fallback = open_action.prompt.clone();
-                open_action
-                    .recipient_inputs
-                    .entry(plan.chair_bot.clone())
-                    .or_insert(fallback)
-                    .push_str(&block);
+            // kernel's version died of exactly that). Council opens only: an
+            // ask session is a solo answer, and the block is synthesis
+            // instruction — noise there (the kernel's ref parser skipped ask
+            // refs by accident of format; this makes it deliberate).
+            if plan.mode == "council" {
+                if let Some(block) = waiver_block_for_repo(store.as_ref(), &plan.repository).await {
+                    let fallback = open_action.prompt.clone();
+                    open_action
+                        .recipient_inputs
+                        .entry(plan.chair_bot.clone())
+                        .or_insert(fallback)
+                        .push_str(&block);
+                }
             }
             match client
                 .open_session(action_id.clone(), open_action)
@@ -1356,8 +1361,19 @@ fn verify_operator_write_signature(
 #[derive(Debug, serde::Deserialize)]
 struct ListWaiversParams {
     repo: Option<String>,
-    #[serde(default)]
+    /// Query strings are not JSON booleans (the kernel's lesson): accept
+    /// `1`/`true`/`yes`, treat anything else — or absence — as false.
+    #[serde(default, deserialize_with = "flag_from_query")]
     all: bool,
+}
+
+fn flag_from_query<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    let raw = Option::<String>::deserialize(deserializer)?;
+    Ok(matches!(raw.as_deref(), Some("1") | Some("true") | Some("yes")))
 }
 
 /// `GET /api/v1/review/waivers` — same signed-observation auth as the other
@@ -1432,10 +1448,10 @@ async fn handle_create_waiver(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(secret) = state.config.observer_secret.as_deref() else {
+    let Some(secret) = state.config.operator_write_secret.as_deref() else {
         return response(
             StatusCode::SERVICE_UNAVAILABLE,
-            json!({"ok": false, "error": "observation_hmac_not_configured"}),
+            json!({"ok": false, "error": "operator_write_secret_not_configured"}),
         );
     };
     let target = uri
@@ -1462,10 +1478,42 @@ async fn handle_create_waiver(
             json!({"ok": false, "error": "invalid_waiver_body"}),
         );
     };
-    if request.repo.trim().is_empty() || request.text.trim().is_empty() {
+    // The kernel's exact caps, ported with the surface: trimmed before
+    // storage (an untrimmed repo would break exact-match scoping) and
+    // bounded (this text is injected into the chair's opening input).
+    let repo = request.repo.trim();
+    let text = request.text.trim();
+    let created_by = request.created_by.trim();
+    let path_class = request.path_class.as_deref().map(str::trim);
+    let origin_pr = request.origin_pr.as_deref().map(str::trim);
+    if repo.is_empty() || repo.len() > 200 {
         return response(
             StatusCode::BAD_REQUEST,
-            json!({"ok": false, "error": "repo_and_text_required"}),
+            json!({"ok": false, "error": "repo_must_be_1_to_200_bytes"}),
+        );
+    }
+    if text.is_empty() || text.len() > 2000 {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "text_must_be_1_to_2000_bytes"}),
+        );
+    }
+    if created_by.is_empty() || created_by.len() > 100 {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "created_by_must_be_1_to_100_bytes"}),
+        );
+    }
+    if path_class.is_some_and(|v| v.len() > 300) {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "path_class_must_be_at_most_300_bytes"}),
+        );
+    }
+    if origin_pr.is_some_and(|v| v.len() > 200) {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "origin_pr_must_be_at_most_200_bytes"}),
         );
     }
     if request.expires_at <= now_unix() {
@@ -1483,14 +1531,7 @@ async fn handle_create_waiver(
         );
     };
     match store
-        .create_review_waiver(
-            &request.repo,
-            request.path_class.as_deref(),
-            &request.text,
-            request.origin_pr.as_deref(),
-            &request.created_by,
-            request.expires_at,
-        )
+        .create_review_waiver(repo, path_class, text, origin_pr, created_by, request.expires_at)
         .await
     {
         Ok(waiver) => {
@@ -1540,10 +1581,10 @@ async fn handle_update_waiver(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(secret) = state.config.observer_secret.as_deref() else {
+    let Some(secret) = state.config.operator_write_secret.as_deref() else {
         return response(
             StatusCode::SERVICE_UNAVAILABLE,
-            json!({"ok": false, "error": "observation_hmac_not_configured"}),
+            json!({"ok": false, "error": "operator_write_secret_not_configured"}),
         );
     };
     let target = uri
@@ -2676,6 +2717,7 @@ mod tests {
             webhook_secret: Some("fixture-secret".into()),
             shadow_secret: Some("shadow-secret".into()),
             observer_secret: None,
+            operator_write_secret: None,
             canary_repository: None,
             allowed_repos: BTreeSet::from(["example/repo".into()]),
             bot_handle: Some("fixture-council".into()),
@@ -3130,6 +3172,7 @@ mod tests {
     async fn waiver_crud_requires_the_v2_write_signature() {
         let mut config = test_config();
         config.observer_secret = Some("observer-secret".into());
+        config.operator_write_secret = Some("operator-write-secret".into());
         let state = Arc::new(AppState {
             config,
             store: Some(Arc::new(SqliteStore::memory().unwrap())),
@@ -3147,7 +3190,7 @@ mod tests {
                 "v2\n{ts}\n{method}\n{target}\n{}",
                 hex::encode(Sha256::digest(body))
             );
-            let mut mac = HmacSha256::new_from_slice(b"observer-secret").unwrap();
+            let mut mac = HmacSha256::new_from_slice(b"operator-write-secret").unwrap();
             mac.update(canonical.as_bytes());
             (
                 ts.to_string(),
@@ -3187,6 +3230,31 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "read signature cannot write");
+
+        // A v2-shaped signature made with the OBSERVATION secret must also be
+        // refused: reads and writes are separate credentials, the boundary
+        // the kernel kept and round 1 of this PR's review flagged.
+        let ts = now_unix();
+        let canonical = format!(
+            "v2\n{ts}\nPOST\n/api/v1/review/waivers\n{}",
+            hex::encode(Sha256::digest(&body))
+        );
+        let mut mac = HmacSha256::new_from_slice(b"observer-secret").unwrap();
+        mac.update(canonical.as_bytes());
+        let observer_v2 = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        let (status, _) = call(
+            Request::post("/api/v1/review/waivers")
+                .header("x-canary-audit-timestamp", ts.to_string())
+                .header("x-canary-audit-signature-256", observer_v2)
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "the observation secret must not authorize writes"
+        );
 
         let (ts, sig) = sign_write("POST", "/api/v1/review/waivers", &body);
         let (status, created) = call(
@@ -3248,9 +3316,13 @@ mod tests {
         let (status, body) = call(signed_get("/api/v1/review/waivers?repo=example/repo")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["waivers"].as_array().unwrap().len(), 0, "revoked is inactive");
+        // Both spellings of the flag work — query strings are not JSON
+        // booleans, and waiver-candidates.py sends `all=1`.
         let (_, body) = call(signed_get("/api/v1/review/waivers?repo=example/repo&all=true")).await;
         assert_eq!(body["waivers"].as_array().unwrap().len(), 1);
         assert!(body["waivers"][0]["revoked_at"].is_number());
+        let (_, body) = call(signed_get("/api/v1/review/waivers?repo=example/repo&all=1")).await;
+        assert_eq!(body["waivers"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]
