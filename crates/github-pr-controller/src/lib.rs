@@ -1611,6 +1611,21 @@ async fn handle_update_waiver(
             json!({"ok": false, "error": "invalid_waiver_body"}),
         );
     };
+    // The kernel's two PATCH guards, ported with the surface: a patch that
+    // changes nothing is a caller bug, and an extension into the past would
+    // be a silent revoke wearing the wrong name.
+    if request.expires_at.is_none() && !request.revoke {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "empty_patch"}),
+        );
+    }
+    if request.expires_at.is_some_and(|at| at <= now_unix()) {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"ok": false, "error": "expires_at_must_be_future"}),
+        );
+    }
     let Some(store) = state.store.as_ref() else {
         return response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3286,9 +3301,37 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "body is bound by the signature");
 
+        // The kernel's PATCH guards: an empty patch and a past expiry 400.
+        let empty = serde_json::to_vec(&json!({})).unwrap();
+        let target = format!("/api/v1/review/waivers/{id}");
+        let (ts, sig) = sign_write("PATCH", &target, &empty);
+        let (status, _) = call(
+            Request::patch(&target)
+                .header("x-canary-audit-timestamp", ts)
+                .header("x-canary-audit-signature-256", sig)
+                .body(Body::from(empty))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "empty patch is a caller bug");
+        let past = serde_json::to_vec(&json!({"expires_at": now_unix() - 60})).unwrap();
+        let (ts, sig) = sign_write("PATCH", &target, &past);
+        let (status, _) = call(
+            Request::patch(&target)
+                .header("x-canary-audit-timestamp", ts)
+                .header("x-canary-audit-signature-256", sig)
+                .body(Body::from(past))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "a past expiry is a silent revoke wearing the wrong name"
+        );
+
         // Revoke, then confirm the active list is empty but --all still sees it.
         let patch_body = serde_json::to_vec(&json!({"revoke": true})).unwrap();
-        let target = format!("/api/v1/review/waivers/{id}");
         let (ts, sig) = sign_write("PATCH", &target, &patch_body);
         let (status, _) = call(
             Request::patch(&target)
