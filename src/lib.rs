@@ -6,7 +6,6 @@ pub mod controller;
 pub mod controller_api;
 pub mod controller_events;
 pub mod coordinator;
-pub mod github_app;
 pub mod identity;
 pub mod ops;
 pub mod orchestrator;

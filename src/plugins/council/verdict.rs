@@ -202,8 +202,6 @@ mod tests {
             store.clone(),
             None,
             None,
-            None,
-            None,
             "http://control-plane.zeabur.internal:8090".to_string(),
             Some(webhook_url),
         );

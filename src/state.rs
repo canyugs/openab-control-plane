@@ -1,6 +1,5 @@
 //! Shared runtime: the bot connection hub (south) + north event broadcast.
 
-use crate::github_app::GitHubApp;
 use crate::protocol::{ChannelInfo, Content, GatewayEvent, SenderInfo, EVENT_SCHEMA};
 use crate::store::{new_id, now_ms, SessionState, Store};
 use controller_protocol::audit::{
@@ -13,8 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
 
-fn pr_review_config_from_env() -> crate::plugins::pr_review::PrReviewConfig {
-    crate::plugins::pr_review::PrReviewConfig::from_values(|name| std::env::var(name).ok())
+fn council_config_from_env() -> crate::plugins::council::CouncilConfig {
+    crate::plugins::council::CouncilConfig::from_values(|name| std::env::var(name).ok())
 }
 
 fn ws_ping_secs_from_env() -> u64 {
@@ -218,7 +217,7 @@ pub struct AppState {
     pub store: Arc<dyn Store>,
     /// Provider-specific review policy, loaded once by the composition root and
     /// passed to the plugin as immutable data.
-    pub pr_review_config: crate::plugins::pr_review::PrReviewConfig,
+    pub council_config: crate::plugins::council::CouncilConfig,
     /// bot_id -> stack of live connections `(generation, outbound sender)`, oldest
     /// first, so the LAST entry is the current one messages route to. Keeping every
     /// live conn (not just the newest) is what fixes the double-connect zombie
@@ -245,22 +244,10 @@ pub struct AppState {
     /// Serializes action execution after durable admission so concurrent replay
     /// cannot execute the interpreter twice in this single-process SQLite runtime.
     pub controller_action_lock: std::sync::Mutex<()>,
-    /// GitHub App credential for minting per-role scoped installation tokens.
-    /// None = PAT mode (pr-agent's `deployment_type = "user"`): pods fall back to the
-    /// shared `GH_TOKEN` until the App is provisioned (ROADMAP Phase 1).
-    pub github_app: Option<GitHubApp>,
-    /// Webhook HMAC secret (`x-hub-signature-256`). None = the webhook endpoint
-    /// rejects every request (403) — a missing secret is fail-closed, not fail-open.
-    pub github_webhook_secret: Option<String>,
     /// Scoped bootstrap token for `/v1/bots/discover`. None = discovery disabled.
     pub bot_discovery_token: Option<String>,
     /// Public/internal base URL returned by `/v1/bots/discover` for `/bot-config`.
     pub config_base_url: String,
-    /// Serializes installation-token minting so concurrent requests for the same
-    /// `(session, role)` can't each mint a distinct live token (check-then-act race).
-    /// Coarse (one lock for all mints) but mints are rare at council scale; make it
-    /// keyed if mint volume ever grows.
-    pub github_mint_lock: tokio::sync::Mutex<()>,
     /// Optional outbound webhook POSTed on session close (ADR 012). None = off.
     pub close_webhook_url: Option<String>,
     /// South WebSocket ping interval in seconds. 0 disables ping deadlines.
@@ -302,14 +289,12 @@ impl AppState {
         Self::new_with_options_and_runtime_config(
             store,
             std::env::var("OABCP_API_KEY").ok(),
-            GitHubApp::from_env(),
-            std::env::var("GITHUB_WEBHOOK_SECRET").ok(),
             std::env::var("OABCP_BOT_DISCOVERY_TOKEN").ok(),
             std::env::var("OABCP_CONFIG_BASE_URL")
                 .unwrap_or_else(|_| "http://control-plane.zeabur.internal:8090".to_string()),
             std::env::var("OABCP_SESSION_CLOSE_WEBHOOK").ok(),
             ws_ping_secs_from_env(),
-            pr_review_config_from_env(),
+            council_config_from_env(),
             controller_auth_from_env(),
             controller_events_from_env(),
         )
@@ -318,8 +303,6 @@ impl AppState {
     pub fn new_with_options(
         store: Arc<dyn Store>,
         api_key: Option<String>,
-        github_app: Option<GitHubApp>,
-        github_webhook_secret: Option<String>,
         bot_discovery_token: Option<String>,
         config_base_url: String,
         close_webhook_url: Option<String>,
@@ -327,8 +310,6 @@ impl AppState {
         Self::new_with_options_and_ws_ping_secs(
             store,
             api_key,
-            github_app,
-            github_webhook_secret,
             bot_discovery_token,
             config_base_url,
             close_webhook_url,
@@ -340,8 +321,6 @@ impl AppState {
     pub fn new_with_options_and_ws_ping_secs(
         store: Arc<dyn Store>,
         api_key: Option<String>,
-        github_app: Option<GitHubApp>,
-        github_webhook_secret: Option<String>,
         bot_discovery_token: Option<String>,
         config_base_url: String,
         close_webhook_url: Option<String>,
@@ -350,13 +329,11 @@ impl AppState {
         Self::new_with_options_and_runtime_config(
             store,
             api_key,
-            github_app,
-            github_webhook_secret,
             bot_discovery_token,
             config_base_url,
             close_webhook_url,
             ws_ping_secs,
-            crate::plugins::pr_review::PrReviewConfig::default(),
+            crate::plugins::council::CouncilConfig::default(),
             None,
             None,
         )
@@ -371,12 +348,10 @@ impl AppState {
             store,
             None,
             None,
-            None,
-            None,
             "http://control-plane.test".into(),
             None,
             0,
-            crate::plugins::pr_review::PrReviewConfig::default(),
+            crate::plugins::council::CouncilConfig::default(),
             Some(controller_auth),
             None,
         )
@@ -386,20 +361,18 @@ impl AppState {
     pub fn new_with_options_and_runtime_config(
         store: Arc<dyn Store>,
         api_key: Option<String>,
-        github_app: Option<GitHubApp>,
-        github_webhook_secret: Option<String>,
         bot_discovery_token: Option<String>,
         config_base_url: String,
         close_webhook_url: Option<String>,
         ws_ping_secs: u64,
-        pr_review_config: crate::plugins::pr_review::PrReviewConfig,
+        council_config: crate::plugins::council::CouncilConfig,
         controller_auth: Option<crate::controller_api::ControllerAuthConfig>,
         controller_events: Option<Arc<crate::controller_events::ControllerEventRuntime>>,
     ) -> Arc<AppState> {
         let (north_tx, _) = broadcast::channel(1024);
         Arc::new(AppState {
             store,
-            pr_review_config,
+            council_config,
             hub: Mutex::new(HashMap::new()),
             conn_seq: AtomicU64::new(0),
             flush_locks: Mutex::new(HashMap::new()),
@@ -409,11 +382,8 @@ impl AppState {
             controller_auth,
             controller_events,
             controller_action_lock: std::sync::Mutex::new(()),
-            github_app,
-            github_webhook_secret,
             bot_discovery_token,
             config_base_url,
-            github_mint_lock: tokio::sync::Mutex::new(()),
             close_webhook_url,
             ws_ping_secs,
             recruit_seen: Mutex::new(HashMap::new()),

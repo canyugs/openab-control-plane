@@ -34,11 +34,11 @@ fn is_bare_tool_echo(text: &str) -> bool {
 /// embedded ingress (ADR 031). `github-pr-controller` owns those now. What
 /// remains is the standing roster the liveness/failover swap falls back to.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrReviewConfig {
+pub struct CouncilConfig {
     pub council_roster: Vec<String>,
 }
 
-impl Default for PrReviewConfig {
+impl Default for CouncilConfig {
     fn default() -> Self {
         Self {
             council_roster: vec!["chair".into(), "rev1".into(), "rev2".into()],
@@ -46,7 +46,7 @@ impl Default for PrReviewConfig {
     }
 }
 
-impl PrReviewConfig {
+impl CouncilConfig {
     /// Build from an explicit key/value source. The composition root owns the
     /// actual environment lookup; this only owns normalization/defaults.
     pub(crate) fn from_values(mut lookup: impl FnMut(&str) -> Option<String>) -> Self {
@@ -77,7 +77,7 @@ pub fn runtime_council_roster(
 ) -> anyhow::Result<(Vec<String>, &'static str)> {
     match state.store.standing_roster()? {
         Some(roster) => Ok((roster, "override")),
-        None => Ok((state.pr_review_config.council_roster.clone(), "config")),
+        None => Ok((state.council_config.council_roster.clone(), "config")),
     }
 }
 
@@ -122,18 +122,16 @@ mod tests {
             ("OABCP_REVIEW_ROUND_BUDGET", "7"),
             ("OABCP_COUNCIL_REVIEW_MODE", "enforce"),
         ]);
-        let config = PrReviewConfig::from_values(|name| values.get(name).map(|v| v.to_string()));
+        let config = CouncilConfig::from_values(|name| values.get(name).map(|v| v.to_string()));
 
         assert_eq!(config.council_roster, vec!["chair", "security", "tests"]);
     }
 
     #[test]
     fn invalid_explicit_config_preserves_safe_defaults() {
-        let values = HashMap::from([
-            ("OABCP_COUNCIL_ROSTER", " , "),
-        ]);
-        let config = PrReviewConfig::from_values(|name| values.get(name).map(|v| v.to_string()));
+        let values = HashMap::from([("OABCP_COUNCIL_ROSTER", " , ")]);
+        let config = CouncilConfig::from_values(|name| values.get(name).map(|v| v.to_string()));
 
-        assert_eq!(config, PrReviewConfig::default());
+        assert_eq!(config, CouncilConfig::default());
     }
 }

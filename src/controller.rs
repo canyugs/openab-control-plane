@@ -148,7 +148,6 @@ fn open_session(
     }
 }
 
-
 fn opening_inputs(action: &OpenSessionAction) -> Vec<OpeningInput> {
     if action.recipient_inputs.is_empty() {
         return Vec::new();
@@ -576,13 +575,7 @@ mod tests {
     #[test]
     fn post_message_reopen_matrix_is_coordinator_owned() {
         let state = state_with_bots();
-        for mode in [
-            "solo",
-            "council",
-            "pipeline",
-            "council",
-            "triage_council",
-        ] {
+        for mode in ["solo", "council", "pipeline", "council", "triage_council"] {
             let session_id = terminal_session(&state, mode, SessionState::Closed);
             let before = state.store.messages(&session_id).unwrap().len();
             let result = execute(
@@ -761,10 +754,6 @@ mod tests {
         else {
             panic!("first open should create a session");
         };
-        state
-            .store
-            .cache_installation_token(&old_id, "reviewer", "ghs_old", i64::MAX)
-            .unwrap();
         assert!(pending_frames_for_session(state.store.as_ref(), "rev1", &old_id) > 0);
 
         let mut north = state.north_tx.subscribe();
@@ -789,12 +778,6 @@ mod tests {
             pending_frames_for_session(state.store.as_ref(), "rev1", &new_id) > 0,
             "new session prompt should still be queued"
         );
-        assert!(state
-            .store
-            .session_installation_tokens(&old_id)
-            .unwrap()
-            .is_empty());
-
         let events = std::iter::from_fn(|| north.try_recv().ok())
             .map(|raw| serde_json::from_str::<serde_json::Value>(&raw).unwrap())
             .collect::<Vec<_>>();
@@ -1248,12 +1231,7 @@ mod tests {
     fn validate_accepts_every_dispatchable_mode() {
         let state = state_with_bots();
 
-        for mode in [
-            "council",
-            "triage_council",
-            "solo",
-            "pipeline",
-        ] {
+        for mode in ["council", "triage_council", "solo", "pipeline"] {
             assert!(
                 coordinator::lookup(mode).is_some(),
                 "mode {mode} should dispatch"

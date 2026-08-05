@@ -89,8 +89,6 @@ async fn render_bot_config(combo: Combo) -> Vec<u8> {
         store,
         None,
         None,
-        None,
-        None,
         "http://control-plane.test".to_string(),
         None,
     );

@@ -245,13 +245,6 @@ pub fn close_session_by_controller(
         return Ok(false);
     }
     purge_session_outbox_after_close(state, session_id);
-    if let Err(error) = crate::identity::revoke_session_github_tokens(
-        state.store.as_ref(),
-        state.github_app.as_ref(),
-        session_id,
-    ) {
-        tracing::warn!("revoke provider tokens for {session_id} failed: {error}");
-    }
     state.emit_north(
         "state",
         session_id,
@@ -330,14 +323,6 @@ pub fn force_close_timeout(
         return Ok(false); // already terminal
     }
     purge_session_outbox_after_close(state, session_id);
-    // Central revoke: scoped GitHub tokens die with the session (Agent Identity).
-    if let Err(e) = crate::identity::revoke_session_github_tokens(
-        state.store.as_ref(),
-        state.github_app.as_ref(),
-        session_id,
-    ) {
-        tracing::warn!("revoke github tokens for {session_id} failed: {e}");
-    }
     let session = state.store.session(session_id)?;
     let roster = state.store.roster(session_id)?;
     let done: std::collections::HashSet<String> =
@@ -418,13 +403,6 @@ fn dispatch_coordinator(
         .close_if_active(&session.id, "session.terminal", "unknown_mode", None)?
     {
         purge_session_outbox_after_close(state, &session.id);
-        if let Err(e) = crate::identity::revoke_session_github_tokens(
-            state.store.as_ref(),
-            state.github_app.as_ref(),
-            &session.id,
-        ) {
-            tracing::warn!("revoke github tokens for {} failed: {e}", session.id);
-        }
         state.emit_north(
             "state",
             &session.id,
@@ -446,19 +424,11 @@ fn purge_session_outbox_after_close(state: &Arc<AppState>, session_id: &str) {
 
 /// Post-commit cleanup for a session closed by `create_session_superseding`.
 /// The close+open itself is atomic in the store; these effects are deliberately
-/// after-commit and at-least-once. Crash window: if the process dies here, scoped
-/// GitHub tokens live until expiry, stale outbox rows wait for the terminal-outbox
-/// sweep, and `reason:"superseded"` events/webhooks are lost because there is no
-/// redrive in the pre-P3 plane.
+/// after-commit and at-least-once. Crash window: if the process dies here, stale
+/// outbox rows wait for the terminal-outbox sweep, and `reason:"superseded"`
+/// events/webhooks are lost because there is no redrive in the pre-P3 plane.
 pub fn handle_superseded_session(state: &Arc<AppState>, session_id: &str) {
     purge_session_outbox_after_close(state, session_id);
-    if let Err(e) = crate::identity::revoke_session_github_tokens(
-        state.store.as_ref(),
-        state.github_app.as_ref(),
-        session_id,
-    ) {
-        tracing::warn!("revoke github tokens for {session_id} failed: {e}");
-    }
     state.emit_north(
         "state",
         session_id,
@@ -744,7 +714,6 @@ fn fire_close_webhook(state: &Arc<AppState>, session_id: &str, verdict: &str, re
         }
     });
 }
-
 
 /// Reconstruct the sender of a stored message (for history backfill).
 fn sender_for(state: &AppState, m: &Message) -> SenderInfo {
@@ -1382,7 +1351,7 @@ fn attempt_failover(state: &Arc<AppState>, degraded_bot_id: &str) {
     // roster is (re-)read below *inside* this lock, so each swap sees the prior
     // one. Cheap — failover is rare — and the path is fully synchronous.
     let _swap = state.failover_lock.lock().unwrap();
-    let Ok((roster, _)) = crate::plugins::pr_review::runtime_council_roster(state) else {
+    let Ok((roster, _)) = crate::plugins::council::runtime_council_roster(state) else {
         return;
     };
     // Only route around a bot that is actually in the standing roster — an
@@ -1909,9 +1878,7 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                 // ADR 013: the chair's structured verdict, parsed from the
                 // closing text. Computed BEFORE the close CAS so it lands in
                 // the same transaction (the close webhook re-reads the row).
-                let structured_verdict = if let Some(coord) =
-                    coordinator::lookup(&session.mode)
-                {
+                let structured_verdict = if let Some(coord) = coordinator::lookup(&session.mode) {
                     let cx = OrchCtx {
                         state,
                         session,
@@ -1966,14 +1933,6 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                 };
                 if closed {
                     purge_session_outbox_after_close(state, &session.id);
-                    // Central revoke: scoped GitHub tokens die with the session.
-                    if let Err(e) = crate::identity::revoke_session_github_tokens(
-                        state.store.as_ref(),
-                        state.github_app.as_ref(),
-                        &session.id,
-                    ) {
-                        tracing::warn!("revoke github tokens for {} failed: {e}", session.id);
-                    }
                     // The chair's findings block is no longer the kernel's to
                     // read: the ledger AND the ADR 035 waiver counters live on
                     // the controller, which parses its own join of the
@@ -2538,8 +2497,6 @@ mod tests {
             store.clone(),
             None,
             None,
-            None,
-            None,
             "http://control-plane.zeabur.internal:8090".to_string(),
             Some(webhook_url),
         );
@@ -2870,8 +2827,7 @@ mod tests {
             handle_reply(&state, &chair, msg_reply(&session.id, err)).unwrap();
         }
 
-        let (roster, source) =
-            crate::plugins::pr_review::runtime_council_roster(&state).unwrap();
+        let (roster, source) = crate::plugins::council::runtime_council_roster(&state).unwrap();
         assert_eq!(source, "override");
         assert_eq!(
             roster.first().unwrap(),
@@ -2908,8 +2864,7 @@ mod tests {
             handle_reply(&state, &rev2, msg_reply(&session.id, err)).unwrap();
         }
 
-        let (roster, _) =
-            crate::plugins::pr_review::runtime_council_roster(&state).unwrap();
+        let (roster, _) = crate::plugins::council::runtime_council_roster(&state).unwrap();
         assert_eq!(roster.first().unwrap(), &chair, "chair untouched");
         assert!(
             roster.contains(&sb1.id) && roster.contains(&sb2.id),
@@ -2935,8 +2890,7 @@ mod tests {
             handle_reply(&state, &chair, msg_reply(&session.id, "-32603")).unwrap();
         }
 
-        let (roster, _) =
-            crate::plugins::pr_review::runtime_council_roster(&state).unwrap();
+        let (roster, _) = crate::plugins::council::runtime_council_roster(&state).unwrap();
         assert_eq!(roster.first().unwrap(), &chair, "no standby → chair stays");
         assert_eq!(
             store.bot_inventory(&chair).unwrap().unwrap().health,
@@ -2960,8 +2914,7 @@ mod tests {
             handle_reply(&state, &chair, msg_reply(&session.id, "-32603")).unwrap();
         }
 
-        let (roster, _) =
-            crate::plugins::pr_review::runtime_council_roster(&state).unwrap();
+        let (roster, _) = crate::plugins::council::runtime_council_roster(&state).unwrap();
         assert_eq!(roster.first().unwrap(), &chair, "disabled → no auto-swap");
         assert!(!roster.contains(&standby.id));
     }

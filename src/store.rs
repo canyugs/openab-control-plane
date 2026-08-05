@@ -290,7 +290,6 @@ pub enum ControllerOpenDecision {
     Supersede(ControllerSessionBinding),
 }
 
-
 /// The full mutable configuration of a registration, as it stands after a
 /// PATCH — the response body, so callers never have to interpret nulls.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -775,27 +774,6 @@ pub trait Store: Send + Sync {
     /// Boot backstop for crash-between-close-and-purge plus legacy NULL-session rows.
     fn purge_terminal_outbox(&self) -> Result<()>;
 
-    /// Per-`session × role` GitHub installation-token cache (Principle: Agent
-    /// Identity). The plane mints a scoped token once per (session, role) and reuses
-    /// it until near expiry, so a council doesn't hit GitHub's token endpoint on
-    /// every post. `expires_at` is unix-ms (`now_ms`). Upsert overwrites on refresh.
-    fn cache_installation_token(
-        &self,
-        session_id: &str,
-        role: &str,
-        token: &str,
-        expires_at: i64,
-    ) -> Result<()>;
-    /// Cached `(token, expires_at_ms)` for a (session, role), or None. The caller
-    /// decides freshness (refresh margin lives in `github_app`).
-    fn installation_token(&self, session_id: &str, role: &str) -> Result<Option<(String, i64)>>;
-    /// Every cached token string for a session (any role). Read before `purge_*` so
-    /// the close path can revoke each one GitHub-side.
-    fn session_installation_tokens(&self, session_id: &str) -> Result<Vec<String>>;
-    /// Central revoke: drop every scoped token for a session. Called when the session
-    /// closes so a pod can't keep acting on GitHub after the verdict.
-    fn purge_installation_tokens(&self, session_id: &str) -> Result<()>;
-
     /// Persist evidence that a deprecated surface was used. This is best-effort
     /// at call sites: observability must never change the behavior being measured.
     fn record_compatibility_use(&self, surface: &str, amount: i64) -> Result<()>;
@@ -876,20 +854,6 @@ CREATE INDEX IF NOT EXISTS idx_outbox_bot ON outbox(bot_id, seq);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY, value TEXT NOT NULL
 );
--- KNOWN GAP (#4): `token` is stored in plaintext. GitHub installation tokens are
--- short-lived (≤1h) bearer credentials; until encryption-at-rest lands (AES-GCM with
--- a KMS-derived key) the DB file itself must be access-controlled. Fast-follow.
-CREATE TABLE IF NOT EXISTS installation_tokens (
-    session_id TEXT NOT NULL, role TEXT NOT NULL,
-    token TEXT NOT NULL, expires_at INTEGER NOT NULL,
-    PRIMARY KEY (session_id, role)
-);
--- ADR 020 findings ledger (PR-review plugin-owned). One row per finding per
--- review round; a session IS a round, so history across rounds = rows across
--- sessions of the same repo/pr. Append-only.
--- ponytail: no rounds/events tables yet — sessions already carries round
--- The pr_review_findings ledger moved to the controller (SEI-895); existing
--- databases keep the old table as inert data until a cleanup migration drops it.
 -- Reviews the hourly cap dropped (SEI-819). One row per trigger_ref; a later
 -- drop overwrites so the newest dropped head wins. The catch-up sweep convenes
 -- and deletes once the cap window clears.
@@ -1051,8 +1015,13 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_runtime ON audit_events(runtime_even
 CREATE INDEX IF NOT EXISTS idx_audit_events_write ON audit_events(write_id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_trigger ON audit_events(trigger_ref);
 CREATE INDEX IF NOT EXISTS idx_audit_events_recorded ON audit_events(recorded_at, seq);
--- review_waivers moved to the controller (SEI-895 item 5); existing databases
--- keep the old table as inert data until a cleanup migration drops it.
+-- Kernel-slim cleanup: the findings ledger and waiver ledger moved to the
+-- controller (SEI-895), and the GitHub installation-token cache left with the
+-- token-mint routes. This batch runs idempotently on every boot, so the DROPs
+-- double as the cleanup migration for databases created before those releases.
+DROP TABLE IF EXISTS pr_review_findings;
+DROP TABLE IF EXISTS review_waivers;
+DROP TABLE IF EXISTS installation_tokens;
 "#;
 
 /// Additive migrations for DBs created before a column or index existed. Each
@@ -1817,8 +1786,6 @@ impl Store for SqliteStore {
             params![controller_id, i64::from(enabled), now_ms()],
         )? == 1)
     }
-
-
 
     fn patch_controller_installation(
         &self,
@@ -4299,51 +4266,6 @@ impl Store for SqliteStore {
              )
              OR session_id IS NULL",
             [],
-        )?;
-        Ok(())
-    }
-
-    fn cache_installation_token(
-        &self,
-        session_id: &str,
-        role: &str,
-        token: &str,
-        expires_at: i64,
-    ) -> Result<()> {
-        let c = self.conn.lock().unwrap();
-        c.execute(
-            "INSERT INTO installation_tokens (session_id, role, token, expires_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(session_id, role)
-             DO UPDATE SET token = excluded.token, expires_at = excluded.expires_at",
-            params![session_id, role, token, expires_at],
-        )?;
-        Ok(())
-    }
-
-    fn installation_token(&self, session_id: &str, role: &str) -> Result<Option<(String, i64)>> {
-        let c = self.conn.lock().unwrap();
-        Ok(c.query_row(
-            "SELECT token, expires_at FROM installation_tokens
-             WHERE session_id = ?1 AND role = ?2",
-            params![session_id, role],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-        )
-        .optional()?)
-    }
-
-    fn session_installation_tokens(&self, session_id: &str) -> Result<Vec<String>> {
-        let c = self.conn.lock().unwrap();
-        let mut stmt = c.prepare("SELECT token FROM installation_tokens WHERE session_id = ?1")?;
-        let rows = stmt.query_map(params![session_id], |r| r.get::<_, String>(0))?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
-    }
-
-    fn purge_installation_tokens(&self, session_id: &str) -> Result<()> {
-        let c = self.conn.lock().unwrap();
-        c.execute(
-            "DELETE FROM installation_tokens WHERE session_id = ?1",
-            params![session_id],
         )?;
         Ok(())
     }
