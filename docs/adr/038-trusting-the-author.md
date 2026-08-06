@@ -193,6 +193,16 @@ the same thing.
    precise, because it keys on the finding the council actually raised rather
    than on someone's prose about it.
 
+   **This bounds the durable channel, not every channel.** The rule above is
+   about the waiver ledger: repo-wide, auto-injected into every future round,
+   for up to 180 days. A dismissal's reason inside *its own pull request* is a
+   different thing — scoped to one PR, gone when the PR closes, and **already
+   readable by the chair**, which has PR read tools and the dismissal is a
+   comment on the thread. Injecting it there is not a new door; it makes an
+   open one deterministic instead of leaving it to whether the model happened
+   to look. Abstinence would not keep the text away from the model, it would
+   only make its arrival unreliable.
+
    Operator-created waivers (the ADR 035 path) have no finding to key on and
    keep their free-text field; for those the header's claim stays true. The
    injected block must therefore **label each entry's provenance** — operator
@@ -225,6 +235,29 @@ recomputation and the three artifacts; the audit event with actor and reason;
 and the reply. The last two are not guards to be traded away — the record is
 what makes trusting the author defensible (point 1), and the reply *is* the
 feature's user experience (point 8).
+
+**And the within-PR teaching loop.** Unblocking a verdict without teaching
+anything is treating the symptom: the next round on the same PR would re-raise
+what the author just answered, which reads as the tool forgetting. So when the
+controller opens a round it includes the PR's own dismissed findings, with the
+author's stated reason, in the chair's task — **framed as the author's claim,
+not as fact**:
+
+> The author dismissed F1 ("SSRF via DNS rebinding…") as not a defect, saying:
+> "…". Weigh that argument. If it does not hold, raise the finding again and
+> say why it does not hold.
+
+The wording deliberately mirrors the Review Contract guard already in
+steering — *a contract can launder a real defect; verify it is honest* — so a
+dismissal informs the council without being able to silence it. Same bounds as
+point 7 apply to the injected text (length-bounded, normalized, one line).
+
+Teaching has three loops and they are not alternatives, only different time
+constants: **this PR** (above, automatic), **this repo** (`waive`, then
+promotion to the boundaries file — v2), and **every repo** (steering and the
+recall probes, corrected from the precision data that `dismiss` finally
+produces). Each is fed by the one below it, which is ADR 021's calibration
+position with the bottom layer finally supplied.
 
 Deferred: `waive` entirely, and with it expiry, repo scope, prompt injection,
 provenance labelling and the tidy-up report; the repo-write permission probe
