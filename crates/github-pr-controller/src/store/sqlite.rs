@@ -5,9 +5,8 @@
 use super::{
     now_unix, CanarySummary, DeliveryAdmission, PendingWrite, ProductStore, RecordedRound,
     ReviewFinding, ReviewFindingQuery, ReviewFindingRow, ReviewRound, ReviewWaiver,
-    RuntimeEventAdmission, SessionTarget, ShadowAdmission,
-    ShadowSummary, StoreError, StoreResult, COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS,
-    WRITE_CLAIM_LEASE_SECS, WRITE_MAX_ATTEMPTS,
+    RuntimeEventAdmission, SessionTarget, ShadowAdmission, ShadowSummary, StoreError, StoreResult,
+    COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS, WRITE_CLAIM_LEASE_SECS, WRITE_MAX_ATTEMPTS,
 };
 use controller_protocol::audit::{
     AuditActor, AuditCorrelation, AuditCursor, AuditError, AuditEvent, AuditEventPage,
@@ -182,6 +181,13 @@ const MIGRATIONS: &[&str] = &[
        last_fired_at INTEGER
      );
      CREATE INDEX IF NOT EXISTS idx_review_waivers_repo ON review_waivers(repo, expires_at);",
+    // 6 — ADR 038: an author's judgement on a finding. The status column
+    // already carried `dismissed`; what was missing is who said so and why,
+    // without which the record cannot be audited and the decision cannot be
+    // told apart from the chair's own bookkeeping.
+    "ALTER TABLE review_findings ADD COLUMN decided_by TEXT;
+     ALTER TABLE review_findings ADD COLUMN decided_reason TEXT;
+     ALTER TABLE review_findings ADD COLUMN decided_at INTEGER;",
 ];
 
 pub struct SqliteStore {
@@ -652,7 +658,8 @@ impl SqliteStore {
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         let mut statement = connection.prepare(
             "SELECT id, session_id, repo, pr_number, stable_id, severity, status,
-                    title, path, line, raised_by, angle, head_sha, created_at
+                    title, path, line, raised_by, angle, head_sha, created_at,
+                    decided_by, decided_reason, decided_at
                FROM review_findings
               WHERE (?1 IS NULL OR repo = ?1)
                 AND (?2 IS NULL OR pr_number = ?2)
@@ -685,10 +692,83 @@ impl SqliteStore {
                     angle: row.get(11)?,
                     head_sha: row.get(12)?,
                     created_at: row.get(13)?,
+                    decided_by: row.get(14)?,
+                    decided_reason: row.get(15)?,
+                    decided_at: row.get(16)?,
                 })
             },
         )?;
         rows.collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn decide_review_finding(
+        &self,
+        repo: &str,
+        pr_number: i64,
+        stable_id: &str,
+        head_sha: &str,
+        status: &str,
+        decided_by: &str,
+        reason: Option<&str>,
+    ) -> rusqlite::Result<Option<ReviewFindingRow>> {
+        let connection = self.connection.lock().unwrap();
+        // The head_sha predicate is the compare-and-swap (ADR 038 point 4): a
+        // decision taken against a head that has since moved matches nothing,
+        // so it cannot land on a newer round's finding of the same name.
+        let changed = connection.execute(
+            "UPDATE review_findings
+                SET status = ?5, decided_by = ?6, decided_reason = ?7, decided_at = ?8
+              WHERE repo = ?1 AND pr_number = ?2 AND stable_id = ?3 AND head_sha = ?4",
+            rusqlite::params![
+                repo,
+                pr_number,
+                stable_id,
+                head_sha,
+                status,
+                decided_by,
+                reason,
+                now_unix(),
+            ],
+        )?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        let mut statement = connection.prepare(
+            "SELECT id, session_id, repo, pr_number, stable_id, severity, status,
+                    title, path, line, raised_by, angle, head_sha, created_at,
+                    decided_by, decided_reason, decided_at
+               FROM review_findings
+              WHERE repo = ?1 AND pr_number = ?2 AND stable_id = ?3 AND head_sha = ?4
+              ORDER BY id DESC LIMIT 1",
+        )?;
+        let row = statement
+            .query_row(
+                rusqlite::params![repo, pr_number, stable_id, head_sha],
+                |row| {
+                    Ok(ReviewFindingRow {
+                        id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        repo: row.get(2)?,
+                        pr_number: row.get(3)?,
+                        stable_id: row.get(4)?,
+                        severity: row.get(5)?,
+                        status: row.get(6)?,
+                        title: row.get(7)?,
+                        path: row.get(8)?,
+                        line: row.get(9)?,
+                        raised_by: row.get(10)?,
+                        angle: row.get(11)?,
+                        head_sha: row.get(12)?,
+                        created_at: row.get(13)?,
+                        decided_by: row.get(14)?,
+                        decided_reason: row.get(15)?,
+                        decided_at: row.get(16)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
     }
 
     pub fn record_review_findings(
@@ -1202,6 +1282,22 @@ impl ProductStore for SqliteStore {
         )?)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn decide_review_finding(
+        &self,
+        repo: &str,
+        pr_number: i64,
+        stable_id: &str,
+        head_sha: &str,
+        status: &str,
+        decided_by: &str,
+        reason: Option<&str>,
+    ) -> StoreResult<Option<ReviewFindingRow>> {
+        Ok(SqliteStore::decide_review_finding(
+            self, repo, pr_number, stable_id, head_sha, status, decided_by, reason,
+        )?)
+    }
+
     async fn review_findings(
         &self,
         query: &ReviewFindingQuery,
@@ -1265,24 +1361,21 @@ impl ProductStore for SqliteStore {
                 AND (?2 OR (revoked_at IS NULL AND expires_at > ?3))
               ORDER BY created_at",
         )?;
-        let rows = statement.query_map(
-            rusqlite::params![repo, include_inactive, now],
-            |row| {
-                Ok(ReviewWaiver {
-                    id: row.get(0)?,
-                    repo: row.get(1)?,
-                    path_class: row.get(2)?,
-                    text: row.get(3)?,
-                    origin_pr: row.get(4)?,
-                    created_by: row.get(5)?,
-                    created_at: row.get(6)?,
-                    expires_at: row.get(7)?,
-                    revoked_at: row.get(8)?,
-                    fired_count: row.get(9)?,
-                    last_fired_at: row.get(10)?,
-                })
-            },
-        )?;
+        let rows = statement.query_map(rusqlite::params![repo, include_inactive, now], |row| {
+            Ok(ReviewWaiver {
+                id: row.get(0)?,
+                repo: row.get(1)?,
+                path_class: row.get(2)?,
+                text: row.get(3)?,
+                origin_pr: row.get(4)?,
+                created_by: row.get(5)?,
+                created_at: row.get(6)?,
+                expires_at: row.get(7)?,
+                revoked_at: row.get(8)?,
+                fired_count: row.get(9)?,
+                last_fired_at: row.get(10)?,
+            })
+        })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
@@ -1465,6 +1558,181 @@ fn audit_event_from_sqlite_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Audi
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn finding(stable_id: &str, severity: &str) -> crate::store::ReviewFinding {
+        crate::store::ReviewFinding {
+            stable_id: stable_id.into(),
+            severity: severity.into(),
+            status: "open".into(),
+            title: format!("{stable_id} title"),
+            path: Some("internal/services/cicd/main.go".into()),
+            line: Some(389),
+            raised_by: Some("rev-codex".into()),
+            angle: Some("security".into()),
+        }
+    }
+
+    #[test]
+    fn a_decisions_writes_survive_the_rounds_own_outbox_rows() {
+        // Regression, council review of #370 F1: the outbox is
+        // UNIQUE(session_id, kind) with INSERT OR IGNORE, so decision writes
+        // that reused the round's kinds were silently dropped — the author was
+        // told the pull request had been unblocked while nothing on it moved.
+        let store = SqliteStore::memory().unwrap();
+        let round = json!({"repo": "zeabur/backend", "sha": "f9caff5d"});
+        assert!(store
+            .enqueue_write("ses_1", crate::closing::KIND_STATUS, &round)
+            .unwrap());
+        assert!(store
+            .enqueue_write("ses_1", crate::closing::KIND_REVIEW, &round)
+            .unwrap());
+        // Same session, same operations, different event: these must land.
+        let status = crate::deciding::decision_kind(crate::deciding::KIND_DECISION_STATUS, 42);
+        let review = crate::deciding::decision_kind(crate::deciding::KIND_DECISION_REVIEW, 42);
+        assert!(store.enqueue_write("ses_1", &status, &round).unwrap());
+        assert!(store.enqueue_write("ses_1", &review, &round).unwrap());
+        // A redelivered command lands on the same row and posts once.
+        assert!(!store.enqueue_write("ses_1", &status, &round).unwrap());
+        // A later decision on the same session gets rows of its own.
+        let later = crate::deciding::decision_kind(crate::deciding::KIND_DECISION_STATUS, 43);
+        assert!(store.enqueue_write("ses_1", &later, &round).unwrap());
+
+        let pending = store.claim_writes(10).unwrap();
+        let kinds: Vec<&str> = pending.iter().map(|w| w.kind.as_str()).collect();
+        assert!(kinds.contains(&status.as_str()), "got {kinds:?}");
+        assert!(kinds.contains(&review.as_str()), "got {kinds:?}");
+        assert_eq!(kinds.len(), 5);
+    }
+
+    #[test]
+    fn a_decision_lands_on_the_reviewed_head_and_nowhere_else() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .record_review_findings(
+                "ses_1",
+                "zeabur/backend",
+                2382,
+                Some("head-old"),
+                &[finding("F1", "red"), finding("F2", "green")],
+            )
+            .unwrap();
+
+        // Wrong head: the compare-and-swap misses, and nothing is written —
+        // a stale decision must never unblock code nobody reviewed.
+        assert!(SqliteStore::decide_review_finding(
+            &store,
+            "zeabur/backend",
+            2382,
+            "F1",
+            "head-new",
+            "dismissed",
+            "yuaanlin",
+            Some("no")
+        )
+        .unwrap()
+        .is_none());
+        let untouched = SqliteStore::review_findings(
+            &store,
+            &crate::store::ReviewFindingQuery {
+                repo: Some("zeabur/backend".into()),
+                pr_number: Some(2382),
+                status: None,
+                severity: None,
+                limit: 10,
+            },
+        )
+        .unwrap();
+        assert!(untouched.iter().all(|row| row.status == "open"));
+
+        // Right head: the row carries who, why and when.
+        let decided = SqliteStore::decide_review_finding(
+            &store,
+            "zeabur/backend",
+            2382,
+            "F1",
+            "head-old",
+            "dismissed",
+            "yuaanlin",
+            Some("validator pins the IP first"),
+        )
+        .unwrap()
+        .expect("the reviewed head matches");
+        assert_eq!(decided.status, "dismissed");
+        assert_eq!(decided.decided_by.as_deref(), Some("yuaanlin"));
+        assert_eq!(
+            decided.decided_reason.as_deref(),
+            Some("validator pins the IP first")
+        );
+        assert!(decided.decided_at.is_some());
+        assert_eq!(decided.title, "F1 title", "the council's own words survive");
+    }
+
+    #[test]
+    fn an_unknown_finding_id_reports_a_miss_rather_than_inventing_a_row() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .record_review_findings(
+                "ses_1",
+                "zeabur/backend",
+                2382,
+                Some("head"),
+                &[finding("F1", "red")],
+            )
+            .unwrap();
+        assert!(SqliteStore::decide_review_finding(
+            &store,
+            "zeabur/backend",
+            2382,
+            "F9",
+            "head",
+            "dismissed",
+            "yuaanlin",
+            Some("x")
+        )
+        .unwrap()
+        .is_none());
+    }
+
+    #[test]
+    fn reopen_restores_the_finding_and_keeps_the_trail() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .record_review_findings(
+                "ses_1",
+                "zeabur/backend",
+                2382,
+                Some("h"),
+                &[finding("F1", "red")],
+            )
+            .unwrap();
+        SqliteStore::decide_review_finding(
+            &store,
+            "zeabur/backend",
+            2382,
+            "F1",
+            "h",
+            "dismissed",
+            "yuaanlin",
+            Some("mistake"),
+        )
+        .unwrap()
+        .unwrap();
+        let reopened = SqliteStore::decide_review_finding(
+            &store,
+            "zeabur/backend",
+            2382,
+            "F1",
+            "h",
+            "open",
+            "yuaanlin",
+            Some("undo"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(reopened.status, "open");
+        // Undo is itself a decision: the record says who undid it and why.
+        assert_eq!(reopened.decided_reason.as_deref(), Some("undo"));
+    }
 
     #[test]
     fn delivery_ids_are_durable_idempotency_keys() {

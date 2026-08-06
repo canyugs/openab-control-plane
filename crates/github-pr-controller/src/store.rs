@@ -225,6 +225,14 @@ pub struct ReviewFindingRow {
     pub angle: Option<String>,
     pub head_sha: Option<String>,
     pub created_at: i64,
+    /// ADR 038 — who judged this finding, why, and when. None for a finding
+    /// the council alone has touched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decided_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<i64>,
 }
 
 /// An ADR 035 waiver: an operator-recorded accepted trade-off, injected into
@@ -373,10 +381,31 @@ pub trait ProductStore: Send + Sync {
         findings: &[ReviewFinding],
     ) -> StoreResult<usize>;
 
+    /// Record an author's judgement on one finding (ADR 038).
+    ///
+    /// Scoped by `head_sha` as well as `(repo, pr, stable_id)`: a decision is
+    /// about the revision the finding was raised on, so one taken against a
+    /// head that has since moved must not land on the newer round's finding of
+    /// the same name. Returns the row as it now stands, or None when nothing
+    /// matched — the caller turns that into a reply, never a silent miss.
+    #[allow(clippy::too_many_arguments)] // the CAS key is four of them
+    async fn decide_review_finding(
+        &self,
+        repo: &str,
+        pr_number: i64,
+        stable_id: &str,
+        head_sha: &str,
+        status: &str,
+        decided_by: &str,
+        reason: Option<&str>,
+    ) -> StoreResult<Option<ReviewFindingRow>>;
+
     /// Read the findings ledger back, newest first. The reporting surface the
     /// ops scripts join against.
-    async fn review_findings(&self, query: &ReviewFindingQuery)
-        -> StoreResult<Vec<ReviewFindingRow>>;
+    async fn review_findings(
+        &self,
+        query: &ReviewFindingQuery,
+    ) -> StoreResult<Vec<ReviewFindingRow>>;
 
     /// ADR 035 P1: record an operator-accepted trade-off. The id is minted
     /// here (`wvr_` + 128-bit random) — it is a capability, never guessable.

@@ -302,6 +302,45 @@ impl GitHubClient {
         }
     }
 
+    /// Whether `login` may write to `repo` — `admin`, `maintain` or `write`.
+    ///
+    /// Org membership is too coarse for a decision that unblocks a merge: a
+    /// member with read-only access to one repository would otherwise be able
+    /// to make the controller submit an APPROVE there, lending council
+    /// authority to someone GitHub itself would refuse. Errors are the
+    /// caller's to fail closed on.
+    pub async fn can_write_repo(&self, repo: &str, login: &str) -> Result<bool> {
+        self.check_repository(repo)?;
+        let token = self.installation_token().await?;
+        let response = self
+            .http
+            .get(format!(
+                "{}/repos/{repo}/collaborators/{login}/permission",
+                self.api_base
+            ))
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await
+            .context("github request failed")?;
+        match response.status().as_u16() {
+            200 => {
+                let body: serde_json::Value =
+                    response.json().await.context("bad permission json")?;
+                Ok(matches!(
+                    body["permission"].as_str(),
+                    Some("admin") | Some("maintain") | Some("write")
+                ))
+            }
+            403 | 404 => Ok(false),
+            status => {
+                bail!("github repos/{repo}/collaborators/{login}/permission returned {status}")
+            }
+        }
+    }
+
     pub async fn find_marked_comment(
         &self,
         repo: &str,
@@ -560,6 +599,8 @@ mod tests {
     use super::*;
     use crate::config::{GitHubAppConfig, OperatingMode};
     use axum::extract::{Path, State};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
     use axum::routing::{patch, post};
     use axum::{Json, Router};
     use std::sync::Arc;
@@ -591,6 +632,19 @@ mod tests {
                 post(|| async {
                     Json(json!({"token": "ghs_installation", "expires_at": "2999-01-01T00:00:00Z"}))
                 }),
+            )
+            .route(
+                "/repos/:owner/:name/collaborators/:login/permission",
+                axum::routing::get(
+                    |Path((_owner, _name, login)): Path<(String, String, String)>| async move {
+                        match login.as_str() {
+                            "maintainer" => Json(json!({"permission": "write"})).into_response(),
+                            "admin" => Json(json!({"permission": "admin"})).into_response(),
+                            "reader" => Json(json!({"permission": "read"})).into_response(),
+                            _ => StatusCode::NOT_FOUND.into_response(),
+                        }
+                    },
+                ),
             )
             .route(
                 "/repos/:owner/:name/issues/:number/comments",
@@ -646,6 +700,32 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
         (format!("http://{addr}"), rx)
+    }
+
+    #[tokio::test]
+    async fn write_access_is_what_authorises_judging_a_finding() {
+        // ADR 038 / council #370 F2: a decision can unblock a merge, so org
+        // membership is not enough — a read-only member would otherwise borrow
+        // council authority GitHub itself would refuse them.
+        let (base, _rx) = fake_github("APPROVED").await;
+        let client = client(&base);
+        assert!(client
+            .can_write_repo("example/repo", "maintainer")
+            .await
+            .unwrap());
+        assert!(client
+            .can_write_repo("example/repo", "admin")
+            .await
+            .unwrap());
+        assert!(!client
+            .can_write_repo("example/repo", "reader")
+            .await
+            .unwrap());
+        // Not a collaborator at all: GitHub answers 404, which is a refusal.
+        assert!(!client
+            .can_write_repo("example/repo", "stranger")
+            .await
+            .unwrap());
     }
 
     fn client(api_base: &str) -> GitHubClient {

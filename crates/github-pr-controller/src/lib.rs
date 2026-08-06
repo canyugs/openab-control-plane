@@ -2,6 +2,7 @@
 
 pub mod closing;
 pub mod config;
+pub mod deciding;
 pub mod github;
 pub mod ocp;
 pub mod planner;
@@ -30,8 +31,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use store::{
     audit_timestamp, now_ms, DeliveryAdmission, ProductStore, ReviewFindingQuery,
-    RuntimeEventAdmission,
-    ShadowAdmission, WRITE_MAX_ATTEMPTS,
+    RuntimeEventAdmission, ShadowAdmission, WRITE_MAX_ATTEMPTS,
 };
 
 #[cfg(test)]
@@ -641,6 +641,33 @@ async fn handle_webhook(
         }
     }
 
+    // A finding command mutates the ledger and what the pull request already
+    // shows; it opens no session, so it never reaches the planner.
+    if let Some(command) =
+        planner::parse_finding_command(event_type, &payload, state.config.bot_handle.as_deref())
+    {
+        let reply = apply_finding_command(&state, &command).await;
+        if let Some(github) = state.github.as_ref() {
+            if let Err(error) = github
+                .create_comment(&command.repository, command.pr_number as i64, &reply)
+                .await
+            {
+                // The author is now waiting on a reply that will not come, so
+                // this is louder than a write failure normally would be.
+                tracing::error!(%error, repo = %command.repository, pr = command.pr_number, "finding-command reply failed");
+            }
+        }
+        let result = json!({
+            "ok": true,
+            "planned": false,
+            "reason": format!("finding_{}", command.verb),
+        });
+        if let Err(error) = store.finish_delivery(delivery_id, "handled", &result).await {
+            tracing::error!(%error, %delivery_id, "finding-command delivery completion failed");
+        }
+        return response(StatusCode::OK, result);
+    }
+
     let (durable_state, result) = match candidate_plan(&state, delivery_id, event_type, &payload)
         .await
     {
@@ -789,19 +816,31 @@ async fn handle_webhook(
             // instruction — noise there (the kernel's ref parser skipped ask
             // refs by accident of format; this makes it deliberate).
             if plan.mode == "council" {
+                let mut context = String::new();
                 if let Some(block) = waiver_block_for_repo(store.as_ref(), &plan.repository).await {
+                    context.push_str(&block);
+                }
+                // ADR 038: what the author already answered on THIS pull
+                // request. Without it the next round re-raises what was just
+                // dealt with, which reads as the tool forgetting — and the
+                // chair could read it from the thread anyway, so this only
+                // makes an existing channel reliable.
+                if let Some(block) =
+                    dismissed_block_for_pr(store.as_ref(), &plan.repository, plan.pr_number as i64)
+                        .await
+                {
+                    context.push_str(&block);
+                }
+                if !context.is_empty() {
                     let fallback = open_action.prompt.clone();
                     open_action
                         .recipient_inputs
                         .entry(plan.chair_bot.clone())
                         .or_insert(fallback)
-                        .push_str(&block);
+                        .push_str(&context);
                 }
             }
-            match client
-                .open_session(action_id.clone(), open_action)
-                .await
-            {
+            match client.open_session(action_id.clone(), open_action).await {
                 Ok(action_result) => {
                     if let Err(error) = append_controller_audit(
                         store.as_ref(),
@@ -1373,7 +1412,10 @@ where
 {
     use serde::Deserialize as _;
     let raw = Option::<String>::deserialize(deserializer)?;
-    Ok(matches!(raw.as_deref(), Some("1") | Some("true") | Some("yes")))
+    Ok(matches!(
+        raw.as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    ))
 }
 
 /// `GET /api/v1/review/waivers` — same signed-observation auth as the other
@@ -1531,7 +1573,14 @@ async fn handle_create_waiver(
         );
     };
     match store
-        .create_review_waiver(repo, path_class, text, origin_pr, created_by, request.expires_at)
+        .create_review_waiver(
+            repo,
+            path_class,
+            text,
+            origin_pr,
+            created_by,
+            request.expires_at,
+        )
         .await
     {
         Ok(waiver) => {
@@ -1675,6 +1724,28 @@ async fn handle_update_waiver(
 /// steering references it — so it moves verbatim. Injection happens at the
 /// dispatch site below, not in the planner, which stays a pure function for
 /// shadow parity.
+/// The PR's own author-dismissed findings, for the chair's opening input.
+async fn dismissed_block_for_pr(
+    store: &dyn store::ProductStore,
+    repo: &str,
+    pr_number: i64,
+) -> Option<String> {
+    let query = store::ReviewFindingQuery {
+        repo: Some(repo.to_string()),
+        pr_number: Some(pr_number),
+        status: Some("dismissed".into()),
+        severity: None,
+        limit: 50,
+    };
+    match store.review_findings(&query).await {
+        Ok(rows) => deciding::dismissed_block(&rows),
+        Err(error) => {
+            tracing::warn!(%error, repo, pr_number, "dismissed-findings lookup failed; round opens without");
+            None
+        }
+    }
+}
+
 async fn waiver_block_for_repo(store: &dyn store::ProductStore, repo: &str) -> Option<String> {
     let now = now_unix();
     let waivers = match store.list_review_waivers(Some(repo), false, now).await {
@@ -2157,7 +2228,9 @@ async fn perform_write_with_receipt(
             }
             json!({"comment_id": existing, "reconciled": existing.is_some()})
         }
-        closing::KIND_STATUS => {
+        kind if kind == closing::KIND_STATUS
+            || kind.starts_with(deciding::KIND_DECISION_STATUS) =>
+        {
             let state = match payload["state"].as_str() {
                 Some("success") => github::StatusState::Success,
                 Some("failure") => github::StatusState::Failure,
@@ -2182,7 +2255,9 @@ async fn perform_write_with_receipt(
                 "state": state.as_str(),
             })
         }
-        closing::KIND_REVIEW => {
+        kind if kind == closing::KIND_REVIEW
+            || kind.starts_with(deciding::KIND_DECISION_REVIEW) =>
+        {
             let event = match payload["event"].as_str() {
                 Some("APPROVE") => github::ReviewEvent::Approve,
                 Some("REQUEST_CHANGES") => github::ReviewEvent::RequestChanges,
@@ -2410,13 +2485,20 @@ async fn shadow_summary(State(state): State<Arc<AppState>>, headers: HeaderMap) 
 /// rejecting. Fail closed: no GitHub client (writes off), no login in the
 /// payload, or a probe error all leave the author untrusted.
 async fn org_membership_fallback(state: &AppState, trigger: &planner::Trigger) -> bool {
+    org_member(state, &trigger.repository, trigger.author_login.as_deref()).await
+}
+
+/// Live membership probe. The payload's `author_association` renders against
+/// PUBLIC org membership only, so a private member arrives as CONTRIBUTOR and
+/// would be refused without this (SEI-884).
+async fn org_member(state: &AppState, repository: &str, login: Option<&str>) -> bool {
     let Some(github) = state.github.as_ref() else {
         return false;
     };
-    let Some(login) = trigger.author_login.as_deref() else {
+    let Some(login) = login else {
         return false;
     };
-    let Some((org, _)) = trigger.repository.split_once('/') else {
+    let Some((org, _)) = repository.split_once('/') else {
         return false;
     };
     match github.is_org_member(org, login).await {
@@ -2426,6 +2508,233 @@ async fn org_membership_fallback(state: &AppState, trigger: &planner::Trigger) -
             false
         }
     }
+}
+
+/// Apply an author's judgement on a finding (ADR 038).
+///
+/// Returns the reply body. Every path returns one: a command that is refused,
+/// or that matches nothing, or that changes nothing still gets answered —
+/// silence is what makes an author conclude the council is broken (ADR 025,
+/// SEI-820), and it is the failure mode this whole feature exists to remove.
+async fn apply_finding_command(state: &Arc<AppState>, command: &planner::FindingCommand) -> String {
+    let Some(store) = state.store.clone() else {
+        return "The controller has no product store configured, so findings cannot be judged \
+                here yet."
+            .into();
+    };
+    // Judging a finding can unblock a merge, so the bar is write access to
+    // THIS repository, not membership of the org: an org member with read-only
+    // access here would otherwise borrow council authority GitHub would refuse
+    // them. Fail closed — a probe that errors is not a grant.
+    let Some(login) = command.author_login.clone() else {
+        return "Could not identify the commenter, so nothing was changed.".into();
+    };
+    let allowed = match state.github.as_ref() {
+        Some(github) => github
+            .can_write_repo(&command.repository, &login)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, repo = %command.repository, %login, "repo permission probe failed; refusing");
+                false
+            }),
+        None => false,
+    };
+    if !allowed {
+        return format!(
+            "Judging a finding can unblock a merge, so it needs write access to \
+             `{}` — @{login} does not have it. `/review` still works for anyone who can \
+             comment.",
+            command.repository
+        );
+    }
+    if command.verb == "dismiss" && command.reason.is_none() {
+        return format!(
+            "`dismiss {}` needs a reason — the record is the whole point of trusting the \
+             judgement. Try `dismiss {} <why this is not a defect>`.",
+            command.stable_id, command.stable_id
+        );
+    }
+    let Some(github) = state.github.as_ref() else {
+        return "No GitHub client is configured, so the head revision cannot be confirmed.".into();
+    };
+    let head_sha = match github
+        .pull_head_sha(&command.repository, command.pr_number as i64)
+        .await
+    {
+        Ok(sha) => sha,
+        Err(error) => {
+            tracing::warn!(%error, repo = %command.repository, "head lookup failed for a finding command");
+            return "Could not confirm this pull request's head revision, so nothing was \
+                    changed. Try again."
+                .into();
+        }
+    };
+    let query = store::ReviewFindingQuery {
+        repo: Some(command.repository.clone()),
+        pr_number: Some(command.pr_number as i64),
+        status: None,
+        severity: None,
+        limit: 500,
+    };
+    let before_rows = match store.review_findings(&query).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!(%error, "findings read failed for a finding command");
+            return "The findings ledger is unavailable, so nothing was changed.".into();
+        }
+    };
+    let before = deciding::open_counts(&before_rows, &head_sha);
+    let was_blocking = before.0 > 0 || before.1 > 0;
+    let status = if command.verb == "dismiss" {
+        "dismissed"
+    } else {
+        "open"
+    };
+    let decided = match store
+        .decide_review_finding(
+            &command.repository,
+            command.pr_number as i64,
+            &command.stable_id,
+            &head_sha,
+            status,
+            command.author_login.as_deref().unwrap_or("unknown"),
+            command.reason.as_deref(),
+        )
+        .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            // Two ways to match nothing, and they need different answers.
+            let on_this_head: Vec<&str> = before_rows
+                .iter()
+                .filter(|row| row.head_sha.as_deref() == Some(head_sha.as_str()))
+                .map(|row| row.stable_id.as_str())
+                .collect();
+            return if on_this_head.contains(&command.stable_id.as_str()) {
+                format!(
+                    "`{}` moved since that round, so nothing was changed — a decision on an \
+                     older revision must not unblock code nobody reviewed. The next round will \
+                     re-raise whatever still applies.",
+                    &head_sha[..head_sha.len().min(8)]
+                )
+            } else if on_this_head.is_empty() {
+                format!(
+                    "No findings are recorded for `{}` on this revision yet.",
+                    command.repository
+                )
+            } else {
+                format!(
+                    "{} is not a finding on this revision. This round has: {}.",
+                    command.stable_id,
+                    on_this_head.join(", ")
+                )
+            };
+        }
+        Err(error) => {
+            tracing::error!(%error, "finding decision write failed");
+            return "The findings ledger refused the write, so nothing was changed.".into();
+        }
+    };
+
+    // A failed re-read must not be answered with pre-decision counts: the
+    // ledger already holds the judgement, so stale rows would tell the author
+    // they are still blocked by the very finding they just dismissed (F4).
+    let after_rows = match store.review_findings(&query).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!(%error, "findings re-read failed after a decision");
+            return format!(
+                "{} is recorded as {status}, but the ledger could not be re-read, so the \
+                 verdict was not recomputed. Comment again to retry — the judgement is \
+                 already saved.",
+                command.stable_id
+            );
+        }
+    };
+    let outcome = deciding::plan_decision(
+        &command.repository,
+        command.pr_number as i64,
+        &head_sha,
+        &after_rows,
+        was_blocking,
+        // v1 leaves the verdict comment as the record of what the council said
+        // that round; the reply carries the news and the ledger carries truth.
+        None,
+        None,
+        "",
+        command.comment_id,
+    );
+    // A write that does not enqueue must never be reported as done: that is the
+    // exact shape of the bug this path was born with — the reply said approved
+    // while the outbox had silently ignored the row.
+    let mut all_queued = true;
+    for (kind, payload) in &outcome.writes {
+        match store
+            .enqueue_write(&decided.session_id, kind, payload)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                all_queued = false;
+                tracing::error!(kind, session_id = %decided.session_id, "decision write collided with an existing outbox row");
+            }
+            Err(error) => {
+                all_queued = false;
+                tracing::error!(%error, kind, "decision write enqueue failed");
+            }
+        }
+    }
+    let _ = append_controller_audit(
+        store.as_ref(),
+        controller_audit_event(
+            format!("finding.{status}:{}:{}", decided.id, command.comment_id),
+            if status == "dismissed" {
+                "finding.dismissed"
+            } else {
+                "finding.reopened"
+            },
+            AuditOutcome::Succeeded,
+            now_unix(),
+            AuditCorrelation {
+                session_id: Some(decided.session_id.clone()),
+                controller_id: state.config.ocp_action.controller_id.clone(),
+                ..Default::default()
+            },
+            json!({
+                "repository": command.repository,
+                "pr_number": command.pr_number,
+                "finding": command.stable_id,
+                "head_sha": head_sha,
+                "reason": command.reason,
+                "counts_before": {"red": before.0, "yellow": before.1},
+                "counts_after": {"red": outcome.red, "yellow": outcome.yellow},
+                "decision": outcome.decision,
+                "unblocked": outcome.unblocked,
+                // The actor is the point of the record, not a detail of it.
+                "actor": command.author_login,
+            }),
+            None,
+        ),
+    )
+    .await;
+    if !outcome.writes.is_empty() {
+        spawn_write_drain(state);
+    }
+    let mut reply = deciding::reply_body(
+        &command.verb,
+        &decided,
+        before,
+        &outcome,
+        command.author_login.as_deref().unwrap_or("unknown"),
+    );
+    if !all_queued {
+        reply.push_str(
+            "\n⚠️ The judgement is recorded, but at least one update to this pull request \
+             could not be queued — the status and review may still show the old verdict. \
+             This is a controller fault, not yours.\n",
+        );
+    }
+    reply
 }
 
 async fn candidate_plan(
@@ -3050,11 +3359,25 @@ mod tests {
     async fn waived_findings_reach_the_plan_and_bump_repo_scoped_counters() {
         let store = SqliteStore::memory().unwrap();
         let own = store
-            .create_review_waiver("example/repo", None, "accepted eval", None, "op", now_unix() + 86_400)
+            .create_review_waiver(
+                "example/repo",
+                None,
+                "accepted eval",
+                None,
+                "op",
+                now_unix() + 86_400,
+            )
             .await
             .unwrap();
         let foreign = store
-            .create_review_waiver("other/repo", None, "elsewhere", None, "op", now_unix() + 86_400)
+            .create_review_waiver(
+                "other/repo",
+                None,
+                "elsewhere",
+                None,
+                "op",
+                now_unix() + 86_400,
+            )
             .await
             .unwrap();
 
@@ -3081,7 +3404,13 @@ mod tests {
         };
         let plan = closing::plan_close(&target, &parsed, None, "ses_waiver_test");
         assert_eq!(plan.fired_waivers.len(), 2);
-        assert_eq!(plan.findings.iter().filter(|f| f.status == "waived").count(), 2);
+        assert_eq!(
+            plan.findings
+                .iter()
+                .filter(|f| f.status == "waived")
+                .count(),
+            2
+        );
 
         let bumped = store
             .record_waiver_fired("example/repo", &plan.fired_waivers)
@@ -3143,7 +3472,14 @@ mod tests {
             .await
             .unwrap();
         let revoked = store
-            .create_review_waiver("example/repo", None, "revoked", None, "op", now_unix() + 86_400)
+            .create_review_waiver(
+                "example/repo",
+                None,
+                "revoked",
+                None,
+                "op",
+                now_unix() + 86_400,
+            )
             .await
             .unwrap();
         store
@@ -3299,7 +3635,11 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "body is bound by the signature");
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "body is bound by the signature"
+        );
 
         // The kernel's PATCH guards: an empty patch and a past expiry 400.
         let empty = serde_json::to_vec(&json!({})).unwrap();
@@ -3313,7 +3653,11 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "empty patch is a caller bug");
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "empty patch is a caller bug"
+        );
         let past = serde_json::to_vec(&json!({"expires_at": now_unix() - 60})).unwrap();
         let (ts, sig) = sign_write("PATCH", &target, &past);
         let (status, _) = call(
@@ -3358,10 +3702,17 @@ mod tests {
         };
         let (status, body) = call(signed_get("/api/v1/review/waivers?repo=example/repo")).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["waivers"].as_array().unwrap().len(), 0, "revoked is inactive");
+        assert_eq!(
+            body["waivers"].as_array().unwrap().len(),
+            0,
+            "revoked is inactive"
+        );
         // Both spellings of the flag work — query strings are not JSON
         // booleans, and waiver-candidates.py sends `all=1`.
-        let (_, body) = call(signed_get("/api/v1/review/waivers?repo=example/repo&all=true")).await;
+        let (_, body) = call(signed_get(
+            "/api/v1/review/waivers?repo=example/repo&all=true",
+        ))
+        .await;
         assert_eq!(body["waivers"].as_array().unwrap().len(), 1);
         assert!(body["waivers"][0]["revoked_at"].is_number());
         let (_, body) = call(signed_get("/api/v1/review/waivers?repo=example/repo&all=1")).await;
