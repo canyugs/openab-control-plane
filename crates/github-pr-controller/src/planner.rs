@@ -30,6 +30,27 @@ pub struct Trigger {
     pub author_login: Option<String>,
 }
 
+/// An author's judgement on a finding the council already raised (ADR 038).
+///
+/// Deliberately NOT a `Trigger`: a trigger opens a session, this one mutates
+/// the ledger and rewrites what is already on the pull request. Routing it
+/// through the planner would give it a roster and a prompt it has no use for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FindingCommand {
+    pub repository: String,
+    pub pr_number: u64,
+    /// `dismiss` — "this is not a defect"; `reopen` — undo a dismissal.
+    pub verb: String,
+    /// The `F<n>` label as it appears in the verdict comment.
+    pub stable_id: String,
+    /// The author's stated reason. Required for `dismiss`: a judgement with no
+    /// reason is unauditable, and the reason is the whole value of the record.
+    pub reason: Option<String>,
+    pub comment_id: u64,
+    pub author_trusted: bool,
+    pub author_login: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionPlan {
     pub source_delivery_id: String,
@@ -613,6 +634,63 @@ fn strip_ci_word<'a>(text: &'a str, word: &str) -> Option<&'a str> {
         .then(|| rest.trim_start_matches(char::is_whitespace))
 }
 
+/// `@bot dismiss F1 <reason>` / `@bot reopen F1`, from an issue-comment event.
+///
+/// Checked before the trigger parser so a command never falls through to the
+/// `ask` catch-all and burns a session asking the chair about itself.
+pub fn parse_finding_command(
+    event: &str,
+    body: &Value,
+    bot_handle: Option<&str>,
+) -> Option<FindingCommand> {
+    if event != "issue_comment"
+        || body["action"].as_str()? != "created"
+        || body["issue"]["pull_request"]["url"].as_str().is_none()
+        || body["comment"]["user"]["type"].as_str() == Some("Bot")
+    {
+        return None;
+    }
+    let comment = body["comment"]["body"].as_str().unwrap_or_default().trim();
+    let (verb, stable_id, reason) = parse_verb(comment, bot_handle)?;
+    Some(FindingCommand {
+        repository: body["repository"]["full_name"].as_str()?.to_string(),
+        pr_number: body["issue"]["number"].as_u64()?,
+        verb,
+        stable_id,
+        reason,
+        comment_id: body["comment"]["id"].as_u64()?,
+        author_trusted: can_command(
+            body["comment"]["author_association"]
+                .as_str()
+                .unwrap_or_default(),
+        ),
+        author_login: body["comment"]["user"]["login"]
+            .as_str()
+            .map(str::to_string),
+    })
+}
+
+/// `(verb, F-id, reason)`. The id is normalized to upper case so `f1` works;
+/// anything that is not `F<digits>` is refused here rather than looked up,
+/// because a typo must produce a reply, not a silent miss.
+fn parse_verb(comment: &str, handle: Option<&str>) -> Option<(String, String, Option<String>)> {
+    let rest = leading_mention(comment, handle)?;
+    let (verb, rest) = ["dismiss", "reopen"]
+        .into_iter()
+        .find_map(|verb| strip_ci_word(rest, verb).map(|rest| (verb, rest)))?;
+    let mut parts = rest.splitn(2, char::is_whitespace);
+    let id = parts.next()?.trim().to_ascii_uppercase();
+    if id.len() < 2 || !id.starts_with('F') || !id[1..].chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let reason = parts
+        .next()
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .map(str::to_string);
+    Some((verb.to_string(), id, reason))
+}
+
 fn parse_ask(comment: &str, handle: Option<&str>) -> Option<String> {
     if let Some(rest) = comment.strip_prefix("/ask") {
         if rest.is_empty() || rest.starts_with(char::is_whitespace) {
@@ -620,7 +698,10 @@ fn parse_ask(comment: &str, handle: Option<&str>) -> Option<String> {
         }
     }
     let rest = leading_mention(comment, handle)?;
-    if strip_ci_word(rest, "review").is_some() || strip_ci_word(rest, "full").is_some() {
+    if ["review", "full", "dismiss", "reopen"]
+        .into_iter()
+        .any(|word| strip_ci_word(rest, word).is_some())
+    {
         return None;
     }
     let question = rest.trim();
@@ -630,6 +711,77 @@ fn parse_ask(comment: &str, handle: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn comment_event(body: &str, association: &str) -> Value {
+        serde_json::json!({
+            "action": "created",
+            "repository": {"full_name": "zeabur/backend"},
+            "issue": {"number": 2382, "pull_request": {"url": "https://api.github.com/x"}},
+            "comment": {
+                "id": 99,
+                "body": body,
+                "author_association": association,
+                "user": {"login": "yuaanlin", "type": "User"}
+            }
+        })
+    }
+
+    #[test]
+    fn dismiss_carries_the_finding_and_the_reason() {
+        let event = comment_event("@bot dismiss F1 the validator pins the IP first", "MEMBER");
+        let cmd = parse_finding_command("issue_comment", &event, Some("bot")).unwrap();
+        assert_eq!(cmd.verb, "dismiss");
+        assert_eq!(cmd.stable_id, "F1");
+        assert_eq!(cmd.reason.as_deref(), Some("the validator pins the IP first"));
+        assert_eq!(cmd.repository, "zeabur/backend");
+        assert_eq!(cmd.pr_number, 2382);
+        assert!(cmd.author_trusted);
+        assert_eq!(cmd.author_login.as_deref(), Some("yuaanlin"));
+    }
+
+    #[test]
+    fn reopen_needs_no_reason_and_the_id_is_case_insensitive() {
+        let event = comment_event("@bot reopen f12", "OWNER");
+        let cmd = parse_finding_command("issue_comment", &event, Some("bot")).unwrap();
+        assert_eq!((cmd.verb.as_str(), cmd.stable_id.as_str()), ("reopen", "F12"));
+        assert_eq!(cmd.reason, None);
+    }
+
+    #[test]
+    fn a_command_never_falls_through_to_the_ask_catch_all() {
+        // Without the guard this burns a session asking the chair about its
+        // own finding instead of dismissing it.
+        for body in ["@bot dismiss F1 reason", "@bot reopen F1"] {
+            let event = comment_event(body, "MEMBER");
+            assert!(parse_trigger("issue_comment", &event, Some("bot")).is_none(), "{body}");
+            assert!(parse_finding_command("issue_comment", &event, Some("bot")).is_some(), "{body}");
+        }
+    }
+
+    #[test]
+    fn a_malformed_id_is_not_a_command() {
+        // It must reach the ask path and get answered, not be silently eaten.
+        for body in ["@bot dismiss theSSRFone", "@bot dismiss F", "@bot dismiss 1"] {
+            let event = comment_event(body, "MEMBER");
+            assert!(parse_finding_command("issue_comment", &event, Some("bot")).is_none(), "{body}");
+        }
+    }
+
+    #[test]
+    fn an_untrusted_association_still_parses_so_it_can_be_answered() {
+        // The gate belongs downstream: refusing silently at the parser would
+        // leave the author with no reply at all (ADR 025).
+        let event = comment_event("@bot dismiss F1 nope", "NONE");
+        let cmd = parse_finding_command("issue_comment", &event, Some("bot")).unwrap();
+        assert!(!cmd.author_trusted);
+    }
+
+    #[test]
+    fn a_bot_comment_is_never_a_command() {
+        let mut event = comment_event("@bot dismiss F1 loop", "MEMBER");
+        event["comment"]["user"]["type"] = serde_json::json!("Bot");
+        assert!(parse_finding_command("issue_comment", &event, Some("bot")).is_none());
+    }
 
     fn fixture(name: &str) -> Value {
         let body = match name {

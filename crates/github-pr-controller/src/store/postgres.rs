@@ -210,6 +210,13 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_recorded ON audit_events(recorded_at
        last_fired_at BIGINT
      );
      CREATE INDEX IF NOT EXISTS idx_review_waivers_repo ON review_waivers(repo, expires_at);",
+    // 6 — ADR 038: an author's judgement on a finding. The status column
+    // already carried `dismissed`; what was missing is who said so and why,
+    // without which the record cannot be audited and the decision cannot be
+    // told apart from the chair's own bookkeeping.
+    "ALTER TABLE review_findings ADD COLUMN IF NOT EXISTS decided_by TEXT;
+     ALTER TABLE review_findings ADD COLUMN IF NOT EXISTS decided_reason TEXT;
+     ALTER TABLE review_findings ADD COLUMN IF NOT EXISTS decided_at BIGINT;",
 ];
 
 /// Serializes concurrent boots racing the migration list; any constant that
@@ -910,6 +917,61 @@ impl ProductStore for PostgresStore {
     /// Same predicate shape as SQLite: NULL filters do not constrain. Postgres
     /// needs the explicit casts because a NULL parameter is otherwise of
     /// unknown type at plan time.
+    async fn decide_review_finding(
+        &self,
+        repo: &str,
+        pr_number: i64,
+        stable_id: &str,
+        head_sha: &str,
+        status: &str,
+        decided_by: &str,
+        reason: Option<&str>,
+    ) -> StoreResult<Option<ReviewFindingRow>> {
+        let client = self.client().await?;
+        // The head_sha predicate is the compare-and-swap (ADR 038 point 4):
+        // a decision taken against a head that has since moved matches
+        // nothing rather than landing on the newer round's finding.
+        let rows = client
+            .query(
+                "UPDATE review_findings
+                    SET status = $5, decided_by = $6, decided_reason = $7, decided_at = $8
+                  WHERE repo = $1 AND pr_number = $2 AND stable_id = $3 AND head_sha = $4
+              RETURNING id, session_id, repo, pr_number, stable_id, severity, status,
+                        title, path, line, raised_by, angle, head_sha, created_at,
+                        decided_by, decided_reason, decided_at",
+                &[
+                    &repo,
+                    &pr_number,
+                    &stable_id,
+                    &head_sha,
+                    &status,
+                    &decided_by,
+                    &reason,
+                    &now_unix(),
+                ],
+            )
+            .await?;
+        Ok(rows.first().map(|row| ReviewFindingRow {
+            id: row.get(0),
+            session_id: row.get(1),
+            repo: row.get(2),
+            pr_number: row.get(3),
+            stable_id: row.get(4),
+            severity: row.get(5),
+            status: row.get(6),
+            title: row.get(7),
+            path: row.get(8),
+            line: row.get(9),
+            raised_by: row.get(10),
+            angle: row.get(11),
+            head_sha: row.get(12),
+            created_at: row.get(13),
+            decided_by: row.get(14),
+            decided_reason: row.get(15),
+            decided_at: row.get(16),
+        }))
+    }
+
     async fn review_findings(
         &self,
         query: &ReviewFindingQuery,
@@ -918,7 +980,8 @@ impl ProductStore for PostgresStore {
         let rows = client
             .query(
                 "SELECT id, session_id, repo, pr_number, stable_id, severity, status,
-                        title, path, line, raised_by, angle, head_sha, created_at
+                        title, path, line, raised_by, angle, head_sha, created_at,
+                        decided_by, decided_reason, decided_at
                    FROM review_findings
                   WHERE ($1::TEXT IS NULL OR repo = $1)
                     AND ($2::BIGINT IS NULL OR pr_number = $2)
@@ -952,6 +1015,9 @@ impl ProductStore for PostgresStore {
                 angle: row.get(11),
                 head_sha: row.get(12),
                 created_at: row.get(13),
+                decided_by: row.get(14),
+                decided_reason: row.get(15),
+                decided_at: row.get(16),
             })
             .collect())
     }
