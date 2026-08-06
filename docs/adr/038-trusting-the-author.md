@@ -228,8 +228,9 @@ risk"), and it carries almost none of the design load: no expiry, no repo
 scope, no injection into future prompts, and therefore none of point 7's
 provenance question and none of the periodic report.
 
-In v1: the existing org-membership gate (already implemented, already gating
-`/review`); the head-SHA equality check from point 4 — a single comparison
+In v1: the **repo-write permission probe** from point 5 (`admin`, `maintain`
+or `write`, failing closed on a probe error) — see below for why it did not
+stay deferred; the head-SHA equality check from point 4 — a single comparison
 that prevents unblocking code nobody reviewed; the status update; the
 recomputation and the three artifacts; the audit event with actor and reason;
 and the reply. The last two are not guards to be traded away — the record is
