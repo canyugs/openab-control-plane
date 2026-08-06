@@ -916,6 +916,7 @@ impl ProductStore for PostgresStore {
     /// Same predicate shape as SQLite: NULL filters do not constrain. Postgres
     /// needs the explicit casts because a NULL parameter is otherwise of
     /// unknown type at plan time.
+    #[allow(clippy::too_many_arguments)]
     async fn decide_review_finding(
         &self,
         repo: &str,

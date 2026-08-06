@@ -388,6 +388,7 @@ pub trait ProductStore: Send + Sync {
     /// head that has since moved must not land on the newer round's finding of
     /// the same name. Returns the row as it now stands, or None when nothing
     /// matched — the caller turns that into a reply, never a silent miss.
+    #[allow(clippy::too_many_arguments)] // the CAS key is four of them
     async fn decide_review_finding(
         &self,
         repo: &str,

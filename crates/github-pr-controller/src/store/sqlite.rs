@@ -701,6 +701,7 @@ impl SqliteStore {
         rows.collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn decide_review_finding(
         &self,
         repo: &str,
@@ -1281,6 +1282,7 @@ impl ProductStore for SqliteStore {
         )?)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn decide_review_finding(
         &self,
         repo: &str,

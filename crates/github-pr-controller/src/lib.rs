@@ -641,6 +641,33 @@ async fn handle_webhook(
         }
     }
 
+    // A finding command mutates the ledger and what the pull request already
+    // shows; it opens no session, so it never reaches the planner.
+    if let Some(command) =
+        planner::parse_finding_command(event_type, &payload, state.config.bot_handle.as_deref())
+    {
+        let reply = apply_finding_command(&state, &command).await;
+        if let Some(github) = state.github.as_ref() {
+            if let Err(error) = github
+                .create_comment(&command.repository, command.pr_number as i64, &reply)
+                .await
+            {
+                // The author is now waiting on a reply that will not come, so
+                // this is louder than a write failure normally would be.
+                tracing::error!(%error, repo = %command.repository, pr = command.pr_number, "finding-command reply failed");
+            }
+        }
+        let result = json!({
+            "ok": true,
+            "planned": false,
+            "reason": format!("finding_{}", command.verb),
+        });
+        if let Err(error) = store.finish_delivery(delivery_id, "handled", &result).await {
+            tracing::error!(%error, %delivery_id, "finding-command delivery completion failed");
+        }
+        return response(StatusCode::OK, result);
+    }
+
     let (durable_state, result) = match candidate_plan(&state, delivery_id, event_type, &payload)
         .await
     {
@@ -789,13 +816,28 @@ async fn handle_webhook(
             // instruction — noise there (the kernel's ref parser skipped ask
             // refs by accident of format; this makes it deliberate).
             if plan.mode == "council" {
+                let mut context = String::new();
                 if let Some(block) = waiver_block_for_repo(store.as_ref(), &plan.repository).await {
+                    context.push_str(&block);
+                }
+                // ADR 038: what the author already answered on THIS pull
+                // request. Without it the next round re-raises what was just
+                // dealt with, which reads as the tool forgetting — and the
+                // chair could read it from the thread anyway, so this only
+                // makes an existing channel reliable.
+                if let Some(block) =
+                    dismissed_block_for_pr(store.as_ref(), &plan.repository, plan.pr_number as i64)
+                        .await
+                {
+                    context.push_str(&block);
+                }
+                if !context.is_empty() {
                     let fallback = open_action.prompt.clone();
                     open_action
                         .recipient_inputs
                         .entry(plan.chair_bot.clone())
                         .or_insert(fallback)
-                        .push_str(&block);
+                        .push_str(&context);
                 }
             }
             match client.open_session(action_id.clone(), open_action).await {
@@ -1682,6 +1724,28 @@ async fn handle_update_waiver(
 /// steering references it — so it moves verbatim. Injection happens at the
 /// dispatch site below, not in the planner, which stays a pure function for
 /// shadow parity.
+/// The PR's own author-dismissed findings, for the chair's opening input.
+async fn dismissed_block_for_pr(
+    store: &dyn store::ProductStore,
+    repo: &str,
+    pr_number: i64,
+) -> Option<String> {
+    let query = store::ReviewFindingQuery {
+        repo: Some(repo.to_string()),
+        pr_number: Some(pr_number),
+        status: Some("dismissed".into()),
+        severity: None,
+        limit: 50,
+    };
+    match store.review_findings(&query).await {
+        Ok(rows) => deciding::dismissed_block(&rows),
+        Err(error) => {
+            tracing::warn!(%error, repo, pr_number, "dismissed-findings lookup failed; round opens without");
+            None
+        }
+    }
+}
+
 async fn waiver_block_for_repo(store: &dyn store::ProductStore, repo: &str) -> Option<String> {
     let now = now_unix();
     let waivers = match store.list_review_waivers(Some(repo), false, now).await {
@@ -2417,13 +2481,20 @@ async fn shadow_summary(State(state): State<Arc<AppState>>, headers: HeaderMap) 
 /// rejecting. Fail closed: no GitHub client (writes off), no login in the
 /// payload, or a probe error all leave the author untrusted.
 async fn org_membership_fallback(state: &AppState, trigger: &planner::Trigger) -> bool {
+    org_member(state, &trigger.repository, trigger.author_login.as_deref()).await
+}
+
+/// Live membership probe. The payload's `author_association` renders against
+/// PUBLIC org membership only, so a private member arrives as CONTRIBUTOR and
+/// would be refused without this (SEI-884).
+async fn org_member(state: &AppState, repository: &str, login: Option<&str>) -> bool {
     let Some(github) = state.github.as_ref() else {
         return false;
     };
-    let Some(login) = trigger.author_login.as_deref() else {
+    let Some(login) = login else {
         return false;
     };
-    let Some((org, _)) = trigger.repository.split_once('/') else {
+    let Some((org, _)) = repository.split_once('/') else {
         return false;
     };
     match github.is_org_member(org, login).await {
@@ -2433,6 +2504,180 @@ async fn org_membership_fallback(state: &AppState, trigger: &planner::Trigger) -
             false
         }
     }
+}
+
+/// Apply an author's judgement on a finding (ADR 038).
+///
+/// Returns the reply body. Every path returns one: a command that is refused,
+/// or that matches nothing, or that changes nothing still gets answered —
+/// silence is what makes an author conclude the council is broken (ADR 025,
+/// SEI-820), and it is the failure mode this whole feature exists to remove.
+async fn apply_finding_command(state: &Arc<AppState>, command: &planner::FindingCommand) -> String {
+    let Some(store) = state.store.clone() else {
+        return "The controller has no product store configured, so findings cannot be judged \
+                here yet."
+            .into();
+    };
+    if !command.author_trusted
+        && !org_member(state, &command.repository, command.author_login.as_deref()).await
+    {
+        return "Only members of this organisation can judge findings. `/review` still works \
+                for anyone who can comment."
+            .into();
+    }
+    if command.verb == "dismiss" && command.reason.is_none() {
+        return format!(
+            "`dismiss {}` needs a reason — the record is the whole point of trusting the \
+             judgement. Try `dismiss {} <why this is not a defect>`.",
+            command.stable_id, command.stable_id
+        );
+    }
+    let Some(github) = state.github.as_ref() else {
+        return "No GitHub client is configured, so the head revision cannot be confirmed.".into();
+    };
+    let head_sha = match github
+        .pull_head_sha(&command.repository, command.pr_number as i64)
+        .await
+    {
+        Ok(sha) => sha,
+        Err(error) => {
+            tracing::warn!(%error, repo = %command.repository, "head lookup failed for a finding command");
+            return "Could not confirm this pull request's head revision, so nothing was \
+                    changed. Try again."
+                .into();
+        }
+    };
+    let query = store::ReviewFindingQuery {
+        repo: Some(command.repository.clone()),
+        pr_number: Some(command.pr_number as i64),
+        status: None,
+        severity: None,
+        limit: 500,
+    };
+    let before_rows = match store.review_findings(&query).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!(%error, "findings read failed for a finding command");
+            return "The findings ledger is unavailable, so nothing was changed.".into();
+        }
+    };
+    let before = deciding::open_counts(&before_rows, &head_sha);
+    let was_blocking = before.0 > 0 || before.1 > 0;
+    let status = if command.verb == "dismiss" {
+        "dismissed"
+    } else {
+        "open"
+    };
+    let decided = match store
+        .decide_review_finding(
+            &command.repository,
+            command.pr_number as i64,
+            &command.stable_id,
+            &head_sha,
+            status,
+            command.author_login.as_deref().unwrap_or("unknown"),
+            command.reason.as_deref(),
+        )
+        .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            // Two ways to match nothing, and they need different answers.
+            let on_this_head: Vec<&str> = before_rows
+                .iter()
+                .filter(|row| row.head_sha.as_deref() == Some(head_sha.as_str()))
+                .map(|row| row.stable_id.as_str())
+                .collect();
+            return if on_this_head.contains(&command.stable_id.as_str()) {
+                format!(
+                    "`{}` moved since that round, so nothing was changed — a decision on an \
+                     older revision must not unblock code nobody reviewed. The next round will \
+                     re-raise whatever still applies.",
+                    &head_sha[..head_sha.len().min(8)]
+                )
+            } else if on_this_head.is_empty() {
+                format!(
+                    "No findings are recorded for `{}` on this revision yet.",
+                    command.repository
+                )
+            } else {
+                format!(
+                    "{} is not a finding on this revision. This round has: {}.",
+                    command.stable_id,
+                    on_this_head.join(", ")
+                )
+            };
+        }
+        Err(error) => {
+            tracing::error!(%error, "finding decision write failed");
+            return "The findings ledger refused the write, so nothing was changed.".into();
+        }
+    };
+
+    let after_rows = store.review_findings(&query).await.unwrap_or(before_rows);
+    let outcome = deciding::plan_decision(
+        &command.repository,
+        command.pr_number as i64,
+        &head_sha,
+        &after_rows,
+        was_blocking,
+        // v1 leaves the verdict comment as the record of what the council said
+        // that round; the reply carries the news and the ledger carries truth.
+        None,
+        None,
+        "",
+    );
+    for (kind, payload) in &outcome.writes {
+        if let Err(error) = store
+            .enqueue_write(&decided.session_id, kind, payload)
+            .await
+        {
+            tracing::error!(%error, kind, "decision write enqueue failed");
+        }
+    }
+    let _ = append_controller_audit(
+        store.as_ref(),
+        controller_audit_event(
+            format!("finding.{status}:{}:{}", decided.id, command.comment_id),
+            if status == "dismissed" {
+                "finding.dismissed"
+            } else {
+                "finding.reopened"
+            },
+            AuditOutcome::Succeeded,
+            now_unix(),
+            AuditCorrelation {
+                session_id: Some(decided.session_id.clone()),
+                controller_id: state.config.ocp_action.controller_id.clone(),
+                ..Default::default()
+            },
+            json!({
+                "repository": command.repository,
+                "pr_number": command.pr_number,
+                "finding": command.stable_id,
+                "head_sha": head_sha,
+                "reason": command.reason,
+                "counts_before": {"red": before.0, "yellow": before.1},
+                "counts_after": {"red": outcome.red, "yellow": outcome.yellow},
+                "decision": outcome.decision,
+                "unblocked": outcome.unblocked,
+                // The actor is the point of the record, not a detail of it.
+                "actor": command.author_login,
+            }),
+            None,
+        ),
+    )
+    .await;
+    if !outcome.writes.is_empty() {
+        spawn_write_drain(state);
+    }
+    deciding::reply_body(
+        &command.verb,
+        &decided,
+        before,
+        &outcome,
+        command.author_login.as_deref().unwrap_or("unknown"),
+    )
 }
 
 async fn candidate_plan(
