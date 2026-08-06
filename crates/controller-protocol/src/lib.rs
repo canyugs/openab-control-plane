@@ -114,6 +114,65 @@ pub struct ActionResultEnvelope {
     pub result: ControllerActionResult,
 }
 
+/// Durable execution state returned by the controller reconciliation surface.
+/// `outcome_unknown` is intentionally terminal for the original action id: a
+/// controller must inspect the attached session projection before deciding
+/// whether a new action is safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControllerActionExecutionState {
+    Processing,
+    Completed,
+    OutcomeUnknown,
+}
+
+/// The kernel-owned settled result. This is deliberately narrower than the
+/// root north session detail: controllers can recover their own result without
+/// gaining transcript, roster, or operator visibility.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControllerSessionResult {
+    pub author_id: String,
+    pub message_ids: Vec<String>,
+    pub text: String,
+}
+
+/// Minimal provider-neutral session projection needed to reconcile an action
+/// response or a lost runtime event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControllerSessionReconciliation {
+    pub session_id: String,
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<ControllerSessionResult>,
+}
+
+/// Read-only outcome for one action owned by the authenticated installation
+/// and exact scope. `response` is the original stored action response when the
+/// action completed; `session` is the current kernel projection when one can be
+/// identified, including after an indeterminate `open_session` crash window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControllerActionReconciliation {
+    pub version: u16,
+    pub action_id: String,
+    pub action_kind: String,
+    pub scope: String,
+    pub state: ControllerActionExecutionState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<ControllerSessionReconciliation>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ControllerActionResult {
@@ -220,5 +279,33 @@ mod tests {
             supported_versions: vec![1, 2, 4],
         };
         assert_eq!(highest_mutual_version(&supported, &peer), Some(2));
+    }
+
+    #[test]
+    fn reconciliation_wire_shape_is_provider_neutral_and_omits_absent_fields() {
+        let envelope = ControllerActionReconciliation {
+            version: CURRENT_VERSION,
+            action_id: "act_42".into(),
+            action_kind: "open_session".into(),
+            scope: "tenant:example/resource:42".into(),
+            state: ControllerActionExecutionState::OutcomeUnknown,
+            http_status: None,
+            response: None,
+            session: Some(ControllerSessionReconciliation {
+                session_id: "ses_42".into(),
+                state: "open".into(),
+                trigger_ref: Some("object:example/42".into()),
+                trigger_fingerprint: Some("revision:abc".into()),
+                closed_at: None,
+                decision: None,
+                result: None,
+            }),
+        };
+        let value = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(value["state"], "outcome_unknown");
+        assert_eq!(value["session"]["trigger_ref"], "object:example/42");
+        assert!(value.get("http_status").is_none());
+        assert!(value.get("response").is_none());
+        assert!(value["session"].get("result").is_none());
     }
 }

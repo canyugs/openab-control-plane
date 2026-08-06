@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 
-const CONTROLLER_ACTION_LEASE_MS: i64 = 5 * 60 * 1000;
+pub(crate) const CONTROLLER_ACTION_LEASE_MS: i64 = 5 * 60 * 1000;
 const AUDIT_SERVICE: &str = "openab-control-plane";
 /// Cap on the terminal event's `final_messages` total bytes; oversize spans
 /// are truncated oldest-first (the trailer/findings sit at the end).
@@ -273,6 +273,24 @@ pub struct ControllerActionReplay {
     pub response_json: String,
 }
 
+/// Durable action-journal row exposed only through the scoped reconciliation
+/// handler. Product payloads stay opaque; the kernel records just enough
+/// intent to recover an `open_session` that crossed the interpreter/finish
+/// crash window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerActionReconciliationRecord {
+    pub action_id: String,
+    pub action_kind: String,
+    pub scope: String,
+    pub state: String,
+    pub http_status: Option<i64>,
+    pub response_json: Option<String>,
+    pub session_id: Option<String>,
+    pub trigger_ref: Option<String>,
+    pub trigger_fingerprint: Option<String>,
+    pub received_at: i64,
+}
+
 /// Open-session trigger data carried into the same SQLite transaction that
 /// authenticates and admits the controller action.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -478,6 +496,15 @@ pub trait Store: Send + Sync {
         controller_id: &str,
         trigger_ref: &str,
     ) -> Result<Option<ControllerSessionBinding>>;
+    /// Read one action only when its exact scope is still granted to the
+    /// authenticated installation. The handler authenticates the active token;
+    /// this join is the second, fail-closed ownership boundary.
+    fn controller_action_for_reconciliation(
+        &self,
+        controller_id: &str,
+        action_id: &str,
+        scope: &str,
+    ) -> Result<Option<ControllerActionReconciliationRecord>>;
     fn configure_controller_events(
         &self,
         controller_id: &str,
@@ -614,6 +641,15 @@ pub trait Store: Send + Sync {
         state: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Session>>;
+    /// Earliest session committed for one admitted trigger intent. This is the
+    /// exact crash-recovery join for an `open_session` whose action finish did
+    /// not commit; it must not depend on a bounded history scan.
+    fn session_for_trigger_intent(
+        &self,
+        trigger_ref: &str,
+        trigger_fingerprint: Option<&str>,
+        admitted_at: i64,
+    ) -> Result<Option<Session>>;
     /// Add a bot to a session roster. Returns true if newly added (false if it
     /// was already a member) — the caller backfills history only on a fresh join.
     fn add_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool>;
@@ -919,6 +955,8 @@ CREATE TABLE IF NOT EXISTS controller_action_idempotency (
     state TEXT NOT NULL,
     http_status INTEGER,
     response_json TEXT,
+    trigger_ref TEXT,
+    trigger_fingerprint TEXT,
     received_at INTEGER NOT NULL,
     completed_at INTEGER,
     PRIMARY KEY (controller_id, action_id)
@@ -1096,6 +1134,14 @@ fn migrate(conn: &Connection) -> Result<()> {
     );
     let _ = conn.execute(
         "ALTER TABLE controller_action_idempotency ADD COLUMN session_id TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE controller_action_idempotency ADD COLUMN trigger_ref TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE controller_action_idempotency ADD COLUMN trigger_fingerprint TEXT",
         [],
     );
     let _ = conn.execute(
@@ -2341,8 +2387,9 @@ impl Store for SqliteStore {
 
         tx.execute(
             "INSERT INTO controller_action_idempotency
-                (controller_id, action_id, request_hash, action_kind, scope, session_id, state, received_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'processing', ?7)",
+                (controller_id, action_id, request_hash, action_kind, scope, session_id,
+                 trigger_ref, trigger_fingerprint, state, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'processing', ?9)",
             params![
                 controller_id,
                 action_id,
@@ -2350,6 +2397,8 @@ impl Store for SqliteStore {
                 action_kind,
                 scope,
                 session_id,
+                open_intent.map(|intent| intent.trigger_ref.as_str()),
+                open_intent.and_then(|intent| intent.trigger_fingerprint.as_deref()),
                 now
             ],
         )?;
@@ -2406,14 +2455,16 @@ impl Store for SqliteStore {
         }
         let updated = tx.execute(
             "UPDATE controller_action_idempotency
-             SET state = 'completed', http_status = ?3, response_json = ?4, completed_at = ?5
+             SET state = 'completed', http_status = ?3, response_json = ?4, completed_at = ?5,
+                 session_id = COALESCE(?6, session_id)
              WHERE controller_id = ?1 AND action_id = ?2 AND state = 'processing'",
             params![
                 controller_id,
                 action_id,
                 http_status,
                 response_json,
-                completed_at
+                completed_at,
+                session_binding.map(|binding| binding.session_id.as_str())
             ],
         )?;
         if updated != 1 {
@@ -2458,6 +2509,42 @@ impl Store for SqliteStore {
                     trigger_ref: row.get(2)?,
                     trigger_fingerprint: row.get(3)?,
                     session_id: row.get(4)?,
+                })
+            },
+        )
+        .optional()?)
+    }
+
+    fn controller_action_for_reconciliation(
+        &self,
+        controller_id: &str,
+        action_id: &str,
+        scope: &str,
+    ) -> Result<Option<ControllerActionReconciliationRecord>> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT a.action_id, a.action_kind, a.scope, a.state, a.http_status,
+                    a.response_json, a.session_id, a.trigger_ref,
+                    a.trigger_fingerprint, a.received_at
+             FROM controller_action_idempotency a
+             JOIN controller_bindings b
+               ON b.controller_id = a.controller_id
+              AND b.scope = a.scope
+              AND b.enabled = 1
+             WHERE a.controller_id = ?1 AND a.action_id = ?2 AND a.scope = ?3",
+            params![controller_id, action_id, scope],
+            |row| {
+                Ok(ControllerActionReconciliationRecord {
+                    action_id: row.get(0)?,
+                    action_kind: row.get(1)?,
+                    scope: row.get(2)?,
+                    state: row.get(3)?,
+                    http_status: row.get(4)?,
+                    response_json: row.get(5)?,
+                    session_id: row.get(6)?,
+                    trigger_ref: row.get(7)?,
+                    trigger_fingerprint: row.get(8)?,
+                    received_at: row.get(9)?,
                 })
             },
         )
@@ -3466,6 +3553,48 @@ impl Store for SqliteStore {
             }
         };
         Ok(sessions)
+    }
+
+    fn session_for_trigger_intent(
+        &self,
+        trigger_ref: &str,
+        trigger_fingerprint: Option<&str>,
+        admitted_at: i64,
+    ) -> Result<Option<Session>> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT id, title, state, trigger_ref, trigger_fingerprint, quorum_n, chair_bot,
+                    created_at, closed_at, mode, decision, findings_red, findings_yellow,
+                    findings_green, result_author_id, result_message_ids
+             FROM sessions
+             WHERE trigger_ref = ?1
+               AND created_at >= ?2
+               AND (?3 IS NULL OR trigger_fingerprint = ?3)
+             ORDER BY created_at ASC, id ASC
+             LIMIT 1",
+            params![trigger_ref, admitted_at, trigger_fingerprint],
+            |row| {
+                Ok(Session {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    state: row.get(2)?,
+                    trigger_ref: row.get(3)?,
+                    trigger_fingerprint: row.get(4)?,
+                    quorum_n: row.get(5)?,
+                    chair_bot: row.get(6)?,
+                    created_at: row.get(7)?,
+                    closed_at: row.get(8)?,
+                    mode: row.get(9)?,
+                    decision: row.get(10)?,
+                    findings_red: row.get(11)?,
+                    findings_yellow: row.get(12)?,
+                    findings_green: row.get(13)?,
+                    result_author_id: row.get(14)?,
+                    result_message_ids: row.get(15)?,
+                })
+            },
+        )
+        .optional()?)
     }
 
     fn add_session_bot(&self, session_id: &str, bot_id: &str) -> Result<bool> {

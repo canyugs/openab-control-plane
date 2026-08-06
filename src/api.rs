@@ -18,6 +18,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use controller_protocol::audit::{AuditCursor, AuditEventQuery};
+use controller_protocol::ControllerSessionResult;
 use futures::Stream;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -37,6 +38,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route(
             "/v1/controller/actions",
             post(crate::controller_api::execute_action),
+        )
+        .route(
+            "/v1/controller/actions/:action_id",
+            get(crate::controller_api::reconcile_action),
         )
         .route(
             "/v1/controller-installations",
@@ -1108,6 +1113,33 @@ fn session_result_ids(session: &crate::store::Session) -> Option<(&str, Vec<Stri
     }
 }
 
+/// Join the one canonical settled-result span for both root north reads and
+/// scoped controller reconciliation. Keeping the join here prevents the two
+/// auth surfaces from drifting on corrupt legacy rows or message ordering.
+pub(crate) fn joined_session_result(
+    store: &dyn crate::store::Store,
+    session: &crate::store::Session,
+) -> anyhow::Result<Option<ControllerSessionResult>> {
+    let Some((author_id, ids)) = session_result_ids(session) else {
+        return Ok(None);
+    };
+    let messages = store.messages(&session.id)?;
+    let by_id: HashMap<&str, &str> = messages
+        .iter()
+        .map(|message| (message.id.as_str(), message.content.as_str()))
+        .collect();
+    let text = ids
+        .iter()
+        .filter_map(|id| by_id.get(id.as_str()).copied())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(Some(ControllerSessionResult {
+        author_id: author_id.to_string(),
+        message_ids: ids,
+        text,
+    }))
+}
+
 /// The detail response's `result` value (ADR 028): the identity object —
 /// `{"author_id","message_ids"}` — or null until the session closed with one
 /// (legacy rows stay null — history is never re-guessed).
@@ -1133,25 +1165,12 @@ async fn get_session_result(
         .session(&id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    let Some((author_id, ids)) = session_result_ids(&session) else {
+    let Some(result) = joined_session_result(state.store.as_ref(), &session)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    else {
         return Ok(Json(json!({ "result": null })));
     };
-    let messages = state
-        .store
-        .messages(&id)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let by_id: HashMap<&str, &str> = messages
-        .iter()
-        .map(|m| (m.id.as_str(), m.content.as_str()))
-        .collect();
-    let text = ids
-        .iter()
-        .filter_map(|id| by_id.get(id.as_str()).copied())
-        .collect::<Vec<_>>()
-        .join("\n");
-    Ok(Json(json!({
-        "result": { "author_id": author_id, "message_ids": ids, "text": text }
-    })))
+    Ok(Json(json!({ "result": result })))
 }
 
 #[derive(Deserialize)]

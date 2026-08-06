@@ -149,6 +149,23 @@ If a request has a new `action_id` but a duplicate `(controller_id,
 trigger_ref)`, the domain dedupe key wins and OCP returns the existing session
 id.
 
+The same installation token may read back one of its own durable action
+outcomes through `GET /v1/controller/actions/:action_id`, with the same exact
+scope header used for the action. This is a reconciliation projection, not
+root north-API access: it exposes the stored response plus only the kernel
+session state and settled result needed to decide whether a new action is safe.
+It does not expose the roster, transcript, other installations, operator data,
+or provider/product state. A revoked token, disabled scope, different
+installation, or different scope fails closed.
+
+For `open_session`, OCP persists the opaque external `trigger_ref` and
+fingerprint at action admission. If the process dies after committing the
+generic session but before committing the action result/session binding, the
+reconciliation projection can locate that controller-namespaced kernel session
+and report `outcome_unknown` with its current state/result. This closes the
+"reconcile before using a new action_id" loop without moving controller policy
+or provider reads into the plane.
+
 ## V1 Actions
 
 The v1 action surface is:
@@ -301,7 +318,8 @@ the store.
 - Controller authors can build policy without database access, Zeabur
   credentials, GitHub App keys, or unrestricted north API access.
 - OCP remains the runtime kernel: it validates actions, enforces quotas and
-  liveness, and records audit.
+  liveness, records audit, and exposes a minimal scoped projection of its own
+  durable action/session outcome for crash recovery.
 - OAB Father has a concrete management surface: install manifests, credentials,
   endpoint health, dead-letter replay, token rotation, and grant review.
 - PR review can migrate incrementally from hardcoded council path to bundled

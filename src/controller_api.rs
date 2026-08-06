@@ -26,7 +26,9 @@ use controller_protocol::audit::{
     AuditCorrelation, AuditError, AuditEvent, AuditOutcome, AUDIT_EVENT_VERSION,
 };
 use controller_protocol::{
-    ActionEnvelope, ActionResultEnvelope, ErrorCode, ErrorEnvelope, ProtocolError, CURRENT_VERSION,
+    ActionEnvelope, ActionResultEnvelope, ControllerActionExecutionState,
+    ControllerActionReconciliation, ControllerSessionReconciliation, ErrorCode, ErrorEnvelope,
+    ProtocolError, CURRENT_VERSION,
 };
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -611,6 +613,224 @@ pub async fn execute_action(
         }
     };
     execute_action_request(&state, &parts.headers, &body)
+}
+
+/// Read-only, install-scoped recovery surface for an action response or runtime
+/// event lost across a crash. This is intentionally an action projection, not
+/// controller access to the root north session API: the response contains only
+/// the controller's own journal row and the minimal kernel state needed to
+/// decide whether another action is safe.
+pub async fn reconcile_action(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(action_id): Path<String>,
+) -> Response {
+    let Some(auth) = state.controller_auth.as_ref() else {
+        return protocol_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some(action_id),
+            ErrorCode::Internal,
+            "external controller action API is not configured",
+            true,
+            None,
+        );
+    };
+    let Some(token) = bearer(&headers) else {
+        return unauthorized_response();
+    };
+    let controller_id = match authenticate_controller(&state, auth, token) {
+        Ok(Some(controller_id)) => controller_id,
+        Ok(None) => return unauthorized_response(),
+        Err(error) => {
+            tracing::error!(%error, "controller reconciliation authentication failed");
+            return protocol_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Some(action_id),
+                ErrorCode::Internal,
+                "controller authentication unavailable",
+                true,
+                None,
+            );
+        }
+    };
+    if action_id.is_empty() || action_id.len() > 200 {
+        return protocol_error_response(
+            StatusCode::BAD_REQUEST,
+            Some(action_id),
+            ErrorCode::InvalidRequest,
+            "action_id must contain 1 to 200 bytes",
+            false,
+            None,
+        );
+    }
+    let Some(scope) = header_text(&headers, SCOPE_HEADER) else {
+        return protocol_error_response(
+            StatusCode::BAD_REQUEST,
+            Some(action_id),
+            ErrorCode::InvalidRequest,
+            "missing X-OAB-Scope header",
+            false,
+            None,
+        );
+    };
+    if scope.is_empty() || scope.len() > 512 {
+        return protocol_error_response(
+            StatusCode::BAD_REQUEST,
+            Some(action_id),
+            ErrorCode::InvalidRequest,
+            "scope must contain 1 to 512 bytes",
+            false,
+            None,
+        );
+    }
+
+    let record =
+        match state
+            .store
+            .controller_action_for_reconciliation(&controller_id, &action_id, &scope)
+        {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                return protocol_error_response(
+                    StatusCode::NOT_FOUND,
+                    Some(action_id),
+                    ErrorCode::NotFound,
+                    "controller action not found in this scope",
+                    false,
+                    None,
+                )
+            }
+            Err(error) => return internal_store_error(Some(action_id), error),
+        };
+
+    let response = match record.response_json.as_deref() {
+        Some(json) => match serde_json::from_str::<serde_json::Value>(json) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                tracing::error!(%error, %controller_id, %action_id, "stored controller action response is invalid");
+                return protocol_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some(action_id),
+                    ErrorCode::Internal,
+                    "stored controller action response is invalid",
+                    false,
+                    None,
+                );
+            }
+        },
+        None => None,
+    };
+    let state_name = match record.state.as_str() {
+        "completed" => ControllerActionExecutionState::Completed,
+        "indeterminate" => ControllerActionExecutionState::OutcomeUnknown,
+        "processing"
+            if now_ms().saturating_sub(record.received_at)
+                > crate::store::CONTROLLER_ACTION_LEASE_MS =>
+        {
+            ControllerActionExecutionState::OutcomeUnknown
+        }
+        "processing" => ControllerActionExecutionState::Processing,
+        other => {
+            tracing::error!(%controller_id, %action_id, state = other, "stored controller action state is invalid");
+            return protocol_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Some(action_id),
+                ErrorCode::Internal,
+                "stored controller action state is invalid",
+                false,
+                None,
+            );
+        }
+    };
+
+    // New rows persist session_id at finish. The response fallback keeps
+    // reconciliation useful for completed rows created before that migration.
+    let response_session_id = response
+        .as_ref()
+        .and_then(|value| value.pointer("/result/data/session_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let known_session_id = record
+        .session_id
+        .as_deref()
+        .or(response_session_id.as_deref());
+    let mut session = match known_session_id {
+        Some(session_id) => match state.store.session(session_id) {
+            Ok(session) => session,
+            Err(error) => return internal_store_error(Some(action_id), error),
+        },
+        None => None,
+    };
+
+    // If open_session created the kernel row but the process died before
+    // finish_controller_action bound it, recover by the controller-namespaced
+    // internal trigger. Pick the first matching session after admission; this
+    // avoids attributing a later superseding action to the crashed one.
+    if session.is_none() && record.action_kind == "open_session" {
+        if let Some(trigger_ref) = record.trigger_ref.as_deref() {
+            let internal_trigger_ref = controller_trigger_ref(&controller_id, trigger_ref);
+            session = match state.store.session_for_trigger_intent(
+                &internal_trigger_ref,
+                record.trigger_fingerprint.as_deref(),
+                record.received_at,
+            ) {
+                Ok(session) => session,
+                Err(error) => return internal_store_error(Some(action_id), error),
+            };
+        }
+    }
+
+    let session = match session {
+        Some(session) => {
+            let result = match crate::api::joined_session_result(state.store.as_ref(), &session) {
+                Ok(result) => result,
+                Err(error) => return internal_store_error(Some(action_id), error),
+            };
+            Some(ControllerSessionReconciliation {
+                session_id: session.id,
+                state: session.state,
+                trigger_ref: record.trigger_ref.clone(),
+                trigger_fingerprint: record
+                    .trigger_fingerprint
+                    .clone()
+                    .or(session.trigger_fingerprint),
+                closed_at: session.closed_at,
+                decision: session.decision,
+                result,
+            })
+        }
+        None => None,
+    };
+    let http_status = match record.http_status {
+        Some(status) => match u16::try_from(status) {
+            Ok(status) => Some(status),
+            Err(_) => {
+                return protocol_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some(action_id),
+                    ErrorCode::Internal,
+                    "stored controller action status is invalid",
+                    false,
+                    None,
+                )
+            }
+        },
+        None => None,
+    };
+    json_response(
+        StatusCode::OK,
+        &ControllerActionReconciliation {
+            version: CURRENT_VERSION,
+            action_id: record.action_id,
+            action_kind: record.action_kind,
+            scope: record.scope,
+            state: state_name,
+            http_status,
+            response,
+            session,
+        },
+        None,
+    )
 }
 
 fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8]) -> Response {
@@ -1706,6 +1926,23 @@ mod tests {
             .to_string()
     }
 
+    async fn reconcile(
+        state: &Arc<AppState>,
+        token: &str,
+        scope: &str,
+        action_id: &str,
+    ) -> (StatusCode, Value, HeaderMap) {
+        response(
+            reconcile_action(
+                State(state.clone()),
+                headers(token, action_id, scope),
+                Path(action_id.to_string()),
+            )
+            .await,
+        )
+        .await
+    }
+
     #[tokio::test]
     async fn token_rotation_overlap_expiry_and_revocation_are_enforced() {
         let (state, store, auth, old_token) = setup(5, 60);
@@ -1805,6 +2042,153 @@ mod tests {
             admitted,
             ControllerActionStart::Denied(ControllerActionDenial::Credential)
         );
+    }
+
+    #[tokio::test]
+    async fn completed_action_reconciliation_is_scoped_and_returns_settled_result() {
+        let (state, store, auth, token_a) = setup(5, 60);
+        let action_id = "act-reconcile-complete";
+        let session_id = opened_session_id(request(
+            &state,
+            &token_a,
+            SCOPE,
+            &open_action(action_id, "object:reconcile", "revision:1"),
+        ))
+        .await;
+        let message = store
+            .add_message(
+                &session_id,
+                None,
+                "bot",
+                Some("chair"),
+                None,
+                "Recovered support draft. [[verdict:approve]]",
+                None,
+            )
+            .unwrap();
+        store
+            .close_session_with_result(
+                &session_id,
+                SessionState::Deliberating,
+                Some("approve"),
+                Some(0),
+                Some(0),
+                Some(1),
+                Some("chair"),
+                Some(&serde_json::to_string(&vec![message.id.clone()]).unwrap()),
+                std::slice::from_ref(&message.content),
+            )
+            .unwrap();
+
+        let (status, body, _) = reconcile(&state, &token_a, SCOPE, action_id).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["state"], "completed");
+        assert_eq!(body["http_status"], 200);
+        assert_eq!(body["session"]["session_id"], session_id);
+        assert_eq!(body["session"]["state"], "closed");
+        assert_eq!(body["session"]["decision"], "approve");
+        assert_eq!(
+            body["session"]["result"]["text"],
+            "Recovered support draft. [[verdict:approve]]"
+        );
+        assert_eq!(body["response"]["result"]["data"]["session_id"], session_id);
+
+        let (wrong_scope, wrong_scope_body, _) =
+            reconcile(&state, &token_a, "tenant:other/resource:one", action_id).await;
+        assert_eq!(wrong_scope, StatusCode::NOT_FOUND, "{wrong_scope_body}");
+
+        let token_b = token(44);
+        install(
+            &store,
+            &auth,
+            "ctrl-b",
+            "tok-b-reconcile",
+            &token_b,
+            1,
+            SCOPE,
+            5,
+            60,
+        );
+        let (foreign, foreign_body, _) = reconcile(&state, &token_b, SCOPE, action_id).await;
+        assert_eq!(foreign, StatusCode::NOT_FOUND, "{foreign_body}");
+
+        store
+            .revoke_controller_action_token("ctrl-a", "tok-a-1", now_ms())
+            .unwrap();
+        let (revoked, revoked_body, _) = reconcile(&state, &token_a, SCOPE, action_id).await;
+        assert_eq!(revoked, StatusCode::UNAUTHORIZED, "{revoked_body}");
+    }
+
+    #[tokio::test]
+    async fn outcome_unknown_reconciliation_finds_the_unbound_kernel_session() {
+        let (state, store, auth, _setup_token) = setup(5, 60);
+        let action_id = "act-reconcile-unknown";
+        let external_trigger = "object:reconcile-unknown";
+        let fingerprint = "revision:unknown";
+        let received_at = now_ms() - crate::store::CONTROLLER_ACTION_LEASE_MS - 10;
+        let action_token = token(55);
+        store
+            .put_controller_action_token(
+                "tok-a-reconcile-old",
+                "ctrl-a",
+                &auth.hash_token(1, &action_token).unwrap(),
+                1,
+                received_at - 1,
+                Some(now_ms() + 900_000),
+            )
+            .unwrap();
+        let intent = ControllerOpenIntent {
+            trigger_ref: external_trigger.into(),
+            trigger_fingerprint: Some(fingerprint.into()),
+        };
+        let started = store
+            .begin_controller_action(
+                "ctrl-a",
+                &auth.credential_hashes(&action_token),
+                action_id,
+                &[5; 32],
+                "open_session",
+                SCOPE,
+                None,
+                Some(&intent),
+                received_at,
+            )
+            .unwrap();
+        assert!(matches!(
+            started,
+            ControllerActionStart::Started {
+                open_decision: Some(ControllerOpenDecision::Create)
+            }
+        ));
+
+        // Model the only ambiguous window: the interpreter committed the
+        // generic session, then the process died before finish bound it to the
+        // action journal or emitted session.opened.
+        let (session, _) = store
+            .create_session_superseding(
+                "reconciliation fixture",
+                Some(&controller_trigger_ref("ctrl-a", external_trigger)),
+                Some(fingerprint),
+                1,
+                Some("chair"),
+                &["chair".into(), "rev1".into()],
+                "council",
+                &[],
+            )
+            .unwrap();
+        assert!(store
+            .controller_session_for_trigger("ctrl-a", external_trigger)
+            .unwrap()
+            .is_none());
+
+        let (status, body, _) = reconcile(&state, &action_token, SCOPE, action_id).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["state"], "outcome_unknown");
+        assert!(body.get("response").is_none());
+        assert_eq!(body["session"]["session_id"], session.id);
+        assert_eq!(body["session"]["state"], "open");
+        assert_eq!(body["session"]["trigger_ref"], external_trigger);
+        assert_eq!(body["session"]["trigger_fingerprint"], fingerprint);
     }
 
     #[tokio::test]
