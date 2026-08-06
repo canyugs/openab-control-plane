@@ -260,9 +260,17 @@ produces). Each is fed by the one below it, which is ADR 021's calibration
 position with the bottom layer finally supplied.
 
 Deferred: `waive` entirely, and with it expiry, repo scope, prompt injection,
-provenance labelling and the tidy-up report; the repo-write permission probe
-(v1 keeps the coarser org gate, acceptable because every action is recorded
-and publicly answered); and promote-to-boundaries.
+provenance labelling and the tidy-up report; and promote-to-boundaries.
+
+The repo-write probe was on that list and came off it during implementation
+(council review of the implementation PR). The deferral had been justified on
+usability, and that reasoning does not survive contact with the actual users:
+anyone who works on a repository already has write, so the check is invisible
+to every legitimate caller. What it prevents is not: an org member with
+read-only access to one repository could otherwise make the controller post an
+APPROVE there — **merge authority GitHub itself would deny**. A guard that
+costs nobody anything is not a usability tax, and "ship it usable first" is
+not a reason to ship it wrong.
 
 ## Alternatives considered
 
