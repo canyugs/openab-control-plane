@@ -732,7 +732,10 @@ mod tests {
         let cmd = parse_finding_command("issue_comment", &event, Some("bot")).unwrap();
         assert_eq!(cmd.verb, "dismiss");
         assert_eq!(cmd.stable_id, "F1");
-        assert_eq!(cmd.reason.as_deref(), Some("the validator pins the IP first"));
+        assert_eq!(
+            cmd.reason.as_deref(),
+            Some("the validator pins the IP first")
+        );
         assert_eq!(cmd.repository, "zeabur/backend");
         assert_eq!(cmd.pr_number, 2382);
         assert!(cmd.author_trusted);
@@ -743,7 +746,10 @@ mod tests {
     fn reopen_needs_no_reason_and_the_id_is_case_insensitive() {
         let event = comment_event("@bot reopen f12", "OWNER");
         let cmd = parse_finding_command("issue_comment", &event, Some("bot")).unwrap();
-        assert_eq!((cmd.verb.as_str(), cmd.stable_id.as_str()), ("reopen", "F12"));
+        assert_eq!(
+            (cmd.verb.as_str(), cmd.stable_id.as_str()),
+            ("reopen", "F12")
+        );
         assert_eq!(cmd.reason, None);
     }
 
@@ -753,17 +759,30 @@ mod tests {
         // own finding instead of dismissing it.
         for body in ["@bot dismiss F1 reason", "@bot reopen F1"] {
             let event = comment_event(body, "MEMBER");
-            assert!(parse_trigger("issue_comment", &event, Some("bot")).is_none(), "{body}");
-            assert!(parse_finding_command("issue_comment", &event, Some("bot")).is_some(), "{body}");
+            assert!(
+                parse_trigger("issue_comment", &event, Some("bot")).is_none(),
+                "{body}"
+            );
+            assert!(
+                parse_finding_command("issue_comment", &event, Some("bot")).is_some(),
+                "{body}"
+            );
         }
     }
 
     #[test]
     fn a_malformed_id_is_not_a_command() {
         // It must reach the ask path and get answered, not be silently eaten.
-        for body in ["@bot dismiss theSSRFone", "@bot dismiss F", "@bot dismiss 1"] {
+        for body in [
+            "@bot dismiss theSSRFone",
+            "@bot dismiss F",
+            "@bot dismiss 1",
+        ] {
             let event = comment_event(body, "MEMBER");
-            assert!(parse_finding_command("issue_comment", &event, Some("bot")).is_none(), "{body}");
+            assert!(
+                parse_finding_command("issue_comment", &event, Some("bot")).is_none(),
+                "{body}"
+            );
         }
     }
 

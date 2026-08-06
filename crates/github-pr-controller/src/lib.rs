@@ -2,6 +2,7 @@
 
 pub mod closing;
 pub mod config;
+pub mod deciding;
 pub mod github;
 pub mod ocp;
 pub mod planner;
@@ -30,8 +31,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use store::{
     audit_timestamp, now_ms, DeliveryAdmission, ProductStore, ReviewFindingQuery,
-    RuntimeEventAdmission,
-    ShadowAdmission, WRITE_MAX_ATTEMPTS,
+    RuntimeEventAdmission, ShadowAdmission, WRITE_MAX_ATTEMPTS,
 };
 
 #[cfg(test)]
@@ -798,10 +798,7 @@ async fn handle_webhook(
                         .push_str(&block);
                 }
             }
-            match client
-                .open_session(action_id.clone(), open_action)
-                .await
-            {
+            match client.open_session(action_id.clone(), open_action).await {
                 Ok(action_result) => {
                     if let Err(error) = append_controller_audit(
                         store.as_ref(),
@@ -1373,7 +1370,10 @@ where
 {
     use serde::Deserialize as _;
     let raw = Option::<String>::deserialize(deserializer)?;
-    Ok(matches!(raw.as_deref(), Some("1") | Some("true") | Some("yes")))
+    Ok(matches!(
+        raw.as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    ))
 }
 
 /// `GET /api/v1/review/waivers` — same signed-observation auth as the other
@@ -1531,7 +1531,14 @@ async fn handle_create_waiver(
         );
     };
     match store
-        .create_review_waiver(repo, path_class, text, origin_pr, created_by, request.expires_at)
+        .create_review_waiver(
+            repo,
+            path_class,
+            text,
+            origin_pr,
+            created_by,
+            request.expires_at,
+        )
         .await
     {
         Ok(waiver) => {
@@ -3050,11 +3057,25 @@ mod tests {
     async fn waived_findings_reach_the_plan_and_bump_repo_scoped_counters() {
         let store = SqliteStore::memory().unwrap();
         let own = store
-            .create_review_waiver("example/repo", None, "accepted eval", None, "op", now_unix() + 86_400)
+            .create_review_waiver(
+                "example/repo",
+                None,
+                "accepted eval",
+                None,
+                "op",
+                now_unix() + 86_400,
+            )
             .await
             .unwrap();
         let foreign = store
-            .create_review_waiver("other/repo", None, "elsewhere", None, "op", now_unix() + 86_400)
+            .create_review_waiver(
+                "other/repo",
+                None,
+                "elsewhere",
+                None,
+                "op",
+                now_unix() + 86_400,
+            )
             .await
             .unwrap();
 
@@ -3081,7 +3102,13 @@ mod tests {
         };
         let plan = closing::plan_close(&target, &parsed, None, "ses_waiver_test");
         assert_eq!(plan.fired_waivers.len(), 2);
-        assert_eq!(plan.findings.iter().filter(|f| f.status == "waived").count(), 2);
+        assert_eq!(
+            plan.findings
+                .iter()
+                .filter(|f| f.status == "waived")
+                .count(),
+            2
+        );
 
         let bumped = store
             .record_waiver_fired("example/repo", &plan.fired_waivers)
@@ -3143,7 +3170,14 @@ mod tests {
             .await
             .unwrap();
         let revoked = store
-            .create_review_waiver("example/repo", None, "revoked", None, "op", now_unix() + 86_400)
+            .create_review_waiver(
+                "example/repo",
+                None,
+                "revoked",
+                None,
+                "op",
+                now_unix() + 86_400,
+            )
             .await
             .unwrap();
         store
@@ -3299,7 +3333,11 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "body is bound by the signature");
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "body is bound by the signature"
+        );
 
         // The kernel's PATCH guards: an empty patch and a past expiry 400.
         let empty = serde_json::to_vec(&json!({})).unwrap();
@@ -3313,7 +3351,11 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "empty patch is a caller bug");
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "empty patch is a caller bug"
+        );
         let past = serde_json::to_vec(&json!({"expires_at": now_unix() - 60})).unwrap();
         let (ts, sig) = sign_write("PATCH", &target, &past);
         let (status, _) = call(
@@ -3358,10 +3400,17 @@ mod tests {
         };
         let (status, body) = call(signed_get("/api/v1/review/waivers?repo=example/repo")).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["waivers"].as_array().unwrap().len(), 0, "revoked is inactive");
+        assert_eq!(
+            body["waivers"].as_array().unwrap().len(),
+            0,
+            "revoked is inactive"
+        );
         // Both spellings of the flag work — query strings are not JSON
         // booleans, and waiver-candidates.py sends `all=1`.
-        let (_, body) = call(signed_get("/api/v1/review/waivers?repo=example/repo&all=true")).await;
+        let (_, body) = call(signed_get(
+            "/api/v1/review/waivers?repo=example/repo&all=true",
+        ))
+        .await;
         assert_eq!(body["waivers"].as_array().unwrap().len(), 1);
         assert!(body["waivers"][0]["revoked_at"].is_number());
         let (_, body) = call(signed_get("/api/v1/review/waivers?repo=example/repo&all=1")).await;

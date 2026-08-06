@@ -401,8 +401,10 @@ pub trait ProductStore: Send + Sync {
 
     /// Read the findings ledger back, newest first. The reporting surface the
     /// ops scripts join against.
-    async fn review_findings(&self, query: &ReviewFindingQuery)
-        -> StoreResult<Vec<ReviewFindingRow>>;
+    async fn review_findings(
+        &self,
+        query: &ReviewFindingQuery,
+    ) -> StoreResult<Vec<ReviewFindingRow>>;
 
     /// ADR 035 P1: record an operator-accepted trade-off. The id is minted
     /// here (`wvr_` + 128-bit random) — it is a capability, never guessable.

@@ -5,9 +5,8 @@
 use super::{
     now_unix, CanarySummary, DeliveryAdmission, PendingWrite, ProductStore, RecordedRound,
     ReviewFinding, ReviewFindingQuery, ReviewFindingRow, ReviewRound, ReviewWaiver,
-    RuntimeEventAdmission, SessionTarget, ShadowAdmission,
-    ShadowSummary, StoreError, StoreResult, COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS,
-    WRITE_CLAIM_LEASE_SECS, WRITE_MAX_ATTEMPTS,
+    RuntimeEventAdmission, SessionTarget, ShadowAdmission, ShadowSummary, StoreError, StoreResult,
+    COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS, WRITE_CLAIM_LEASE_SECS, WRITE_MAX_ATTEMPTS,
 };
 use controller_protocol::audit::{
     AuditActor, AuditCorrelation, AuditCursor, AuditError, AuditEvent, AuditEventPage,
@@ -1360,24 +1359,21 @@ impl ProductStore for SqliteStore {
                 AND (?2 OR (revoked_at IS NULL AND expires_at > ?3))
               ORDER BY created_at",
         )?;
-        let rows = statement.query_map(
-            rusqlite::params![repo, include_inactive, now],
-            |row| {
-                Ok(ReviewWaiver {
-                    id: row.get(0)?,
-                    repo: row.get(1)?,
-                    path_class: row.get(2)?,
-                    text: row.get(3)?,
-                    origin_pr: row.get(4)?,
-                    created_by: row.get(5)?,
-                    created_at: row.get(6)?,
-                    expires_at: row.get(7)?,
-                    revoked_at: row.get(8)?,
-                    fired_count: row.get(9)?,
-                    last_fired_at: row.get(10)?,
-                })
-            },
-        )?;
+        let rows = statement.query_map(rusqlite::params![repo, include_inactive, now], |row| {
+            Ok(ReviewWaiver {
+                id: row.get(0)?,
+                repo: row.get(1)?,
+                path_class: row.get(2)?,
+                text: row.get(3)?,
+                origin_pr: row.get(4)?,
+                created_by: row.get(5)?,
+                created_at: row.get(6)?,
+                expires_at: row.get(7)?,
+                revoked_at: row.get(8)?,
+                fired_count: row.get(9)?,
+                last_fired_at: row.get(10)?,
+            })
+        })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
@@ -1590,7 +1586,14 @@ mod tests {
         // Wrong head: the compare-and-swap misses, and nothing is written —
         // a stale decision must never unblock code nobody reviewed.
         assert!(SqliteStore::decide_review_finding(
-            &store, "zeabur/backend", 2382, "F1", "head-new", "dismissed", "yuaanlin", Some("no")
+            &store,
+            "zeabur/backend",
+            2382,
+            "F1",
+            "head-new",
+            "dismissed",
+            "yuaanlin",
+            Some("no")
         )
         .unwrap()
         .is_none());
@@ -1634,10 +1637,23 @@ mod tests {
     fn an_unknown_finding_id_reports_a_miss_rather_than_inventing_a_row() {
         let store = SqliteStore::memory().unwrap();
         store
-            .record_review_findings("ses_1", "zeabur/backend", 2382, Some("head"), &[finding("F1", "red")])
+            .record_review_findings(
+                "ses_1",
+                "zeabur/backend",
+                2382,
+                Some("head"),
+                &[finding("F1", "red")],
+            )
             .unwrap();
         assert!(SqliteStore::decide_review_finding(
-            &store, "zeabur/backend", 2382, "F9", "head", "dismissed", "yuaanlin", Some("x")
+            &store,
+            "zeabur/backend",
+            2382,
+            "F9",
+            "head",
+            "dismissed",
+            "yuaanlin",
+            Some("x")
         )
         .unwrap()
         .is_none());
@@ -1647,15 +1663,35 @@ mod tests {
     fn reopen_restores_the_finding_and_keeps_the_trail() {
         let store = SqliteStore::memory().unwrap();
         store
-            .record_review_findings("ses_1", "zeabur/backend", 2382, Some("h"), &[finding("F1", "red")])
+            .record_review_findings(
+                "ses_1",
+                "zeabur/backend",
+                2382,
+                Some("h"),
+                &[finding("F1", "red")],
+            )
             .unwrap();
         SqliteStore::decide_review_finding(
-            &store, "zeabur/backend", 2382, "F1", "h", "dismissed", "yuaanlin", Some("mistake"),
+            &store,
+            "zeabur/backend",
+            2382,
+            "F1",
+            "h",
+            "dismissed",
+            "yuaanlin",
+            Some("mistake"),
         )
         .unwrap()
         .unwrap();
         let reopened = SqliteStore::decide_review_finding(
-            &store, "zeabur/backend", 2382, "F1", "h", "open", "yuaanlin", Some("undo"),
+            &store,
+            "zeabur/backend",
+            2382,
+            "F1",
+            "h",
+            "open",
+            "yuaanlin",
+            Some("undo"),
         )
         .unwrap()
         .unwrap();
