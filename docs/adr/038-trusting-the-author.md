@@ -179,6 +179,14 @@ the same thing.
      safeDiagnostic" (waived by @author-login, expires in 83d)
    ```
 
+   "Council-authored" means *attenuated*, not *clean*: the path is taken
+   verbatim from the diff and is fully author-controlled, and the title is a
+   model summary of author-controlled code, so both carry indirect influence.
+   The controller therefore length-bounds and normalizes them before
+   injection — truncate the path and title, strip control and non-printable
+   sequences, keep them on one line. This bounds surface area; it is not a
+   content filter, and it is not asked to be one.
+
    The author's reason is stored in the ledger, carried in the audit event,
    quoted in the PR reply and listed in the periodic report — every
    human-facing surface, and no model-facing one. Matching also gets *more*
@@ -196,6 +204,32 @@ the same thing.
    The scope line is not decoration — an author typing `waive` is usually
    thinking "stop bothering me on this PR" while the system is recording a
    **repo-wide** acceptance, and the reply is where that gap becomes visible.
+
+## Scope of the first implementation
+
+Points 1–8 describe the destination. They are **not** a precondition for the
+first release, and this section exists so the ADR cannot be read as one: a
+feature nobody can use yet cannot be iterated on, and today an author on a PR
+can do nothing at all.
+
+**v1 ships `dismiss` alone.** It is the verb the triggering case actually
+needs (`backend#2382` F1 is "your finding is wrong", not "we accept this
+risk"), and it carries almost none of the design load: no expiry, no repo
+scope, no injection into future prompts, and therefore none of point 7's
+provenance question and none of the periodic report.
+
+In v1: the existing org-membership gate (already implemented, already gating
+`/review`); the head-SHA equality check from point 4 — a single comparison
+that prevents unblocking code nobody reviewed; the status update; the
+recomputation and the three artifacts; the audit event with actor and reason;
+and the reply. The last two are not guards to be traded away — the record is
+what makes trusting the author defensible (point 1), and the reply *is* the
+feature's user experience (point 8).
+
+Deferred: `waive` entirely, and with it expiry, repo scope, prompt injection,
+provenance labelling and the tidy-up report; the repo-write permission probe
+(v1 keeps the coarser org gate, acceptable because every action is recorded
+and publicly answered); and promote-to-boundaries.
 
 ## Alternatives considered
 
