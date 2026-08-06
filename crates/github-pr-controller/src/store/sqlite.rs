@@ -1573,6 +1573,38 @@ mod tests {
     }
 
     #[test]
+    fn a_decisions_writes_survive_the_rounds_own_outbox_rows() {
+        // Regression, council review of #370 F1: the outbox is
+        // UNIQUE(session_id, kind) with INSERT OR IGNORE, so decision writes
+        // that reused the round's kinds were silently dropped — the author was
+        // told the pull request had been unblocked while nothing on it moved.
+        let store = SqliteStore::memory().unwrap();
+        let round = json!({"repo": "zeabur/backend", "sha": "f9caff5d"});
+        assert!(store
+            .enqueue_write("ses_1", crate::closing::KIND_STATUS, &round)
+            .unwrap());
+        assert!(store
+            .enqueue_write("ses_1", crate::closing::KIND_REVIEW, &round)
+            .unwrap());
+        // Same session, same operations, different event: these must land.
+        let status = crate::deciding::decision_kind(crate::deciding::KIND_DECISION_STATUS, 42);
+        let review = crate::deciding::decision_kind(crate::deciding::KIND_DECISION_REVIEW, 42);
+        assert!(store.enqueue_write("ses_1", &status, &round).unwrap());
+        assert!(store.enqueue_write("ses_1", &review, &round).unwrap());
+        // A redelivered command lands on the same row and posts once.
+        assert!(!store.enqueue_write("ses_1", &status, &round).unwrap());
+        // A later decision on the same session gets rows of its own.
+        let later = crate::deciding::decision_kind(crate::deciding::KIND_DECISION_STATUS, 43);
+        assert!(store.enqueue_write("ses_1", &later, &round).unwrap());
+
+        let pending = store.claim_writes(10).unwrap();
+        let kinds: Vec<&str> = pending.iter().map(|w| w.kind.as_str()).collect();
+        assert!(kinds.contains(&status.as_str()), "got {kinds:?}");
+        assert!(kinds.contains(&review.as_str()), "got {kinds:?}");
+        assert_eq!(kinds.len(), 5);
+    }
+
+    #[test]
     fn a_decision_lands_on_the_reviewed_head_and_nowhere_else() {
         let store = SqliteStore::memory().unwrap();
         store

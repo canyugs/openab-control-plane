@@ -12,7 +12,26 @@
 //! no second opinion from anybody. Re-convening a round would spend three
 //! agents deriving what the ledger already knows.
 
-use crate::closing::{KIND_COMMENT, KIND_REVIEW, KIND_STATUS, STATUS_CONTEXT};
+use crate::closing::{KIND_COMMENT, STATUS_CONTEXT};
+
+/// Outbox kinds for the writes a decision produces.
+///
+/// The outbox is `UNIQUE(session_id, kind)` with `INSERT OR IGNORE`, which is
+/// what makes a redelivered terminal event idempotent — and what silently
+/// swallowed these writes when they reused the round's own kinds: the row
+/// already existed from the close, the insert did nothing, and the author was
+/// told the pull request had been unblocked while nothing on it moved.
+///
+/// A decision is a different event from the close, so it gets its own key, and
+/// the natural one is the comment that asked for it. That also buys idempotency
+/// for free: a redelivered `dismiss` comment lands on the same row and posts
+/// once, while a *later* decision on the same session gets a row of its own.
+pub const KIND_DECISION_STATUS: &str = "decision_status";
+pub const KIND_DECISION_REVIEW: &str = "decision_review";
+
+pub fn decision_kind(base: &str, comment_id: u64) -> String {
+    format!("{base}:{comment_id}")
+}
 use crate::store::ReviewFindingRow;
 use serde_json::{json, Value};
 
@@ -25,7 +44,9 @@ pub struct DecisionOutcome {
     pub decision: &'static str,
     /// True when this decision is what cleared the last blocker.
     pub unblocked: bool,
-    pub writes: Vec<(&'static str, Value)>,
+    /// `(outbox kind, payload)`. Kinds are owned Strings because a decision's
+    /// writes are keyed by the comment that requested them.
+    pub writes: Vec<(String, Value)>,
 }
 
 /// Open findings still blocking on `head_sha`. `dismissed`, `waived` and
@@ -64,6 +85,8 @@ pub fn plan_decision(
     comment_id: Option<i64>,
     verdict_body: Option<&str>,
     marker: &str,
+    // The comment that requested this decision — the writes' outbox key.
+    deciding_comment_id: u64,
 ) -> DecisionOutcome {
     let (red, yellow) = open_counts(findings, head_sha);
     let blocking = red > 0 || yellow > 0;
@@ -74,10 +97,10 @@ pub fn plan_decision(
     };
     let unblocked = was_blocking && !blocking;
 
-    let mut writes: Vec<(&'static str, Value)> = Vec::new();
+    let mut writes: Vec<(String, Value)> = Vec::new();
     if let (Some(comment_id), Some(body)) = (comment_id, verdict_body) {
         writes.push((
-            KIND_COMMENT,
+            KIND_COMMENT.to_string(),
             json!({
                 "repo": repo,
                 "pr_number": pr_number,
@@ -92,7 +115,7 @@ pub fn plan_decision(
     // leaves other findings open changes nothing a merge depends on.
     if unblocked {
         writes.push((
-            KIND_STATUS,
+            decision_kind(KIND_DECISION_STATUS, deciding_comment_id),
             json!({
                 "repo": repo,
                 "sha": head_sha,
@@ -106,7 +129,7 @@ pub fn plan_decision(
         // comment, not the status — is what actually holds the merge, so
         // clearing the blocker means submitting a new one.
         writes.push((
-            KIND_REVIEW,
+            decision_kind(KIND_DECISION_REVIEW, deciding_comment_id),
             json!({
                 "repo": repo,
                 "pr_number": pr_number,
@@ -291,12 +314,21 @@ mod tests {
             Some(42),
             Some("verdict body"),
             "<!-- marker -->",
+            777,
         );
         assert_eq!((outcome.red, outcome.yellow), (0, 0));
         assert_eq!(outcome.decision, "approve");
         assert!(outcome.unblocked);
-        let kinds: Vec<&str> = outcome.writes.iter().map(|(kind, _)| *kind).collect();
-        assert_eq!(kinds, [KIND_COMMENT, KIND_STATUS, KIND_REVIEW]);
+        let kinds: Vec<&str> = outcome
+            .writes
+            .iter()
+            .map(|(kind, _)| kind.as_str())
+            .collect();
+        assert_eq!(
+            kinds,
+            [KIND_COMMENT, "decision_status:777", "decision_review:777"],
+            "decision writes must not reuse the round's outbox keys"
+        );
         let review = &outcome.writes[2].1;
         assert_eq!(review["event"], "APPROVE");
         assert_eq!(outcome.writes[1].1["state"], "success");
@@ -314,10 +346,15 @@ mod tests {
             Some(42),
             Some("verdict body"),
             "<!-- marker -->",
+            777,
         );
         assert_eq!((outcome.red, outcome.yellow), (0, 1));
         assert!(!outcome.unblocked);
-        let kinds: Vec<&str> = outcome.writes.iter().map(|(kind, _)| *kind).collect();
+        let kinds: Vec<&str> = outcome
+            .writes
+            .iter()
+            .map(|(kind, _)| kind.as_str())
+            .collect();
         assert_eq!(kinds, [KIND_COMMENT], "no status flip, no new review");
     }
 
@@ -337,6 +374,7 @@ mod tests {
             None,
             None,
             "<!-- m -->",
+            777,
         );
         assert_eq!((outcome.red, outcome.yellow), (0, 0));
         assert!(outcome.unblocked);
@@ -354,13 +392,14 @@ mod tests {
             Some(1),
             Some("b"),
             "<!-- m -->",
+            777,
         );
         assert_eq!(outcome.decision, "request_changes");
         assert!(!outcome.unblocked);
         assert!(outcome
             .writes
             .iter()
-            .all(|(kind, _)| *kind != KIND_REVIEW && *kind != KIND_STATUS));
+            .all(|(kind, _)| !kind.starts_with("decision_")));
     }
 
     #[test]
@@ -377,6 +416,7 @@ mod tests {
             None,
             None,
             "<!-- m -->",
+            777,
         );
         let body = reply_body("dismiss", &decided, (1, 0), &outcome, "yuaanlin");
         assert!(body.contains("F1 dismissed"));
@@ -395,6 +435,7 @@ mod tests {
             None,
             None,
             "<!-- m -->",
+            777,
         );
         let body = reply_body("dismiss", &decided, (1, 1), &blocked, "yuaanlin");
         assert!(body.contains("Still blocked"));

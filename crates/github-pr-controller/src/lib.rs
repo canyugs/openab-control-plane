@@ -2228,7 +2228,9 @@ async fn perform_write_with_receipt(
             }
             json!({"comment_id": existing, "reconciled": existing.is_some()})
         }
-        closing::KIND_STATUS => {
+        kind if kind == closing::KIND_STATUS
+            || kind.starts_with(deciding::KIND_DECISION_STATUS) =>
+        {
             let state = match payload["state"].as_str() {
                 Some("success") => github::StatusState::Success,
                 Some("failure") => github::StatusState::Failure,
@@ -2253,7 +2255,9 @@ async fn perform_write_with_receipt(
                 "state": state.as_str(),
             })
         }
-        closing::KIND_REVIEW => {
+        kind if kind == closing::KIND_REVIEW
+            || kind.starts_with(deciding::KIND_DECISION_REVIEW) =>
+        {
             let event = match payload["event"].as_str() {
                 Some("APPROVE") => github::ReviewEvent::Approve,
                 Some("REQUEST_CHANGES") => github::ReviewEvent::RequestChanges,
@@ -2626,13 +2630,26 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         None,
         None,
         "",
+        command.comment_id,
     );
+    // A write that does not enqueue must never be reported as done: that is the
+    // exact shape of the bug this path was born with — the reply said approved
+    // while the outbox had silently ignored the row.
+    let mut all_queued = true;
     for (kind, payload) in &outcome.writes {
-        if let Err(error) = store
+        match store
             .enqueue_write(&decided.session_id, kind, payload)
             .await
         {
-            tracing::error!(%error, kind, "decision write enqueue failed");
+            Ok(true) => {}
+            Ok(false) => {
+                all_queued = false;
+                tracing::error!(kind, session_id = %decided.session_id, "decision write collided with an existing outbox row");
+            }
+            Err(error) => {
+                all_queued = false;
+                tracing::error!(%error, kind, "decision write enqueue failed");
+            }
         }
     }
     let _ = append_controller_audit(
@@ -2671,13 +2688,21 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
     if !outcome.writes.is_empty() {
         spawn_write_drain(state);
     }
-    deciding::reply_body(
+    let mut reply = deciding::reply_body(
         &command.verb,
         &decided,
         before,
         &outcome,
         command.author_login.as_deref().unwrap_or("unknown"),
-    )
+    );
+    if !all_queued {
+        reply.push_str(
+            "\n⚠️ The judgement is recorded, but at least one update to this pull request \
+             could not be queued — the status and review may still show the old verdict. \
+             This is a controller fault, not yours.\n",
+        );
+    }
+    reply
 }
 
 async fn candidate_plan(
