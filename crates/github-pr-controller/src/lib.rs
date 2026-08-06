@@ -2522,12 +2522,30 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
                 here yet."
             .into();
     };
-    if !command.author_trusted
-        && !org_member(state, &command.repository, command.author_login.as_deref()).await
-    {
-        return "Only members of this organisation can judge findings. `/review` still works \
-                for anyone who can comment."
-            .into();
+    // Judging a finding can unblock a merge, so the bar is write access to
+    // THIS repository, not membership of the org: an org member with read-only
+    // access here would otherwise borrow council authority GitHub would refuse
+    // them. Fail closed — a probe that errors is not a grant.
+    let Some(login) = command.author_login.clone() else {
+        return "Could not identify the commenter, so nothing was changed.".into();
+    };
+    let allowed = match state.github.as_ref() {
+        Some(github) => github
+            .can_write_repo(&command.repository, &login)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, repo = %command.repository, %login, "repo permission probe failed; refusing");
+                false
+            }),
+        None => false,
+    };
+    if !allowed {
+        return format!(
+            "Judging a finding can unblock a merge, so it needs write access to \
+             `{}` — @{login} does not have it. `/review` still works for anyone who can \
+             comment.",
+            command.repository
+        );
     }
     if command.verb == "dismiss" && command.reason.is_none() {
         return format!(
@@ -2618,7 +2636,21 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         }
     };
 
-    let after_rows = store.review_findings(&query).await.unwrap_or(before_rows);
+    // A failed re-read must not be answered with pre-decision counts: the
+    // ledger already holds the judgement, so stale rows would tell the author
+    // they are still blocked by the very finding they just dismissed (F4).
+    let after_rows = match store.review_findings(&query).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!(%error, "findings re-read failed after a decision");
+            return format!(
+                "{} is recorded as {status}, but the ledger could not be re-read, so the \
+                 verdict was not recomputed. Comment again to retry — the judgement is \
+                 already saved.",
+                command.stable_id
+            );
+        }
+    };
     let outcome = deciding::plan_decision(
         &command.repository,
         command.pr_number as i64,
