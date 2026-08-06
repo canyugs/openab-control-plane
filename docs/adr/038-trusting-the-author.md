@@ -160,7 +160,37 @@ the same thing.
    history; only its status changes. Trusting the author never means
    pretending the finding did not happen.
 
-7. **Silence remains the violation (ADR 025).** Every command is answered:
+7. **The author's prose never enters a prompt.** An operator-written waiver
+   is injected into the chair's context as free text, and its block header
+   tells the chair the entries are "recorded by the operator — never sourced
+   from PR content". An author-written waiver would make that sentence false
+   and turn the ledger into a durable, repo-wide, auto-injected channel for
+   PR-authored text — up to 180 days of it, which is a different class of
+   exposure from the single round an `ask` or `review <notes>` survives. That
+   is ADR 035's memory-poisoning concern in its real form: not *who may
+   create* a waiver, but *what the chair is told and by whom*.
+
+   The split that resolves it: **a command-created waiver names a finding,
+   and the finding's own title, path and severity are council-authored.**
+   Those are what get injected:
+
+   ```
+   - W-12 [apps/backend/src/lib/agent/cost/]: "Forged sentinel bypasses
+     safeDiagnostic" (waived by @author-login, expires in 83d)
+   ```
+
+   The author's reason is stored in the ledger, carried in the audit event,
+   quoted in the PR reply and listed in the periodic report — every
+   human-facing surface, and no model-facing one. Matching also gets *more*
+   precise, because it keys on the finding the council actually raised rather
+   than on someone's prose about it.
+
+   Operator-created waivers (the ADR 035 path) have no finding to key on and
+   keep their free-text field; for those the header's claim stays true. The
+   injected block must therefore **label each entry's provenance** — operator
+   or author — rather than asserting one source for all of them.
+
+8. **Silence remains the violation (ADR 025).** Every command is answered:
    accepted (what changed, the scope, the expiry, counts before and after, how
    to revoke), accepted-but-still-blocked (what remains), or refused (why).
    The scope line is not decoration — an author typing `waive` is usually
@@ -195,9 +225,14 @@ the same thing.
   longer exists, expiring soon).
 - 🔴 waives are permitted but conspicuous: a shorter maximum expiry and a
   separate listing in that report.
-- The command path becomes a security-relevant surface. It must stay
-  controller-parsed; the day an agent is allowed to act on it, ADR 035's
-  memory-poisoning line is breached for real.
+- The command path becomes a security-relevant surface. Two things keep it
+  safe and both must hold: it stays **controller-parsed** (the day an agent is
+  allowed to act on the command, ADR 035's memory-poisoning line is breached
+  for real), and **no author-written prose is ever injected** (point 7) — the
+  ledger must not become a durable prompt channel just because the write path
+  opened. Free text from a PR already reaches a model through `ask` and
+  `review <notes>`, but only for one round; a waiver lasts up to 180 days and
+  applies to every future round in the repo.
 - Precision problems stop hiding as author friction. A finding class that is
   dismissed repeatedly is now visible as a steering defect, which is the
   cheaper thing to fix.
