@@ -98,6 +98,20 @@ the same thing.
    unblocks the merge. This path only ever downgrades blocking; it can never
    turn an approve into a blocker.
 
+   **The recomputation is a compare-and-swap on the reviewed head, not on
+   "whatever is current".** A decision names a finding, and every finding
+   carries the head SHA it was raised against. If the PR's head has moved
+   between the command and the write, **no artifact is rewritten** — a stale
+   decision must never unblock code nobody reviewed.
+
+   Nothing is lost when that happens, because the push has already produced a
+   new round against the new head: a `waive` is repo-scoped and durable, so it
+   applies to that round on its own; a `dismiss` judges one finding on one
+   revision, so if the new round raises the same class again the author
+   dismisses again — and that repetition is itself the precision signal
+   (point 2). The reply says which of the two happened; silence would be the
+   violation (point 7).
+
    Re-convening a full round to reach the same conclusion is rejected: it
    spends three agents to derive what the ledger already knows, and delays the
    unblock the author asked for.
@@ -108,9 +122,20 @@ the same thing.
    - the command is parsed by the **controller** from the signed webhook
      payload — **never by an agent reading PR text**, so there is no prompt
      to inject;
-   - authority comes from a **server-side org-membership probe**, not from
-     the payload's self-reported `author_association`;
+   - authority is checked **server-side against the repository**, not taken
+     from the payload's self-reported `author_association`;
    - the acting identity is recorded before anything changes.
+
+   **The bar is write permission on the repository, not org membership.**
+   Waivers are repo-scoped, so org membership is too coarse: a member with no
+   access to a repo could otherwise silence its reviews. The minimum is
+   `admin`, `maintain` or `write` from
+   `GET /repos/{owner}/{repo}/collaborators/{login}/permission`. The rationale
+   is that accepting a risk in a repo should require the same standing as
+   landing code in it — someone who can push the change can accept its
+   trade-off; someone who cannot should not be able to silence its review.
+   The org-membership probe (SEI-884) remains the gate for *triggering* a
+   review; it is not sufficient for *deciding* one.
 
    Residual risk, stated plainly: a compromised org-member account can now
    create waivers where previously it could not. It is bounded by mandatory
