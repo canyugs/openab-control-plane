@@ -233,6 +233,13 @@ the `session` projection contains only provider-neutral kernel state and the
 canonical settled result. It deliberately excludes roster, transcript,
 operator audit, and provider/product data.
 
+Actions admitted before OCP persisted trigger intent remain readable under
+their original exact scope, and a completed action can recover its session id
+from the stored response. Those legacy rows cannot reconstruct an uncommitted
+crash-window correlation, so `session` may be absent when no completed response
+was stored. New actions always persist the trigger intent and its durable scope
+claim before the kernel side effect.
+
 For a crash after the kernel session committed but before the action result and
 `session.opened` event committed, an admitted `open_session` retains both its
 opaque trigger intent and the exact kernel correlation ref used for the side

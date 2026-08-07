@@ -1397,7 +1397,13 @@ impl Store for PostgresStore {
                       AND b.scope = a.scope
                       AND b.enabled = 1
                      WHERE a.controller_id = $1 AND a.action_id = $2 AND a.scope = $3
-                       AND (a.action_kind != 'open_session' OR EXISTS (
+                       AND (a.action_kind != 'open_session'
+                            -- Legacy rows predate persisted trigger intent and
+                            -- therefore cannot join trigger ownership. The
+                            -- controller + exact enabled scope still owns their
+                            -- stored response; new rows must prove the claim.
+                            OR a.trigger_ref IS NULL
+                            OR EXISTS (
                             SELECT 1 FROM controller_trigger_scopes t
                             WHERE t.controller_id = a.controller_id
                               AND t.trigger_ref = a.trigger_ref
@@ -4522,6 +4528,45 @@ mod tests {
             .controller_action_for_reconciliation("reconciler", "act-reconcile", "tenant:dev",)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn legacy_open_action_without_trigger_intent_remains_reconcilable() {
+        let Some(s) = store("ctrl_reconciliation_legacy") else {
+            return;
+        };
+        provision(&s, "reconciler-legacy");
+        s.block(async {
+            let client = s.client().await?;
+            client
+                .execute(
+                    "INSERT INTO controller_action_idempotency
+                        (controller_id, action_id, request_hash, action_kind, scope,
+                         state, http_status, response_json, received_at, completed_at)
+                     VALUES ('reconciler-legacy', 'act-legacy', decode('01', 'hex'),
+                             'open_session', 'tenant:dev', 'completed', 200, '{}', 10, 20)",
+                    &[],
+                )
+                .await?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .unwrap();
+
+        let record = s
+            .controller_action_for_reconciliation("reconciler-legacy", "act-legacy", "tenant:dev")
+            .unwrap()
+            .expect("legacy action remains visible in its exact enabled scope");
+        assert_eq!(record.state, "completed");
+        assert!(record.trigger_ref.is_none());
+        assert!(
+            s.controller_action_for_reconciliation(
+                "reconciler-legacy",
+                "act-legacy",
+                "tenant:other",
+            )
+            .unwrap()
+            .is_none()
+        );
     }
 
     #[test]

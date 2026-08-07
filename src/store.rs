@@ -2644,7 +2644,13 @@ impl Store for SqliteStore {
               AND b.scope = a.scope
               AND b.enabled = 1
              WHERE a.controller_id = ?1 AND a.action_id = ?2 AND a.scope = ?3
-               AND (a.action_kind != 'open_session' OR EXISTS (
+               AND (a.action_kind != 'open_session'
+                    -- Rows admitted before trigger intent was persisted have
+                    -- no trigger ownership row to join. Their controller and
+                    -- exact enabled scope still authenticate the stored action
+                    -- response; only new rows must prove the durable claim.
+                    OR a.trigger_ref IS NULL
+                    OR EXISTS (
                     SELECT 1 FROM controller_trigger_scopes t
                     WHERE t.controller_id = a.controller_id
                       AND t.trigger_ref = a.trigger_ref
@@ -6518,6 +6524,40 @@ mod tests {
             error.contains("controller trigger scope conflict"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn legacy_open_action_without_trigger_intent_remains_reconcilable() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .upsert_controller_installation("ctrl-legacy", 1, 60)
+            .unwrap();
+        store
+            .set_controller_scope_binding("ctrl-legacy", "scope:legacy", true)
+            .unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO controller_action_idempotency
+                    (controller_id, action_id, request_hash, action_kind, scope,
+                     state, http_status, response_json, received_at, completed_at)
+                 VALUES ('ctrl-legacy', 'act-legacy', X'01', 'open_session',
+                         'scope:legacy', 'completed', 200, '{}', 10, 20)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let record = store
+            .controller_action_for_reconciliation("ctrl-legacy", "act-legacy", "scope:legacy")
+            .unwrap()
+            .expect("legacy action remains visible in its exact enabled scope");
+        assert_eq!(record.state, "completed");
+        assert!(record.trigger_ref.is_none());
+        assert!(store
+            .controller_action_for_reconciliation("ctrl-legacy", "act-legacy", "scope:other",)
+            .unwrap()
+            .is_none());
     }
 
     /// The watchdog deadline is anchored on the last message, not on
