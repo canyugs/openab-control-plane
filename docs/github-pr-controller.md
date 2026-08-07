@@ -90,14 +90,24 @@ hourly.
 
 The controller recognizes non-draft PR `opened`, `reopened`,
 `ready_for_review`, and `synchronize` events, plus trusted PR comments using
-`/review`, `/ask`, or a leading configured bot mention. `OWNER`, `MEMBER`, and
+`/review`, `/ask`, a leading configured bot mention, or a judgement on a
+finding (`dismiss F<n> <why>` / `reopen F<n>`, ADR 038). `OWNER`, `MEMBER`, and
 `COLLABORATOR` associations are trusted. The `oab-review` label is the
 maintainer opt-in for other PR authors.
 
-GitHub's webhook association can hide private organization membership. The
-controller does not verify membership beyond the delivered association, so
-such events are acknowledged and ignored fail-closed (`author_not_trusted`)
-instead of spending tokens; the `oab-review` label is the maintainer
+A judgement is held to a higher bar than convening: it requires **write access
+to the repository** (`admin`, `maintain`, `write`), probed live and failing
+closed, because clearing the last blocking finding makes the controller submit
+an APPROVE — merge authority that organization membership alone should not
+confer.
+
+GitHub's webhook association renders against PUBLIC organization membership
+only, so a private member arrives as `CONTRIBUTOR`. The controller therefore
+probes `GET /orgs/{org}/members/{login}` when the delivered association is not
+trusted (SEI-884 — before that fix every private member's push was ignored as
+`author_not_trusted`). A probe that fails or comes back negative still ends in
+a fail-closed ignore rather than spent tokens; the `oab-review` label is the
+maintainer
 override.
 
 An accepted trigger returns `202` with a deterministic `SessionPlan`. The plan

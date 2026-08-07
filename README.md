@@ -79,10 +79,26 @@ PR comments are an interaction surface:
 | `/ask <question>` | Opens a comment-scoped `solo` session; the answer arrives as a new PR comment (no round comment) |
 | `@<bot-handle> review <notes>` | Re-runs the council with the notes relayed as author fix notes |
 | `@<bot-handle> <question>` | Same as `/ask`, when the bot handle is configured |
+| `@<bot-handle> dismiss F<n> <why>` | Records that a finding is **not a defect**, recomputes the verdict, and — if that cleared the last blocker — flips the commit status and submits an APPROVE that supersedes the earlier REQUEST_CHANGES |
+| `@<bot-handle> reopen F<n>` | Undoes a dismissal |
 
-Comment commands are accepted only from write-ish GitHub users
-(`OWNER`, `MEMBER`, or `COLLABORATOR`). `GITHUB_CONTROLLER_ALLOWED_REPOS`
-restricts which repositories the controller will serve.
+Who may run them:
+
+- **Convening** a review (`/review`, `/ask`, a bare mention) needs a trusted
+  association (`OWNER`, `MEMBER`, `COLLABORATOR`) or live organization
+  membership — the webhook's association renders against *public* membership
+  only, so a private member is probed rather than refused.
+- **Judging** a finding (`dismiss`, `reopen`) needs **write access to that
+  repository** (`admin`, `maintain`, `write`), because it can unblock a merge:
+  accepting a risk in a repository takes the same standing as landing code in
+  it. A failed probe refuses (ADR 038).
+
+A dismissal is recorded, never erased: the finding keeps its row with who
+judged it and why, the reply states the recomputed counts, and the audit
+journal carries the actor. Disagreeing with the council is a first-class
+action — a reviewer nobody can answer gets routed around instead of argued
+with. `GITHUB_CONTROLLER_ALLOWED_REPOS` restricts which repositories the
+controller will serve.
 
 ## Deploy
 
