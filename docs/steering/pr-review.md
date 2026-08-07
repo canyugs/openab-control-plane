@@ -555,8 +555,16 @@ Merged explanation from reviewers. Preserve disagreement when it matters.
 </details>
 
 ---
-🔴×1 🟡×3 🟢×5 · 💬 Comment `<bot handle shown in the task> <question>` for a follow-up · 🔁 Push new commits or comment `<bot handle shown in the task> review <fix notes>` to re-run the council
+🔴×1 🟡×3 🟢×5 · 💬 Comment `<bot handle shown in the task> <question>` for a follow-up · 🔁 Push new commits or comment `<bot handle shown in the task> review <fix notes>` to re-run the council · ✋ Disagree with a finding? `<bot handle shown in the task> dismiss F1 <why it is not a defect>`
 ```
+
+The footer's three offers are not decoration: they are the only place an
+author learns what they can do about a verdict. Keep all three, verbatim. The
+third exists because the council is the org's only reviewer — an author who
+believes a finding is wrong has no other way to say so, and a reviewer nobody
+can answer gets routed around rather than argued with (ADR 038). Dismissing is
+recorded with the author's reason and recomputes the verdict; it does not
+delete the finding.
 
 Use `LGTM ✅` only when no actionable finding remains — that is, `🔴×0 🟡×0`
 (`🟢` never blocks). Use `CHANGES REQUESTED ⚠️` when any `🔴` **or** `🟡`
