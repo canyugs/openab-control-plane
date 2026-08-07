@@ -149,10 +149,10 @@ impl SessionPlan {
     }
 }
 
-pub fn parse_trigger(event: &str, body: &Value, bot_handle: Option<&str>) -> Option<Trigger> {
+pub fn parse_trigger(event: &str, body: &Value, bot_handles: &[String]) -> Option<Trigger> {
     match event {
         "pull_request" => parse_pull_request(body),
-        "issue_comment" => parse_issue_comment(body, bot_handle),
+        "issue_comment" => parse_issue_comment(body, bot_handles),
         _ => None,
     }
 }
@@ -352,7 +352,7 @@ fn parse_pull_request(body: &Value) -> Option<Trigger> {
     })
 }
 
-fn parse_issue_comment(body: &Value, bot_handle: Option<&str>) -> Option<Trigger> {
+fn parse_issue_comment(body: &Value, bot_handles: &[String]) -> Option<Trigger> {
     if body["action"].as_str()? != "created"
         || body["issue"]["pull_request"]["url"].as_str().is_none()
         || body["comment"]["user"]["type"].as_str() == Some("Bot")
@@ -364,10 +364,10 @@ fn parse_issue_comment(body: &Value, bot_handle: Option<&str>) -> Option<Trigger
     let (reason, question, review_notes, review_from_scratch) =
         if starts_with_command(trimmed, "/review") {
             ("/review", None, None, false)
-        } else if let Some(review) = parse_mention_review(trimmed, bot_handle) {
+        } else if let Some(review) = parse_mention_review(trimmed, bot_handles) {
             ("/review", None, Some(review.notes), review.from_scratch)
         } else {
-            let question = parse_ask(trimmed, bot_handle)?;
+            let question = parse_ask(trimmed, bot_handles)?;
             ("ask", Some(question), None, false)
         };
     let comment_id = body["comment"]["id"].as_u64()?;
@@ -596,22 +596,28 @@ fn starts_with_command(comment: &str, command: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
 }
 
-fn leading_mention<'a>(comment: &'a str, handle: Option<&str>) -> Option<&'a str> {
-    let handle = handle?;
+/// Strip a leading `@handle` when it is one of ours.
+///
+/// Plural on purpose: the App's live slug is authoritative, but the configured
+/// handle stays a valid alias so a rename does not invalidate the name people
+/// have in their muscle memory and in older comments on the same thread.
+fn leading_mention<'a>(comment: &'a str, handles: &[String]) -> Option<&'a str> {
     let rest = comment.strip_prefix('@')?;
-    let name = rest.get(..handle.len())?;
-    if !name.eq_ignore_ascii_case(handle) {
-        return None;
-    }
-    let tail = &rest[handle.len()..];
-    if tail.starts_with(|character: char| character.is_alphanumeric() || character == '-') {
-        return None;
-    }
-    Some(tail.trim_start_matches("[bot]").trim_start())
+    handles.iter().find_map(|handle| {
+        let name = rest.get(..handle.len())?;
+        if !name.eq_ignore_ascii_case(handle) {
+            return None;
+        }
+        let tail = &rest[handle.len()..];
+        if tail.starts_with(|character: char| character.is_alphanumeric() || character == '-') {
+            return None;
+        }
+        Some(tail.trim_start_matches("[bot]").trim_start())
+    })
 }
 
-fn parse_mention_review(comment: &str, handle: Option<&str>) -> Option<MentionReview> {
-    let rest = leading_mention(comment, handle)?;
+fn parse_mention_review(comment: &str, handles: &[String]) -> Option<MentionReview> {
+    let rest = leading_mention(comment, handles)?;
     if let Some(rest) = strip_ci_word(rest, "full") {
         return Some(MentionReview {
             notes: strip_ci_word(rest, "review")?.to_string(),
@@ -641,7 +647,7 @@ fn strip_ci_word<'a>(text: &'a str, word: &str) -> Option<&'a str> {
 pub fn parse_finding_command(
     event: &str,
     body: &Value,
-    bot_handle: Option<&str>,
+    bot_handles: &[String],
 ) -> Option<FindingCommand> {
     if event != "issue_comment"
         || body["action"].as_str()? != "created"
@@ -651,7 +657,7 @@ pub fn parse_finding_command(
         return None;
     }
     let comment = body["comment"]["body"].as_str().unwrap_or_default().trim();
-    let (verb, stable_id, reason) = parse_verb(comment, bot_handle)?;
+    let (verb, stable_id, reason) = parse_verb(comment, bot_handles)?;
     Some(FindingCommand {
         repository: body["repository"]["full_name"].as_str()?.to_string(),
         pr_number: body["issue"]["number"].as_u64()?,
@@ -673,8 +679,8 @@ pub fn parse_finding_command(
 /// `(verb, F-id, reason)`. The id is normalized to upper case so `f1` works;
 /// anything that is not `F<digits>` is refused here rather than looked up,
 /// because a typo must produce a reply, not a silent miss.
-fn parse_verb(comment: &str, handle: Option<&str>) -> Option<(String, String, Option<String>)> {
-    let rest = leading_mention(comment, handle)?;
+fn parse_verb(comment: &str, handles: &[String]) -> Option<(String, String, Option<String>)> {
+    let rest = leading_mention(comment, handles)?;
     let (verb, rest) = ["dismiss", "reopen"]
         .into_iter()
         .find_map(|verb| strip_ci_word(rest, verb).map(|rest| (verb, rest)))?;
@@ -691,13 +697,13 @@ fn parse_verb(comment: &str, handle: Option<&str>) -> Option<(String, String, Op
     Some((verb.to_string(), id, reason))
 }
 
-fn parse_ask(comment: &str, handle: Option<&str>) -> Option<String> {
+fn parse_ask(comment: &str, handles: &[String]) -> Option<String> {
     if let Some(rest) = comment.strip_prefix("/ask") {
         if rest.is_empty() || rest.starts_with(char::is_whitespace) {
             return Some(rest.trim().to_string());
         }
     }
-    let rest = leading_mention(comment, handle)?;
+    let rest = leading_mention(comment, handles)?;
     if ["review", "full", "dismiss", "reopen"]
         .into_iter()
         .any(|word| strip_ci_word(rest, word).is_some())
@@ -711,6 +717,11 @@ fn parse_ask(comment: &str, handle: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The handles a controller would resolve: in tests just the one.
+    fn handles() -> Vec<String> {
+        vec!["bot".into()]
+    }
 
     fn comment_event(body: &str, association: &str) -> Value {
         serde_json::json!({
@@ -729,7 +740,7 @@ mod tests {
     #[test]
     fn dismiss_carries_the_finding_and_the_reason() {
         let event = comment_event("@bot dismiss F1 the validator pins the IP first", "MEMBER");
-        let cmd = parse_finding_command("issue_comment", &event, Some("bot")).unwrap();
+        let cmd = parse_finding_command("issue_comment", &event, &handles()).unwrap();
         assert_eq!(cmd.verb, "dismiss");
         assert_eq!(cmd.stable_id, "F1");
         assert_eq!(
@@ -745,7 +756,7 @@ mod tests {
     #[test]
     fn reopen_needs_no_reason_and_the_id_is_case_insensitive() {
         let event = comment_event("@bot reopen f12", "OWNER");
-        let cmd = parse_finding_command("issue_comment", &event, Some("bot")).unwrap();
+        let cmd = parse_finding_command("issue_comment", &event, &handles()).unwrap();
         assert_eq!(
             (cmd.verb.as_str(), cmd.stable_id.as_str()),
             ("reopen", "F12")
@@ -760,11 +771,11 @@ mod tests {
         for body in ["@bot dismiss F1 reason", "@bot reopen F1"] {
             let event = comment_event(body, "MEMBER");
             assert!(
-                parse_trigger("issue_comment", &event, Some("bot")).is_none(),
+                parse_trigger("issue_comment", &event, &handles()).is_none(),
                 "{body}"
             );
             assert!(
-                parse_finding_command("issue_comment", &event, Some("bot")).is_some(),
+                parse_finding_command("issue_comment", &event, &handles()).is_some(),
                 "{body}"
             );
         }
@@ -780,7 +791,7 @@ mod tests {
         ] {
             let event = comment_event(body, "MEMBER");
             assert!(
-                parse_finding_command("issue_comment", &event, Some("bot")).is_none(),
+                parse_finding_command("issue_comment", &event, &handles()).is_none(),
                 "{body}"
             );
         }
@@ -791,7 +802,7 @@ mod tests {
         // The gate belongs downstream: refusing silently at the parser would
         // leave the author with no reply at all (ADR 025).
         let event = comment_event("@bot dismiss F1 nope", "NONE");
-        let cmd = parse_finding_command("issue_comment", &event, Some("bot")).unwrap();
+        let cmd = parse_finding_command("issue_comment", &event, &handles()).unwrap();
         assert!(!cmd.author_trusted);
     }
 
@@ -799,7 +810,7 @@ mod tests {
     fn a_bot_comment_is_never_a_command() {
         let mut event = comment_event("@bot dismiss F1 loop", "MEMBER");
         event["comment"]["user"]["type"] = serde_json::json!("Bot");
-        assert!(parse_finding_command("issue_comment", &event, Some("bot")).is_none());
+        assert!(parse_finding_command("issue_comment", &event, &handles()).is_none());
     }
 
     fn fixture(name: &str) -> Value {
@@ -823,23 +834,23 @@ mod tests {
 
     #[test]
     fn replays_existing_trigger_fixtures() {
-        let opened = parse_trigger("pull_request", &fixture("opened"), None).unwrap();
+        let opened = parse_trigger("pull_request", &fixture("opened"), &[]).unwrap();
         assert_eq!(opened.trigger_fingerprint.as_deref(), Some("sha:abc123"));
         assert_eq!(opened.preset.as_deref(), Some("full"));
         assert!(opened.author_trusted);
         assert_eq!(opened.author_login.as_deref(), Some("octocat"));
-        assert!(parse_trigger("pull_request", &fixture("ready"), None).is_some());
-        assert!(parse_trigger("pull_request", &fixture("draft"), None).is_none());
+        assert!(parse_trigger("pull_request", &fixture("ready"), &[]).is_some());
+        assert!(parse_trigger("pull_request", &fixture("draft"), &[]).is_none());
 
-        let review = parse_trigger("issue_comment", &fixture("review"), None).unwrap();
+        let review = parse_trigger("issue_comment", &fixture("review"), &[]).unwrap();
         assert_eq!(review.reason, "/review");
         assert_eq!(review.preset.as_deref(), Some("quick"));
-        let ask = parse_trigger("issue_comment", &fixture("ask"), None).unwrap();
+        let ask = parse_trigger("issue_comment", &fixture("ask"), &[]).unwrap();
         assert_eq!(ask.question.as_deref(), Some("why is this a blocker?"));
         let mention = parse_trigger(
             "issue_comment",
             &fixture("mention"),
-            Some("fixture-council"),
+            &["fixture-council".to_string()],
         )
         .unwrap();
         assert!(mention
@@ -851,7 +862,7 @@ mod tests {
 
     #[test]
     fn opened_plan_matches_embedded_action_and_only_proposes_writes() {
-        let trigger = parse_trigger("pull_request", &fixture("opened"), None).unwrap();
+        let trigger = parse_trigger("pull_request", &fixture("opened"), &[]).unwrap();
         let plan = build_plan(
             "delivery-1",
             trigger,
@@ -960,7 +971,7 @@ mod tests {
         let trigger = parse_trigger(
             "issue_comment",
             &fixture("mention"),
-            Some("fixture-council"),
+            &["fixture-council".to_string()],
         )
         .unwrap();
         let notes = trigger.review_notes.clone().expect("fixture carries notes");
@@ -984,7 +995,7 @@ mod tests {
     fn a_solo_roster_keeps_the_shared_prompt_instead_of_council_tasks() {
         // One bot means solo mode and no quorum; a chair task built around
         // "wait for reviewer quorum" would be dead instructions (F3, #306).
-        let trigger = parse_trigger("pull_request", &fixture("opened"), None).unwrap();
+        let trigger = parse_trigger("pull_request", &fixture("opened"), &[]).unwrap();
         let plan = build_plan("delivery-1", trigger, &["chair".into()], None, "approve");
         assert_eq!(plan.mode, "solo");
         assert!(
@@ -1008,13 +1019,19 @@ mod tests {
 
     #[test]
     fn bare_or_prefix_colliding_mentions_do_not_create_empty_asks() {
-        assert_eq!(parse_ask("@fixture-council", Some("fixture-council")), None);
         assert_eq!(
-            parse_ask("@fixture-council-admin help", Some("fixture-council")),
+            parse_ask("@fixture-council", &["fixture-council".to_string()]),
             None
         );
         assert_eq!(
-            parse_ask("@fixture-council help", Some("fixture-council")),
+            parse_ask(
+                "@fixture-council-admin help",
+                &["fixture-council".to_string()]
+            ),
+            None
+        );
+        assert_eq!(
+            parse_ask("@fixture-council help", &["fixture-council".to_string()]),
             Some("help".into())
         );
     }
@@ -1024,7 +1041,7 @@ mod tests {
         let roster = ["chair".into(), "rev1".into(), "rev2".into()];
         let ask = build_plan(
             "delivery-ask",
-            parse_trigger("issue_comment", &fixture("ask"), None).unwrap(),
+            parse_trigger("issue_comment", &fixture("ask"), &[]).unwrap(),
             &roster,
             None,
             "approve",
@@ -1046,7 +1063,7 @@ mod tests {
             }]
         );
 
-        let trigger = parse_trigger("pull_request", &fixture("opened"), None).unwrap();
+        let trigger = parse_trigger("pull_request", &fixture("opened"), &[]).unwrap();
         let status = build_plan("delivery-status", trigger.clone(), &roster, None, "status");
         assert_eq!(status.proposed_writes.len(), 2);
         assert!(status

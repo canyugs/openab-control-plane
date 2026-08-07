@@ -257,8 +257,27 @@ Run exactly one delivery mode from §7.
 - [ ] `setup-github-app.sh` exits 0
 - [ ] GitHub App webhook URL is `$CONTROLLER_URL/api/v1/github/webhooks`
 - [ ] Controller `GITHUB_CONTROLLER_BOT_HANDLE` = App slug
-- [ ] Controller `GITHUB_CONTROLLER_WEBHOOK_SECRET` matches App webhook secret
-- [ ] Chair `gh auth status` shows `<slug>[bot]` (§8)
+
+### If you ever rename the App
+
+**The controller follows the rename on its own.** It asks GitHub what it is
+actually called (`GET /app`) when it starts, and that slug is the name it
+answers to — because that is the name GitHub renders, the name its own
+comments are signed with, and therefore the name a user copies.
+
+`GITHUB_CONTROLLER_BOT_HANDLE` is kept as an **alias**, so the old name in
+older comments and in people's fingers keeps working too. Neither name breaks;
+update the variable when convenient and drop the alias.
+
+Two things this deliberately does not do. It does not re-probe per request —
+`/readyz` is polled often and this must not spend rate limit — so a rename
+takes effect at the next restart. And a probe that fails is reported as
+*unverified* rather than as a mismatch, falling back to the configured handle:
+an unreachable GitHub is already visible in the `github` component and must not
+be re-reported as a configuration fault.
+
+`/readyz`'s `bot_identity` component names whichever handle is in force, and
+says so when the configured value has gone stale.
 
 ## 7. Wiring delivery modes
 
