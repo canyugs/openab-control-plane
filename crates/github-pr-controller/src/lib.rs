@@ -2606,7 +2606,7 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
     // Every refusal and every miss ends with the same line: reporting what
     // went wrong without saying what to type leaves the author stuck holding a
     // command they cannot correct.
-    let hint = deciding::usage_hint(state.config.bot_handle.as_deref().unwrap_or("bot"));
+    let hint = deciding::usage_hint(state.bot_name());
     let Some(store) = state.store.clone() else {
         return deciding::fault(
             "The controller has no product store configured, so findings cannot be judged yet.",
@@ -2714,7 +2714,7 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
                      `@{} review` convenes one.{hint}",
                     command.repository,
                     &head_sha[..head_sha.len().min(8)],
-                    state.config.bot_handle.as_deref().unwrap_or("bot"),
+                    state.bot_name(),
                 )
             } else {
                 format!(
