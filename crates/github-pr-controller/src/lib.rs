@@ -2522,16 +2522,16 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
     // command they cannot correct.
     let hint = deciding::usage_hint(state.config.bot_handle.as_deref().unwrap_or("bot"));
     let Some(store) = state.store.clone() else {
-        return "The controller has no product store configured, so findings cannot be judged \
-                here yet."
-            .into();
+        return deciding::fault(
+            "The controller has no product store configured, so findings cannot be judged yet.",
+        );
     };
     // Judging a finding can unblock a merge, so the bar is write access to
     // THIS repository, not membership of the org: an org member with read-only
     // access here would otherwise borrow council authority GitHub would refuse
     // them. Fail closed — a probe that errors is not a grant.
     let Some(login) = command.author_login.clone() else {
-        return "Could not identify the commenter, so nothing was changed.".into();
+        return deciding::fault("Could not identify the commenter from this event.");
     };
     let allowed = match state.github.as_ref() {
         Some(github) => github
@@ -2559,7 +2559,9 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         );
     }
     let Some(github) = state.github.as_ref() else {
-        return "No GitHub client is configured, so the head revision cannot be confirmed.".into();
+        return deciding::fault(
+            "No GitHub client is configured, so the head revision cannot be confirmed.",
+        );
     };
     let head_sha = match github
         .pull_head_sha(&command.repository, command.pr_number as i64)
@@ -2568,9 +2570,7 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         Ok(sha) => sha,
         Err(error) => {
             tracing::warn!(%error, repo = %command.repository, "head lookup failed for a finding command");
-            return "Could not confirm this pull request's head revision, so nothing was \
-                    changed. Try again."
-                .into();
+            return deciding::fault("Could not confirm this pull request's head revision.");
         }
     };
     let query = store::ReviewFindingQuery {
@@ -2584,7 +2584,7 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         Ok(rows) => rows,
         Err(error) => {
             tracing::error!(%error, "findings read failed for a finding command");
-            return "The findings ledger is unavailable, so nothing was changed.".into();
+            return deciding::fault("The findings ledger is unavailable.");
         }
     };
     let before = deciding::open_counts(&before_rows, &head_sha);
@@ -2640,7 +2640,7 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         }
         Err(error) => {
             tracing::error!(%error, "finding decision write failed");
-            return "The findings ledger refused the write, so nothing was changed.".into();
+            return deciding::fault("The findings ledger refused the write.");
         }
     };
 

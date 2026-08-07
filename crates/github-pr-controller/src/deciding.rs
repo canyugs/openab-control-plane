@@ -150,6 +150,19 @@ pub fn plan_decision(
     }
 }
 
+/// What a controller-side fault says.
+///
+/// Deliberately NOT the usage hint: nothing the author types differently would
+/// have helped, and offering syntax after our own failure implies they got it
+/// wrong. What they need is that the command was understood, that nothing
+/// changed, and that retrying is the right move.
+pub fn fault(detail: &str) -> String {
+    format!(
+        "{detail}\n\nThis is a controller fault, not yours — the command was understood and \
+             nothing was changed. Trying again is safe."
+    )
+}
+
 /// The one line every refusal and every miss ends with.
 ///
 /// Saying what went wrong is not the same as saying what to do: a reply that
@@ -475,6 +488,22 @@ mod tests {
         );
         assert!(body.contains("Still blocked"));
         assert!(!body.contains("APPROVE review"));
+    }
+
+    #[test]
+    fn a_controller_fault_does_not_hand_the_author_syntax() {
+        // Council review of #374 named six paths with no usage line. Five of
+        // them are our own failures, and offering syntax there implies the
+        // author mistyped: what they need is that the command was understood,
+        // that nothing changed, and that retrying is safe.
+        let body = fault("The findings ledger is unavailable.");
+        assert!(body.contains("controller fault, not yours"));
+        assert!(body.contains("nothing was changed"));
+        assert!(body.contains("Trying again is safe"));
+        assert!(
+            !body.contains("dismiss F<n>"),
+            "syntax here would blame the author: {body}"
+        );
     }
 
     #[test]
