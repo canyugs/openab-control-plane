@@ -2726,6 +2726,7 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         before,
         &outcome,
         command.author_login.as_deref().unwrap_or("unknown"),
+        state.config.bot_handle.as_deref().unwrap_or("bot"),
     );
     if !all_queued {
         reply.push_str(

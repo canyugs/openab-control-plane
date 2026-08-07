@@ -159,6 +159,10 @@ pub fn reply_body(
     before: (i64, i64),
     outcome: &DecisionOutcome,
     actor: &str,
+    // The handle authors actually type. Rendering a placeholder here hands
+    // them a command that does nothing, which is the same failure as not
+    // telling them at all.
+    bot_handle: &str,
 ) -> String {
     let where_ = match (row.path.as_deref(), row.line) {
         (Some(path), Some(line)) => format!(" `{path}:{line}`"),
@@ -199,7 +203,7 @@ pub fn reply_body(
     }
     if verb == "dismiss" {
         body.push_str(&format!(
-            "\nWrong call? `@{{bot}} reopen {}` puts it back.\n",
+            "\nWrong call? `@{bot_handle} reopen {}` puts it back.\n",
             row.stable_id
         ));
     }
@@ -418,12 +422,22 @@ mod tests {
             "<!-- m -->",
             777,
         );
-        let body = reply_body("dismiss", &decided, (1, 0), &outcome, "yuaanlin");
+        let body = reply_body(
+            "dismiss",
+            &decided,
+            (1, 0),
+            &outcome,
+            "yuaanlin",
+            "opencodezebra",
+        );
         assert!(body.contains("F1 dismissed"));
         assert!(body.contains("the validator pins the IP first"));
         assert!(body.contains("🔴1 🟡0 → 🔴0 🟡0"));
         assert!(body.contains("APPROVE review"));
-        assert!(body.contains("reopen F1"), "the undo must be discoverable");
+        assert!(
+            body.contains("`@opencodezebra reopen F1`"),
+            "the undo must be a command the author can actually type: {body}"
+        );
 
         // A decision that leaves blockers says what remains instead.
         let blocked = plan_decision(
@@ -437,7 +451,14 @@ mod tests {
             "<!-- m -->",
             777,
         );
-        let body = reply_body("dismiss", &decided, (1, 1), &blocked, "yuaanlin");
+        let body = reply_body(
+            "dismiss",
+            &decided,
+            (1, 1),
+            &blocked,
+            "yuaanlin",
+            "opencodezebra",
+        );
         assert!(body.contains("Still blocked"));
         assert!(!body.contains("APPROVE review"));
     }
