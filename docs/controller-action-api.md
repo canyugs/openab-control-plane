@@ -184,10 +184,84 @@ non-retryable `409` for that action id. OCP does not automatically re-execute an
 action whose side effects may already have happened; the controller must first
 reconcile its domain state, then use a new action id if another action is safe.
 
+## Reconcile an action
+
+Use the same installation token and exact scope to recover a lost action
+response, a dead-lettered runtime event, or an indeterminate `open_session`:
+
+```http
+GET /v1/controller/actions/act_001
+Authorization: Bearer <install action token>
+X-OAB-Scope: tenant:example/resource:demo
+```
+
+```json
+{
+  "version": 1,
+  "action_id": "act_001",
+  "action_kind": "open_session",
+  "scope": "tenant:example/resource:demo",
+  "state": "completed",
+  "http_status": 200,
+  "response": {
+    "version": 1,
+    "action_id": "act_001",
+    "result": {
+      "type": "session_opened",
+      "data": { "session_id": "ses_123", "deduped": false }
+    }
+  },
+  "session": {
+    "session_id": "ses_123",
+    "state": "closed",
+    "trigger_ref": "object:example/42",
+    "trigger_fingerprint": "revision:abc123",
+    "closed_at": 1786000000000,
+    "decision": "approve",
+    "result": {
+      "author_id": "chair",
+      "message_ids": ["msg_123"],
+      "text": "The settled controller result."
+    }
+  }
+}
+```
+
+`state` is `processing`, `completed`, or `outcome_unknown`. Optional fields are
+omitted until they exist. The `response` is the exact stored action response;
+the `session` projection contains only provider-neutral kernel state and the
+canonical settled result. It deliberately excludes roster, transcript,
+operator audit, and provider/product data.
+
+Actions admitted before OCP persisted trigger intent remain readable under
+their original exact scope, and a completed action can recover its session id
+from the stored response. Those legacy rows cannot reconstruct an uncommitted
+crash-window correlation, so `session` may be absent when no completed response
+was stored. New actions always persist the trigger intent and its durable scope
+claim before the kernel side effect.
+
+For a crash after the kernel session committed but before the action result and
+`session.opened` event committed, an admitted `open_session` retains both its
+opaque trigger intent and the exact kernel correlation ref used for the side
+effect. The read can therefore return `outcome_unknown` together with the
+already-created session without re-deriving a lookup key. A controller should
+inspect that session before choosing a new action id. A new retry with the same
+trigger/fingerprint will then dedupe through the normal kernel path.
+
+The read returns `404` when the action does not belong to the authenticated
+installation and exact currently-enabled scope. Revoked/expired credentials
+return `401`. Disabling an installation does not erase its action outcomes;
+an otherwise-active token may still reconcile them, but revoking its scope or
+token removes that access.
+
 Every external `open_session` requires an opaque `trigger_ref`. Dedupe and
 fingerprint supersede are controller-scoped, so two installations may use the
-same external ref without sharing a session. Later actions may address only
-sessions owned by the same installation and scope.
+same external ref without sharing a session. Within one installation, OCP
+atomically and permanently binds a trigger to its first admitted scope before
+executing the kernel side effect; the opaque kernel correlation ref also
+namespaces that scope. Reusing a trigger from another scope fails closed,
+including while the first action is still `processing` or indeterminate. Later
+actions may address only sessions owned by the same installation and scope.
 
 Errors use the versioned `ErrorEnvelope` from `controller-protocol`. Rate quota
 responses return `429` and `Retry-After`; concurrent-session quota responses
