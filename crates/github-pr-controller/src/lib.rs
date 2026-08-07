@@ -180,33 +180,72 @@ pub struct AppState {
     /// stop parsing, with no error in any log — so the mismatch is surfaced
     /// where an operator and the watchdog both already look.
     pub bot_identity: ComponentReadiness,
+    /// Handles that count as addressing this bot, most authoritative first:
+    /// the App's live slug, then the configured handle as an alias. Plural so
+    /// a rename takes effect immediately without invalidating the name already
+    /// sitting in older comments on the same thread.
+    pub bot_handles: Vec<String>,
 }
 
-/// Compare the configured mention handle against the App's real slug.
+impl AppState {
+    /// The name to PRINT — what a reader should type. Always the live slug
+    /// when we know it: advertising the configured name after a rename is how
+    /// the system ends up teaching a command that does nothing.
+    pub fn bot_name(&self) -> &str {
+        self.bot_handles
+            .first()
+            .map(String::as_str)
+            .unwrap_or("bot")
+    }
+}
+
+/// Resolve which names address this bot, and report how that went.
 ///
-/// Disabled — and therefore never blocking — when there is no handle or no
-/// GitHub client to ask with. A probe that errors is reported as unknown
-/// rather than as a mismatch: an unreachable GitHub is already visible in the
-/// `github` component and must not be re-reported here as a config fault.
-async fn probe_bot_identity(
-    handle: Option<&str>,
+/// The App's slug is authoritative: it is what GitHub renders, what the bot's
+/// own comments are signed with, and therefore what a user copies. The
+/// configured handle is kept as an alias so a rename does not invalidate the
+/// name already in people's fingers and in older comments.
+///
+/// Probed once at startup — readyz is polled often and this must not spend
+/// rate limit. When the probe fails the configured handle stands alone, which
+/// is exactly the old behaviour rather than a new failure.
+async fn resolve_bot_handles(
+    configured: Option<&str>,
     github: Option<&github::GitHubClient>,
-) -> ComponentReadiness {
-    let (Some(handle), Some(github)) = (handle, github) else {
-        return ComponentReadiness::disabled("no bot handle or no GitHub client");
+) -> (ComponentReadiness, Vec<String>) {
+    let configured_vec: Vec<String> = configured.map(str::to_string).into_iter().collect();
+    let Some(github) = github else {
+        return (
+            ComponentReadiness::disabled("no GitHub client; handle unverified"),
+            configured_vec,
+        );
     };
     match github.app_slug().await {
-        Ok(slug) if slug.eq_ignore_ascii_case(handle) => {
-            ComponentReadiness::ready("bot handle matches the App slug")
+        Ok(slug) => {
+            let matches = configured.is_some_and(|handle| slug.eq_ignore_ascii_case(handle));
+            let mut handles = vec![slug.clone()];
+            handles.extend(configured_vec.into_iter().filter(|_| !matches));
+            let readiness = if matches || configured.is_none() {
+                ComponentReadiness::ready(format!("addressed as @{slug}"))
+            } else {
+                // Informational, not a fault: commands work under both names
+                // from here. It still says so, because the configuration is
+                // now stale and someone should tidy it.
+                ComponentReadiness::ready(format!(
+                    "addressed as @{slug} (the App's own name); \
+                     GITHUB_CONTROLLER_BOT_HANDLE still says `{}` and is kept as an alias — \
+                     update it when convenient",
+                    configured.unwrap_or_default()
+                ))
+            };
+            (readiness, handles)
         }
-        Ok(slug) => ComponentReadiness::not_ready(format!(
-            "GITHUB_CONTROLLER_BOT_HANDLE is `{handle}` but the App is `{slug}` — every \
-             mention command (review, ask, dismiss, reopen) is being ignored; set the handle \
-             to the App slug and restart"
-        )),
         Err(error) => {
-            tracing::warn!(%error, "app slug probe failed; bot handle left unverified");
-            ComponentReadiness::disabled("App slug unavailable; handle unverified")
+            tracing::warn!(%error, "app slug probe failed; falling back to the configured handle");
+            (
+                ComponentReadiness::disabled("App slug unavailable; using the configured handle"),
+                configured_vec,
+            )
         }
     }
 }
@@ -250,8 +289,8 @@ impl AppState {
             _ => (None, None),
         };
         let github = github::GitHubClient::from_config(&config).map(Arc::new);
-        let bot_identity =
-            probe_bot_identity(config.bot_handle.as_deref(), github.as_deref()).await;
+        let (bot_identity, bot_handles) =
+            resolve_bot_handles(config.bot_handle.as_deref(), github.as_deref()).await;
         Self {
             config,
             store,
@@ -262,6 +301,7 @@ impl AppState {
             event_verifier_error,
             github,
             bot_identity,
+            bot_handles,
         }
     }
 
@@ -272,6 +312,7 @@ impl AppState {
         event_verifier: Option<Arc<runtime_events::RuntimeEventVerifier>>,
     ) -> Self {
         let github = github::GitHubClient::from_config(&config).map(Arc::new);
+        let config_handles: Vec<String> = config.bot_handle.clone().into_iter().collect();
         Self {
             config,
             store: Some(Arc::new(store)),
@@ -281,10 +322,10 @@ impl AppState {
             event_verifier,
             event_verifier_error: None,
             github,
-            // Sync constructor: no probe here. Tests and embeddings assert on
-            // the components they set up, and an unverified handle must never
-            // read as a mismatch.
+            // Sync constructor: no probe here, so the configured handle stands
+            // alone and an unverified name never reads as a mismatch.
             bot_identity: ComponentReadiness::disabled("handle unverified"),
+            bot_handles: config_handles,
         }
     }
 
@@ -689,8 +730,7 @@ async fn handle_webhook(
 
     // A finding command mutates the ledger and what the pull request already
     // shows; it opens no session, so it never reaches the planner.
-    if let Some(command) =
-        planner::parse_finding_command(event_type, &payload, state.config.bot_handle.as_deref())
+    if let Some(command) = planner::parse_finding_command(event_type, &payload, &state.bot_handles)
     {
         let reply = apply_finding_command(&state, &command).await;
         if let Some(github) = state.github.as_ref() {
@@ -2780,7 +2820,7 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         before,
         &outcome,
         command.author_login.as_deref().unwrap_or("unknown"),
-        state.config.bot_handle.as_deref().unwrap_or("bot"),
+        state.bot_name(),
     );
     if !all_queued {
         reply.push_str(
@@ -2798,9 +2838,7 @@ async fn candidate_plan(
     event_type: &str,
     payload: &Value,
 ) -> Result<planner::SessionPlan, &'static str> {
-    let Some(mut trigger) =
-        planner::parse_trigger(event_type, payload, state.config.bot_handle.as_deref())
-    else {
+    let Some(mut trigger) = planner::parse_trigger(event_type, payload, &state.bot_handles) else {
         return Err("not_a_trigger");
     };
     if !state.config.allowed_repos.is_empty()
@@ -2950,27 +2988,47 @@ fn response(status: StatusCode, value: Value) -> Response {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
-    async fn a_renamed_app_is_reported_rather_than_silently_ignored() {
+    async fn a_renamed_app_is_answered_to_under_both_names() {
         // Live case 2026-08-07: the dev App was renamed to `openab-council`
-        // while the controller still had `zeabur-council`. Nothing errored;
-        // `@openab-council review` simply did nothing, and only asking GitHub
-        // what the App is actually called revealed it.
-        let matched = probe_bot_identity(None, None).await;
-        assert!(!matched.enabled, "no handle configured is not a fault");
+        // while the controller still had `zeabur-council`. Nothing errored —
+        // `@openab-council review` simply did nothing. The App's own slug is
+        // authoritative now, and the configured name survives as an alias so
+        // the rename does not invalidate what is already in the thread.
+        let (readiness, handles) = resolve_bot_handles(Some("zeabur-council"), None).await;
+        assert!(
+            !readiness.enabled,
+            "no client to ask: unverified, not a fault"
+        );
+        assert_eq!(handles, vec!["zeabur-council".to_string()]);
 
-        // The comparison itself, without a network: same name in either case,
-        // different names never.
-        for (handle, slug, want) in [
-            ("openab-council", "openab-council", true),
-            ("OpenAB-Council", "openab-council", true),
-            ("zeabur-council", "openab-council", false),
+        // The matcher takes either name, and neither matches a stranger.
+        let both = vec!["openab-council".to_string(), "zeabur-council".to_string()];
+        for comment in [
+            "@openab-council review",
+            "@zeabur-council review",
+            "@OpenAB-Council review",
         ] {
-            assert_eq!(
-                slug.eq_ignore_ascii_case(handle),
-                want,
-                "{handle} vs {slug}"
+            assert!(
+                planner::parse_trigger("issue_comment", &comment_fixture(comment), &both).is_some(),
+                "{comment}"
             );
         }
+        assert!(planner::parse_trigger(
+            "issue_comment",
+            &comment_fixture("@someone-else review"),
+            &both
+        )
+        .is_none());
+    }
+
+    fn comment_fixture(body: &str) -> serde_json::Value {
+        json!({
+            "action": "created",
+            "repository": {"full_name": "example/repo"},
+            "issue": {"number": 1, "pull_request": {"url": "https://api.github.com/x"}},
+            "comment": {"id": 1, "body": body, "author_association": "MEMBER",
+                        "user": {"login": "someone", "type": "User"}}
+        })
     }
 
     use super::*;
@@ -3342,6 +3400,7 @@ mod tests {
             event_verifier_error: None,
             github: None,
             bot_identity: ComponentReadiness::disabled("handle unverified"),
+            bot_handles: vec!["bot".into()],
         });
 
         let signed = |target: &str| {
@@ -3614,6 +3673,7 @@ mod tests {
             event_verifier_error: None,
             github: None,
             bot_identity: ComponentReadiness::disabled("handle unverified"),
+            bot_handles: vec!["bot".into()],
         });
 
         let sign_write = |method: &str, target: &str, body: &[u8]| {
@@ -3812,6 +3872,7 @@ mod tests {
             event_verifier_error: None,
             github: None,
             bot_identity: ComponentReadiness::disabled("handle unverified"),
+            bot_handles: vec!["bot".into()],
         });
         let response = router(state)
             .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
@@ -4338,6 +4399,7 @@ mod tests {
             event_verifier_error: None,
             github: Some(Arc::new(client)),
             bot_identity: ComponentReadiness::disabled("handle unverified"),
+            bot_handles: vec!["bot".into()],
         };
 
         let payload = |login: &str| {
@@ -4375,6 +4437,7 @@ mod tests {
             event_verifier_error: None,
             github: None,
             bot_identity: ComponentReadiness::disabled("handle unverified"),
+            bot_handles: vec!["bot".into()],
         };
         let denied =
             candidate_plan(&closed, "d3", "pull_request", &payload("private-member")).await;
