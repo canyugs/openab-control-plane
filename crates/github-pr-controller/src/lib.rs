@@ -2904,7 +2904,10 @@ async fn candidate_plan(
         state.config.council_preset.as_deref(),
         &state.config.review_mode,
         round,
-        state.config.bot_handle.as_deref(),
+        // The chair renders this into the verdict footer, so it must be the
+        // name in force: advertising the configured one after a rename is how
+        // the system ends up teaching a command that does nothing.
+        Some(state.bot_name()),
     ))
 }
 
