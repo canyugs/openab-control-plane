@@ -234,11 +234,12 @@ canonical settled result. It deliberately excludes roster, transcript,
 operator audit, and provider/product data.
 
 For a crash after the kernel session committed but before the action result and
-`session.opened` event committed, an admitted `open_session` retains its opaque
-trigger intent. The read can therefore return `outcome_unknown` together with
-the already-created session. A controller should inspect that session before
-choosing a new action id. A new retry with the same trigger/fingerprint will
-then dedupe through the normal kernel path.
+`session.opened` event committed, an admitted `open_session` retains both its
+opaque trigger intent and the exact kernel correlation ref used for the side
+effect. The read can therefore return `outcome_unknown` together with the
+already-created session without re-deriving a lookup key. A controller should
+inspect that session before choosing a new action id. A new retry with the same
+trigger/fingerprint will then dedupe through the normal kernel path.
 
 The read returns `404` when the action does not belong to the authenticated
 installation and exact currently-enabled scope. Revoked/expired credentials
@@ -248,8 +249,12 @@ token removes that access.
 
 Every external `open_session` requires an opaque `trigger_ref`. Dedupe and
 fingerprint supersede are controller-scoped, so two installations may use the
-same external ref without sharing a session. Later actions may address only
-sessions owned by the same installation and scope.
+same external ref without sharing a session. Within one installation, OCP
+atomically and permanently binds a trigger to its first admitted scope before
+executing the kernel side effect; the opaque kernel correlation ref also
+namespaces that scope. Reusing a trigger from another scope fails closed,
+including while the first action is still `processing` or indeterminate. Later
+actions may address only sessions owned by the same installation and scope.
 
 Errors use the versioned `ErrorEnvelope` from `controller-protocol`. Rate quota
 responses return `429` and `Retry-After`; concurrent-session quota responses

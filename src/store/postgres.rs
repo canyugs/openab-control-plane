@@ -268,6 +268,15 @@ CREATE TABLE IF NOT EXISTS controller_bindings (
     updated_at BIGINT NOT NULL,
     PRIMARY KEY (controller_id, scope)
 );
+CREATE TABLE IF NOT EXISTS controller_trigger_scopes (
+    controller_id TEXT NOT NULL,
+    trigger_ref TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    PRIMARY KEY (controller_id, trigger_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_controller_trigger_scopes_scope
+    ON controller_trigger_scopes(controller_id, scope, trigger_ref);
 CREATE TABLE IF NOT EXISTS controller_action_idempotency (
     controller_id TEXT NOT NULL,
     action_id TEXT NOT NULL,
@@ -279,6 +288,7 @@ CREATE TABLE IF NOT EXISTS controller_action_idempotency (
     response_json TEXT,
     trigger_ref TEXT,
     trigger_fingerprint TEXT,
+    session_trigger_ref TEXT,
     received_at BIGINT NOT NULL,
     completed_at BIGINT,
     -- folded from migrate(): the session an accepted open_session produced
@@ -417,6 +427,37 @@ DROP TABLE IF EXISTS installation_tokens;
     r#"
 ALTER TABLE controller_action_idempotency ADD COLUMN IF NOT EXISTS trigger_ref TEXT;
 ALTER TABLE controller_action_idempotency ADD COLUMN IF NOT EXISTS trigger_fingerprint TEXT;
+"#,
+    // 6 — bind each installation-wide trigger identity to one scope before
+    // executing its kernel side effect, and persist the exact kernel trigger
+    // used by the action so reconciliation never has to re-derive it.
+    r#"
+CREATE TABLE IF NOT EXISTS controller_trigger_scopes (
+    controller_id TEXT NOT NULL,
+    trigger_ref TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    PRIMARY KEY (controller_id, trigger_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_controller_trigger_scopes_scope
+    ON controller_trigger_scopes(controller_id, scope, trigger_ref);
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM controller_sessions
+        GROUP BY controller_id, trigger_ref
+        HAVING COUNT(DISTINCT scope) > 1
+    ) THEN
+        RAISE EXCEPTION 'controller trigger scope conflict in existing controller_sessions';
+    END IF;
+END $$;
+INSERT INTO controller_trigger_scopes (controller_id, trigger_ref, scope, created_at)
+SELECT controller_id, trigger_ref, MIN(scope), MIN(created_at)
+FROM controller_sessions
+GROUP BY controller_id, trigger_ref
+ON CONFLICT (controller_id, trigger_ref) DO NOTHING;
+ALTER TABLE controller_action_idempotency
+    ADD COLUMN IF NOT EXISTS session_trigger_ref TEXT;
 "#,
 ];
 
@@ -1057,6 +1098,32 @@ impl Store for PostgresStore {
             }
 
             let open_decision = if let Some(intent) = open_intent {
+                let claimed_scope = tx
+                    .query_opt(
+                        "SELECT scope FROM controller_trigger_scopes
+                         WHERE controller_id = $1 AND trigger_ref = $2",
+                        &[&controller_id, &intent.trigger_ref],
+                    )
+                    .await?
+                    .map(|row| row.get::<_, String>(0));
+                match claimed_scope {
+                    Some(claimed_scope) if claimed_scope != scope => {
+                        tx.rollback().await?;
+                        return Ok(ControllerActionStart::Denied(
+                            ControllerActionDenial::TriggerScope,
+                        ));
+                    }
+                    None => {
+                        tx.execute(
+                            "INSERT INTO controller_trigger_scopes
+                                (controller_id, trigger_ref, scope, created_at)
+                             VALUES ($1, $2, $3, $4)",
+                            &[&controller_id, &intent.trigger_ref, &scope, &now],
+                        )
+                        .await?;
+                    }
+                    Some(_) => {}
+                }
                 let existing = tx
                     .query_opt(
                         "SELECT cs.controller_id, cs.scope, cs.trigger_ref,
@@ -1136,8 +1203,8 @@ impl Store for PostgresStore {
             tx.execute(
                 "INSERT INTO controller_action_idempotency
                     (controller_id, action_id, request_hash, action_kind, scope, session_id,
-                     trigger_ref, trigger_fingerprint, state, received_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9)",
+                     trigger_ref, trigger_fingerprint, session_trigger_ref, state, received_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'processing', $10)",
                 &[
                     &controller_id,
                     &action_id,
@@ -1147,6 +1214,7 @@ impl Store for PostgresStore {
                     &session_id,
                     &open_intent.map(|intent| intent.trigger_ref.as_str()),
                     &open_intent.and_then(|intent| intent.trigger_fingerprint.as_deref()),
+                    &open_intent.map(|intent| intent.session_trigger_ref.as_str()),
                     &now,
                 ],
             )
@@ -1173,6 +1241,37 @@ impl Store for PostgresStore {
                 if binding.controller_id != controller_id {
                     tx.rollback().await?;
                     anyhow::bail!("controller session binding owner mismatch");
+                }
+                let admitted = tx
+                    .query_opt(
+                        "SELECT a.scope, a.trigger_ref, a.trigger_fingerprint
+                         FROM controller_action_idempotency a
+                         JOIN controller_trigger_scopes t
+                           ON t.controller_id = a.controller_id
+                          AND t.trigger_ref = a.trigger_ref
+                          AND t.scope = a.scope
+                         WHERE a.controller_id = $1 AND a.action_id = $2
+                           AND a.action_kind = 'open_session' AND a.state = 'processing'",
+                        &[&controller_id, &action_id],
+                    )
+                    .await?
+                    .map(|row| {
+                        (
+                            row.get::<_, String>(0),
+                            row.get::<_, String>(1),
+                            row.get::<_, Option<String>>(2),
+                        )
+                    });
+                let Some((scope, trigger_ref, trigger_fingerprint)) = admitted else {
+                    tx.rollback().await?;
+                    anyhow::bail!("controller session binding has no admitted open action");
+                };
+                if scope != binding.scope
+                    || trigger_ref != binding.trigger_ref
+                    || trigger_fingerprint != binding.trigger_fingerprint
+                {
+                    tx.rollback().await?;
+                    anyhow::bail!("controller session binding does not match admitted intent");
                 }
                 tx.execute(
                     "UPDATE controller_sessions SET current = 0
@@ -1291,13 +1390,19 @@ impl Store for PostgresStore {
                 .query_opt(
                     "SELECT a.action_id, a.action_kind, a.scope, a.state, a.http_status,
                             a.response_json, a.session_id, a.trigger_ref,
-                            a.trigger_fingerprint, a.received_at
+                            a.trigger_fingerprint, a.session_trigger_ref, a.received_at
                      FROM controller_action_idempotency a
                      JOIN controller_bindings b
                        ON b.controller_id = a.controller_id
                       AND b.scope = a.scope
                       AND b.enabled = 1
-                     WHERE a.controller_id = $1 AND a.action_id = $2 AND a.scope = $3",
+                     WHERE a.controller_id = $1 AND a.action_id = $2 AND a.scope = $3
+                       AND (a.action_kind != 'open_session' OR EXISTS (
+                            SELECT 1 FROM controller_trigger_scopes t
+                            WHERE t.controller_id = a.controller_id
+                              AND t.trigger_ref = a.trigger_ref
+                              AND t.scope = a.scope
+                       ))",
                     &[&controller_id, &action_id, &scope],
                 )
                 .await?
@@ -1311,7 +1416,8 @@ impl Store for PostgresStore {
                     session_id: row.get(6),
                     trigger_ref: row.get(7),
                     trigger_fingerprint: row.get(8),
-                    received_at: row.get(9),
+                    session_trigger_ref: row.get(9),
+                    received_at: row.get(10),
                 }))
         })
     }
@@ -4361,6 +4467,7 @@ mod tests {
         let intent = ControllerOpenIntent {
             trigger_ref: "object:42".into(),
             trigger_fingerprint: Some("revision:abc".into()),
+            session_trigger_ref: "controller:reconciler:object-42".into(),
         };
         assert!(matches!(
             s.begin_controller_action(
@@ -4377,6 +4484,23 @@ mod tests {
             .unwrap(),
             ControllerActionStart::Started { .. }
         ));
+        s.set_controller_scope_binding("reconciler", "tenant:other", true)
+            .unwrap();
+        assert_eq!(
+            s.begin_controller_action(
+                "reconciler",
+                &creds,
+                "act-cross-scope",
+                b"cross-scope-request",
+                "open_session",
+                "tenant:other",
+                None,
+                Some(&intent),
+                now + 1,
+            )
+            .unwrap(),
+            ControllerActionStart::Denied(ControllerActionDenial::TriggerScope)
+        );
         let record = s
             .controller_action_for_reconciliation("reconciler", "act-reconcile", "tenant:dev")
             .unwrap()
@@ -4384,6 +4508,10 @@ mod tests {
         assert_eq!(record.state, "processing");
         assert_eq!(record.trigger_ref.as_deref(), Some("object:42"));
         assert_eq!(record.trigger_fingerprint.as_deref(), Some("revision:abc"));
+        assert_eq!(
+            record.session_trigger_ref.as_deref(),
+            Some("controller:reconciler:object-42")
+        );
         assert!(s
             .controller_action_for_reconciliation("reconciler", "act-reconcile", "tenant:other",)
             .unwrap()
@@ -4429,6 +4557,7 @@ mod tests {
                 Some(&ControllerOpenIntent {
                     trigger_ref: "pr#5".into(),
                     trigger_fingerprint: Some("sha:a".into()),
+                    session_trigger_ref: "controller:gc2:pr-5".into(),
                 }),
                 now,
             )

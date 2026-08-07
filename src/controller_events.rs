@@ -524,6 +524,7 @@ mod tests {
         let intent = ControllerOpenIntent {
             trigger_ref: "trigger:events".into(),
             trigger_fingerprint: Some("v1".into()),
+            session_trigger_ref: "controller:events".into(),
         };
         assert!(matches!(
             store

@@ -288,6 +288,7 @@ pub struct ControllerActionReconciliationRecord {
     pub session_id: Option<String>,
     pub trigger_ref: Option<String>,
     pub trigger_fingerprint: Option<String>,
+    pub session_trigger_ref: Option<String>,
     pub received_at: i64,
 }
 
@@ -297,6 +298,9 @@ pub struct ControllerActionReconciliationRecord {
 pub struct ControllerOpenIntent {
     pub trigger_ref: String,
     pub trigger_fingerprint: Option<String>,
+    /// The exact opaque ref written to the kernel session. Persisting it at
+    /// admission makes crash recovery independent of later namespace changes.
+    pub session_trigger_ref: String,
 }
 
 /// The trigger decision made at the controller action's durable admission
@@ -946,6 +950,18 @@ CREATE TABLE IF NOT EXISTS controller_bindings (
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (controller_id, scope)
 );
+-- A trigger is an installation-wide idempotency identity. Claim its scope at
+-- action admission, before the kernel side effect, so a crash cannot let the
+-- same external ref cross a scope boundary before controller_sessions exists.
+CREATE TABLE IF NOT EXISTS controller_trigger_scopes (
+    controller_id TEXT NOT NULL,
+    trigger_ref TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (controller_id, trigger_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_controller_trigger_scopes_scope
+    ON controller_trigger_scopes(controller_id, scope, trigger_ref);
 CREATE TABLE IF NOT EXISTS controller_action_idempotency (
     controller_id TEXT NOT NULL,
     action_id TEXT NOT NULL,
@@ -957,6 +973,7 @@ CREATE TABLE IF NOT EXISTS controller_action_idempotency (
     response_json TEXT,
     trigger_ref TEXT,
     trigger_fingerprint TEXT,
+    session_trigger_ref TEXT,
     received_at INTEGER NOT NULL,
     completed_at INTEGER,
     PRIMARY KEY (controller_id, action_id)
@@ -1145,6 +1162,32 @@ fn migrate(conn: &Connection) -> Result<()> {
         [],
     );
     let _ = conn.execute(
+        "ALTER TABLE controller_action_idempotency ADD COLUMN session_trigger_ref TEXT",
+        [],
+    );
+    // Existing completed bindings already prove the trigger's scope. This is
+    // idempotent and keeps upgraded databases under the same admission rule.
+    // Very old migration fixtures predate the controller tables entirely.
+    let has_controller_sessions: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'controller_sessions'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_controller_sessions {
+        ensure_controller_trigger_scope_consistency(conn)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO controller_trigger_scopes
+                (controller_id, trigger_ref, scope, created_at)
+             SELECT controller_id, trigger_ref, MIN(scope), MIN(created_at)
+             FROM controller_sessions
+             GROUP BY controller_id, trigger_ref",
+            [],
+        )?;
+    }
+    let _ = conn.execute(
         "ALTER TABLE bots ADD COLUMN source TEXT NOT NULL DEFAULT 'registered'",
         [],
     );
@@ -1164,6 +1207,27 @@ fn migrate(conn: &Connection) -> Result<()> {
          WHERE trigger_ref IS NOT NULL AND state NOT IN ('closed', 'aborted')",
         [],
     )?;
+    Ok(())
+}
+
+fn ensure_controller_trigger_scope_consistency(conn: &Connection) -> Result<()> {
+    let conflict = conn
+        .query_row(
+            "SELECT controller_id, trigger_ref
+             FROM controller_sessions
+             GROUP BY controller_id, trigger_ref
+             HAVING COUNT(DISTINCT scope) > 1
+             ORDER BY controller_id, trigger_ref
+             LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    if let Some((controller_id, trigger_ref)) = conflict {
+        anyhow::bail!(
+            "controller trigger scope conflict for controller '{controller_id}', trigger '{trigger_ref}'"
+        );
+    }
     Ok(())
 }
 
@@ -2313,6 +2377,30 @@ impl Store for SqliteStore {
         }
 
         let open_decision = if let Some(intent) = open_intent {
+            let claimed_scope = tx
+                .query_row(
+                    "SELECT scope FROM controller_trigger_scopes
+                     WHERE controller_id = ?1 AND trigger_ref = ?2",
+                    params![controller_id, intent.trigger_ref],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            match claimed_scope {
+                Some(claimed_scope) if claimed_scope != scope => {
+                    return Ok(ControllerActionStart::Denied(
+                        ControllerActionDenial::TriggerScope,
+                    ));
+                }
+                None => {
+                    tx.execute(
+                        "INSERT INTO controller_trigger_scopes
+                            (controller_id, trigger_ref, scope, created_at)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![controller_id, intent.trigger_ref, scope, now],
+                    )?;
+                }
+                Some(_) => {}
+            }
             let existing = tx
                 .query_row(
                     "SELECT cs.controller_id, cs.scope, cs.trigger_ref,
@@ -2388,8 +2476,8 @@ impl Store for SqliteStore {
         tx.execute(
             "INSERT INTO controller_action_idempotency
                 (controller_id, action_id, request_hash, action_kind, scope, session_id,
-                 trigger_ref, trigger_fingerprint, state, received_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'processing', ?9)",
+                 trigger_ref, trigger_fingerprint, session_trigger_ref, state, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'processing', ?10)",
             params![
                 controller_id,
                 action_id,
@@ -2399,6 +2487,7 @@ impl Store for SqliteStore {
                 session_id,
                 open_intent.map(|intent| intent.trigger_ref.as_str()),
                 open_intent.and_then(|intent| intent.trigger_fingerprint.as_deref()),
+                open_intent.map(|intent| intent.session_trigger_ref.as_str()),
                 now
             ],
         )?;
@@ -2420,6 +2509,29 @@ impl Store for SqliteStore {
         if let Some(binding) = session_binding {
             if binding.controller_id != controller_id {
                 anyhow::bail!("controller session binding owner mismatch");
+            }
+            let admitted: Option<(String, String, Option<String>)> = tx
+                .query_row(
+                    "SELECT a.scope, a.trigger_ref, a.trigger_fingerprint
+                     FROM controller_action_idempotency a
+                     JOIN controller_trigger_scopes t
+                       ON t.controller_id = a.controller_id
+                      AND t.trigger_ref = a.trigger_ref
+                      AND t.scope = a.scope
+                     WHERE a.controller_id = ?1 AND a.action_id = ?2
+                       AND a.action_kind = 'open_session' AND a.state = 'processing'",
+                    params![controller_id, action_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            let Some((scope, trigger_ref, trigger_fingerprint)) = admitted else {
+                anyhow::bail!("controller session binding has no admitted open action");
+            };
+            if scope != binding.scope
+                || trigger_ref != binding.trigger_ref
+                || trigger_fingerprint != binding.trigger_fingerprint
+            {
+                anyhow::bail!("controller session binding does not match admitted intent");
             }
             tx.execute(
                 "UPDATE controller_sessions SET current = 0
@@ -2525,13 +2637,19 @@ impl Store for SqliteStore {
         Ok(c.query_row(
             "SELECT a.action_id, a.action_kind, a.scope, a.state, a.http_status,
                     a.response_json, a.session_id, a.trigger_ref,
-                    a.trigger_fingerprint, a.received_at
+                    a.trigger_fingerprint, a.session_trigger_ref, a.received_at
              FROM controller_action_idempotency a
              JOIN controller_bindings b
                ON b.controller_id = a.controller_id
               AND b.scope = a.scope
               AND b.enabled = 1
-             WHERE a.controller_id = ?1 AND a.action_id = ?2 AND a.scope = ?3",
+             WHERE a.controller_id = ?1 AND a.action_id = ?2 AND a.scope = ?3
+               AND (a.action_kind != 'open_session' OR EXISTS (
+                    SELECT 1 FROM controller_trigger_scopes t
+                    WHERE t.controller_id = a.controller_id
+                      AND t.trigger_ref = a.trigger_ref
+                      AND t.scope = a.scope
+               ))",
             params![controller_id, action_id, scope],
             |row| {
                 Ok(ControllerActionReconciliationRecord {
@@ -2544,7 +2662,8 @@ impl Store for SqliteStore {
                     session_id: row.get(6)?,
                     trigger_ref: row.get(7)?,
                     trigger_fingerprint: row.get(8)?,
-                    received_at: row.get(9)?,
+                    session_trigger_ref: row.get(9)?,
+                    received_at: row.get(10)?,
                 })
             },
         )
@@ -6219,6 +6338,9 @@ mod tests {
         store
             .set_controller_scope_binding("ctrl-atomic", "scope:atomic", true)
             .unwrap();
+        store
+            .set_controller_scope_binding("ctrl-atomic", "scope:other", true)
+            .unwrap();
         let session = store
             .create_session("atomic", Some("controller:atomic"), 1, None, &[], "solo")
             .unwrap();
@@ -6236,6 +6358,7 @@ mod tests {
         let first_intent = ControllerOpenIntent {
             trigger_ref: binding.trigger_ref.clone(),
             trigger_fingerprint: binding.trigger_fingerprint.clone(),
+            session_trigger_ref: "controller:atomic".into(),
         };
         assert!(matches!(
             store
@@ -6255,6 +6378,37 @@ mod tests {
                 open_decision: Some(ControllerOpenDecision::Create)
             }
         ));
+        assert_eq!(
+            store
+                .begin_controller_action(
+                    "ctrl-atomic",
+                    &credential,
+                    "act-cross-scope",
+                    &[9; 32],
+                    "open_session",
+                    "scope:other",
+                    None,
+                    Some(&first_intent),
+                    now + 1,
+                )
+                .unwrap(),
+            ControllerActionStart::Denied(ControllerActionDenial::TriggerScope),
+            "the trigger scope is claimed before a session binding exists"
+        );
+        let mismatched_binding = ControllerSessionBinding {
+            scope: "scope:other".into(),
+            ..binding.clone()
+        };
+        assert!(store
+            .finish_controller_action(
+                "ctrl-atomic",
+                "act-initial",
+                200,
+                "{}",
+                Some(&mismatched_binding),
+                now,
+            )
+            .is_err());
         store
             .finish_controller_action("ctrl-atomic", "act-initial", 200, "{}", Some(&binding), now)
             .unwrap();
@@ -6281,6 +6435,7 @@ mod tests {
         let changed = ControllerOpenIntent {
             trigger_ref: binding.trigger_ref.clone(),
             trigger_fingerprint: Some("v2".into()),
+            session_trigger_ref: "controller:atomic".into(),
         };
         assert!(matches!(
             store
@@ -6322,6 +6477,44 @@ mod tests {
                 open_decision: Some(ControllerOpenDecision::Create)
             }
         ));
+    }
+
+    #[test]
+    fn migration_backfills_trigger_scope_ownership_and_rejects_conflicts() {
+        let store = SqliteStore::memory().unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO controller_sessions
+                    (controller_id, scope, trigger_ref, session_id, current, created_at)
+                 VALUES ('ctrl-migrate', 'scope:one', 'trigger:one', 'ses-one', 1, 10)",
+                [],
+            )
+            .unwrap();
+            migrate(&conn).unwrap();
+            let scope: String = conn
+                .query_row(
+                    "SELECT scope FROM controller_trigger_scopes
+                     WHERE controller_id = 'ctrl-migrate' AND trigger_ref = 'trigger:one'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(scope, "scope:one");
+        }
+
+        let conflicting = SqliteStore::memory().unwrap();
+        let conn = conflicting.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO controller_sessions
+                (controller_id, scope, trigger_ref, session_id, current, created_at)
+             VALUES ('ctrl-conflict', 'scope:one', 'trigger:shared', 'ses-old', 0, 10),
+                    ('ctrl-conflict', 'scope:two', 'trigger:shared', 'ses-new', 1, 20)",
+            [],
+        )
+        .unwrap();
+        let error = migrate(&conn).unwrap_err().to_string();
+        assert!(error.contains("controller trigger scope conflict"), "{error}");
     }
 
     /// The watchdog deadline is anchored on the last message, not on

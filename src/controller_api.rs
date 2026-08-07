@@ -763,14 +763,14 @@ pub async fn reconcile_action(
     };
 
     // If open_session created the kernel row but the process died before
-    // finish_controller_action bound it, recover by the controller-namespaced
-    // internal trigger. Pick the first matching session after admission; this
-    // avoids attributing a later superseding action to the crashed one.
+    // finish_controller_action bound it, recover through the exact correlation
+    // ref committed with the admitted action. The trigger's immutable scope
+    // owner was claimed in that same admission transaction, so this lookup does
+    // not infer ownership from an unscoped kernel row.
     if session.is_none() && record.action_kind == "open_session" {
-        if let Some(trigger_ref) = record.trigger_ref.as_deref() {
-            let internal_trigger_ref = controller_trigger_ref(&controller_id, trigger_ref);
+        if let Some(session_trigger_ref) = record.session_trigger_ref.as_deref() {
             session = match state.store.session_for_trigger_intent(
-                &internal_trigger_ref,
+                session_trigger_ref,
                 record.trigger_fingerprint.as_deref(),
                 record.received_at,
             ) {
@@ -971,6 +971,7 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
             Some(ControllerOpenIntent {
                 trigger_ref: trigger_ref.to_string(),
                 trigger_fingerprint: action.trigger_fingerprint.clone(),
+                session_trigger_ref: controller_trigger_ref(&controller_id, &scope, trigger_ref),
             })
         }
         _ => None,
@@ -1193,7 +1194,7 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
             // ADR 035 moved with the waiver ledger to the controller
             // (SEI-895): the block now rides in on recipient_inputs, already
             // appended by the controller before it dispatched this action.
-            open.trigger_ref = Some(controller_trigger_ref(&controller_id, &intent.trigger_ref));
+            open.trigger_ref = Some(intent.session_trigger_ref);
             Some((intent.trigger_ref, intent.trigger_fingerprint))
         } else {
             None
@@ -1383,9 +1384,11 @@ fn result_session_id(result: &ControllerActionResult) -> Option<&str> {
     }
 }
 
-fn controller_trigger_ref(controller_id: &str, trigger_ref: &str) -> String {
+fn controller_trigger_ref(controller_id: &str, scope: &str, trigger_ref: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(controller_id.as_bytes());
+    digest.update([0]);
+    digest.update(scope.as_bytes());
     digest.update([0]);
     digest.update(trigger_ref.as_bytes());
     format!(
@@ -1943,6 +1946,19 @@ mod tests {
         .await
     }
 
+    #[test]
+    fn kernel_trigger_correlation_is_controller_and_scope_namespaced() {
+        let reference = controller_trigger_ref("ctrl-a", "scope:one", "object:42");
+        assert_ne!(
+            reference,
+            controller_trigger_ref("ctrl-a", "scope:two", "object:42")
+        );
+        assert_ne!(
+            reference,
+            controller_trigger_ref("ctrl-b", "scope:one", "object:42")
+        );
+    }
+
     #[tokio::test]
     async fn token_rotation_overlap_expiry_and_revocation_are_enforced() {
         let (state, store, auth, old_token) = setup(5, 60);
@@ -2125,6 +2141,7 @@ mod tests {
         let action_id = "act-reconcile-unknown";
         let external_trigger = "object:reconcile-unknown";
         let fingerprint = "revision:unknown";
+        let session_trigger_ref = "controller:persisted-reconciliation-ref";
         let received_at = now_ms() - crate::store::CONTROLLER_ACTION_LEASE_MS - 10;
         let action_token = token(55);
         store
@@ -2140,6 +2157,7 @@ mod tests {
         let intent = ControllerOpenIntent {
             trigger_ref: external_trigger.into(),
             trigger_fingerprint: Some(fingerprint.into()),
+            session_trigger_ref: session_trigger_ref.into(),
         };
         let started = store
             .begin_controller_action(
@@ -2167,7 +2185,7 @@ mod tests {
         let (session, _) = store
             .create_session_superseding(
                 "reconciliation fixture",
-                Some(&controller_trigger_ref("ctrl-a", external_trigger)),
+                Some(session_trigger_ref),
                 Some(fingerprint),
                 1,
                 Some("chair"),
@@ -2180,6 +2198,24 @@ mod tests {
             .controller_session_for_trigger("ctrl-a", external_trigger)
             .unwrap()
             .is_none());
+
+        let other_scope = "tenant:other/resource:one";
+        store
+            .set_controller_scope_binding("ctrl-a", other_scope, true)
+            .unwrap();
+        let (cross_scope, cross_scope_body, _) = response(request(
+            &state,
+            &action_token,
+            other_scope,
+            &open_action("act-cross-scope-crash", external_trigger, fingerprint),
+        ))
+        .await;
+        assert_eq!(cross_scope, StatusCode::FORBIDDEN, "{cross_scope_body}");
+        assert_eq!(
+            cross_scope_body["error"]["message"],
+            "controller trigger is bound to another scope"
+        );
+        assert_eq!(store.list_sessions(None, None, 10).unwrap().len(), 1);
 
         let (status, body, _) = reconcile(&state, &action_token, SCOPE, action_id).await;
         assert_eq!(status, StatusCode::OK, "{body}");
