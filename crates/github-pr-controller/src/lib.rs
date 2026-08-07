@@ -174,6 +174,41 @@ pub struct AppState {
     /// the explicit switch). `None` leaves queued writes pending forever,
     /// which is the correct posture until the P7 cutover.
     pub github: Option<Arc<github::GitHubClient>>,
+    /// Whether the configured bot handle still matches the App's own slug,
+    /// probed once at startup. A rename in GitHub's UI silently kills every
+    /// mention command — `@new-name review`, `dismiss`, `reopen` and asks all
+    /// stop parsing, with no error in any log — so the mismatch is surfaced
+    /// where an operator and the watchdog both already look.
+    pub bot_identity: ComponentReadiness,
+}
+
+/// Compare the configured mention handle against the App's real slug.
+///
+/// Disabled — and therefore never blocking — when there is no handle or no
+/// GitHub client to ask with. A probe that errors is reported as unknown
+/// rather than as a mismatch: an unreachable GitHub is already visible in the
+/// `github` component and must not be re-reported here as a config fault.
+async fn probe_bot_identity(
+    handle: Option<&str>,
+    github: Option<&github::GitHubClient>,
+) -> ComponentReadiness {
+    let (Some(handle), Some(github)) = (handle, github) else {
+        return ComponentReadiness::disabled("no bot handle or no GitHub client");
+    };
+    match github.app_slug().await {
+        Ok(slug) if slug.eq_ignore_ascii_case(handle) => {
+            ComponentReadiness::ready("bot handle matches the App slug")
+        }
+        Ok(slug) => ComponentReadiness::not_ready(format!(
+            "GITHUB_CONTROLLER_BOT_HANDLE is `{handle}` but the App is `{slug}` — every \
+             mention command (review, ask, dismiss, reopen) is being ignored; set the handle \
+             to the App slug and restart"
+        )),
+        Err(error) => {
+            tracing::warn!(%error, "app slug probe failed; bot handle left unverified");
+            ComponentReadiness::disabled("App slug unavailable; handle unverified")
+        }
+    }
 }
 
 impl AppState {
@@ -215,6 +250,8 @@ impl AppState {
             _ => (None, None),
         };
         let github = github::GitHubClient::from_config(&config).map(Arc::new);
+        let bot_identity =
+            probe_bot_identity(config.bot_handle.as_deref(), github.as_deref()).await;
         Self {
             config,
             store,
@@ -224,6 +261,7 @@ impl AppState {
             event_verifier,
             event_verifier_error,
             github,
+            bot_identity,
         }
     }
 
@@ -243,6 +281,10 @@ impl AppState {
             event_verifier,
             event_verifier_error: None,
             github,
+            // Sync constructor: no probe here. Tests and embeddings assert on
+            // the components they set up, and an unverified handle must never
+            // read as a mismatch.
+            bot_identity: ComponentReadiness::disabled("handle unverified"),
         }
     }
 
@@ -272,8 +314,10 @@ impl AppState {
         if runtime_events.ready && self.event_verifier.is_none() {
             runtime_events = ComponentReadiness::not_ready("runtime-event verifier unavailable");
         }
+        let bot_identity = self.bot_identity.clone();
         let ready = ingress.ready
             && product_store.ready
+            && (bot_identity.ready || !bot_identity.enabled)
             && (github.ready || !github.enabled)
             && (ownership.ready || !ownership.enabled)
             && (ocp.ready || !ocp.enabled)
@@ -288,6 +332,7 @@ impl AppState {
                 runtime_events,
                 github,
                 product_store,
+                bot_identity,
             },
         }
     }
@@ -308,6 +353,7 @@ struct Components {
     runtime_events: ComponentReadiness,
     github: ComponentReadiness,
     product_store: ComponentReadiness,
+    bot_identity: ComponentReadiness,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -2903,6 +2949,30 @@ fn response(status: StatusCode, value: Value) -> Response {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn a_renamed_app_is_reported_rather_than_silently_ignored() {
+        // Live case 2026-08-07: the dev App was renamed to `openab-council`
+        // while the controller still had `zeabur-council`. Nothing errored;
+        // `@openab-council review` simply did nothing, and only asking GitHub
+        // what the App is actually called revealed it.
+        let matched = probe_bot_identity(None, None).await;
+        assert!(!matched.enabled, "no handle configured is not a fault");
+
+        // The comparison itself, without a network: same name in either case,
+        // different names never.
+        for (handle, slug, want) in [
+            ("openab-council", "openab-council", true),
+            ("OpenAB-Council", "openab-council", true),
+            ("zeabur-council", "openab-council", false),
+        ] {
+            assert_eq!(
+                slug.eq_ignore_ascii_case(handle),
+                want,
+                "{handle} vs {slug}"
+            );
+        }
+    }
+
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
@@ -3271,6 +3341,7 @@ mod tests {
             event_verifier: None,
             event_verifier_error: None,
             github: None,
+            bot_identity: ComponentReadiness::disabled("handle unverified"),
         });
 
         let signed = |target: &str| {
@@ -3542,6 +3613,7 @@ mod tests {
             event_verifier: None,
             event_verifier_error: None,
             github: None,
+            bot_identity: ComponentReadiness::disabled("handle unverified"),
         });
 
         let sign_write = |method: &str, target: &str, body: &[u8]| {
@@ -3739,6 +3811,7 @@ mod tests {
             event_verifier: None,
             event_verifier_error: None,
             github: None,
+            bot_identity: ComponentReadiness::disabled("handle unverified"),
         });
         let response = router(state)
             .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
@@ -4264,6 +4337,7 @@ mod tests {
             event_verifier: None,
             event_verifier_error: None,
             github: Some(Arc::new(client)),
+            bot_identity: ComponentReadiness::disabled("handle unverified"),
         };
 
         let payload = |login: &str| {
@@ -4300,6 +4374,7 @@ mod tests {
             event_verifier: None,
             event_verifier_error: None,
             github: None,
+            bot_identity: ComponentReadiness::disabled("handle unverified"),
         };
         let denied =
             candidate_plan(&closed, "d3", "pull_request", &payload("private-member")).await;

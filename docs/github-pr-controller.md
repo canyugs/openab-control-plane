@@ -166,7 +166,7 @@ read the authenticated aggregate gate.
 | `GITHUB_CONTROLLER_OBSERVER_SECRET` | _(disabled)_ | Separate HMAC secret for the aggregate canary summary; required in `external_canary` |
 | `GITHUB_CONTROLLER_CANARY_REPOSITORY` | _(disabled)_ | Exact `owner/repo` whose raw ingress is owned in `external_canary` |
 | `GITHUB_CONTROLLER_ALLOWED_REPOS` | _(allow all)_ | Comma-separated `owner/repo` allowlist |
-| `GITHUB_CONTROLLER_BOT_HANDLE` | _(none)_ | Bot handle without `@`, used for mention commands |
+| `GITHUB_CONTROLLER_BOT_HANDLE` | _(none)_ | Bot handle without `@`, used for mention commands. **Must equal the App's slug**; if the App is renamed and this is not, every mention command is ignored with no error. `/readyz`'s `bot_identity` component compares the two at startup and reports a mismatch |
 | `GITHUB_CONTROLLER_ROSTER` | `chair,rev1,rev2` | Planned council roster; first entry is chair |
 | `GITHUB_CONTROLLER_COUNCIL_PRESET` | `lite` | Default `lite`, `quick`, `standard`, or `full` plan preset; PR label wins |
 | `GITHUB_CONTROLLER_REVIEW_MODE` | `approve` | Proposed write parity: `status`, `approve`, or `enforce` |

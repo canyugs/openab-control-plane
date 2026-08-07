@@ -257,6 +257,23 @@ Run exactly one delivery mode from §7.
 - [ ] `setup-github-app.sh` exits 0
 - [ ] GitHub App webhook URL is `$CONTROLLER_URL/api/v1/github/webhooks`
 - [ ] Controller `GITHUB_CONTROLLER_BOT_HANDLE` = App slug
+
+### If you ever rename the App
+
+Renaming happens in GitHub's UI, months later, nowhere near this checklist —
+and the moment the App slug and `GITHUB_CONTROLLER_BOT_HANDLE` differ, **every
+mention command stops working silently**. `@<new-name> review`, `ask`,
+`dismiss` and `reopen` are all matched against the configured handle, so they
+simply do not parse: no error, no log line, no reply. Bare `/review` keeps
+working, which makes the breakage look like "only some commands are broken".
+Worse, the chair's verdict footer advertises the configured handle, so the
+system actively teaches the dead name.
+
+After any rename: set `GITHUB_CONTROLLER_BOT_HANDLE` to the new slug and
+restart the controller. `/readyz` reports the mismatch as a `bot_identity`
+component that is **not ready**, with both names in its detail — so a lane in
+this state is visibly not ready rather than quietly useless. The check runs at
+startup, so a restart is what re-tests it.
 - [ ] Controller `GITHUB_CONTROLLER_WEBHOOK_SECRET` matches App webhook secret
 - [ ] Chair `gh auth status` shows `<slug>[bot]` (§8)
 
