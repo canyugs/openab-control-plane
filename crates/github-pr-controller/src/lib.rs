@@ -2517,17 +2517,21 @@ async fn org_member(state: &AppState, repository: &str, login: Option<&str>) -> 
 /// silence is what makes an author conclude the council is broken (ADR 025,
 /// SEI-820), and it is the failure mode this whole feature exists to remove.
 async fn apply_finding_command(state: &Arc<AppState>, command: &planner::FindingCommand) -> String {
+    // Every refusal and every miss ends with the same line: reporting what
+    // went wrong without saying what to type leaves the author stuck holding a
+    // command they cannot correct.
+    let hint = deciding::usage_hint(state.config.bot_handle.as_deref().unwrap_or("bot"));
     let Some(store) = state.store.clone() else {
-        return "The controller has no product store configured, so findings cannot be judged \
-                here yet."
-            .into();
+        return deciding::fault(
+            "The controller has no product store configured, so findings cannot be judged yet.",
+        );
     };
     // Judging a finding can unblock a merge, so the bar is write access to
     // THIS repository, not membership of the org: an org member with read-only
     // access here would otherwise borrow council authority GitHub would refuse
     // them. Fail closed — a probe that errors is not a grant.
     let Some(login) = command.author_login.clone() else {
-        return "Could not identify the commenter, so nothing was changed.".into();
+        return deciding::fault("Could not identify the commenter from this event.");
     };
     let allowed = match state.github.as_ref() {
         Some(github) => github
@@ -2543,19 +2547,21 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         return format!(
             "Judging a finding can unblock a merge, so it needs write access to \
              `{}` — @{login} does not have it. `/review` still works for anyone who can \
-             comment.",
+             comment.{hint}",
             command.repository
         );
     }
     if command.verb == "dismiss" && command.reason.is_none() {
         return format!(
             "`dismiss {}` needs a reason — the record is the whole point of trusting the \
-             judgement. Try `dismiss {} <why this is not a defect>`.",
+             judgement. Try `dismiss {} <why this is not a defect>`.{hint}",
             command.stable_id, command.stable_id
         );
     }
     let Some(github) = state.github.as_ref() else {
-        return "No GitHub client is configured, so the head revision cannot be confirmed.".into();
+        return deciding::fault(
+            "No GitHub client is configured, so the head revision cannot be confirmed.",
+        );
     };
     let head_sha = match github
         .pull_head_sha(&command.repository, command.pr_number as i64)
@@ -2564,9 +2570,7 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         Ok(sha) => sha,
         Err(error) => {
             tracing::warn!(%error, repo = %command.repository, "head lookup failed for a finding command");
-            return "Could not confirm this pull request's head revision, so nothing was \
-                    changed. Try again."
-                .into();
+            return deciding::fault("Could not confirm this pull request's head revision.");
         }
     };
     let query = store::ReviewFindingQuery {
@@ -2580,7 +2584,7 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         Ok(rows) => rows,
         Err(error) => {
             tracing::error!(%error, "findings read failed for a finding command");
-            return "The findings ledger is unavailable, so nothing was changed.".into();
+            return deciding::fault("The findings ledger is unavailable.");
         }
     };
     let before = deciding::open_counts(&before_rows, &head_sha);
@@ -2614,17 +2618,21 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
                 format!(
                     "`{}` moved since that round, so nothing was changed — a decision on an \
                      older revision must not unblock code nobody reviewed. The next round will \
-                     re-raise whatever still applies.",
+                     re-raise whatever still applies.{hint}",
                     &head_sha[..head_sha.len().min(8)]
                 )
             } else if on_this_head.is_empty() {
                 format!(
-                    "No findings are recorded for `{}` on this revision yet.",
-                    command.repository
+                    "No findings are recorded for `{}` on `{}` yet — a judgement needs a \
+                     finding to be about. If no round has run on this revision, \
+                     `@{} review` convenes one.{hint}",
+                    command.repository,
+                    &head_sha[..head_sha.len().min(8)],
+                    state.config.bot_handle.as_deref().unwrap_or("bot"),
                 )
             } else {
                 format!(
-                    "{} is not a finding on this revision. This round has: {}.",
+                    "{} is not a finding on this revision. This round has: {}.{hint}",
                     command.stable_id,
                     on_this_head.join(", ")
                 )
@@ -2632,7 +2640,7 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         }
         Err(error) => {
             tracing::error!(%error, "finding decision write failed");
-            return "The findings ledger refused the write, so nothing was changed.".into();
+            return deciding::fault("The findings ledger refused the write.");
         }
     };
 

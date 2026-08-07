@@ -150,6 +150,33 @@ pub fn plan_decision(
     }
 }
 
+/// What a controller-side fault says.
+///
+/// Deliberately NOT the usage hint: nothing the author types differently would
+/// have helped, and offering syntax after our own failure implies they got it
+/// wrong. What they need is that the command was understood, that nothing
+/// changed, and that retrying is the right move.
+pub fn fault(detail: &str) -> String {
+    format!(
+        "{detail}\n\nThis is a controller fault, not yours — the command was understood and \
+             nothing was changed. Trying again is safe."
+    )
+}
+
+/// The one line every refusal and every miss ends with.
+///
+/// Saying what went wrong is not the same as saying what to do: a reply that
+/// only reports "no findings on this revision" leaves the author holding a
+/// command they cannot correct. The commands are cheap to restate and the
+/// author is, by definition, already looking at this comment.
+pub fn usage_hint(bot_handle: &str) -> String {
+    format!(
+        "\n\n---\nUsage: `@{bot_handle} dismiss F<n> <why it is not a defect>` · \
+         `@{bot_handle} reopen F<n>` · `@{bot_handle} review <notes>` to re-run the council \
+         · `@{bot_handle} <question>` to ask."
+    )
+}
+
 /// The reply the author gets. Every branch answers — a command that changes
 /// nothing still says so, because silence is what makes people think the
 /// council is broken (ADR 025, SEI-820).
@@ -461,6 +488,32 @@ mod tests {
         );
         assert!(body.contains("Still blocked"));
         assert!(!body.contains("APPROVE review"));
+    }
+
+    #[test]
+    fn a_controller_fault_does_not_hand_the_author_syntax() {
+        // Council review of #374 named six paths with no usage line. Five of
+        // them are our own failures, and offering syntax there implies the
+        // author mistyped: what they need is that the command was understood,
+        // that nothing changed, and that retrying is safe.
+        let body = fault("The findings ledger is unavailable.");
+        assert!(body.contains("controller fault, not yours"));
+        assert!(body.contains("nothing was changed"));
+        assert!(body.contains("Trying again is safe"));
+        assert!(
+            !body.contains("dismiss F<n>"),
+            "syntax here would blame the author: {body}"
+        );
+    }
+
+    #[test]
+    fn the_usage_hint_is_typeable_and_names_every_verb() {
+        let hint = usage_hint("zeabur-council");
+        for verb in ["dismiss F<n>", "reopen F<n>", "review <notes>"] {
+            assert!(hint.contains(verb), "{verb} missing from: {hint}");
+        }
+        assert!(!hint.contains("{bot"), "no placeholder may survive: {hint}");
+        assert_eq!(hint.matches("@zeabur-council").count(), 4);
     }
 
     #[test]
