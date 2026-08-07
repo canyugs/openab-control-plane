@@ -1170,76 +1170,75 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
         }
     };
 
-    let (status, body, binding) = if let Some(ControllerOpenDecision::Deduplicate(existing)) =
-        open_decision.as_ref()
-    {
-        let result = ActionResultEnvelope {
-            version: CURRENT_VERSION,
-            action_id: action_id.clone(),
-            result: ControllerActionResult::SessionOpened {
-                session_id: existing.session_id.clone(),
-                deduped: true,
-            },
-        };
-        (
-            StatusCode::OK,
-            serde_json::to_string(&result).expect("protocol result serializes"),
-            None,
-        )
-    } else {
-        let mut action = envelope.action;
-        let binding_input = if let (ControllerAction::OpenSession(open), Some(intent)) =
-            (&mut action, open_intent)
-        {
-            // ADR 035 moved with the waiver ledger to the controller
-            // (SEI-895): the block now rides in on recipient_inputs, already
-            // appended by the controller before it dispatched this action.
-            open.trigger_ref = Some(intent.session_trigger_ref);
-            Some((intent.trigger_ref, intent.trigger_fingerprint))
+    let (status, body, binding) =
+        if let Some(ControllerOpenDecision::Deduplicate(existing)) = open_decision.as_ref() {
+            let result = ActionResultEnvelope {
+                version: CURRENT_VERSION,
+                action_id: action_id.clone(),
+                result: ControllerActionResult::SessionOpened {
+                    session_id: existing.session_id.clone(),
+                    deduped: true,
+                },
+            };
+            (
+                StatusCode::OK,
+                serde_json::to_string(&result).expect("protocol result serializes"),
+                None,
+            )
         } else {
-            None
+            let mut action = envelope.action;
+            let binding_input = if let (ControllerAction::OpenSession(open), Some(intent)) =
+                (&mut action, open_intent)
+            {
+                // ADR 035 moved with the waiver ledger to the controller
+                // (SEI-895): the block now rides in on recipient_inputs, already
+                // appended by the controller before it dispatched this action.
+                open.trigger_ref = Some(intent.session_trigger_ref);
+                Some((intent.trigger_ref, intent.trigger_fingerprint))
+            } else {
+                None
+            };
+            match execute_interpreted_action(state, action) {
+                Ok(result) => {
+                    let binding = binding_input.and_then(|(trigger_ref, fingerprint)| {
+                        result_session_id(&result).map(|session_id| ControllerSessionBinding {
+                            controller_id: controller_id.clone(),
+                            scope: scope.clone(),
+                            trigger_ref,
+                            trigger_fingerprint: fingerprint,
+                            session_id: session_id.to_string(),
+                        })
+                    });
+                    let result = ActionResultEnvelope {
+                        version: CURRENT_VERSION,
+                        action_id: action_id.clone(),
+                        result,
+                    };
+                    (
+                        StatusCode::OK,
+                        serde_json::to_string(&result).expect("protocol result serializes"),
+                        binding,
+                    )
+                }
+                Err(error) => {
+                    let (status, code, message, retryable) = map_controller_error(error);
+                    let error = ErrorEnvelope {
+                        version: CURRENT_VERSION,
+                        action_id: Some(action_id.clone()),
+                        error: ProtocolError {
+                            code,
+                            message,
+                            retryable,
+                        },
+                    };
+                    (
+                        status,
+                        serde_json::to_string(&error).expect("protocol error serializes"),
+                        None,
+                    )
+                }
+            }
         };
-        match execute_interpreted_action(state, action) {
-            Ok(result) => {
-                let binding = binding_input.and_then(|(trigger_ref, fingerprint)| {
-                    result_session_id(&result).map(|session_id| ControllerSessionBinding {
-                        controller_id: controller_id.clone(),
-                        scope: scope.clone(),
-                        trigger_ref,
-                        trigger_fingerprint: fingerprint,
-                        session_id: session_id.to_string(),
-                    })
-                });
-                let result = ActionResultEnvelope {
-                    version: CURRENT_VERSION,
-                    action_id: action_id.clone(),
-                    result,
-                };
-                (
-                    StatusCode::OK,
-                    serde_json::to_string(&result).expect("protocol result serializes"),
-                    binding,
-                )
-            }
-            Err(error) => {
-                let (status, code, message, retryable) = map_controller_error(error);
-                let error = ErrorEnvelope {
-                    version: CURRENT_VERSION,
-                    action_id: Some(action_id.clone()),
-                    error: ProtocolError {
-                        code,
-                        message,
-                        retryable,
-                    },
-                };
-                (
-                    status,
-                    serde_json::to_string(&error).expect("protocol error serializes"),
-                    None,
-                )
-            }
-        }
-    };
 
     if let Err(error) = state.store.finish_controller_action(
         &controller_id,

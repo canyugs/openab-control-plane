@@ -6514,7 +6514,10 @@ mod tests {
         )
         .unwrap();
         let error = migrate(&conn).unwrap_err().to_string();
-        assert!(error.contains("controller trigger scope conflict"), "{error}");
+        assert!(
+            error.contains("controller trigger scope conflict"),
+            "{error}"
+        );
     }
 
     /// The watchdog deadline is anchored on the last message, not on
