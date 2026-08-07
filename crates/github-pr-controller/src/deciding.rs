@@ -150,6 +150,20 @@ pub fn plan_decision(
     }
 }
 
+/// The one line every refusal and every miss ends with.
+///
+/// Saying what went wrong is not the same as saying what to do: a reply that
+/// only reports "no findings on this revision" leaves the author holding a
+/// command they cannot correct. The commands are cheap to restate and the
+/// author is, by definition, already looking at this comment.
+pub fn usage_hint(bot_handle: &str) -> String {
+    format!(
+        "\n\n---\nUsage: `@{bot_handle} dismiss F<n> <why it is not a defect>` · \
+         `@{bot_handle} reopen F<n>` · `@{bot_handle} review <notes>` to re-run the council \
+         · `@{bot_handle} <question>` to ask."
+    )
+}
+
 /// The reply the author gets. Every branch answers — a command that changes
 /// nothing still says so, because silence is what makes people think the
 /// council is broken (ADR 025, SEI-820).
@@ -461,6 +475,16 @@ mod tests {
         );
         assert!(body.contains("Still blocked"));
         assert!(!body.contains("APPROVE review"));
+    }
+
+    #[test]
+    fn the_usage_hint_is_typeable_and_names_every_verb() {
+        let hint = usage_hint("zeabur-council");
+        for verb in ["dismiss F<n>", "reopen F<n>", "review <notes>"] {
+            assert!(hint.contains(verb), "{verb} missing from: {hint}");
+        }
+        assert!(!hint.contains("{bot"), "no placeholder may survive: {hint}");
+        assert_eq!(hint.matches("@zeabur-council").count(), 4);
     }
 
     #[test]
