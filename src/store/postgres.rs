@@ -1472,6 +1472,29 @@ impl Store for PostgresStore {
         })
     }
 
+    fn enqueue_session_intent(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        payload: Value,
+    ) -> Result<()> {
+        self.block(async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            enqueue_controller_session_event_pg(
+                &*tx,
+                session_id,
+                "session.intent",
+                payload,
+                &format!("session.intent:{message_id}"),
+                now_ms(),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        })
+    }
+
     fn claim_controller_events(
         &self,
         now: i64,

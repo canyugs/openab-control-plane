@@ -255,6 +255,10 @@ pub struct AppState {
     /// Per-session recruit directives already processed. This bounds repeated
     /// parse paths and the unknown-target provision signal surface.
     pub recruit_seen: Mutex<HashMap<String, HashSet<String>>>,
+    /// Per-session message ids whose `[[intent:…]]` was already emitted
+    /// (ADR 039). Absorbs streamed-edit re-parses and caps the per-session
+    /// intent volume before anything reaches the controller event queue.
+    pub intent_seen: Mutex<HashMap<String, HashSet<String>>>,
     /// Serializes auto-failover roster swaps (ADR 023 Phase 4). Two bots degrading
     /// concurrently would otherwise each read the same roster snapshot and the later
     /// `set_standing_roster` would clobber the earlier swap (council F7). Holding
@@ -387,6 +391,7 @@ impl AppState {
             close_webhook_url,
             ws_ping_secs,
             recruit_seen: Mutex::new(HashMap::new()),
+            intent_seen: Mutex::new(HashMap::new()),
             failover_lock: std::sync::Mutex::new(()),
             compatibility_seen: Mutex::new(HashSet::new()),
         })

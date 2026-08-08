@@ -805,6 +805,16 @@ fn recruit_session_cap() -> usize {
         .unwrap_or(5)
 }
 
+/// Max distinct intent-carrying messages per session (ADR 039). Bounds the
+/// controller event volume a single looping bot can generate.
+fn intent_session_cap() -> usize {
+    std::env::var("OABCP_INTENT_SESSION_CAP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(32)
+}
+
 /// Max history frames replayed to a late/replacement bot. `0` disables the cap.
 /// A joiner must not cost O(full history) agent turns; the opening client
 /// trigger is pinned because it carries the task.
@@ -1154,6 +1164,80 @@ fn maybe_recruit(state: &Arc<AppState>, session: &Session, bot_id: &str, text: &
     Ok(())
 }
 
+/// Extract a bot intent from an own-line, unfenced `[[intent:<verb> <args>]]`
+/// directive (ADR 039). Verb is the first whitespace-separated token; the
+/// argument tail stays raw — the kernel transports intents, the consuming
+/// controller owns the grammar. Same text convention as `[[recruit:]]`.
+fn parse_intent(text: &str) -> Option<(&str, &str)> {
+    for line in unfenced_lines(text) {
+        let Some(inner) = line
+            .strip_prefix("[[intent:")
+            .and_then(|rest| rest.strip_suffix("]]"))
+        else {
+            continue;
+        };
+        let inner = inner.trim();
+        let (verb, args) = match inner.split_once(char::is_whitespace) {
+            Some((v, a)) => (v, a.trim()),
+            None => (inner, ""),
+        };
+        if !verb.is_empty() {
+            return Some((verb, args));
+        }
+    }
+    None
+}
+
+/// Bot-initiated intent (ADR 039): a roster bot may embed
+/// `[[intent:<verb> <args>]]` in a normal message. The mechanism never acts on
+/// it — it emits north for observability and enqueues a grant-gated
+/// `session.intent` controller event; policy (a coordinator or an external
+/// controller) decides what, if anything, happens. Any roster member may emit
+/// one (`handle_reply` already proved membership); finer authorization is
+/// policy, not mechanism.
+fn maybe_intent(
+    state: &Arc<AppState>,
+    session: &Session,
+    bot_id: &str,
+    message_id: &str,
+    text: &str,
+) -> Result<()> {
+    let Some((verb, args)) = parse_intent(text) else {
+        return Ok(());
+    };
+    let cap = intent_session_cap();
+    {
+        let mut seen = state.intent_seen.lock().unwrap();
+        let session_seen = seen.entry(session.id.clone()).or_default();
+        if session_seen.contains(message_id) {
+            return Ok(()); // a streamed edit re-delivers the same final message
+        }
+        if session_seen.len() >= cap {
+            tracing::warn!(
+                "intent rate limit reached in session {} (bot {bot_id})",
+                session.id
+            );
+            state.emit_north(
+                "intent_rejected",
+                &session.id,
+                json!({ "by": bot_id, "verb": verb, "reason": "rate_limited" }),
+            );
+            return Ok(());
+        }
+        session_seen.insert(message_id.to_string());
+    }
+    state.emit_north(
+        "intent",
+        &session.id,
+        json!({ "by": bot_id, "message_id": message_id, "verb": verb, "args": args }),
+    );
+    state.store.enqueue_session_intent(
+        &session.id,
+        message_id,
+        json!({ "message_id": message_id, "bot_id": bot_id, "verb": verb, "args": args }),
+    )
+}
+
 /// Dispatch a bot's GatewayReply (the south handler core).
 pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) -> Result<()> {
     let session_id = reply.channel.id.clone();
@@ -1463,6 +1547,8 @@ fn on_send(
     // A bot may embed `[[recruit:<id>]]` to add a member (chair-only, via the
     // admission gate). Parsed from the same message — no extra wire command.
     maybe_recruit(state, session, bot_id, &reply.content.text)?;
+    // A bot may embed `[[intent:<verb> …]]` (ADR 039) — emitted, never acted on.
+    maybe_intent(state, session, bot_id, &msg.id, &reply.content.text)?;
     // A done-signal posted as a complete (non-streamed) message is caught here;
     // a streamed one is caught in `on_edit` when the final content lands.
     check_text_done(state, session, bot_id, &msg.id, &reply.content.text)?;
@@ -2043,6 +2129,8 @@ fn on_edit(
         // A streamed recruit directive lands via edit_message when the final
         // content replaces the stub. The per-session seen set absorbs repeats.
         maybe_recruit(state, session, bot_id, &reply.content.text)?;
+        // Same for a streamed `[[intent:…]]` (ADR 039); seen-set absorbs repeats.
+        maybe_intent(state, session, bot_id, target, &reply.content.text)?;
         // a streamed done-signal arrives here (the stub had no `[done]` yet)
         check_text_done(state, session, bot_id, target, &reply.content.text)?;
     }
@@ -4274,6 +4362,27 @@ mod tests {
         assert_eq!(parse_recruit("let's add [[recruit:rev3]] please"), None);
         assert_eq!(parse_recruit("```\n[[recruit:rev3]]\n```"), None);
         assert_eq!(parse_recruit("> [[recruit:rev3]]"), None);
+    }
+
+    #[test]
+    fn parse_intent_extracts_verb_and_raw_args() {
+        assert_eq!(
+            parse_intent(r#"[[intent:delegate to=rev2 task="dig into X"]]"#),
+            Some(("delegate", r#"to=rev2 task="dig into X""#))
+        );
+        assert_eq!(parse_intent("[[intent:status]]"), Some(("status", "")));
+        assert_eq!(parse_intent("[[intent:  ]]"), None); // empty verb
+        assert_eq!(parse_intent("no directive here"), None);
+    }
+
+    #[test]
+    fn parse_intent_requires_own_line_outside_fences() {
+        assert_eq!(
+            parse_intent("\n  [[intent:status task=t1]]  \n"),
+            Some(("status", "task=t1"))
+        );
+        assert_eq!(parse_intent("I will [[intent:status]] now"), None);
+        assert_eq!(parse_intent("```\n[[intent:status]]\n```"), None);
     }
 
     #[test]

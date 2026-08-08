@@ -430,6 +430,7 @@ pub async fn configure_installation_events(
     let allowed = [
         "session.opened",
         "session.progress",
+        "session.intent",
         "session.terminal",
         "session.timeout",
         "session.superseded",
