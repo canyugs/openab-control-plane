@@ -134,8 +134,9 @@ consumer demands it — not now.
 - Intent grammar: key=value trailer (recruit-style) vs a JSON body in an
   HTML comment (findings-style)? Trailer first; revisit when an intent needs
   nesting.
-- Rate/abuse control on intents — per-bot budget at the mechanism layer, or
-  purely controller policy?
+- ~~Rate/abuse control on intents~~ — resolved in PR 381: a per-bot
+  per-session budget at the mechanism layer (`OABCP_INTENT_SESSION_CAP`);
+  a shared session budget would let one looping bot starve the channel.
 - Does `delegate to=<role>` (plane picks the bot, like `find_spare`) belong
   in v1, or only `to=<bot_id>`?
 - Progress surface for bots: answered in-session via `PostMessage`, or do

@@ -255,10 +255,12 @@ pub struct AppState {
     /// Per-session recruit directives already processed. This bounds repeated
     /// parse paths and the unknown-target provision signal surface.
     pub recruit_seen: Mutex<HashMap<String, HashSet<String>>>,
-    /// Per-session message ids whose `[[intent:…]]` was already emitted
-    /// (ADR 039). Absorbs streamed-edit re-parses and caps the per-session
-    /// intent volume before anything reaches the controller event queue.
-    pub intent_seen: Mutex<HashMap<String, HashSet<String>>>,
+    /// Message ids whose `[[intent:…]]` was already emitted, keyed
+    /// session → bot (ADR 039). Absorbs streamed-edit re-parses; the cap is
+    /// per bot, not per session — intents are open to every roster member
+    /// (unlike chair-only recruit), so a shared budget would let one looping
+    /// bot starve the whole session's intent channel (PR 381 F1).
+    pub intent_seen: Mutex<HashMap<String, HashMap<String, HashSet<String>>>>,
     /// Serializes auto-failover roster swaps (ADR 023 Phase 4). Two bots degrading
     /// concurrently would otherwise each read the same roster snapshot and the later
     /// `set_standing_roster` would clobber the earlier swap (council F7). Holding

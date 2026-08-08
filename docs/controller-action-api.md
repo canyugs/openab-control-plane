@@ -152,9 +152,9 @@ raw untouched tail; the kernel transports intents but owns no intent grammar.
 The kernel never acts on an intent: whatever the verb means (delegation, a
 progress query, …) is entirely the receiving controller's policy, effected
 through ordinary actions (`open_session`, `post_message`). At most one event
-fires per message (streamed edits re-parse idempotently), and a per-session
-cap (`OABCP_INTENT_SESSION_CAP`, default 32) bounds the volume a looping bot
-can generate.
+fires per message (streamed edits re-parse idempotently), and a per-bot
+per-session cap (`OABCP_INTENT_SESSION_CAP`, default 32) bounds the volume a
+looping bot can generate without starving other roster members' budgets.
 
 ## Execute an action
 
