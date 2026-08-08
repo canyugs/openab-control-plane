@@ -533,6 +533,16 @@ pub trait Store: Send + Sync {
     ) -> Result<bool>;
     fn prune_delivered_controller_events(&self, before: i64) -> Result<usize>;
     fn controller_event_audit(&self, controller_id: &str) -> Result<Vec<ControllerEventAudit>>;
+    /// ADR 039: enqueue a `session.intent` controller event for the controller
+    /// owning this session. Grant-gated like every event; silently a no-op when
+    /// the session is unowned or the controller lacks the grant. Idempotent per
+    /// message (streamed edits re-parse the same final message).
+    fn enqueue_session_intent(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        payload: Value,
+    ) -> Result<()>;
 
     /// Append one provider-neutral investigation event. The `(service,
     /// event_key)` pair is idempotent; retries return the already durable row.
@@ -2711,6 +2721,26 @@ impl Store for SqliteStore {
         }
         tx.commit()?;
         Ok(true)
+    }
+
+    fn enqueue_session_intent(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        payload: Value,
+    ) -> Result<()> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        enqueue_controller_session_event_locked(
+            &tx,
+            session_id,
+            "session.intent",
+            payload,
+            &format!("session.intent:{message_id}"),
+            now_ms(),
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     fn claim_controller_events(
@@ -5258,6 +5288,66 @@ mod tests {
             ])
         );
         assert!(body["payload"].get("final_messages_truncated").is_none());
+    }
+
+    /// ADR 039: a bot intent on a controller-owned session becomes exactly one
+    /// grant-gated `session.intent` event; without the grant (or an owning
+    /// controller) it is silently nothing.
+    #[test]
+    fn session_intent_event_is_grant_gated_and_idempotent() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .upsert_controller_installation("ctrl-w", 4, 60)
+            .unwrap();
+        assert!(store
+            .configure_controller_events(
+                "ctrl-w",
+                "https://ctrl.example/events",
+                1,
+                &["session.intent".into()],
+                now_ms(),
+            )
+            .unwrap());
+        let s = store
+            .create_session("t", None, 0, None, &[], "solo")
+            .unwrap();
+        // Unowned session: no-op, nothing enqueued.
+        store
+            .enqueue_session_intent(&s.id, "msg_0", json!({"verb": "status"}))
+            .unwrap();
+        assert!(store
+            .claim_controller_events(now_ms(), 10, 1_000)
+            .unwrap()
+            .is_empty());
+        {
+            let c = store.conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO controller_sessions
+                    (controller_id, scope, trigger_ref, trigger_fingerprint, session_id, current, created_at)
+                 VALUES ('ctrl-w', 'task:dag1/node:2', 'world:task/dag1#2', NULL, ?1, 1, 0)",
+                params![s.id],
+            )
+            .unwrap();
+        }
+        let payload = json!({
+            "message_id": "msg_1",
+            "bot_id": "b0",
+            "verb": "delegate",
+            "args": "to=rev2 task=\"dig\"",
+        });
+        store
+            .enqueue_session_intent(&s.id, "msg_1", payload.clone())
+            .unwrap();
+        // Streamed edit re-parse retries with the same message id: idempotent.
+        store
+            .enqueue_session_intent(&s.id, "msg_1", payload)
+            .unwrap();
+        let events = store.claim_controller_events(now_ms(), 10, 1_000).unwrap();
+        assert_eq!(events.len(), 1, "one event per intent-carrying message");
+        assert_eq!(events[0].event_type, "session.intent");
+        let body: serde_json::Value = serde_json::from_str(&events[0].body_json).unwrap();
+        assert_eq!(body["payload"]["verb"], "delegate");
+        assert_eq!(body["payload"]["bot_id"], "b0");
     }
 
     /// The event bus must never choke on a huge chair message: the span is
