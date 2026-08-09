@@ -78,6 +78,7 @@ Content-Type: application/json
   "events": [
     "session.opened",
     "session.progress",
+    "session.intent",
     "session.terminal",
     "session.timeout",
     "session.superseded",
@@ -143,6 +144,17 @@ character boundary. Both rules protect the same thing: the verdict trailer and
 findings block sit at the end of the span.
 Timeout, supersede, and controller-requested closes (`close_session` action)
 carry no result and no final messages — only a normal close has one.
+
+A `session.intent` event (ADR 039) fires when a roster bot embeds an own-line
+`[[intent:<verb> <args>]]` directive in a message. The payload is
+`{message_id, bot_id, verb, args}` — `verb` is the first token, `args` is the
+raw untouched tail; the kernel transports intents but owns no intent grammar.
+The kernel never acts on an intent: whatever the verb means (delegation, a
+progress query, …) is entirely the receiving controller's policy, effected
+through ordinary actions (`open_session`, `post_message`). At most one event
+fires per message (streamed edits re-parse idempotently), and a per-bot
+per-session cap (`OABCP_INTENT_SESSION_CAP`, default 32) bounds the volume a
+looping bot can generate without starving other roster members' budgets.
 
 ## Execute an action
 

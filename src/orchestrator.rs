@@ -805,6 +805,17 @@ fn recruit_session_cap() -> usize {
         .unwrap_or(5)
 }
 
+/// Max distinct intent-carrying messages per bot per session (ADR 039).
+/// Bounds the controller event volume a single looping bot can generate
+/// without letting it exhaust the other roster members' budgets.
+fn intent_session_cap() -> usize {
+    std::env::var("OABCP_INTENT_SESSION_CAP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(32)
+}
+
 /// Max history frames replayed to a late/replacement bot. `0` disables the cap.
 /// A joiner must not cost O(full history) agent turns; the opening client
 /// trigger is pinned because it carries the task.
@@ -1154,6 +1165,86 @@ fn maybe_recruit(state: &Arc<AppState>, session: &Session, bot_id: &str, text: &
     Ok(())
 }
 
+/// Extract a bot intent from an own-line, unfenced `[[intent:<verb> <args>]]`
+/// directive (ADR 039). Verb is the first whitespace-separated token; the
+/// argument tail stays raw — the kernel transports intents, the consuming
+/// controller owns the grammar. Same text convention as `[[recruit:]]`.
+fn parse_intent(text: &str) -> Option<(&str, &str)> {
+    for line in unfenced_lines(text) {
+        let Some(inner) = line
+            .strip_prefix("[[intent:")
+            .and_then(|rest| rest.strip_suffix("]]"))
+        else {
+            continue;
+        };
+        let inner = inner.trim();
+        let (verb, args) = match inner.split_once(char::is_whitespace) {
+            Some((v, a)) => (v, a.trim()),
+            None => (inner, ""),
+        };
+        if !verb.is_empty() {
+            return Some((verb, args));
+        }
+    }
+    None
+}
+
+/// Bot-initiated intent (ADR 039): a roster bot may embed
+/// `[[intent:<verb> <args>]]` in a normal message. The mechanism never acts on
+/// it — it emits north for observability and enqueues a grant-gated
+/// `session.intent` controller event; policy (a coordinator or an external
+/// controller) decides what, if anything, happens. Any roster member may emit
+/// one (`handle_reply` already proved membership); finer authorization is
+/// policy, not mechanism.
+fn maybe_intent(
+    state: &Arc<AppState>,
+    session: &Session,
+    bot_id: &str,
+    message_id: &str,
+    text: &str,
+) -> Result<()> {
+    let Some((verb, args)) = parse_intent(text) else {
+        return Ok(());
+    };
+    let cap = intent_session_cap();
+    {
+        let mut seen = state.intent_seen.lock().unwrap();
+        // Per-bot budget (PR 381 F1): a shared session-wide set would let one
+        // looping bot starve every other member's intent channel.
+        let bot_seen = seen
+            .entry(session.id.clone())
+            .or_default()
+            .entry(bot_id.to_string())
+            .or_default();
+        if bot_seen.contains(message_id) {
+            return Ok(()); // a streamed edit re-delivers the same final message
+        }
+        if bot_seen.len() >= cap {
+            tracing::warn!(
+                "intent rate limit reached in session {} (bot {bot_id})",
+                session.id
+            );
+            state.emit_north(
+                "intent_rejected",
+                &session.id,
+                json!({ "by": bot_id, "verb": verb, "reason": "rate_limited" }),
+            );
+            return Ok(());
+        }
+        bot_seen.insert(message_id.to_string());
+    }
+    state.emit_north(
+        "intent",
+        &session.id,
+        json!({ "by": bot_id, "message_id": message_id, "verb": verb, "args": args }),
+    );
+    state.store.enqueue_session_intent(
+        &session.id,
+        message_id,
+        json!({ "message_id": message_id, "bot_id": bot_id, "verb": verb, "args": args }),
+    )
+}
+
 /// Dispatch a bot's GatewayReply (the south handler core).
 pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) -> Result<()> {
     let session_id = reply.channel.id.clone();
@@ -1463,6 +1554,8 @@ fn on_send(
     // A bot may embed `[[recruit:<id>]]` to add a member (chair-only, via the
     // admission gate). Parsed from the same message — no extra wire command.
     maybe_recruit(state, session, bot_id, &reply.content.text)?;
+    // A bot may embed `[[intent:<verb> …]]` (ADR 039) — emitted, never acted on.
+    maybe_intent(state, session, bot_id, &msg.id, &reply.content.text)?;
     // A done-signal posted as a complete (non-streamed) message is caught here;
     // a streamed one is caught in `on_edit` when the final content lands.
     check_text_done(state, session, bot_id, &msg.id, &reply.content.text)?;
@@ -2043,6 +2136,8 @@ fn on_edit(
         // A streamed recruit directive lands via edit_message when the final
         // content replaces the stub. The per-session seen set absorbs repeats.
         maybe_recruit(state, session, bot_id, &reply.content.text)?;
+        // Same for a streamed `[[intent:…]]` (ADR 039); seen-set absorbs repeats.
+        maybe_intent(state, session, bot_id, target, &reply.content.text)?;
         // a streamed done-signal arrives here (the stub had no `[done]` yet)
         check_text_done(state, session, bot_id, target, &reply.content.text)?;
     }
@@ -4277,6 +4372,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_intent_extracts_verb_and_raw_args() {
+        assert_eq!(
+            parse_intent(r#"[[intent:delegate to=rev2 task="dig into X"]]"#),
+            Some(("delegate", r#"to=rev2 task="dig into X""#))
+        );
+        assert_eq!(parse_intent("[[intent:status]]"), Some(("status", "")));
+        assert_eq!(parse_intent("[[intent:  ]]"), None); // empty verb
+        assert_eq!(parse_intent("no directive here"), None);
+    }
+
+    #[test]
+    fn parse_intent_requires_own_line_outside_fences() {
+        assert_eq!(
+            parse_intent("\n  [[intent:status task=t1]]  \n"),
+            Some(("status", "task=t1"))
+        );
+        assert_eq!(parse_intent("I will [[intent:status]] now"), None);
+        assert_eq!(parse_intent("```\n[[intent:status]]\n```"), None);
+    }
+
+    #[test]
     fn unfenced_lines_drops_fenced_segments_fail_closed() {
         assert_eq!(
             unfenced_lines("alpha\n```\n[[recruit:x]]\n```\nbeta"),
@@ -4390,6 +4506,149 @@ mod tests {
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0]["payload"]["target"], "missing3");
         assert_eq!(rejected[0]["payload"]["reason"], "rate_limited");
+    }
+
+    /// PR 381 F2: the full `handle_reply` → `on_send`/`on_edit` →
+    /// `maybe_intent` wiring, against a controller-owned session — a dropped
+    /// call site, wrong message id, or broken enqueue all fail here.
+    #[test]
+    fn intent_through_handle_reply_enqueues_once_for_owned_session() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                1,
+                Some(&chair.id),
+                std::slice::from_ref(&chair.id),
+                "council",
+            )
+            .unwrap();
+        store
+            .upsert_controller_installation("ctrl-w", 4, 60)
+            .unwrap();
+        assert!(store
+            .configure_controller_events(
+                "ctrl-w",
+                "https://ctrl.example/events",
+                1,
+                &["session.intent".into()],
+                crate::store::now_ms(),
+            )
+            .unwrap());
+        store
+            .bind_test_controller_session("ctrl-w", &session.id)
+            .unwrap();
+        let mut north = state.north_tx.subscribe();
+
+        handle_reply(
+            &state,
+            &chair.id,
+            msg_reply(&session.id, "checking in\n[[intent:status task=t1]]"),
+        )
+        .unwrap();
+        let msg = store
+            .messages(&session.id)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.author_id.as_deref() == Some(chair.id.as_str()))
+            .unwrap();
+        // A streamed finalize re-delivers the same message: still one intent.
+        handle_reply(
+            &state,
+            &chair.id,
+            edit_reply(
+                &session.id,
+                &msg.id,
+                "checking in\n[[intent:status task=t1]]",
+            ),
+        )
+        .unwrap();
+
+        let events = store
+            .claim_controller_events(crate::store::now_ms(), 10, 1_000)
+            .unwrap();
+        let intents: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == "session.intent")
+            .collect();
+        assert_eq!(intents.len(), 1, "one event per intent-carrying message");
+        let body: serde_json::Value = serde_json::from_str(&intents[0].body_json).unwrap();
+        assert_eq!(body["payload"]["verb"], "status");
+        assert_eq!(body["payload"]["args"], "task=t1");
+        assert_eq!(body["payload"]["bot_id"], chair.id);
+        assert_eq!(body["payload"]["message_id"], msg.id);
+
+        let mut north_intents = 0;
+        while let Ok(raw) = north.try_recv() {
+            let event: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            if event["type"] == "intent" {
+                north_intents += 1;
+                assert_eq!(event["payload"]["by"], chair.id);
+            }
+        }
+        assert_eq!(north_intents, 1, "edit re-parse must not duplicate intent");
+    }
+
+    /// PR 381 F1: the intent budget is per bot — one bot at its cap must not
+    /// starve another roster member's intent channel.
+    #[test]
+    fn intent_cap_is_per_bot_not_per_session() {
+        std::env::set_var("OABCP_INTENT_SESSION_CAP", "1");
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev = store.register_bot("rev1", "reviewer", "h2", "t2").unwrap();
+        let session = store
+            .create_session(
+                "t",
+                None,
+                1,
+                Some(&chair.id),
+                &[chair.id.clone(), rev.id.clone()],
+                "council",
+            )
+            .unwrap();
+        let mut north = state.north_tx.subscribe();
+
+        handle_reply(
+            &state,
+            &chair.id,
+            msg_reply(&session.id, "[[intent:status a]]"),
+        )
+        .unwrap();
+        handle_reply(
+            &state,
+            &chair.id,
+            msg_reply(&session.id, "[[intent:status b]]"),
+        )
+        .unwrap();
+        handle_reply(
+            &state,
+            &rev.id,
+            msg_reply(&session.id, "[[intent:status c]]"),
+        )
+        .unwrap();
+        std::env::remove_var("OABCP_INTENT_SESSION_CAP");
+
+        let mut accepted = Vec::new();
+        let mut rejected = Vec::new();
+        while let Ok(raw) = north.try_recv() {
+            let event: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            match event["type"].as_str() {
+                Some("intent") => accepted.push(event["payload"]["by"].clone()),
+                Some("intent_rejected") => rejected.push(event["payload"]["by"].clone()),
+                _ => {}
+            }
+        }
+        assert_eq!(accepted, vec![json!(chair.id), json!(rev.id)]);
+        assert_eq!(
+            rejected,
+            vec![json!(chair.id)],
+            "only the over-cap bot is limited"
+        );
     }
 
     #[test]
