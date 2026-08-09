@@ -5,7 +5,11 @@ edition = "2021"
 license = "MIT"
 
 [workspace]
-members = ["crates/controller-protocol", "crates/github-pr-controller"]
+members = [
+    "crates/controller-protocol",
+    "crates/github-pr-controller",
+    "crates/world-controller",
+]
 default-members = [".", "crates/controller-protocol"]
 resolver = "2"
 
@@ -40,6 +44,7 @@ rustls = { version = "0.23.43", default-features = false, features = ["ring", "s
 [dev-dependencies]
 serde_urlencoded = "0.7"
 github-pr-controller = { path = "crates/github-pr-controller" }
+world-controller = { path = "crates/world-controller" }
 tokio-tungstenite = "0.23"
 futures-util = "0.3"
 tower = { version = "0.5", features = ["util"] }
