@@ -6,10 +6,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 WORKDIR /app
 # Keep the repository lockfile authoritative without copying OCP implementation
 # code. Cargo needs every workspace package manifest and a root target while it
-# validates the lock, even though only github-pr-controller is built.
+# validates the lock, even though only github-pr-controller is built — so every
+# workspace member under crates/ must be COPYed here, and adding a crate to the
+# workspace without adding it below fails the release build (v0.1.73 died this
+# way when world-controller landed).
 COPY Cargo.toml Cargo.lock ./
 COPY crates/controller-protocol ./crates/controller-protocol
 COPY crates/github-pr-controller ./crates/github-pr-controller
+COPY crates/world-controller ./crates/world-controller
 COPY crates/github-pr-controller/docker/workspace-placeholder.rs ./src/lib.rs
 RUN cargo build --release --locked -p github-pr-controller
 
