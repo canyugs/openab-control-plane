@@ -1666,6 +1666,7 @@ async fn handle_create_waiver(
             origin_pr,
             created_by,
             request.expires_at,
+            store::WAIVER_SOURCE_OPERATOR,
         )
         .await
     {
@@ -1844,37 +1845,64 @@ async fn waiver_block_for_repo(store: &dyn store::ProductStore, repo: &str) -> O
     if waivers.is_empty() {
         return None;
     }
+    // Two provenances share the ledger (ADR 038 point 7), so the header
+    // labels per entry instead of asserting one source for all: an operator
+    // entry is free text recorded via the signed API; an author entry is a
+    // waived council finding whose text is the council-authored title —
+    // attenuated, not clean, and never the author's prose.
     let mut block = String::from(
-        "\n\n===== ACTIVE WAIVERS (ADR 035, operator ledger) =====\n\
-         Accepted trade-offs recorded by the operator — never sourced from PR \
-         content, never shown to reviewers. At synthesis: a finding matching a \
-         waiver goes in a `Waived` table row (visible, never an open \u{1F534}/\u{1F7E1}, \
-         never blocking), and its entry in the machine findings block carries \
+        "\n\n===== ACTIVE WAIVERS (ADR 035 / ADR 038) =====\n\
+         Accepted trade-offs from the waiver ledger — never shown to \
+         reviewers. Each entry names its provenance: recorded by the operator, \
+         or `waived by @<login>` — an author-accepted council finding whose \
+         text is the council's own title for it, never the author's prose. At \
+         synthesis: a finding matching a waiver goes in a `Waived` table row \
+         (visible, never an open \u{1F534}/\u{1F7E1}, never blocking), and its entry in \
+         the machine findings block carries \
          \"status\":\"waived\",\"waiver_id\":\"<id>\". A finding that only \
          partially matches stays open — when in doubt, it is not waived.\n",
     );
-    // Operator-written, but still flattened defensively: one line per waiver,
-    // and no run of '=' can imitate the block delimiters.
-    let sanitize = |raw: &str| {
-        raw.split_whitespace()
+    // Flattened defensively regardless of provenance: one line per waiver,
+    // bounded, and no run of '=' can imitate the block delimiters. Author
+    // entries carry council-authored words, but the path is verbatim from the
+    // diff and the title summarizes author-controlled code.
+    let sanitize = |raw: &str, max: usize| {
+        let flat = raw
+            .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
-            .replace("=====", "-")
+            .replace("=====", "-");
+        if flat.chars().count() <= max {
+            flat
+        } else {
+            flat.chars().take(max).collect::<String>() + "…"
+        }
     };
     for waiver in &waivers {
         let days_left = (waiver.expires_at - now).max(0) / 86_400;
         let scope = waiver
             .path_class
             .as_deref()
-            .map(|p| format!(" [{}]", sanitize(p)))
+            .map(|p| format!(" [{}]", sanitize(p, 120)))
             .unwrap_or_default();
-        block.push_str(&format!(
-            "- {}{}: {} (expires in {}d)\n",
-            waiver.id,
-            scope,
-            sanitize(&waiver.text),
-            days_left
-        ));
+        if waiver.source == store::WAIVER_SOURCE_AUTHOR {
+            block.push_str(&format!(
+                "- {}{}: \"{}\" (waived by @{}, expires in {}d)\n",
+                waiver.id,
+                scope,
+                sanitize(&waiver.text, 80),
+                sanitize(&waiver.created_by, 40),
+                days_left
+            ));
+        } else {
+            block.push_str(&format!(
+                "- {}{}: {} (operator, expires in {}d)\n",
+                waiver.id,
+                scope,
+                sanitize(&waiver.text, 2000),
+                days_left
+            ));
+        }
     }
     block.push_str("===== END ACTIVE WAIVERS =====\n");
     Some(block)
@@ -2314,6 +2342,17 @@ async fn perform_write_with_receipt(
             }
             json!({"comment_id": existing, "reconciled": existing.is_some()})
         }
+        kind if kind.starts_with(deciding::KIND_DECISION_COMMENT) => {
+            // A decision's edit of the round's verdict comment. Always a
+            // PATCH: the comment provably exists (its id was read from the
+            // store), and PATCH is idempotent, so no marker reconcile.
+            let comment_id = payload["comment_id"]
+                .as_i64()
+                .ok_or_else(|| anyhow::anyhow!("decision comment write carried no comment_id"))?;
+            let body = payload["body"].as_str().unwrap_or_default();
+            github.update_comment(repo, comment_id, body).await?;
+            json!({"comment_id": comment_id, "reconciled": false})
+        }
         kind if kind == closing::KIND_STATUS
             || kind.starts_with(deciding::KIND_DECISION_STATUS) =>
         {
@@ -2351,8 +2390,17 @@ async fn perform_write_with_receipt(
             };
             let pr_number = payload["pr_number"].as_i64().unwrap_or_default();
             // Same reconcile as the comment: a replayed submit must find the
-            // review it already submitted, not add a second one.
-            let marker = closing::round_marker(&write.session_id);
+            // review it already submitted, not add a second one. A decision's
+            // review reconciles on its own marker — the round's marker is
+            // already on the REQUEST_CHANGES review this APPROVE supersedes,
+            // and matching that one would swallow the unblock as "already
+            // sent".
+            let marker = if kind.starts_with(deciding::KIND_DECISION_REVIEW) {
+                let deciding_comment = kind.rsplit(':').next().unwrap_or_default();
+                deciding::decision_marker(&write.session_id, deciding_comment)
+            } else {
+                closing::round_marker(&write.session_id)
+            };
             if let Some(review_id) = github.find_marked_review(repo, pr_number, &marker).await? {
                 tracing::info!(
                     session_id = write.session_id,
@@ -2637,12 +2685,27 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
             command.repository
         );
     }
-    if command.verb == "dismiss" && command.reason.is_none() {
-        return format!(
-            "`dismiss {}` needs a reason — the record is the whole point of trusting the \
-             judgement. Try `dismiss {} <why this is not a defect>`.{hint}",
-            command.stable_id, command.stable_id
-        );
+    if command.reason.is_none() {
+        // Both judging verbs require the reason — it is the whole value of
+        // the record. Reopen carries none.
+        match command.verb.as_str() {
+            "dismiss" => {
+                return format!(
+                    "`dismiss {}` needs a reason — the record is the whole point of trusting \
+                     the judgement. Try `dismiss {} <why this is not a defect>`.{hint}",
+                    command.stable_id, command.stable_id
+                );
+            }
+            "waive" => {
+                return format!(
+                    "`waive {}` needs a reason — a waiver is the org accepting a real defect, \
+                     and the reason is what future readers of the ledger get. Try `waive {} \
+                     <why we accept this defect>`.{hint}",
+                    command.stable_id, command.stable_id
+                );
+            }
+            _ => {}
+        }
     }
     let Some(github) = state.github.as_ref() else {
         return deciding::fault(
@@ -2675,60 +2738,103 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
     };
     let before = deciding::open_counts(&before_rows, &head_sha);
     let was_blocking = before.0 > 0 || before.1 > 0;
-    let status = if command.verb == "dismiss" {
-        "dismissed"
+    let status = match command.verb.as_str() {
+        "dismiss" => "dismissed",
+        "waive" => "waived",
+        _ => "open",
+    };
+    // Two ways to match nothing, and they need different answers.
+    let miss_reply = |before_rows: &[store::ReviewFindingRow]| {
+        let on_this_head: Vec<&str> = before_rows
+            .iter()
+            .filter(|row| row.head_sha.as_deref() == Some(head_sha.as_str()))
+            .map(|row| row.stable_id.as_str())
+            .collect();
+        if on_this_head.contains(&command.stable_id.as_str()) {
+            format!(
+                "`{}` moved since that round, so nothing was changed — a decision on an \
+                 older revision must not unblock code nobody reviewed. The next round will \
+                 re-raise whatever still applies.{hint}",
+                &head_sha[..head_sha.len().min(8)]
+            )
+        } else if on_this_head.is_empty() {
+            format!(
+                "No findings are recorded for `{}` on `{}` yet — a judgement needs a \
+                 finding to be about. If no round has run on this revision, \
+                 `@{} review` convenes one.{hint}",
+                command.repository,
+                &head_sha[..head_sha.len().min(8)],
+                state.bot_name(),
+            )
+        } else {
+            format!(
+                "{} is not a finding on this revision. This round has: {}.{hint}",
+                command.stable_id,
+                on_this_head.join(", ")
+            )
+        }
+    };
+    // `waive` is one transaction — the status flip and the repo-scoped waiver
+    // land together or not at all (a stale waive that still minted a waiver
+    // would silence rounds on code nobody reviewed). The other verbs touch
+    // the finding alone.
+    let (decided, waiver) = if command.verb == "waive" {
+        match store
+            .waive_review_finding(
+                &command.repository,
+                command.pr_number as i64,
+                &command.stable_id,
+                &head_sha,
+                command.author_login.as_deref().unwrap_or("unknown"),
+                command.reason.as_deref().unwrap_or_default(),
+                now_unix() + deciding::WAIVE_DEFAULT_EXPIRY_SECS,
+            )
+            .await
+        {
+            Ok(Some((row, waiver))) => (row, Some(waiver)),
+            Ok(None) => return miss_reply(&before_rows),
+            Err(error) => {
+                tracing::error!(%error, "finding waive write failed");
+                return deciding::fault("The findings ledger refused the write.");
+            }
+        }
     } else {
-        "open"
-    };
-    let decided = match store
-        .decide_review_finding(
-            &command.repository,
-            command.pr_number as i64,
-            &command.stable_id,
-            &head_sha,
-            status,
-            command.author_login.as_deref().unwrap_or("unknown"),
-            command.reason.as_deref(),
-        )
-        .await
-    {
-        Ok(Some(row)) => row,
-        Ok(None) => {
-            // Two ways to match nothing, and they need different answers.
-            let on_this_head: Vec<&str> = before_rows
-                .iter()
-                .filter(|row| row.head_sha.as_deref() == Some(head_sha.as_str()))
-                .map(|row| row.stable_id.as_str())
-                .collect();
-            return if on_this_head.contains(&command.stable_id.as_str()) {
-                format!(
-                    "`{}` moved since that round, so nothing was changed — a decision on an \
-                     older revision must not unblock code nobody reviewed. The next round will \
-                     re-raise whatever still applies.{hint}",
-                    &head_sha[..head_sha.len().min(8)]
-                )
-            } else if on_this_head.is_empty() {
-                format!(
-                    "No findings are recorded for `{}` on `{}` yet — a judgement needs a \
-                     finding to be about. If no round has run on this revision, \
-                     `@{} review` convenes one.{hint}",
-                    command.repository,
-                    &head_sha[..head_sha.len().min(8)],
-                    state.bot_name(),
-                )
-            } else {
-                format!(
-                    "{} is not a finding on this revision. This round has: {}.{hint}",
-                    command.stable_id,
-                    on_this_head.join(", ")
-                )
-            };
-        }
-        Err(error) => {
-            tracing::error!(%error, "finding decision write failed");
-            return deciding::fault("The findings ledger refused the write.");
+        match store
+            .decide_review_finding(
+                &command.repository,
+                command.pr_number as i64,
+                &command.stable_id,
+                &head_sha,
+                status,
+                command.author_login.as_deref().unwrap_or("unknown"),
+                command.reason.as_deref(),
+            )
+            .await
+        {
+            Ok(Some(row)) => (row, None),
+            Ok(None) => return miss_reply(&before_rows),
+            Err(error) => {
+                tracing::error!(%error, "finding decision write failed");
+                return deciding::fault("The findings ledger refused the write.");
+            }
         }
     };
+    // Reopening a waived finding must also revoke the waiver it minted, or
+    // the finding would come back while the repo-wide suppression stayed live
+    // — an undo that does not undo.
+    let mut revoked_waiver: Option<String> = None;
+    let mut revoke_failed = false;
+    if command.verb == "reopen" {
+        if let Some(waiver_id) = decided.waiver_id.as_deref() {
+            match store.update_review_waiver(waiver_id, None, true).await {
+                Ok(_) => revoked_waiver = Some(waiver_id.to_string()),
+                Err(error) => {
+                    revoke_failed = true;
+                    tracing::error!(%error, waiver_id, "waiver revoke failed on reopen");
+                }
+            }
+        }
+    }
 
     // A failed re-read must not be answered with pre-decision counts: the
     // ledger already holds the judgement, so stale rows would tell the author
@@ -2745,17 +2851,59 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
             );
         }
     };
+    // A waive moves the finding to a visible `Waived` section on the round's
+    // own verdict comment (ADR 038 point 4) — read the live body, upsert the
+    // section, PATCH it back. Every step degrades to "reply carries the news"
+    // rather than blocking the decision: the ledger already holds the truth.
+    // Dismiss keeps v1's posture — the verdict comment stays the record of
+    // what the council said that round.
+    let verdict_comment = if command.verb == "waive" {
+        match store.round_comment_id(&decided.session_id).await {
+            Ok(Some(comment_id)) => {
+                match github
+                    .issue_comment_body(&command.repository, comment_id)
+                    .await
+                {
+                    Ok(body) => {
+                        let expiries: std::collections::BTreeMap<String, i64> = store
+                            .list_review_waivers(Some(&command.repository), false, now_unix())
+                            .await
+                            .map(|waivers| {
+                                waivers
+                                    .into_iter()
+                                    .map(|waiver| (waiver.id, waiver.expires_at))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        deciding::waived_section(&after_rows, &head_sha, &expiries, now_unix()).map(
+                            |section| {
+                                (comment_id, deciding::upsert_waived_section(&body, &section))
+                            },
+                        )
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, comment_id, "verdict comment read failed; waive proceeds without the section");
+                        None
+                    }
+                }
+            }
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(%error, "round comment lookup failed; waive proceeds without the section");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let outcome = deciding::plan_decision(
         &command.repository,
         command.pr_number as i64,
         &head_sha,
         &after_rows,
         was_blocking,
-        // v1 leaves the verdict comment as the record of what the council said
-        // that round; the reply carries the news and the ledger carries truth.
-        None,
-        None,
-        "",
+        verdict_comment,
+        &decided.session_id,
         command.comment_id,
     );
     // A write that does not enqueue must never be reported as done: that is the
@@ -2782,10 +2930,10 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         store.as_ref(),
         controller_audit_event(
             format!("finding.{status}:{}:{}", decided.id, command.comment_id),
-            if status == "dismissed" {
-                "finding.dismissed"
-            } else {
-                "finding.reopened"
+            match status {
+                "dismissed" => "finding.dismissed",
+                "waived" => "finding.waived",
+                _ => "finding.reopened",
             },
             AuditOutcome::Succeeded,
             now_unix(),
@@ -2806,11 +2954,43 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
                 "unblocked": outcome.unblocked,
                 // The actor is the point of the record, not a detail of it.
                 "actor": command.author_login,
+                "waiver_id": waiver.as_ref().map(|waiver| waiver.id.clone()),
+                "revoked_waiver_id": revoked_waiver,
             }),
             None,
         ),
     )
     .await;
+    // The minted waiver gets the same `waiver.created` event the operator
+    // path writes — and, per ADR 038 point 6, this one carries the audit
+    // ACTOR, not just a created_by inside the detail payload.
+    if let Some(waiver) = waiver.as_ref() {
+        let _ = append_controller_audit(
+            store.as_ref(),
+            controller_audit_event(
+                format!("waiver.created:{}", waiver.id),
+                "waiver.created",
+                AuditOutcome::Succeeded,
+                now_unix(),
+                AuditCorrelation {
+                    session_id: Some(decided.session_id.clone()),
+                    controller_id: state.config.ocp_action.controller_id.clone(),
+                    ..Default::default()
+                },
+                json!({"waiver_id": waiver.id, "repo": waiver.repo,
+                "created_by": waiver.created_by,
+                "expires_at": waiver.expires_at,
+                "source": waiver.source,
+                "finding": command.stable_id,
+                "actor": {
+                    "kind": "github_user",
+                    "display": command.author_login,
+                }}),
+                None,
+            ),
+        )
+        .await;
+    }
     if !outcome.writes.is_empty() {
         spawn_write_drain(state);
     }
@@ -2821,7 +3001,21 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         &outcome,
         command.author_login.as_deref().unwrap_or("unknown"),
         state.bot_name(),
+        waiver.as_ref(),
     );
+    if let Some(waiver_id) = revoked_waiver.as_deref() {
+        reply.push_str(&format!(
+            "\nThe linked waiver `{waiver_id}` was revoked — future rounds will weigh this \
+             finding again.\n"
+        ));
+    }
+    if revoke_failed {
+        reply.push_str(
+            "\n⚠️ The finding is reopened, but its linked waiver could not be revoked — future \
+             rounds may still treat it as accepted. This is a controller fault, not yours; \
+             `reopen` again to retry.\n",
+        );
+    }
     if !all_queued {
         reply.push_str(
             "\n⚠️ The judgement is recorded, but at least one update to this pull request \
@@ -3508,6 +3702,7 @@ mod tests {
                 None,
                 "op",
                 now_unix() + 86_400,
+                store::WAIVER_SOURCE_OPERATOR,
             )
             .await
             .unwrap();
@@ -3519,6 +3714,7 @@ mod tests {
                 None,
                 "op",
                 now_unix() + 86_400,
+                store::WAIVER_SOURCE_OPERATOR,
             )
             .await
             .unwrap();
@@ -3601,12 +3797,55 @@ mod tests {
                 Some("example/repo#1"),
                 "op",
                 now_unix() + 3 * 86_400,
+                store::WAIVER_SOURCE_OPERATOR,
             )
             .await
             .unwrap();
+        // An author-waived finding's entry (ADR 038): council-authored title,
+        // labeled with who accepted it — never the author's prose.
+        store
+            .record_review_findings(
+                "ses_authored",
+                "example/repo",
+                9,
+                Some("headsha"),
+                &[store::ReviewFinding {
+                    stable_id: "F1".into(),
+                    severity: "red".into(),
+                    status: "open".into(),
+                    title: "Forged sentinel bypasses safeDiagnostic".into(),
+                    path: Some("src/lib/agent/cost.rs".into()),
+                    line: None,
+                    raised_by: None,
+                    angle: None,
+                }],
+            )
+            .await
+            .unwrap();
+        let (_, authored) = store
+            .waive_review_finding(
+                "example/repo",
+                9,
+                "F1",
+                "headsha",
+                "yuaanlin",
+                "we accept this for eval traffic",
+                now_unix() + 83 * 86_400,
+            )
+            .await
+            .unwrap()
+            .unwrap();
         // Inactive ones must not appear: one expired, one revoked.
         let expired = store
-            .create_review_waiver("example/repo", None, "expired", None, "op", now_unix() + 1)
+            .create_review_waiver(
+                "example/repo",
+                None,
+                "expired",
+                None,
+                "op",
+                now_unix() + 1,
+                store::WAIVER_SOURCE_OPERATOR,
+            )
             .await
             .unwrap();
         store
@@ -3621,6 +3860,7 @@ mod tests {
                 None,
                 "op",
                 now_unix() + 86_400,
+                store::WAIVER_SOURCE_OPERATOR,
             )
             .await
             .unwrap();
@@ -3651,6 +3891,24 @@ mod tests {
             "text flattened and delimiter runs defanged: {chair_input}"
         );
         assert!(chair_input.contains("[src/**]"));
+        // Provenance is labeled per entry (ADR 038 point 7): the operator's
+        // words as operator, the author's acceptance under the council's own
+        // title with the accepting login — and never the author's prose.
+        assert!(
+            chair_input.contains("(operator, expires in"),
+            "operator provenance labeled: {chair_input}"
+        );
+        assert!(chair_input.contains(&authored.id));
+        assert!(
+            chair_input.contains(
+                "\"Forged sentinel bypasses safeDiagnostic\" (waived by @yuaanlin, expires in"
+            ),
+            "author provenance carries the council-authored title: {chair_input}"
+        );
+        assert!(
+            !chair_input.contains("we accept this for eval traffic"),
+            "the author's prose must never reach the chair: {chair_input}"
+        );
         assert!(!chair_input.contains(&expired.id), "expired never injected");
         assert!(!chair_input.contains(&revoked.id), "revoked never injected");
         for (bot, input) in action.recipient_inputs.iter().filter(|(b, _)| **b != chair) {
@@ -3659,6 +3917,344 @@ mod tests {
                 "reviewer {bot} must never see the waiver ledger"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_waive_unblocks_and_rewrites_all_three_artifacts() {
+        // ADR 038 v2 end to end: `@bot waive F1 <reason>` flips the last
+        // blocker to waived, mints the repo-scoped waiver, and rewrites what
+        // the pull request shows — the verdict comment gains a visible Waived
+        // section, the status goes green, and a new APPROVE review supersedes
+        // the REQUEST_CHANGES that actually holds the merge.
+        use axum::extract::Path as AxPath;
+        use axum::routing::{get as axum_get, post as axum_post};
+
+        #[derive(Clone, Default)]
+        struct Recorded {
+            patched: Arc<std::sync::Mutex<Vec<(i64, String)>>>,
+            statuses: Arc<std::sync::Mutex<Vec<Value>>>,
+            reviews: Arc<std::sync::Mutex<Vec<Value>>>,
+        }
+        let gh = Recorded::default();
+        let round_marker = closing::round_marker("ses_w");
+        let app = Router::new()
+            .route(
+                "/repos/:o/:n/collaborators/:login/permission",
+                axum_get(|| async { Json(json!({"permission": "write"})) }),
+            )
+            .route(
+                "/repos/:o/:n/pulls/7",
+                axum_get(|| async { Json(json!({"head": {"sha": "deadbeef"}})) }),
+            )
+            .route(
+                "/repos/:o/:n/issues/comments/:id",
+                axum_get({
+                    let marker = round_marker.clone();
+                    move || {
+                        let marker = marker.clone();
+                        async move { Json(json!({"body": format!("council report\n\n{marker}")})) }
+                    }
+                })
+                .patch({
+                    let gh = gh.clone();
+                    move |AxPath((_, _, id)): AxPath<(String, String, i64)>,
+                          Json(body): Json<Value>| {
+                        let gh = gh.clone();
+                        async move {
+                            gh.patched
+                                .lock()
+                                .unwrap()
+                                .push((id, body["body"].as_str().unwrap_or_default().into()));
+                            Json(json!({"id": id}))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/repos/:o/:n/statuses/:sha",
+                axum_post({
+                    let gh = gh.clone();
+                    move |Json(body): Json<Value>| {
+                        let gh = gh.clone();
+                        async move {
+                            gh.statuses.lock().unwrap().push(body);
+                            Json(json!({"id": 1}))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/repos/:o/:n/pulls/7/reviews",
+                axum_get({
+                    // The round's own REQUEST_CHANGES review is already on the
+                    // pull request, carrying the round marker. The decision's
+                    // APPROVE must not reconcile onto it and conclude
+                    // "already sent" — that would swallow the unblock.
+                    let marker = round_marker.clone();
+                    move || {
+                        let marker = marker.clone();
+                        async move {
+                            Json(json!([{
+                                "id": 901,
+                                "body": format!("blocked\n\n{marker}"),
+                                "user": {"login": "fixture-council[bot]"}
+                            }]))
+                        }
+                    }
+                })
+                .post({
+                    let gh = gh.clone();
+                    move |Json(body): Json<Value>| {
+                        let gh = gh.clone();
+                        async move {
+                            gh.reviews.lock().unwrap().push(body);
+                            Json(json!({"id": 2000, "state": "APPROVED"}))
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut config = Config::from_values(|_| None);
+        config.mode = OperatingMode::ExternalCanary;
+        config.enable_writes = true;
+        config.canary_repository = Some("example/repo".into());
+        config.github_api_base = format!("http://{addr}");
+        config.bot_handle = Some("fixture-council".into());
+        config.github_app = config::GitHubAppConfig {
+            app_id: Some("1".into()),
+            installation_id: Some("2".into()),
+            private_key: Some("unused".into()),
+        };
+        let state = Arc::new(AppState::with_components(
+            config,
+            SqliteStore::memory().unwrap(),
+            None,
+            None,
+        ));
+        state.github.as_ref().unwrap().seed_test_token("ghs_test");
+        let store = state.store.clone().unwrap();
+        store
+            .record_review_round(&store::ReviewRound {
+                repo: "example/repo".into(),
+                pr_number: 7,
+                session_id: "ses_w".into(),
+                head_sha: Some("deadbeef".into()),
+                decision: "request_changes".into(),
+                red: 1,
+                yellow: 0,
+                green: 1,
+            })
+            .await
+            .unwrap();
+        store.set_round_comment_id("ses_w", 4242).await.unwrap();
+        store
+            .record_review_findings(
+                "ses_w",
+                "example/repo",
+                7,
+                Some("deadbeef"),
+                &[
+                    store::ReviewFinding {
+                        stable_id: "F1".into(),
+                        severity: "red".into(),
+                        status: "open".into(),
+                        title: "Forged sentinel bypasses safeDiagnostic".into(),
+                        path: Some("src/lib/agent/cost.rs".into()),
+                        line: Some(42),
+                        raised_by: Some("rev-codex".into()),
+                        angle: Some("security".into()),
+                    },
+                    store::ReviewFinding {
+                        stable_id: "F2".into(),
+                        severity: "green".into(),
+                        status: "open".into(),
+                        title: "fine".into(),
+                        path: None,
+                        line: None,
+                        raised_by: None,
+                        angle: None,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        // A reasonless waive is refused with the exact command to type — the
+        // waiver ledger must gain no row from it.
+        let mut command = planner::FindingCommand {
+            repository: "example/repo".into(),
+            pr_number: 7,
+            verb: "waive".into(),
+            stable_id: "F1".into(),
+            reason: None,
+            comment_id: 555,
+            author_trusted: true,
+            author_login: Some("author1".into()),
+        };
+        let refusal = apply_finding_command(&state, &command).await;
+        assert!(refusal.contains("`waive F1` needs a reason"), "{refusal}");
+        assert!(refusal.contains("waive F1 <why we accept this defect>"));
+        assert!(store
+            .list_review_waivers(Some("example/repo"), true, now_unix())
+            .await
+            .unwrap()
+            .is_empty());
+
+        command.reason = Some("eval traffic only, capped upstream".into());
+        let reply = apply_finding_command(&state, &command).await;
+        assert!(reply.contains("F1 waived"), "{reply}");
+        assert!(reply.contains("repo-wide"), "{reply}");
+        assert!(reply.contains("🔴1 🟡0 → 🔴0 🟡0"), "{reply}");
+        assert!(reply.contains("APPROVE review"), "{reply}");
+        assert!(
+            !reply.contains("controller fault"),
+            "every write must enqueue: {reply}"
+        );
+        let waivers = store
+            .list_review_waivers(Some("example/repo"), false, now_unix())
+            .await
+            .unwrap();
+        assert_eq!(waivers.len(), 1);
+        assert_eq!(waivers[0].source, store::WAIVER_SOURCE_AUTHOR);
+        assert!(reply.contains(&waivers[0].id), "the reply names the waiver");
+
+        // The outbox drains to the fake GitHub; wait for it to empty.
+        for _ in 0..200 {
+            if store.pending_writes(10).await.unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(store.pending_writes(10).await.unwrap().is_empty());
+
+        let patched = gh.patched.lock().unwrap();
+        assert_eq!(patched.len(), 1, "the verdict comment was edited in place");
+        assert_eq!(patched[0].0, 4242);
+        assert!(patched[0].1.contains(&round_marker), "the marker survives");
+        assert!(patched[0].1.contains("**Waived**"));
+        assert!(patched[0]
+            .1
+            .contains("F1 🔴 Forged sentinel bypasses safeDiagnostic"));
+        assert!(patched[0].1.contains("waived by @author1"));
+        let statuses = gh.statuses.lock().unwrap();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0]["state"], "success");
+        let reviews = gh.reviews.lock().unwrap();
+        assert_eq!(
+            reviews.len(),
+            1,
+            "the APPROVE must not reconcile onto the round's own REQUEST_CHANGES"
+        );
+        assert_eq!(reviews[0]["event"], "APPROVE");
+        assert!(reviews[0]["body"]
+            .as_str()
+            .unwrap()
+            .contains(&deciding::decision_marker("ses_w", "555")));
+    }
+
+    #[tokio::test]
+    async fn reopening_a_waived_finding_revokes_its_waiver() {
+        // An undo that does not undo would be worse than none: the finding
+        // would come back while the repo-wide suppression stayed live, and
+        // every future round would waive it again.
+        use axum::routing::get as axum_get;
+
+        let app = Router::new()
+            .route(
+                "/repos/:o/:n/collaborators/:login/permission",
+                axum_get(|| async { Json(json!({"permission": "maintain"})) }),
+            )
+            .route(
+                "/repos/:o/:n/pulls/7",
+                axum_get(|| async { Json(json!({"head": {"sha": "deadbeef"}})) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut config = Config::from_values(|_| None);
+        config.mode = OperatingMode::ExternalCanary;
+        config.enable_writes = true;
+        config.canary_repository = Some("example/repo".into());
+        config.github_api_base = format!("http://{addr}");
+        config.bot_handle = Some("fixture-council".into());
+        config.github_app = config::GitHubAppConfig {
+            app_id: Some("1".into()),
+            installation_id: Some("2".into()),
+            private_key: Some("unused".into()),
+        };
+        let state = Arc::new(AppState::with_components(
+            config,
+            SqliteStore::memory().unwrap(),
+            None,
+            None,
+        ));
+        state.github.as_ref().unwrap().seed_test_token("ghs_test");
+        let store = state.store.clone().unwrap();
+        store
+            .record_review_findings(
+                "ses_w",
+                "example/repo",
+                7,
+                Some("deadbeef"),
+                &[store::ReviewFinding {
+                    stable_id: "F1".into(),
+                    severity: "red".into(),
+                    status: "open".into(),
+                    title: "title".into(),
+                    path: None,
+                    line: None,
+                    raised_by: None,
+                    angle: None,
+                }],
+            )
+            .await
+            .unwrap();
+        let (_, waiver) = store
+            .waive_review_finding(
+                "example/repo",
+                7,
+                "F1",
+                "deadbeef",
+                "author1",
+                "accepted",
+                now_unix() + 86_400,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        let command = planner::FindingCommand {
+            repository: "example/repo".into(),
+            pr_number: 7,
+            verb: "reopen".into(),
+            stable_id: "F1".into(),
+            reason: None,
+            comment_id: 556,
+            author_trusted: true,
+            author_login: Some("author1".into()),
+        };
+        let reply = apply_finding_command(&state, &command).await;
+        assert!(reply.contains("F1 reopened"), "{reply}");
+        assert!(
+            reply.contains(&waiver.id) && reply.contains("revoked"),
+            "the reply says the waiver went with it: {reply}"
+        );
+        assert!(
+            store
+                .list_review_waivers(Some("example/repo"), false, now_unix())
+                .await
+                .unwrap()
+                .is_empty(),
+            "the waiver must not stay live after the reopen"
+        );
     }
 
     #[tokio::test]

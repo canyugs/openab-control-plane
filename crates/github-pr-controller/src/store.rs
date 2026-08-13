@@ -233,6 +233,11 @@ pub struct ReviewFindingRow {
     pub decided_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decided_at: Option<i64>,
+    /// ADR 038 v2 — the repo-scoped waiver a `waive` minted for this finding
+    /// (ADR 035's `waived_by` join, under the id the ledger actually uses).
+    /// The link is what lets `reopen` revoke the waiver it undoes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiver_id: Option<String>,
 }
 
 /// An ADR 035 waiver: an operator-recorded accepted trade-off, injected into
@@ -253,7 +258,17 @@ pub struct ReviewWaiver {
     pub revoked_at: Option<i64>,
     pub fired_count: i64,
     pub last_fired_at: Option<i64>,
+    /// Who this entry's words belong to (ADR 038 point 7): `operator` — free
+    /// text recorded via the signed API; `author` — a waived council finding,
+    /// whose `text` is the council-authored title, never the author's prose.
+    /// The chair's injected block labels each entry with this.
+    pub source: String,
 }
+
+/// `ReviewWaiver.source` values. A column, not an enum in the DB — the ledger
+/// predates the distinction and defaults every old row to `operator`.
+pub const WAIVER_SOURCE_OPERATOR: &str = "operator";
+pub const WAIVER_SOURCE_AUTHOR: &str = "author";
 
 /// Filters for [`ProductStore::review_findings`]. Every field is optional and
 /// ANDed; `limit` is clamped by the caller.
@@ -409,6 +424,8 @@ pub trait ProductStore: Send + Sync {
 
     /// ADR 035 P1: record an operator-accepted trade-off. The id is minted
     /// here (`wvr_` + 128-bit random) — it is a capability, never guessable.
+    /// `source` is a `WAIVER_SOURCE_*` value.
+    #[allow(clippy::too_many_arguments)]
     async fn create_review_waiver(
         &self,
         repo: &str,
@@ -417,7 +434,29 @@ pub trait ProductStore: Send + Sync {
         origin_pr: Option<&str>,
         created_by: &str,
         expires_at: i64,
+        source: &str,
     ) -> StoreResult<ReviewWaiver>;
+
+    /// ADR 038 v2: an author accepts a finding as a real defect. One
+    /// transaction does all three things or none of them: the finding flips to
+    /// `waived` under the same head-sha compare-and-swap as
+    /// [`decide_review_finding`](Self::decide_review_finding), a repo-scoped
+    /// waiver is minted whose `text`/`path_class` are the finding's own
+    /// council-authored title and path (the author's `reason` stays on the
+    /// finding row — human surfaces only, never the injected ledger, ADR 038
+    /// point 7), and the finding is linked to the waiver by `waiver_id`.
+    /// Returns None when the compare-and-swap matches nothing.
+    #[allow(clippy::too_many_arguments)]
+    async fn waive_review_finding(
+        &self,
+        repo: &str,
+        pr_number: i64,
+        stable_id: &str,
+        head_sha: &str,
+        decided_by: &str,
+        reason: &str,
+        expires_at: i64,
+    ) -> StoreResult<Option<(ReviewFindingRow, ReviewWaiver)>>;
 
     /// Active waivers for a repo (unexpired, unrevoked), or everything when
     /// `include_inactive`. Ordered oldest first, like the kernel did.

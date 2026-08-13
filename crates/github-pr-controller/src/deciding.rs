@@ -12,7 +12,7 @@
 //! no second opinion from anybody. Re-convening a round would spend three
 //! agents deriving what the ledger already knows.
 
-use crate::closing::{KIND_COMMENT, STATUS_CONTEXT};
+use crate::closing::STATUS_CONTEXT;
 
 /// Outbox kinds for the writes a decision produces.
 ///
@@ -28,11 +28,33 @@ use crate::closing::{KIND_COMMENT, STATUS_CONTEXT};
 /// once, while a *later* decision on the same session gets a row of its own.
 pub const KIND_DECISION_STATUS: &str = "decision_status";
 pub const KIND_DECISION_REVIEW: &str = "decision_review";
+pub const KIND_DECISION_COMMENT: &str = "decision_comment";
 
 pub fn decision_kind(base: &str, comment_id: u64) -> String {
     format!("{base}:{comment_id}")
 }
-use crate::store::ReviewFindingRow;
+
+/// The identity a decision's formal review carries in its body, so a crash
+/// replay can find its own earlier success. Deliberately NOT the round's
+/// `round_marker`: the round's own REQUEST_CHANGES review already carries
+/// that one, so reconciling on it would find the blocker and conclude the
+/// APPROVE was "already sent" — swallowing the exact write that unblocks the
+/// merge.
+pub fn decision_marker(session_id: &str, comment_id: &str) -> String {
+    format!("<!-- openab-decision:{session_id}:{comment_id} -->")
+}
+
+/// How long an author's waiver stands before the org must look at it again.
+///
+/// Neither ADR names a default — ADR 035 only makes expiry mandatory, and
+/// ADR 038 names 180 days only as the worst-case exposure it is bounding.
+/// 90 days is the working default: ADR 038's own injected example is a
+/// ~90-day waiver ("expires in 83d"), and it leaves room for exactly one
+/// renewal inside that 180-day bound before the "a waiver renewed twice is a
+/// rule wearing a waiver's clothes" promotion rule applies.
+pub const WAIVE_DEFAULT_EXPIRY_SECS: i64 = 90 * 86_400;
+
+use crate::store::{ReviewFindingRow, ReviewWaiver};
 use serde_json::{json, Value};
 
 /// What the recomputation concluded, and what the pull request must be made to
@@ -71,20 +93,23 @@ pub fn open_counts(findings: &[ReviewFindingRow], head_sha: &str) -> (i64, i64) 
 
 /// Recompute the verdict and shape the rewrites.
 ///
-/// `comment_id` is the round's own verdict comment: present → PATCH it in
-/// place, so the pull request keeps exactly one verdict comment per round
-/// (SEI-797's comment-id anchoring). Absent → nothing to edit, and the reply
-/// carries the news alone.
-#[allow(clippy::too_many_arguments)]
+/// `verdict_comment` is the round's own verdict comment `(id, new full body)`:
+/// present → PATCH it in place, so the pull request keeps exactly one verdict
+/// comment per round (SEI-797's comment-id anchoring). Absent → nothing to
+/// edit, and the reply carries the news alone. The caller composes the body —
+/// including keeping the round marker it already carries — because only the
+/// caller knows what changed in it.
+#[allow(clippy::too_many_arguments)] // the CAS key plus the three artifacts
 pub fn plan_decision(
     repo: &str,
     pr_number: i64,
     head_sha: &str,
     findings: &[ReviewFindingRow],
     was_blocking: bool,
-    comment_id: Option<i64>,
-    verdict_body: Option<&str>,
-    marker: &str,
+    verdict_comment: Option<(i64, String)>,
+    // The session whose round raised the finding — the writes are keyed to it
+    // in the outbox, and the APPROVE review's own marker embeds it.
+    session_id: &str,
     // The comment that requested this decision — the writes' outbox key.
     deciding_comment_id: u64,
 ) -> DecisionOutcome {
@@ -98,14 +123,18 @@ pub fn plan_decision(
     let unblocked = was_blocking && !blocking;
 
     let mut writes: Vec<(String, Value)> = Vec::new();
-    if let (Some(comment_id), Some(body)) = (comment_id, verdict_body) {
+    if let Some((comment_id, body)) = verdict_comment {
+        // Keyed by the deciding comment like the other decision writes: the
+        // round's own KIND_COMMENT row already exists on this session, and
+        // INSERT OR IGNORE would swallow a second one silently — the exact
+        // bug the decision kinds exist to prevent.
         writes.push((
-            KIND_COMMENT.to_string(),
+            decision_kind(KIND_DECISION_COMMENT, deciding_comment_id),
             json!({
                 "repo": repo,
                 "pr_number": pr_number,
                 "comment_id": comment_id,
-                "body": format!("{body}\n\n{marker}"),
+                "body": body,
             }),
         ));
     }
@@ -128,6 +157,7 @@ pub fn plan_decision(
         // superseded by a later review from the same reviewer. It — not the
         // comment, not the status — is what actually holds the merge, so
         // clearing the blocker means submitting a new one.
+        let marker = decision_marker(session_id, &deciding_comment_id.to_string());
         writes.push((
             decision_kind(KIND_DECISION_REVIEW, deciding_comment_id),
             json!({
@@ -172,6 +202,7 @@ pub fn fault(detail: &str) -> String {
 pub fn usage_hint(bot_handle: &str) -> String {
     format!(
         "\n\n---\nUsage: `@{bot_handle} dismiss F<n> <why it is not a defect>` · \
+         `@{bot_handle} waive F<n> <why we accept this defect>` · \
          `@{bot_handle} reopen F<n>` · `@{bot_handle} review <notes>` to re-run the council \
          · `@{bot_handle} <question>` to ask."
     )
@@ -190,16 +221,21 @@ pub fn reply_body(
     // them a command that does nothing, which is the same failure as not
     // telling them at all.
     bot_handle: &str,
+    // The repo-scoped waiver a `waive` minted. The scope line it produces is
+    // not decoration (ADR 038 point 8): the author is thinking "stop bothering
+    // me on this PR" while the system records a repo-wide acceptance, and the
+    // reply is where that gap becomes visible.
+    waiver: Option<&ReviewWaiver>,
 ) -> String {
     let where_ = match (row.path.as_deref(), row.line) {
         (Some(path), Some(line)) => format!(" `{path}:{line}`"),
         (Some(path), None) => format!(" `{path}`"),
         _ => String::new(),
     };
-    let verb_past = if verb == "dismiss" {
-        "dismissed"
-    } else {
-        "reopened"
+    let verb_past = match verb {
+        "dismiss" => "dismissed",
+        "waive" => "waived",
+        _ => "reopened",
     };
     let mut body = format!(
         "**{} {verb_past}** — {}{where_}\n",
@@ -207,6 +243,17 @@ pub fn reply_body(
     );
     if let Some(reason) = row.decided_reason.as_deref() {
         body.push_str(&format!("\n@{actor}: \"{reason}\"\n"));
+    }
+    if let Some(waiver) = waiver {
+        let days = (waiver.expires_at - waiver.created_at).max(0) / 86_400;
+        body.push_str(&format!(
+            "\nThis acceptance is **repo-wide, not just this pull request**: waiver \
+             `{}` covers `{}` and future rounds will see the finding as waived, not \
+             re-block on it. It expires in {days}d — after that the finding returns at \
+             full severity on the next touch. An acceptance that keeps needing renewal \
+             belongs in the repo's Review Boundaries instead.\n",
+            waiver.id, waiver.repo,
+        ));
     }
     body.push_str(&format!(
         "\nOpen findings on `{}`: 🔴{} 🟡{} → 🔴{} 🟡{}\n",
@@ -228,11 +275,17 @@ pub fn reply_body(
             outcome.red, outcome.yellow
         ));
     }
-    if verb == "dismiss" {
-        body.push_str(&format!(
+    match verb {
+        "dismiss" => body.push_str(&format!(
             "\nWrong call? `@{bot_handle} reopen {}` puts it back.\n",
             row.stable_id
-        ));
+        )),
+        "waive" => body.push_str(&format!(
+            "\nWrong call? `@{bot_handle} reopen {}` reopens the finding and revokes \
+             the waiver.\n",
+            row.stable_id
+        )),
+        _ => {}
     }
     body
 }
@@ -283,6 +336,87 @@ pub fn dismissed_block(findings: &[ReviewFindingRow]) -> Option<String> {
     Some(block)
 }
 
+/// Delimiters for the `Waived` section a `waive` appends to the round's
+/// verdict comment. HTML comments: invisible on GitHub, and what makes a
+/// second waive on the same round replace the section instead of stacking one
+/// per command.
+pub const WAIVED_SECTION_START: &str = "<!-- openab-waived-start -->";
+pub const WAIVED_SECTION_END: &str = "<!-- openab-waived-end -->";
+
+/// The visible `Waived` section for a verdict comment: every waived finding on
+/// this head, with who accepted it and when the acceptance lapses (ADR 038
+/// point 4 — the finding moves to a visible row, it does not disappear).
+/// `expiries` maps waiver id → expires_at (unix seconds); an unlisted id
+/// renders without the countdown rather than inventing one.
+pub fn waived_section(
+    findings: &[ReviewFindingRow],
+    head_sha: &str,
+    expiries: &std::collections::BTreeMap<String, i64>,
+    now: i64,
+) -> Option<String> {
+    let waived: Vec<&ReviewFindingRow> = findings
+        .iter()
+        .filter(|row| row.head_sha.as_deref() == Some(head_sha))
+        .filter(|row| row.status == "waived")
+        .filter(|row| row.decided_by.is_some())
+        .collect();
+    if waived.is_empty() {
+        return None;
+    }
+    let mut section = format!(
+        "{WAIVED_SECTION_START}\n---\n**Waived** — accepted defects (ADR 038). \
+         Repo-scoped and expiring; not blocking, not forgotten.\n"
+    );
+    for row in waived {
+        let severity = match row.severity.as_str() {
+            "red" => "🔴",
+            "yellow" => "🟡",
+            _ => "⚪",
+        };
+        let where_ = row
+            .path
+            .as_deref()
+            .map(|path| match row.line {
+                Some(line) => format!(" `{}:{line}`", bound(path, 120)),
+                None => format!(" `{}`", bound(path, 120)),
+            })
+            .unwrap_or_default();
+        let expiry = row
+            .waiver_id
+            .as_deref()
+            .and_then(|id| expiries.get(id))
+            .map(|expires_at| {
+                let days = (expires_at - now).max(0) / 86_400;
+                format!(", expires in {days}d")
+            })
+            .unwrap_or_default();
+        section.push_str(&format!(
+            "- {} {severity} {}{where_} — waived by @{}{expiry}\n",
+            row.stable_id,
+            bound(&row.title, 80),
+            row.decided_by.as_deref().unwrap_or("?"),
+        ));
+    }
+    section.push_str(WAIVED_SECTION_END);
+    Some(section)
+}
+
+/// Replace the comment's existing `Waived` section, or append one. Idempotent
+/// by construction: the delimiters are ours, and everything between the first
+/// start and the last end is regenerated wholesale.
+pub fn upsert_waived_section(body: &str, section: &str) -> String {
+    if let (Some(start), Some(end)) = (
+        body.find(WAIVED_SECTION_START),
+        body.rfind(WAIVED_SECTION_END),
+    ) {
+        if start < end {
+            let after = end + WAIVED_SECTION_END.len();
+            return format!("{}{}{}", &body[..start], section, &body[after..]);
+        }
+    }
+    format!("{}\n\n{}", body.trim_end(), section)
+}
+
 /// One line, printable, length-bounded. Titles and paths carry indirect author
 /// influence — the path is verbatim from the diff, the title is a model summary
 /// of author-controlled code — so this bounds the surface area they present.
@@ -325,6 +459,24 @@ mod tests {
             decided_by: None,
             decided_reason: None,
             decided_at: None,
+            waiver_id: None,
+        }
+    }
+
+    fn waiver(id: &str) -> ReviewWaiver {
+        ReviewWaiver {
+            id: id.into(),
+            repo: "zeabur/backend".into(),
+            path_class: Some("internal/services/cicd/main.go".into()),
+            text: "F1 title".into(),
+            origin_pr: Some("zeabur/backend#2382".into()),
+            created_by: "yuaanlin".into(),
+            created_at: 0,
+            expires_at: 90 * 86_400,
+            revoked_at: None,
+            fired_count: 0,
+            last_fired_at: None,
+            source: crate::store::WAIVER_SOURCE_AUTHOR.into(),
         }
     }
 
@@ -342,9 +494,8 @@ mod tests {
             "f9caff5d",
             &findings,
             true,
-            Some(42),
-            Some("verdict body"),
-            "<!-- marker -->",
+            Some((42, "verdict body".to_string())),
+            "ses_1",
             777,
         );
         assert_eq!((outcome.red, outcome.yellow), (0, 0));
@@ -357,8 +508,17 @@ mod tests {
             .collect();
         assert_eq!(
             kinds,
-            [KIND_COMMENT, "decision_status:777", "decision_review:777"],
+            [
+                "decision_comment:777",
+                "decision_status:777",
+                "decision_review:777"
+            ],
             "decision writes must not reuse the round's outbox keys"
+        );
+        assert_eq!(outcome.writes[0].1["comment_id"], 42);
+        assert_eq!(
+            outcome.writes[0].1["body"], "verdict body",
+            "the caller composes the body; nothing is appended to it"
         );
         let review = &outcome.writes[2].1;
         assert_eq!(review["event"], "APPROVE");
@@ -374,9 +534,8 @@ mod tests {
             "f9caff5d",
             &findings,
             true,
-            Some(42),
-            Some("verdict body"),
-            "<!-- marker -->",
+            Some((42, "verdict body".to_string())),
+            "ses_1",
             777,
         );
         assert_eq!((outcome.red, outcome.yellow), (0, 1));
@@ -386,7 +545,11 @@ mod tests {
             .iter()
             .map(|(kind, _)| kind.as_str())
             .collect();
-        assert_eq!(kinds, [KIND_COMMENT], "no status flip, no new review");
+        assert_eq!(
+            kinds,
+            ["decision_comment:777"],
+            "no status flip, no new review"
+        );
     }
 
     #[test]
@@ -403,11 +566,30 @@ mod tests {
             &findings,
             true,
             None,
-            None,
-            "<!-- m -->",
+            "ses_1",
             777,
         );
         assert_eq!((outcome.red, outcome.yellow), (0, 0));
+        assert!(outcome.unblocked);
+    }
+
+    #[test]
+    fn a_waived_finding_no_longer_blocks_the_verdict() {
+        // ADR 013: the counts decide, and a waived row is out of the count by
+        // definition — accepted is not open.
+        let findings = vec![row("F1", "red", "waived"), row("F2", "green", "open")];
+        let outcome = plan_decision(
+            "zeabur/backend",
+            2382,
+            "f9caff5d",
+            &findings,
+            true,
+            None,
+            "ses_1",
+            777,
+        );
+        assert_eq!((outcome.red, outcome.yellow), (0, 0));
+        assert_eq!(outcome.decision, "approve");
         assert!(outcome.unblocked);
     }
 
@@ -420,17 +602,15 @@ mod tests {
             "f9caff5d",
             &findings,
             false,
-            Some(1),
-            Some("b"),
-            "<!-- m -->",
+            Some((1, "b".to_string())),
+            "ses_1",
             777,
         );
         assert_eq!(outcome.decision, "request_changes");
         assert!(!outcome.unblocked);
-        assert!(outcome
-            .writes
-            .iter()
-            .all(|(kind, _)| !kind.starts_with("decision_")));
+        assert!(outcome.writes.iter().all(|(kind, _)| {
+            !kind.starts_with(KIND_DECISION_STATUS) && !kind.starts_with(KIND_DECISION_REVIEW)
+        }));
     }
 
     #[test]
@@ -445,8 +625,7 @@ mod tests {
             &[decided.clone()],
             true,
             None,
-            None,
-            "<!-- m -->",
+            "ses_1",
             777,
         );
         let body = reply_body(
@@ -456,6 +635,7 @@ mod tests {
             &outcome,
             "yuaanlin",
             "opencodezebra",
+            None,
         );
         assert!(body.contains("F1 dismissed"));
         assert!(body.contains("the validator pins the IP first"));
@@ -474,8 +654,7 @@ mod tests {
             &[decided.clone(), row("F2", "yellow", "open")],
             true,
             None,
-            None,
-            "<!-- m -->",
+            "ses_1",
             777,
         );
         let body = reply_body(
@@ -485,9 +664,88 @@ mod tests {
             &blocked,
             "yuaanlin",
             "opencodezebra",
+            None,
         );
         assert!(body.contains("Still blocked"));
         assert!(!body.contains("APPROVE review"));
+    }
+
+    #[test]
+    fn a_waive_reply_names_the_scope_the_expiry_and_the_undo() {
+        // ADR 038 point 8: the author is thinking "this PR"; the system is
+        // recording a repo-wide acceptance. The reply is where that gap
+        // becomes visible — leaving the scope out would be the silence.
+        let mut decided = row("F1", "red", "waived");
+        decided.decided_by = Some("yuaanlin".into());
+        decided.decided_reason = Some("eval traffic only, capped upstream".into());
+        decided.waiver_id = Some("wvr_abc".into());
+        let outcome = plan_decision(
+            "zeabur/backend",
+            2382,
+            "f9caff5d",
+            &[decided.clone()],
+            true,
+            None,
+            "ses_1",
+            777,
+        );
+        let waiver = waiver("wvr_abc");
+        let body = reply_body(
+            "waive",
+            &decided,
+            (1, 0),
+            &outcome,
+            "yuaanlin",
+            "opencodezebra",
+            Some(&waiver),
+        );
+        assert!(body.contains("F1 waived"));
+        assert!(body.contains("eval traffic only, capped upstream"));
+        assert!(body.contains("repo-wide"), "the scope line is the point");
+        assert!(body.contains("`wvr_abc`"));
+        assert!(body.contains("expires in 90d"));
+        assert!(
+            body.contains("`@opencodezebra reopen F1`") && body.contains("revokes the waiver"),
+            "the undo must be typeable and must say it revokes: {body}"
+        );
+        assert!(body.contains("🔴1 🟡0 → 🔴0 🟡0"));
+        assert!(body.contains("APPROVE review"));
+    }
+
+    #[test]
+    fn the_verdict_comment_gains_a_visible_waived_section() {
+        let mut waived = row("F1", "red", "waived");
+        waived.decided_by = Some("yuaanlin".into());
+        waived.waiver_id = Some("wvr_abc".into());
+        // Another head's waived row and an open row must both stay out.
+        let mut elsewhere = row("F7", "red", "waived");
+        elsewhere.head_sha = Some("older".into());
+        elsewhere.decided_by = Some("x".into());
+        let findings = vec![waived, elsewhere, row("F2", "yellow", "open")];
+        let expiries = std::collections::BTreeMap::from([("wvr_abc".to_string(), 90 * 86_400)]);
+        let section = waived_section(&findings, "f9caff5d", &expiries, 0).unwrap();
+        assert!(section.contains("**Waived**"));
+        assert!(section.contains("F1 🔴 F1 title"));
+        assert!(section.contains("waived by @yuaanlin"));
+        assert!(section.contains("expires in 90d"));
+        assert!(!section.contains("F7"), "other heads never appear");
+        assert!(!section.contains("F2"), "open findings never appear");
+
+        // Upsert appends once, then replaces in place — a second waive must
+        // not stack a second section, and the round marker must survive.
+        let comment = "council report\n\n<!-- openab-round:ses_1 -->";
+        let once = upsert_waived_section(comment, &section);
+        assert!(once.contains("<!-- openab-round:ses_1 -->"));
+        let twice = upsert_waived_section(&once, &section);
+        assert_eq!(
+            twice.matches(WAIVED_SECTION_START).count(),
+            1,
+            "idempotent: {twice}"
+        );
+        assert_eq!(once, twice);
+
+        // Nothing waived on this head → no section at all.
+        assert!(waived_section(&[row("F2", "yellow", "open")], "f9caff5d", &expiries, 0).is_none());
     }
 
     #[test]
@@ -509,11 +767,16 @@ mod tests {
     #[test]
     fn the_usage_hint_is_typeable_and_names_every_verb() {
         let hint = usage_hint("zeabur-council");
-        for verb in ["dismiss F<n>", "reopen F<n>", "review <notes>"] {
+        for verb in [
+            "dismiss F<n>",
+            "waive F<n>",
+            "reopen F<n>",
+            "review <notes>",
+        ] {
             assert!(hint.contains(verb), "{verb} missing from: {hint}");
         }
         assert!(!hint.contains("{bot"), "no placeholder may survive: {hint}");
-        assert_eq!(hint.matches("@zeabur-council").count(), 4);
+        assert_eq!(hint.matches("@zeabur-council").count(), 5);
     }
 
     #[test]

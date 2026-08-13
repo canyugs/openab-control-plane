@@ -151,6 +151,24 @@ impl GitHubClient {
             .context("comment response carried no id")
     }
 
+    /// Read one issue comment's current body. The waive path edits the
+    /// round's verdict comment in place, and the controller deliberately does
+    /// not store comment bodies — GitHub's copy is the truth being edited.
+    pub async fn issue_comment_body(&self, repo: &str, comment_id: i64) -> Result<String> {
+        self.check_repository(repo)?;
+        let response = self
+            .send(
+                reqwest::Method::GET,
+                &format!("repos/{repo}/issues/comments/{comment_id}"),
+                None,
+            )
+            .await?;
+        response["body"]
+            .as_str()
+            .map(str::to_string)
+            .context("comment response carried no body")
+    }
+
     pub async fn update_comment(&self, repo: &str, comment_id: i64, body: &str) -> Result<()> {
         self.check_repository(repo)?;
         self.send(

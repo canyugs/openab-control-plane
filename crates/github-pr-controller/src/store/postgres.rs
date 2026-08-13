@@ -216,6 +216,13 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_recorded ON audit_events(recorded_at
     "ALTER TABLE review_findings ADD COLUMN IF NOT EXISTS decided_by TEXT;
      ALTER TABLE review_findings ADD COLUMN IF NOT EXISTS decided_reason TEXT;
      ALTER TABLE review_findings ADD COLUMN IF NOT EXISTS decided_at BIGINT;",
+    // 7 — ADR 038 v2: `waive` mints a repo-scoped waiver from the finding it
+    // accepts. Same shape and rationale as the SQLite step: the finding
+    // remembers its waiver (so `reopen` can revoke it), and the ledger labels
+    // whose words each entry carries — every pre-existing row is the
+    // operator's.
+    "ALTER TABLE review_findings ADD COLUMN IF NOT EXISTS waiver_id TEXT;
+     ALTER TABLE review_waivers ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'operator';",
 ];
 
 /// Serializes concurrent boots racing the migration list; any constant that
@@ -938,7 +945,7 @@ impl ProductStore for PostgresStore {
                   WHERE repo = $1 AND pr_number = $2 AND stable_id = $3 AND head_sha = $4
               RETURNING id, session_id, repo, pr_number, stable_id, severity, status,
                         title, path, line, raised_by, angle, head_sha, created_at,
-                        decided_by, decided_reason, decided_at",
+                        decided_by, decided_reason, decided_at, waiver_id",
                 &[
                     &repo,
                     &pr_number,
@@ -951,25 +958,7 @@ impl ProductStore for PostgresStore {
                 ],
             )
             .await?;
-        Ok(rows.first().map(|row| ReviewFindingRow {
-            id: row.get(0),
-            session_id: row.get(1),
-            repo: row.get(2),
-            pr_number: row.get(3),
-            stable_id: row.get(4),
-            severity: row.get(5),
-            status: row.get(6),
-            title: row.get(7),
-            path: row.get(8),
-            line: row.get(9),
-            raised_by: row.get(10),
-            angle: row.get(11),
-            head_sha: row.get(12),
-            created_at: row.get(13),
-            decided_by: row.get(14),
-            decided_reason: row.get(15),
-            decided_at: row.get(16),
-        }))
+        Ok(rows.first().map(finding_row_from))
     }
 
     async fn review_findings(
@@ -981,7 +970,7 @@ impl ProductStore for PostgresStore {
             .query(
                 "SELECT id, session_id, repo, pr_number, stable_id, severity, status,
                         title, path, line, raised_by, angle, head_sha, created_at,
-                        decided_by, decided_reason, decided_at
+                        decided_by, decided_reason, decided_at, waiver_id
                    FROM review_findings
                   WHERE ($1::TEXT IS NULL OR repo = $1)
                     AND ($2::BIGINT IS NULL OR pr_number = $2)
@@ -998,28 +987,7 @@ impl ProductStore for PostgresStore {
                 ],
             )
             .await?;
-        Ok(rows
-            .iter()
-            .map(|row| ReviewFindingRow {
-                id: row.get(0),
-                session_id: row.get(1),
-                repo: row.get(2),
-                pr_number: row.get(3),
-                stable_id: row.get(4),
-                severity: row.get(5),
-                status: row.get(6),
-                title: row.get(7),
-                path: row.get(8),
-                line: row.get(9),
-                raised_by: row.get(10),
-                angle: row.get(11),
-                head_sha: row.get(12),
-                created_at: row.get(13),
-                decided_by: row.get(14),
-                decided_reason: row.get(15),
-                decided_at: row.get(16),
-            })
-            .collect())
+        Ok(rows.iter().map(finding_row_from).collect())
     }
 
     async fn create_review_waiver(
@@ -1030,6 +998,7 @@ impl ProductStore for PostgresStore {
         origin_pr: Option<&str>,
         created_by: &str,
         expires_at: i64,
+        source: &str,
     ) -> StoreResult<ReviewWaiver> {
         let waiver = ReviewWaiver {
             id: super::new_waiver_id(),
@@ -1043,13 +1012,15 @@ impl ProductStore for PostgresStore {
             revoked_at: None,
             fired_count: 0,
             last_fired_at: None,
+            source: source.into(),
         };
         let client = self.client().await?;
         client
             .execute(
                 "INSERT INTO review_waivers
-                    (id, repo, path_class, text, origin_pr, created_by, created_at, expires_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                    (id, repo, path_class, text, origin_pr, created_by, created_at,
+                     expires_at, source)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
                 &[
                     &waiver.id,
                     &waiver.repo,
@@ -1059,10 +1030,98 @@ impl ProductStore for PostgresStore {
                     &waiver.created_by,
                     &waiver.created_at,
                     &waiver.expires_at,
+                    &waiver.source,
                 ],
             )
             .await?;
         Ok(waiver)
+    }
+
+    /// Same transaction as the SQLite twin: CAS the finding to `waived`, mint
+    /// the repo-scoped waiver from the finding's council-authored title and
+    /// path, link the two — all or nothing.
+    #[allow(clippy::too_many_arguments)]
+    async fn waive_review_finding(
+        &self,
+        repo: &str,
+        pr_number: i64,
+        stable_id: &str,
+        head_sha: &str,
+        decided_by: &str,
+        reason: &str,
+        expires_at: i64,
+    ) -> StoreResult<Option<(ReviewFindingRow, ReviewWaiver)>> {
+        let mut client = self.client().await?;
+        let transaction = client.transaction().await?;
+        let now = now_unix();
+        let rows = transaction
+            .query(
+                "UPDATE review_findings
+                    SET status = 'waived', decided_by = $5, decided_reason = $6, decided_at = $7
+                  WHERE repo = $1 AND pr_number = $2 AND stable_id = $3 AND head_sha = $4
+              RETURNING id, session_id, repo, pr_number, stable_id, severity, status,
+                        title, path, line, raised_by, angle, head_sha, created_at,
+                        decided_by, decided_reason, decided_at, waiver_id",
+                &[
+                    &repo,
+                    &pr_number,
+                    &stable_id,
+                    &head_sha,
+                    &decided_by,
+                    &reason,
+                    &now,
+                ],
+            )
+            .await?;
+        let Some(row) = rows.first().map(finding_row_from) else {
+            transaction.rollback().await?;
+            return Ok(None);
+        };
+        let waiver = ReviewWaiver {
+            id: super::new_waiver_id(),
+            repo: repo.into(),
+            path_class: row.path.clone(),
+            text: row.title.clone(),
+            origin_pr: Some(format!("{repo}#{pr_number}")),
+            created_by: decided_by.into(),
+            created_at: now,
+            expires_at,
+            revoked_at: None,
+            fired_count: 0,
+            last_fired_at: None,
+            source: super::WAIVER_SOURCE_AUTHOR.into(),
+        };
+        transaction
+            .execute(
+                "INSERT INTO review_waivers
+                    (id, repo, path_class, text, origin_pr, created_by, created_at,
+                     expires_at, source)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                &[
+                    &waiver.id,
+                    &waiver.repo,
+                    &waiver.path_class,
+                    &waiver.text,
+                    &waiver.origin_pr,
+                    &waiver.created_by,
+                    &waiver.created_at,
+                    &waiver.expires_at,
+                    &waiver.source,
+                ],
+            )
+            .await?;
+        transaction
+            .execute(
+                "UPDATE review_findings SET waiver_id = $2 WHERE id = $1",
+                &[&row.id, &waiver.id],
+            )
+            .await?;
+        transaction.commit().await?;
+        let row = ReviewFindingRow {
+            waiver_id: Some(waiver.id.clone()),
+            ..row
+        };
+        Ok(Some((row, waiver)))
     }
 
     async fn list_review_waivers(
@@ -1075,7 +1134,8 @@ impl ProductStore for PostgresStore {
         let rows = client
             .query(
                 "SELECT id, repo, path_class, text, origin_pr, created_by,
-                        created_at, expires_at, revoked_at, fired_count, last_fired_at
+                        created_at, expires_at, revoked_at, fired_count, last_fired_at,
+                        source
                    FROM review_waivers
                   WHERE ($1::TEXT IS NULL OR repo = $1)
                     AND ($2 OR (revoked_at IS NULL AND expires_at > $3))
@@ -1097,6 +1157,7 @@ impl ProductStore for PostgresStore {
                 revoked_at: row.get(8),
                 fired_count: row.get(9),
                 last_fired_at: row.get(10),
+                source: row.get(11),
             })
             .collect())
     }
@@ -1507,6 +1568,31 @@ impl ProductStore for PostgresStore {
 /// `TEST_POSTGRES_URL=postgres://user:pass@localhost:5432/postgres`.
 /// Each test owns a throwaway schema, dropped and recreated on entry, so
 /// reruns are clean and a failed run leaves its state behind for inspection.
+/// The one `review_findings` row shape, shared by every query that selects
+/// the full column list in its canonical order.
+fn finding_row_from(row: &tokio_postgres::Row) -> ReviewFindingRow {
+    ReviewFindingRow {
+        id: row.get(0),
+        session_id: row.get(1),
+        repo: row.get(2),
+        pr_number: row.get(3),
+        stable_id: row.get(4),
+        severity: row.get(5),
+        status: row.get(6),
+        title: row.get(7),
+        path: row.get(8),
+        line: row.get(9),
+        raised_by: row.get(10),
+        angle: row.get(11),
+        head_sha: row.get(12),
+        created_at: row.get(13),
+        decided_by: row.get(14),
+        decided_reason: row.get(15),
+        decided_at: row.get(16),
+        waiver_id: row.get(17),
+    }
+}
+
 fn audit_event_from_pg_row(row: &tokio_postgres::Row) -> StoreResult<AuditEventRecord> {
     let outcome_raw: String = row.get(8);
     let outcome = AuditOutcome::parse(&outcome_raw)
@@ -1951,6 +2037,76 @@ mod tests {
             0,
             "a redelivered session appends nothing to the append-only ledger"
         );
+    }
+
+    #[tokio::test]
+    async fn a_waive_is_atomic_and_a_missed_cas_mints_no_waiver() {
+        let Some(store) = store("waive").await else {
+            return;
+        };
+        let finding = ReviewFinding {
+            stable_id: "F1".into(),
+            severity: "red".into(),
+            status: "open".into(),
+            title: "Forged sentinel bypasses safeDiagnostic".into(),
+            path: Some("src/lib/agent/cost.rs".into()),
+            line: Some(42),
+            raised_by: Some("bot-a".into()),
+            angle: Some("security".into()),
+        };
+        store
+            .record_review_findings("ses_1", "example/repo", 7, Some("deadbeef"), &[finding])
+            .await
+            .unwrap();
+
+        // Wrong head: nothing changes, and — the part the transaction is for —
+        // no repo-scoped waiver appears either.
+        assert!(store
+            .waive_review_finding(
+                "example/repo",
+                7,
+                "F1",
+                "moved",
+                "author",
+                "why",
+                far_future()
+            )
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store
+            .list_review_waivers(Some("example/repo"), true, now_unix())
+            .await
+            .unwrap()
+            .is_empty());
+
+        let (row, waiver) = store
+            .waive_review_finding(
+                "example/repo",
+                7,
+                "F1",
+                "deadbeef",
+                "author",
+                "accepted for eval traffic",
+                far_future(),
+            )
+            .await
+            .unwrap()
+            .expect("the reviewed head matches");
+        assert_eq!(row.status, "waived");
+        assert_eq!(row.waiver_id.as_deref(), Some(waiver.id.as_str()));
+        assert_eq!(waiver.text, "Forged sentinel bypasses safeDiagnostic");
+        assert_eq!(waiver.source, crate::store::WAIVER_SOURCE_AUTHOR);
+        assert_eq!(waiver.origin_pr.as_deref(), Some("example/repo#7"));
+        let active = store
+            .list_review_waivers(Some("example/repo"), false, now_unix())
+            .await
+            .unwrap();
+        assert_eq!(active.len(), 1, "the minted waiver is live for injection");
+    }
+
+    fn far_future() -> i64 {
+        now_unix() + 90 * 86_400
     }
 
     #[tokio::test]
