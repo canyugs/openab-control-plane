@@ -257,6 +257,8 @@ Run exactly one delivery mode from §7.
 - [ ] `setup-github-app.sh` exits 0
 - [ ] GitHub App webhook URL is `$CONTROLLER_URL/api/v1/github/webhooks`
 - [ ] Controller `GITHUB_CONTROLLER_BOT_HANDLE` = App slug
+- [ ] Controller `GITHUB_CONTROLLER_WEBHOOK_SECRET` matches App webhook secret
+- [ ] Chair `gh auth status` shows `<slug>[bot]` (§8)
 
 ### If you ever rename the App
 
