@@ -270,6 +270,25 @@ pub struct ReviewWaiver {
 pub const WAIVER_SOURCE_OPERATOR: &str = "operator";
 pub const WAIVER_SOURCE_AUTHOR: &str = "author";
 
+/// What [`ProductStore::waive_review_finding`] concluded. The three cases need
+/// three different replies, so they are three variants rather than a nested
+/// Option the caller would have to re-derive them from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WaiveAdmission {
+    /// The compare-and-swap landed: the finding flipped to `waived` and this
+    /// waiver was minted for it, in the same transaction.
+    Waived(ReviewFindingRow, ReviewWaiver),
+    /// The finding on this head is already waived — nothing was written.
+    /// Council review of #383 F1: without this guard a repeated `waive`
+    /// minted a NEW waiver, overwrote the finding's link, and orphaned the
+    /// previous one — live in the ledger, injected into every future round,
+    /// and unreachable by `reopen`. The waiver is the linked row when it
+    /// still resolves (it may be expired or revoked; the caller says which).
+    AlreadyWaived(ReviewFindingRow, Option<ReviewWaiver>),
+    /// The compare-and-swap matched nothing on this head.
+    NoMatch,
+}
+
 /// Filters for [`ProductStore::review_findings`]. Every field is optional and
 /// ANDed; `limit` is clamped by the caller.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -445,7 +464,8 @@ pub trait ProductStore: Send + Sync {
     /// council-authored title and path (the author's `reason` stays on the
     /// finding row — human surfaces only, never the injected ledger, ADR 038
     /// point 7), and the finding is linked to the waiver by `waiver_id`.
-    /// Returns None when the compare-and-swap matches nothing.
+    /// An already-waived finding is left exactly as it is — repeating the
+    /// command must not mint a second waiver and orphan the first (#383 F1).
     #[allow(clippy::too_many_arguments)]
     async fn waive_review_finding(
         &self,
@@ -456,7 +476,7 @@ pub trait ProductStore: Send + Sync {
         decided_by: &str,
         reason: &str,
         expires_at: i64,
-    ) -> StoreResult<Option<(ReviewFindingRow, ReviewWaiver)>>;
+    ) -> StoreResult<WaiveAdmission>;
 
     /// Active waivers for a repo (unexpired, unrevoked), or everything when
     /// `include_inactive`. Ordered oldest first, like the kernel did.

@@ -17,7 +17,8 @@ use super::{
     now_unix, CanarySummary, DeliveryAdmission, PendingWrite, ProductStore, RecordedRound,
     ReviewFinding, ReviewFindingQuery, ReviewFindingRow, ReviewRound, ReviewWaiver,
     RuntimeEventAdmission, SessionTarget, ShadowAdmission, ShadowSummary, StoreError, StoreResult,
-    COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS, WRITE_CLAIM_LEASE_SECS, WRITE_MAX_ATTEMPTS,
+    WaiveAdmission, COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS, WRITE_CLAIM_LEASE_SECS,
+    WRITE_MAX_ATTEMPTS,
 };
 use controller_protocol::audit::{
     AuditActor, AuditCorrelation, AuditCursor, AuditError, AuditEvent, AuditEventPage,
@@ -1039,7 +1040,9 @@ impl ProductStore for PostgresStore {
 
     /// Same transaction as the SQLite twin: CAS the finding to `waived`, mint
     /// the repo-scoped waiver from the finding's council-authored title and
-    /// path, link the two — all or nothing.
+    /// path, link the two — all or nothing. The `status != 'waived'` guard is
+    /// the idempotency line (council #383 F1): a repeated waive must not mint
+    /// a second waiver and orphan the first.
     #[allow(clippy::too_many_arguments)]
     async fn waive_review_finding(
         &self,
@@ -1050,7 +1053,7 @@ impl ProductStore for PostgresStore {
         decided_by: &str,
         reason: &str,
         expires_at: i64,
-    ) -> StoreResult<Option<(ReviewFindingRow, ReviewWaiver)>> {
+    ) -> StoreResult<WaiveAdmission> {
         let mut client = self.client().await?;
         let transaction = client.transaction().await?;
         let now = now_unix();
@@ -1059,6 +1062,7 @@ impl ProductStore for PostgresStore {
                 "UPDATE review_findings
                     SET status = 'waived', decided_by = $5, decided_reason = $6, decided_at = $7
                   WHERE repo = $1 AND pr_number = $2 AND stable_id = $3 AND head_sha = $4
+                    AND status != 'waived'
               RETURNING id, session_id, repo, pr_number, stable_id, severity, status,
                         title, path, line, raised_by, angle, head_sha, created_at,
                         decided_by, decided_reason, decided_at, waiver_id",
@@ -1074,8 +1078,55 @@ impl ProductStore for PostgresStore {
             )
             .await?;
         let Some(row) = rows.first().map(finding_row_from) else {
+            // Already waived, or not on this head at all — tell the caller
+            // which, because they need different replies.
+            let existing = transaction
+                .query(
+                    "SELECT id, session_id, repo, pr_number, stable_id, severity, status,
+                            title, path, line, raised_by, angle, head_sha, created_at,
+                            decided_by, decided_reason, decided_at, waiver_id
+                       FROM review_findings
+                      WHERE repo = $1 AND pr_number = $2 AND stable_id = $3 AND head_sha = $4
+                      ORDER BY id DESC LIMIT 1",
+                    &[&repo, &pr_number, &stable_id, &head_sha],
+                )
+                .await?;
+            let admission = match existing.first().map(finding_row_from) {
+                Some(row) if row.status == "waived" => {
+                    let waiver = match row.waiver_id.as_deref() {
+                        Some(waiver_id) => {
+                            let rows = transaction
+                                .query(
+                                    "SELECT id, repo, path_class, text, origin_pr, created_by,
+                                            created_at, expires_at, revoked_at, fired_count,
+                                            last_fired_at, source
+                                       FROM review_waivers WHERE id = $1",
+                                    &[&waiver_id],
+                                )
+                                .await?;
+                            rows.first().map(|row| ReviewWaiver {
+                                id: row.get(0),
+                                repo: row.get(1),
+                                path_class: row.get(2),
+                                text: row.get(3),
+                                origin_pr: row.get(4),
+                                created_by: row.get(5),
+                                created_at: row.get(6),
+                                expires_at: row.get(7),
+                                revoked_at: row.get(8),
+                                fired_count: row.get(9),
+                                last_fired_at: row.get(10),
+                                source: row.get(11),
+                            })
+                        }
+                        None => None,
+                    };
+                    WaiveAdmission::AlreadyWaived(row, waiver)
+                }
+                _ => WaiveAdmission::NoMatch,
+            };
             transaction.rollback().await?;
-            return Ok(None);
+            return Ok(admission);
         };
         let waiver = ReviewWaiver {
             id: super::new_waiver_id(),
@@ -1121,7 +1172,7 @@ impl ProductStore for PostgresStore {
             waiver_id: Some(waiver.id.clone()),
             ..row
         };
-        Ok(Some((row, waiver)))
+        Ok(WaiveAdmission::Waived(row, waiver))
     }
 
     async fn list_review_waivers(
@@ -2061,26 +2112,28 @@ mod tests {
 
         // Wrong head: nothing changes, and — the part the transaction is for —
         // no repo-scoped waiver appears either.
-        assert!(store
-            .waive_review_finding(
-                "example/repo",
-                7,
-                "F1",
-                "moved",
-                "author",
-                "why",
-                far_future()
-            )
-            .await
-            .unwrap()
-            .is_none());
+        assert_eq!(
+            store
+                .waive_review_finding(
+                    "example/repo",
+                    7,
+                    "F1",
+                    "moved",
+                    "author",
+                    "why",
+                    far_future()
+                )
+                .await
+                .unwrap(),
+            WaiveAdmission::NoMatch
+        );
         assert!(store
             .list_review_waivers(Some("example/repo"), true, now_unix())
             .await
             .unwrap()
             .is_empty());
 
-        let (row, waiver) = store
+        let WaiveAdmission::Waived(row, waiver) = store
             .waive_review_finding(
                 "example/repo",
                 7,
@@ -2092,7 +2145,9 @@ mod tests {
             )
             .await
             .unwrap()
-            .expect("the reviewed head matches");
+        else {
+            panic!("the reviewed head matches");
+        };
         assert_eq!(row.status, "waived");
         assert_eq!(row.waiver_id.as_deref(), Some(waiver.id.as_str()));
         assert_eq!(waiver.text, "Forged sentinel bypasses safeDiagnostic");
@@ -2103,6 +2158,64 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(active.len(), 1, "the minted waiver is live for injection");
+
+        // Council #383 F1 regression: a repeated waive is refused as already
+        // waived and mints nothing — no orphan for `reopen` to miss.
+        let WaiveAdmission::AlreadyWaived(again, linked) = store
+            .waive_review_finding(
+                "example/repo",
+                7,
+                "F1",
+                "deadbeef",
+                "someone-else",
+                "again",
+                far_future(),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("second waive must be refused as already waived");
+        };
+        assert_eq!(again.decided_by.as_deref(), Some("author"));
+        assert_eq!(again.waiver_id.as_deref(), Some(waiver.id.as_str()));
+        assert_eq!(linked.map(|linked| linked.id), Some(waiver.id.clone()));
+        assert_eq!(
+            store
+                .list_review_waivers(Some("example/repo"), true, now_unix())
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "one waiver total, nothing orphaned"
+        );
+
+        // The council's full sequence: waive twice → reopen (revoking the
+        // linked waiver, the caller's job) → zero active waivers remain.
+        let reopened = store
+            .decide_review_finding(
+                "example/repo",
+                7,
+                "F1",
+                "deadbeef",
+                "open",
+                "author",
+                Some("undo"),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .update_review_waiver(reopened.waiver_id.as_deref().unwrap(), None, true)
+            .await
+            .unwrap());
+        assert!(
+            store
+                .list_review_waivers(Some("example/repo"), false, now_unix())
+                .await
+                .unwrap()
+                .is_empty(),
+            "no active waiver survives the undo"
+        );
     }
 
     fn far_future() -> i64 {

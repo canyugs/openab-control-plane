@@ -6,7 +6,8 @@ use super::{
     now_unix, CanarySummary, DeliveryAdmission, PendingWrite, ProductStore, RecordedRound,
     ReviewFinding, ReviewFindingQuery, ReviewFindingRow, ReviewRound, ReviewWaiver,
     RuntimeEventAdmission, SessionTarget, ShadowAdmission, ShadowSummary, StoreError, StoreResult,
-    COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS, WRITE_CLAIM_LEASE_SECS, WRITE_MAX_ATTEMPTS,
+    WaiveAdmission, COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS, WRITE_CLAIM_LEASE_SECS,
+    WRITE_MAX_ATTEMPTS,
 };
 use controller_protocol::audit::{
     AuditActor, AuditCorrelation, AuditCursor, AuditError, AuditEvent, AuditEventPage,
@@ -806,22 +807,42 @@ impl SqliteStore {
         decided_by: &str,
         reason: &str,
         expires_at: i64,
-    ) -> rusqlite::Result<Option<(ReviewFindingRow, ReviewWaiver)>> {
+    ) -> rusqlite::Result<WaiveAdmission> {
         let mut connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = now_unix();
+        // `status != 'waived'` is the idempotency guard (council #383 F1):
+        // without it a repeated waive re-matched the row, minted a SECOND
+        // waiver, overwrote the finding's link and orphaned the first — live
+        // in the ledger, injected into every future round, and unreachable by
+        // `reopen`, which only revokes the finding's current waiver_id.
         let changed = transaction.execute(
             "UPDATE review_findings
                 SET status = 'waived', decided_by = ?5, decided_reason = ?6, decided_at = ?7
-              WHERE repo = ?1 AND pr_number = ?2 AND stable_id = ?3 AND head_sha = ?4",
+              WHERE repo = ?1 AND pr_number = ?2 AND stable_id = ?3 AND head_sha = ?4
+                AND status != 'waived'",
             rusqlite::params![repo, pr_number, stable_id, head_sha, decided_by, reason, now,],
         )?;
         if changed == 0 {
-            return Ok(None);
+            // Already waived, or not on this head at all — tell the caller
+            // which, because they need different replies.
+            let row = Self::finding_row(&transaction, repo, pr_number, stable_id, head_sha)?;
+            return Ok(match row {
+                Some(row) if row.status == "waived" => {
+                    let waiver = row
+                        .waiver_id
+                        .as_deref()
+                        .map(|id| Self::waiver_row(&transaction, id))
+                        .transpose()?
+                        .flatten();
+                    WaiveAdmission::AlreadyWaived(row, waiver)
+                }
+                _ => WaiveAdmission::NoMatch,
+            });
         }
         let Some(row) = Self::finding_row(&transaction, repo, pr_number, stable_id, head_sha)?
         else {
-            return Ok(None);
+            return Ok(WaiveAdmission::NoMatch);
         };
         let waiver = ReviewWaiver {
             id: super::new_waiver_id(),
@@ -863,7 +884,33 @@ impl SqliteStore {
             waiver_id: Some(waiver.id.clone()),
             ..row
         };
-        Ok(Some((row, waiver)))
+        Ok(WaiveAdmission::Waived(row, waiver))
+    }
+
+    fn waiver_row(connection: &Connection, id: &str) -> rusqlite::Result<Option<ReviewWaiver>> {
+        let mut statement = connection.prepare(
+            "SELECT id, repo, path_class, text, origin_pr, created_by,
+                    created_at, expires_at, revoked_at, fired_count, last_fired_at, source
+               FROM review_waivers WHERE id = ?1",
+        )?;
+        statement
+            .query_row([id], |row| {
+                Ok(ReviewWaiver {
+                    id: row.get(0)?,
+                    repo: row.get(1)?,
+                    path_class: row.get(2)?,
+                    text: row.get(3)?,
+                    origin_pr: row.get(4)?,
+                    created_by: row.get(5)?,
+                    created_at: row.get(6)?,
+                    expires_at: row.get(7)?,
+                    revoked_at: row.get(8)?,
+                    fired_count: row.get(9)?,
+                    last_fired_at: row.get(10)?,
+                    source: row.get(11)?,
+                })
+            })
+            .optional()
     }
 
     pub fn record_review_findings(
@@ -1455,7 +1502,7 @@ impl ProductStore for SqliteStore {
         decided_by: &str,
         reason: &str,
         expires_at: i64,
-    ) -> StoreResult<Option<(ReviewFindingRow, ReviewWaiver)>> {
+    ) -> StoreResult<WaiveAdmission> {
         Ok(SqliteStore::waive_review_finding(
             self, repo, pr_number, stable_id, head_sha, decided_by, reason, expires_at,
         )?)
@@ -1863,7 +1910,7 @@ mod tests {
             )
             .unwrap();
         let expires = now_unix() + 90 * 86_400;
-        let (row, waiver) = SqliteStore::waive_review_finding(
+        let WaiveAdmission::Waived(row, waiver) = SqliteStore::waive_review_finding(
             &store,
             "zeabur/backend",
             2382,
@@ -1873,8 +1920,9 @@ mod tests {
             "eval traffic only, capped upstream",
             expires,
         )
-        .unwrap()
-        .expect("the reviewed head matches");
+        .unwrap() else {
+            panic!("the reviewed head matches");
+        };
         assert_eq!(row.status, "waived");
         assert_eq!(row.decided_by.as_deref(), Some("yuaanlin"));
         assert_eq!(
@@ -1919,6 +1967,84 @@ mod tests {
     }
 
     #[test]
+    fn a_repeated_waive_mints_no_second_waiver() {
+        // Council review of #383, F1: without the status guard a second
+        // `waive F1` re-matched the row, minted a NEW waiver, overwrote the
+        // finding's waiver_id and orphaned the first — live in the ledger,
+        // injected into every future round, and unreachable by `reopen`.
+        let store = SqliteStore::memory().unwrap();
+        store
+            .record_review_findings(
+                "ses_1",
+                "zeabur/backend",
+                2382,
+                Some("h"),
+                &[finding("F1", "red")],
+            )
+            .unwrap();
+        let WaiveAdmission::Waived(_, first) = SqliteStore::waive_review_finding(
+            &store,
+            "zeabur/backend",
+            2382,
+            "F1",
+            "h",
+            "yuaanlin",
+            "accepted",
+            now_unix() + 86_400,
+        )
+        .unwrap() else {
+            panic!("first waive lands");
+        };
+        let WaiveAdmission::AlreadyWaived(row, linked) = SqliteStore::waive_review_finding(
+            &store,
+            "zeabur/backend",
+            2382,
+            "F1",
+            "h",
+            "someone-else",
+            "again",
+            now_unix() + 86_400,
+        )
+        .unwrap() else {
+            panic!("second waive must be refused as already waived");
+        };
+        // Untouched: same decider, same reason, same linked waiver.
+        assert_eq!(row.decided_by.as_deref(), Some("yuaanlin"));
+        assert_eq!(row.decided_reason.as_deref(), Some("accepted"));
+        assert_eq!(row.waiver_id.as_deref(), Some(first.id.as_str()));
+        assert_eq!(linked.map(|waiver| waiver.id), Some(first.id.clone()));
+        let all =
+            futures_block_on(store.list_review_waivers(Some("zeabur/backend"), true, now_unix()))
+                .unwrap();
+        assert_eq!(all.len(), 1, "one waiver total, nothing orphaned");
+
+        // The council's full sequence: waive twice, then reopen and revoke
+        // the linked waiver (the caller's job) — zero active waivers remain.
+        let reopened = SqliteStore::decide_review_finding(
+            &store,
+            "zeabur/backend",
+            2382,
+            "F1",
+            "h",
+            "open",
+            "yuaanlin",
+            Some("undo"),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(futures_block_on(store.update_review_waiver(
+            reopened.waiver_id.as_deref().unwrap(),
+            None,
+            true
+        ))
+        .unwrap());
+        let active =
+            futures_block_on(store.list_review_waivers(Some("zeabur/backend"), false, now_unix()))
+                .unwrap();
+        assert!(active.is_empty(), "no active waiver survives the undo");
+    }
+
+    #[test]
     fn a_waive_on_a_moved_head_writes_nothing_at_all() {
         // The compare-and-swap must cover the waiver too: a stale waive that
         // still minted a repo-scoped suppression would silence rounds on code
@@ -1933,18 +2059,20 @@ mod tests {
                 &[finding("F1", "red")],
             )
             .unwrap();
-        assert!(SqliteStore::waive_review_finding(
-            &store,
-            "zeabur/backend",
-            2382,
-            "F1",
-            "head-new",
-            "yuaanlin",
-            "reason",
-            now_unix() + 86_400,
-        )
-        .unwrap()
-        .is_none());
+        assert_eq!(
+            SqliteStore::waive_review_finding(
+                &store,
+                "zeabur/backend",
+                2382,
+                "F1",
+                "head-new",
+                "yuaanlin",
+                "reason",
+                now_unix() + 86_400,
+            )
+            .unwrap(),
+            WaiveAdmission::NoMatch
+        );
         let waivers =
             futures_block_on(store.list_review_waivers(Some("zeabur/backend"), true, now_unix()))
                 .unwrap();

@@ -2791,8 +2791,39 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
             )
             .await
         {
-            Ok(Some((row, waiver))) => (row, Some(waiver)),
-            Ok(None) => return miss_reply(&before_rows),
+            Ok(store::WaiveAdmission::Waived(row, waiver)) => (row, Some(waiver)),
+            // Council #383 F1: a repeated waive is answered, not repeated —
+            // minting again would orphan the first waiver as a permanent,
+            // reopen-proof suppression.
+            Ok(store::WaiveAdmission::AlreadyWaived(row, existing)) => {
+                // The name in force (#375), not the configured one — the
+                // retract hint must be a command that actually works.
+                let bot = state.bot_name();
+                let waiver_state = existing
+                    .map(|waiver| {
+                        let now = now_unix();
+                        if waiver.revoked_at.is_some() {
+                            format!(" Its waiver `{}` was revoked.", waiver.id)
+                        } else if waiver.expires_at <= now {
+                            format!(" Its waiver `{}` has expired.", waiver.id)
+                        } else {
+                            format!(
+                                " Its waiver `{}` is active and expires in {}d.",
+                                waiver.id,
+                                (waiver.expires_at - now).max(0) / 86_400
+                            )
+                        }
+                    })
+                    .unwrap_or_default();
+                return format!(
+                    "{} is already waived on this revision by @{} — nothing was changed.\
+                     {waiver_state} To retract or renew it, `@{bot} reopen {}` first.{hint}",
+                    row.stable_id,
+                    row.decided_by.as_deref().unwrap_or("?"),
+                    row.stable_id,
+                );
+            }
+            Ok(store::WaiveAdmission::NoMatch) => return miss_reply(&before_rows),
             Err(error) => {
                 tracing::error!(%error, "finding waive write failed");
                 return deciding::fault("The findings ledger refused the write.");
@@ -3822,7 +3853,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let (_, authored) = store
+        let store::WaiveAdmission::Waived(_, authored) = store
             .waive_review_finding(
                 "example/repo",
                 9,
@@ -3834,7 +3865,9 @@ mod tests {
             )
             .await
             .unwrap()
-            .unwrap();
+        else {
+            panic!("an open finding on the right head must waive");
+        };
         // Inactive ones must not appear: one expired, one revoked.
         let expired = store
             .create_review_waiver(
@@ -4217,7 +4250,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let (_, waiver) = store
+        let store::WaiveAdmission::Waived(_, waiver) = store
             .waive_review_finding(
                 "example/repo",
                 7,
@@ -4229,7 +4262,37 @@ mod tests {
             )
             .await
             .unwrap()
+        else {
+            panic!("an open finding on the right head must waive");
+        };
+
+        // Council #383 F1 regression, first half: repeating the waive answers
+        // "already waived" and mints nothing — no second waiver to orphan.
+        let repeat = apply_finding_command(
+            &state,
+            &planner::FindingCommand {
+                repository: "example/repo".into(),
+                pr_number: 7,
+                verb: "waive".into(),
+                stable_id: "F1".into(),
+                reason: Some("again".into()),
+                comment_id: 557,
+                author_trusted: true,
+                author_login: Some("author2".into()),
+            },
+        )
+        .await;
+        assert!(
+            repeat.contains("already waived on this revision by @author1"),
+            "{repeat}"
+        );
+        assert!(repeat.contains(&waiver.id), "{repeat}");
+        assert!(repeat.contains("reopen F1"), "{repeat}");
+        let all = store
+            .list_review_waivers(Some("example/repo"), true, now_unix())
+            .await
             .unwrap();
+        assert_eq!(all.len(), 1, "no second waiver row exists");
 
         let command = planner::FindingCommand {
             repository: "example/repo".into(),
