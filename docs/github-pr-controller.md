@@ -94,7 +94,8 @@ The controller recognizes non-draft PR `opened`, `reopened`,
 finding (`dismiss F<n> <why>` / `waive F<n> <why>` / `reopen F<n>`, ADR 038 —
 `dismiss` says the finding is wrong, `waive` accepts it as a real defect and
 mints a repo-scoped, expiring waiver that future rounds see; `reopen` undoes
-either and revokes the waiver a waive minted). `OWNER`, `MEMBER`, and
+either and revokes the waiver a waive minted — author-facing guide:
+[review-author-guide.md](review-author-guide.md)). `OWNER`, `MEMBER`, and
 `COLLABORATOR` associations are trusted. The `oab-review` label is the
 maintainer opt-in for other PR authors.
 
