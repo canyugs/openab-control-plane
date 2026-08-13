@@ -490,6 +490,24 @@ pub fn spawn_maintenance(state: &Arc<AppState>) {
                 Ok(_) => {}
                 Err(error) => tracing::warn!(%error, "audit retention sweep failed"),
             }
+            // The waiver report's log-line half, on the tick that already
+            // exists (no new channel): one line an operator's log search
+            // finds, only when there is something to say. The endpoint
+            // carries the same numbers for the weekly ops report.
+            match store.list_review_waivers(None, false, now_unix()).await {
+                Ok(waivers) if !waivers.is_empty() => {
+                    let report = waiver_report(&waivers, now_unix());
+                    tracing::info!(
+                        active = report["active"].as_u64().unwrap_or_default(),
+                        expiring_within_14d = %report["expiring_within_14d"],
+                        renewed_twice_or_more = %report["renewed_twice_or_more"],
+                        never_fired = report["never_fired"].as_u64().unwrap_or_default(),
+                        "waiver report"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "waiver report read failed"),
+            }
         }
     });
 }
@@ -1544,7 +1562,16 @@ async fn handle_list_waivers(
         .list_review_waivers(params.repo.as_deref(), params.all, now_unix())
         .await
     {
-        Ok(waivers) => response(StatusCode::OK, json!({ "waivers": waivers })),
+        Ok(waivers) => {
+            // The report block rides along on every read: the weekly ops
+            // report is the consumer the ADRs envisage, and this saves it
+            // re-deriving the judgement inputs from raw rows.
+            let report = waiver_report(&waivers, now_unix());
+            response(
+                StatusCode::OK,
+                json!({ "waivers": waivers, "report": report }),
+            )
+        }
         Err(error) => {
             tracing::error!(%error, "waiver list failed");
             response(
@@ -1831,6 +1858,48 @@ async fn dismissed_block_for_pr(
             None
         }
     }
+}
+
+/// "Soon" for the waiver report's expiring list. The ADRs name no window;
+/// two weeks covers two cycles of the weekly ops report the entries feed, so
+/// nothing can lapse between one report an operator skims and the next.
+const WAIVER_EXPIRING_SOON_SECS: i64 = 14 * 86_400;
+
+/// The controller half of the ADR 035/038 periodic waiver report.
+///
+/// The report proper — hit rates, masking detection, intake — is the ops
+/// repo's weekly quality loop (ADR 035); this is the smallest summary that
+/// serves the two judgements the ADRs put on a clock: "expiry is the
+/// classifier" (what lapses soon) and "a waiver renewed twice is a rule
+/// wearing a waiver's clothes" (what keeps being renewed). Counts for
+/// context, ids where the operator must act.
+fn waiver_report(waivers: &[store::ReviewWaiver], now: i64) -> Value {
+    let active: Vec<&store::ReviewWaiver> = waivers
+        .iter()
+        .filter(|waiver| waiver.revoked_at.is_none() && waiver.expires_at > now)
+        .collect();
+    let expiring_soon: Vec<&str> = active
+        .iter()
+        .filter(|waiver| waiver.expires_at <= now + WAIVER_EXPIRING_SOON_SECS)
+        .map(|waiver| waiver.id.as_str())
+        .collect();
+    let renewed_twice_or_more: Vec<&str> = active
+        .iter()
+        .filter(|waiver| waiver.renewal_count >= 2)
+        .map(|waiver| waiver.id.as_str())
+        .collect();
+    let never_fired = active
+        .iter()
+        .filter(|waiver| waiver.fired_count == 0)
+        .count();
+    json!({
+        "active": active.len(),
+        "expiring_within_14d": expiring_soon,
+        "never_fired": never_fired,
+        // The promotion queue: these belong in the repo's Review Boundaries,
+        // and their waivers revoked (ADR 038 point 3).
+        "renewed_twice_or_more": renewed_twice_or_more,
+    })
 }
 
 async fn waiver_block_for_repo(store: &dyn store::ProductStore, repo: &str) -> Option<String> {
@@ -2779,6 +2848,19 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
     // would silence rounds on code nobody reviewed). The other verbs touch
     // the finding alone.
     let (decided, waiver) = if command.verb == "waive" {
+        // The horizon is severity-aware (ADR 038: red waives are "permitted
+        // but conspicuous: a shorter maximum expiry"). Severity comes from
+        // the rows just read; a finding those rows do not have gets the short
+        // horizon, and in that case the compare-and-swap is about to miss
+        // anyway.
+        let severity = before_rows
+            .iter()
+            .find(|row| {
+                row.head_sha.as_deref() == Some(head_sha.as_str())
+                    && row.stable_id == command.stable_id
+            })
+            .map(|row| row.severity.as_str())
+            .unwrap_or_default();
         match store
             .waive_review_finding(
                 &command.repository,
@@ -2787,7 +2869,7 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
                 &head_sha,
                 command.author_login.as_deref().unwrap_or("unknown"),
                 command.reason.as_deref().unwrap_or_default(),
-                now_unix() + deciding::WAIVE_DEFAULT_EXPIRY_SECS,
+                now_unix() + deciding::waive_expiry_secs(severity),
             )
             .await
         {
@@ -4148,12 +4230,24 @@ mod tests {
             !reply.contains("controller fault"),
             "every write must enqueue: {reply}"
         );
+        // F1 is 🔴, so the waiver is minted with the short horizon and the
+        // reply says why it is short.
+        assert!(
+            reply.contains("shorter horizon") && reply.contains("conspicuous"),
+            "a red waive must explain its horizon: {reply}"
+        );
         let waivers = store
             .list_review_waivers(Some("example/repo"), false, now_unix())
             .await
             .unwrap();
         assert_eq!(waivers.len(), 1);
         assert_eq!(waivers[0].source, store::WAIVER_SOURCE_AUTHOR);
+        let horizon = waivers[0].expires_at - waivers[0].created_at;
+        assert!(
+            horizon <= deciding::WAIVE_RED_EXPIRY_SECS
+                && horizon > deciding::WAIVE_RED_EXPIRY_SECS - 60,
+            "a red finding's waiver gets the 30d horizon, got {horizon}s"
+        );
         assert!(reply.contains(&waivers[0].id), "the reply names the waiver");
 
         // The outbox drains to the fake GitHub; wait for it to empty.
@@ -4520,6 +4614,80 @@ mod tests {
         assert!(body["waivers"][0]["revoked_at"].is_number());
         let (_, body) = call(signed_get("/api/v1/review/waivers?repo=example/repo&all=1")).await;
         assert_eq!(body["waivers"].as_array().unwrap().len(), 1);
+
+        // The report block rides on every read, and renewals are visible per
+        // row — the controller half of the ADR 035/038 periodic report.
+        let store = state.store.clone().unwrap();
+        let live = store
+            .create_review_waiver(
+                "example/repo",
+                None,
+                "expiring soon and twice renewed",
+                None,
+                "op",
+                now_unix() + 3 * 86_400,
+                store::WAIVER_SOURCE_OPERATOR,
+            )
+            .await
+            .unwrap();
+        for days in [5i64, 7] {
+            store
+                .update_review_waiver(&live.id, Some(now_unix() + days * 86_400), false)
+                .await
+                .unwrap();
+        }
+        let (_, body) = call(signed_get("/api/v1/review/waivers?repo=example/repo")).await;
+        assert_eq!(body["waivers"].as_array().unwrap().len(), 1);
+        assert_eq!(body["waivers"][0]["renewal_count"], 2);
+        let report = &body["report"];
+        assert_eq!(report["active"], 1, "the revoked row stays out: {report}");
+        assert_eq!(report["expiring_within_14d"], json!([live.id]));
+        assert_eq!(
+            report["renewed_twice_or_more"],
+            json!([live.id]),
+            "the promotion queue names its candidates: {report}"
+        );
+        assert_eq!(report["never_fired"], 1);
+    }
+
+    #[test]
+    fn the_waiver_report_serves_the_two_clocked_judgements() {
+        // "Expiry is the classifier" and "renewed twice is a rule" are the
+        // judgements the ADRs put on a clock; the report is the smallest
+        // summary that serves them. Revoked and expired rows are out of every
+        // number — they are history, not exposure.
+        let now = 1_000_000_000;
+        let mk =
+            |id: &str, expires_at: i64, renewal_count: i64, fired_count: i64| store::ReviewWaiver {
+                id: id.into(),
+                repo: "example/repo".into(),
+                path_class: None,
+                text: "t".into(),
+                origin_pr: None,
+                created_by: "op".into(),
+                created_at: now - 86_400,
+                expires_at,
+                revoked_at: None,
+                fired_count,
+                last_fired_at: None,
+                source: store::WAIVER_SOURCE_OPERATOR.into(),
+                renewal_count,
+            };
+        let mut revoked = mk("wvr_revoked", now + 90 * 86_400, 5, 0);
+        revoked.revoked_at = Some(now - 10);
+        let expired = mk("wvr_expired", now - 10, 2, 0);
+        let waivers = vec![
+            mk("wvr_far", now + 90 * 86_400, 0, 3),
+            mk("wvr_soon", now + 3 * 86_400, 0, 0),
+            mk("wvr_rule", now + 90 * 86_400, 2, 1),
+            revoked,
+            expired,
+        ];
+        let report = waiver_report(&waivers, now);
+        assert_eq!(report["active"], 3);
+        assert_eq!(report["expiring_within_14d"], json!(["wvr_soon"]));
+        assert_eq!(report["renewed_twice_or_more"], json!(["wvr_rule"]));
+        assert_eq!(report["never_fired"], 1, "wvr_soon alone: {report}");
     }
 
     #[tokio::test]
