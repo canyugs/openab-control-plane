@@ -302,6 +302,36 @@ impl GitHubClient {
         }
     }
 
+    /// The App's own slug, as GitHub renders it — i.e. what a human types
+    /// after `@` and what comments are authored by (`<slug>[bot]`).
+    ///
+    /// Exists so the controller can notice that its configured bot handle no
+    /// longer matches the App. Renaming an App is done in GitHub's UI, far
+    /// from this repository's install checklist, and every mention command
+    /// stops parsing the moment the two drift — with no error anywhere.
+    pub async fn app_slug(&self) -> Result<String> {
+        let jwt = self.app_jwt()?;
+        let response = self
+            .http
+            .get(format!("{}/app", self.api_base))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await
+            .context("github request failed")?;
+        let status = response.status();
+        if !status.is_success() {
+            bail!("github /app returned {status}");
+        }
+        let body: serde_json::Value = response.json().await.context("bad /app json")?;
+        body["slug"]
+            .as_str()
+            .map(str::to_string)
+            .context("github /app carried no slug")
+    }
+
     /// Whether `login` may write to `repo` — `admin`, `maintain` or `write`.
     ///
     /// Org membership is too coarse for a decision that unblocks a merge: a
