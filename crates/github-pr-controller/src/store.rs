@@ -263,6 +263,12 @@ pub struct ReviewWaiver {
     /// whose `text` is the council-authored title, never the author's prose.
     /// The chair's injected block labels each entry with this.
     pub source: String,
+    /// How many times the expiry has been extended. ADR 038 point 3's
+    /// classifier made countable: "a waiver renewed twice is a rule wearing a
+    /// waiver's clothes" is a judgement the periodic report can only make if
+    /// renewals leave a trace — before this column an extension silently
+    /// overwrote `expires_at` and the history was gone.
+    pub renewal_count: i64,
 }
 
 /// `ReviewWaiver.source` values. A column, not an enum in the DB — the ledger
@@ -487,7 +493,9 @@ pub trait ProductStore: Send + Sync {
         now: i64,
     ) -> StoreResult<Vec<ReviewWaiver>>;
 
-    /// Extend or revoke. Returns false for an unknown id.
+    /// Extend or revoke. Returns false for an unknown id. An extension
+    /// (`expires_at` present) bumps `renewal_count` — the trace the
+    /// renewed-twice judgement reads.
     async fn update_review_waiver(
         &self,
         id: &str,

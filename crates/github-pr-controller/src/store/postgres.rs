@@ -224,6 +224,11 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_recorded ON audit_events(recorded_at
     // operator's.
     "ALTER TABLE review_findings ADD COLUMN IF NOT EXISTS waiver_id TEXT;
      ALTER TABLE review_waivers ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'operator';",
+    // 8 — the renewed-twice judgement needs a trace: an expiry extension used
+    // to overwrite expires_at and leave no sign it had ever happened, which
+    // is exactly the history ADR 038's "a waiver renewed twice is a rule
+    // wearing a waiver's clothes" classifier reads.
+    "ALTER TABLE review_waivers ADD COLUMN IF NOT EXISTS renewal_count BIGINT NOT NULL DEFAULT 0;",
 ];
 
 /// Serializes concurrent boots racing the migration list; any constant that
@@ -1014,6 +1019,7 @@ impl ProductStore for PostgresStore {
             fired_count: 0,
             last_fired_at: None,
             source: source.into(),
+            renewal_count: 0,
         };
         let client = self.client().await?;
         client
@@ -1099,7 +1105,7 @@ impl ProductStore for PostgresStore {
                                 .query(
                                     "SELECT id, repo, path_class, text, origin_pr, created_by,
                                             created_at, expires_at, revoked_at, fired_count,
-                                            last_fired_at, source
+                                            last_fired_at, source, renewal_count
                                        FROM review_waivers WHERE id = $1",
                                     &[&waiver_id],
                                 )
@@ -1117,6 +1123,7 @@ impl ProductStore for PostgresStore {
                                 fired_count: row.get(9),
                                 last_fired_at: row.get(10),
                                 source: row.get(11),
+                                renewal_count: row.get(12),
                             })
                         }
                         None => None,
@@ -1141,6 +1148,7 @@ impl ProductStore for PostgresStore {
             fired_count: 0,
             last_fired_at: None,
             source: super::WAIVER_SOURCE_AUTHOR.into(),
+            renewal_count: 0,
         };
         transaction
             .execute(
@@ -1186,7 +1194,7 @@ impl ProductStore for PostgresStore {
             .query(
                 "SELECT id, repo, path_class, text, origin_pr, created_by,
                         created_at, expires_at, revoked_at, fired_count, last_fired_at,
-                        source
+                        source, renewal_count
                    FROM review_waivers
                   WHERE ($1::TEXT IS NULL OR repo = $1)
                     AND ($2 OR (revoked_at IS NULL AND expires_at > $3))
@@ -1209,6 +1217,7 @@ impl ProductStore for PostgresStore {
                 fired_count: row.get(9),
                 last_fired_at: row.get(10),
                 source: row.get(11),
+                renewal_count: row.get(12),
             })
             .collect())
     }
@@ -1224,6 +1233,8 @@ impl ProductStore for PostgresStore {
             .execute(
                 "UPDATE review_waivers SET
                     expires_at = COALESCE($2, expires_at),
+                    renewal_count = renewal_count
+                        + (CASE WHEN $2::BIGINT IS NOT NULL THEN 1 ELSE 0 END),
                     revoked_at = CASE WHEN $3 THEN COALESCE(revoked_at, $4) ELSE revoked_at END
                  WHERE id = $1",
                 &[&id, &expires_at, &revoke, &now_unix()],
@@ -2215,6 +2226,46 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "no active waiver survives the undo"
+        );
+    }
+
+    #[tokio::test]
+    async fn renewals_are_counted_and_revocation_is_not_a_renewal() {
+        // Same trace as the SQLite twin: the renewed-twice judgement needs
+        // extensions to be countable, and a revoke must not count as one.
+        let Some(store) = store("renewals").await else {
+            return;
+        };
+        let waiver = store
+            .create_review_waiver(
+                "example/repo",
+                None,
+                "trade-off",
+                None,
+                "op",
+                now_unix() + 86_400,
+                crate::store::WAIVER_SOURCE_OPERATOR,
+            )
+            .await
+            .unwrap();
+        assert_eq!(waiver.renewal_count, 0);
+        for days in [30i64, 60] {
+            assert!(store
+                .update_review_waiver(&waiver.id, Some(now_unix() + days * 86_400), false)
+                .await
+                .unwrap());
+        }
+        assert!(store
+            .update_review_waiver(&waiver.id, None, true)
+            .await
+            .unwrap());
+        let all = store
+            .list_review_waivers(Some("example/repo"), true, now_unix())
+            .await
+            .unwrap();
+        assert_eq!(
+            all[0].renewal_count, 2,
+            "two extensions and a revoke leave exactly two renewals on record"
         );
     }
 

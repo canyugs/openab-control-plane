@@ -54,6 +54,27 @@ pub fn decision_marker(session_id: &str, comment_id: &str) -> String {
 /// rule wearing a waiver's clothes" promotion rule applies.
 pub const WAIVE_DEFAULT_EXPIRY_SECS: i64 = 90 * 86_400;
 
+/// The horizon for a waived 🔴 finding — deliberately shorter.
+///
+/// ADR 038's consequences call red waives "permitted but conspicuous: a
+/// shorter maximum expiry and a separate listing in that report". Neither ADR
+/// names the number; 30 days — a third of the default — makes an accepted
+/// security defect return for re-examination monthly rather than quarterly,
+/// and still fits ADR 038's 180-day exposure bound with room for the one
+/// renewal the "renewed twice is a rule" judgement tolerates.
+pub const WAIVE_RED_EXPIRY_SECS: i64 = 30 * 86_400;
+
+/// How long a waive of a finding of `severity` stands. Red is conspicuous;
+/// everything else gets the default. An unknown severity is treated as red —
+/// when the ledger cannot say how serious the defect is, the shorter horizon
+/// errs toward looking again sooner.
+pub fn waive_expiry_secs(severity: &str) -> i64 {
+    match severity {
+        "yellow" | "green" => WAIVE_DEFAULT_EXPIRY_SECS,
+        _ => WAIVE_RED_EXPIRY_SECS,
+    }
+}
+
 use crate::store::{ReviewFindingRow, ReviewWaiver};
 use serde_json::{json, Value};
 
@@ -254,6 +275,13 @@ pub fn reply_body(
              belongs in the repo's Review Boundaries instead.\n",
             waiver.id, waiver.repo,
         ));
+        if row.severity == "red" {
+            body.push_str(
+                "\n🔴 findings get this shorter horizon on purpose (ADR 038): an accepted \
+                 security defect stays conspicuous, and comes back for re-examination \
+                 sooner.\n",
+            );
+        }
     }
     body.push_str(&format!(
         "\nOpen findings on `{}`: 🔴{} 🟡{} → 🔴{} 🟡{}\n",
@@ -477,6 +505,7 @@ mod tests {
             fired_count: 0,
             last_fired_at: None,
             source: crate::store::WAIVER_SOURCE_AUTHOR.into(),
+            renewal_count: 0,
         }
     }
 
@@ -689,7 +718,10 @@ mod tests {
             "ses_1",
             777,
         );
-        let waiver = waiver("wvr_abc");
+        // A red waive is minted with the shorter horizon, and the reply says
+        // why the horizon is short.
+        let mut red_waiver = waiver("wvr_abc");
+        red_waiver.expires_at = red_waiver.created_at + WAIVE_RED_EXPIRY_SECS;
         let body = reply_body(
             "waive",
             &decided,
@@ -697,19 +729,61 @@ mod tests {
             &outcome,
             "yuaanlin",
             "opencodezebra",
-            Some(&waiver),
+            Some(&red_waiver),
         );
         assert!(body.contains("F1 waived"));
         assert!(body.contains("eval traffic only, capped upstream"));
         assert!(body.contains("repo-wide"), "the scope line is the point");
         assert!(body.contains("`wvr_abc`"));
-        assert!(body.contains("expires in 90d"));
+        assert!(body.contains("expires in 30d"));
+        assert!(
+            body.contains("shorter horizon") && body.contains("conspicuous"),
+            "a red waive must say why its horizon is short: {body}"
+        );
         assert!(
             body.contains("`@opencodezebra reopen F1`") && body.contains("revokes the waiver"),
             "the undo must be typeable and must say it revokes: {body}"
         );
         assert!(body.contains("🔴1 🟡0 → 🔴0 🟡0"));
         assert!(body.contains("APPROVE review"));
+
+        // A yellow waive keeps the default horizon and gets no red note.
+        let mut yellow = row("F2", "yellow", "waived");
+        yellow.decided_by = Some("yuaanlin".into());
+        yellow.waiver_id = Some("wvr_y".into());
+        let body = reply_body(
+            "waive",
+            &yellow,
+            (0, 1),
+            &plan_decision(
+                "zeabur/backend",
+                2382,
+                "f9caff5d",
+                &[yellow.clone()],
+                true,
+                None,
+                "ses_1",
+                777,
+            ),
+            "yuaanlin",
+            "opencodezebra",
+            Some(&waiver("wvr_y")),
+        );
+        assert!(body.contains("expires in 90d"));
+        assert!(!body.contains("shorter horizon"), "{body}");
+    }
+
+    #[test]
+    fn the_waive_horizon_is_severity_aware_and_fails_toward_short() {
+        // ADR 038: red waives are "permitted but conspicuous: a shorter
+        // maximum expiry". The number is ours to pick; the direction is not.
+        assert_eq!(waive_expiry_secs("red"), WAIVE_RED_EXPIRY_SECS);
+        assert_eq!(waive_expiry_secs("yellow"), WAIVE_DEFAULT_EXPIRY_SECS);
+        assert_eq!(waive_expiry_secs("green"), WAIVE_DEFAULT_EXPIRY_SECS);
+        // A severity the ledger cannot vouch for gets the short horizon: when
+        // we do not know how serious the defect is, look again sooner.
+        assert_eq!(waive_expiry_secs(""), WAIVE_RED_EXPIRY_SECS);
+        assert!(WAIVE_RED_EXPIRY_SECS < WAIVE_DEFAULT_EXPIRY_SECS);
     }
 
     #[test]

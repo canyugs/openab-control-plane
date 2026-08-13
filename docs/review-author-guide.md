@@ -28,7 +28,7 @@ They look similar and do very different things:
 | You believe | Say | What it records |
 |---|---|---|
 | "This is **not a defect**" | `dismiss F<n> <why>` | The finding was wrong. Feeds the council's precision stats — dismissals teach the council what not to flag. |
-| "It **is a defect**, and we accept it" | `waive F<n> <why>` | The defect is real and consciously accepted. Mints a **repo-scoped waiver** (default 90 days) that future rounds see: the same defect won't block you again while the waiver lives. |
+| "It **is a defect**, and we accept it" | `waive F<n> <why>` | The defect is real and consciously accepted. Mints a **repo-scoped waiver** (90 days; **30 days for a 🔴 finding**) that future rounds see: the same defect won't block you again while the waiver lives. |
 
 The distinction is the record. A dismissed finding says the council was
 wrong; a waived one says the council was right and the team chose the
@@ -43,8 +43,10 @@ Rules that differ between the two:
   finding, not your prose.
 - **`dismiss` takes a reason too** — it is what the next round's chair reads
   as your claim — but a missing one is tolerated.
-- **Waivers expire** (90 days by default). A waiver that keeps being renewed
-  is a rule wearing a waiver's clothes: promote it to the repo's
+- **Waivers expire** (90 days by default; a 🔴 finding's waiver gets 30 —
+  accepted security defects stay conspicuous and come back for
+  re-examination sooner, ADR 038). A waiver that keeps being renewed is a
+  rule wearing a waiver's clothes: promote it to the repo's
   `review-boundaries` file and let the waiver die.
 
 ## What happens when a judgement is accepted

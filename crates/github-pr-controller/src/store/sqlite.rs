@@ -196,6 +196,11 @@ const MIGRATIONS: &[&str] = &[
     // until now), so the default is honest, not merely convenient.
     "ALTER TABLE review_findings ADD COLUMN waiver_id TEXT;
      ALTER TABLE review_waivers ADD COLUMN source TEXT NOT NULL DEFAULT 'operator';",
+    // 8 — the renewed-twice judgement needs a trace: an expiry extension used
+    // to overwrite expires_at and leave no sign it had ever happened, which
+    // is exactly the history ADR 038's "a waiver renewed twice is a rule
+    // wearing a waiver's clothes" classifier reads.
+    "ALTER TABLE review_waivers ADD COLUMN renewal_count INTEGER NOT NULL DEFAULT 0;",
 ];
 
 pub struct SqliteStore {
@@ -857,6 +862,7 @@ impl SqliteStore {
             fired_count: 0,
             last_fired_at: None,
             source: super::WAIVER_SOURCE_AUTHOR.into(),
+            renewal_count: 0,
         };
         transaction.execute(
             "INSERT INTO review_waivers
@@ -890,7 +896,8 @@ impl SqliteStore {
     fn waiver_row(connection: &Connection, id: &str) -> rusqlite::Result<Option<ReviewWaiver>> {
         let mut statement = connection.prepare(
             "SELECT id, repo, path_class, text, origin_pr, created_by,
-                    created_at, expires_at, revoked_at, fired_count, last_fired_at, source
+                    created_at, expires_at, revoked_at, fired_count, last_fired_at, source,
+                    renewal_count
                FROM review_waivers WHERE id = ?1",
         )?;
         statement
@@ -908,6 +915,7 @@ impl SqliteStore {
                     fired_count: row.get(9)?,
                     last_fired_at: row.get(10)?,
                     source: row.get(11)?,
+                    renewal_count: row.get(12)?,
                 })
             })
             .optional()
@@ -1470,6 +1478,7 @@ impl ProductStore for SqliteStore {
             fired_count: 0,
             last_fired_at: None,
             source: source.into(),
+            renewal_count: 0,
         };
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         connection.execute(
@@ -1517,7 +1526,8 @@ impl ProductStore for SqliteStore {
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         let mut statement = connection.prepare(
             "SELECT id, repo, path_class, text, origin_pr, created_by,
-                    created_at, expires_at, revoked_at, fired_count, last_fired_at, source
+                    created_at, expires_at, revoked_at, fired_count, last_fired_at, source,
+                    renewal_count
                FROM review_waivers
               WHERE (?1 IS NULL OR repo = ?1)
                 AND (?2 OR (revoked_at IS NULL AND expires_at > ?3))
@@ -1537,6 +1547,7 @@ impl ProductStore for SqliteStore {
                 fired_count: row.get(9)?,
                 last_fired_at: row.get(10)?,
                 source: row.get(11)?,
+                renewal_count: row.get(12)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1552,6 +1563,7 @@ impl ProductStore for SqliteStore {
         let updated = connection.execute(
             "UPDATE review_waivers SET
                 expires_at = COALESCE(?2, expires_at),
+                renewal_count = renewal_count + (CASE WHEN ?2 IS NOT NULL THEN 1 ELSE 0 END),
                 revoked_at = CASE WHEN ?3 THEN COALESCE(revoked_at, ?4) ELSE revoked_at END
              WHERE id = ?1",
             rusqlite::params![id, expires_at, revoke, now_unix()],
@@ -2042,6 +2054,43 @@ mod tests {
             futures_block_on(store.list_review_waivers(Some("zeabur/backend"), false, now_unix()))
                 .unwrap();
         assert!(active.is_empty(), "no active waiver survives the undo");
+    }
+
+    #[test]
+    fn renewals_are_counted_and_revocation_is_not_a_renewal() {
+        // ADR 038 point 3: "a waiver renewed twice is a rule wearing a
+        // waiver's clothes" — a judgement the periodic report can only make
+        // if extensions leave a trace instead of silently overwriting
+        // expires_at.
+        let store = SqliteStore::memory().unwrap();
+        let waiver = futures_block_on(store.create_review_waiver(
+            "zeabur/backend",
+            None,
+            "trade-off",
+            None,
+            "op",
+            now_unix() + 86_400,
+            crate::store::WAIVER_SOURCE_OPERATOR,
+        ))
+        .unwrap();
+        assert_eq!(waiver.renewal_count, 0);
+        for days in [30, 60] {
+            assert!(futures_block_on(store.update_review_waiver(
+                &waiver.id,
+                Some(now_unix() + days * 86_400),
+                false,
+            ))
+            .unwrap());
+        }
+        // Revocation is an ending, not a renewal.
+        assert!(futures_block_on(store.update_review_waiver(&waiver.id, None, true)).unwrap());
+        let all =
+            futures_block_on(store.list_review_waivers(Some("zeabur/backend"), true, now_unix()))
+                .unwrap();
+        assert_eq!(
+            all[0].renewal_count, 2,
+            "two extensions and a revoke leave exactly two renewals on record"
+        );
     }
 
     #[test]
