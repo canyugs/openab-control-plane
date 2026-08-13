@@ -6,7 +6,8 @@ use super::{
     now_unix, CanarySummary, DeliveryAdmission, PendingWrite, ProductStore, RecordedRound,
     ReviewFinding, ReviewFindingQuery, ReviewFindingRow, ReviewRound, ReviewWaiver,
     RuntimeEventAdmission, SessionTarget, ShadowAdmission, ShadowSummary, StoreError, StoreResult,
-    COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS, WRITE_CLAIM_LEASE_SECS, WRITE_MAX_ATTEMPTS,
+    WaiveAdmission, COMPLETED_RETENTION_SECS, PROCESSING_LEASE_SECS, WRITE_CLAIM_LEASE_SECS,
+    WRITE_MAX_ATTEMPTS,
 };
 use controller_protocol::audit::{
     AuditActor, AuditCorrelation, AuditCursor, AuditError, AuditEvent, AuditEventPage,
@@ -188,6 +189,13 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE review_findings ADD COLUMN decided_by TEXT;
      ALTER TABLE review_findings ADD COLUMN decided_reason TEXT;
      ALTER TABLE review_findings ADD COLUMN decided_at INTEGER;",
+    // 7 — ADR 038 v2: `waive` mints a repo-scoped waiver from the finding it
+    // accepts. The finding remembers which waiver it minted (so `reopen` can
+    // revoke it), and the ledger remembers whose words each entry carries —
+    // every pre-existing row is the operator's (ADR 035's only write path
+    // until now), so the default is honest, not merely convenient.
+    "ALTER TABLE review_findings ADD COLUMN waiver_id TEXT;
+     ALTER TABLE review_waivers ADD COLUMN source TEXT NOT NULL DEFAULT 'operator';",
 ];
 
 pub struct SqliteStore {
@@ -659,7 +667,7 @@ impl SqliteStore {
         let mut statement = connection.prepare(
             "SELECT id, session_id, repo, pr_number, stable_id, severity, status,
                     title, path, line, raised_by, angle, head_sha, created_at,
-                    decided_by, decided_reason, decided_at
+                    decided_by, decided_reason, decided_at, waiver_id
                FROM review_findings
               WHERE (?1 IS NULL OR repo = ?1)
                 AND (?2 IS NULL OR pr_number = ?2)
@@ -695,6 +703,7 @@ impl SqliteStore {
                     decided_by: row.get(14)?,
                     decided_reason: row.get(15)?,
                     decided_at: row.get(16)?,
+                    waiver_id: row.get(17)?,
                 })
             },
         )?;
@@ -734,15 +743,26 @@ impl SqliteStore {
         if changed == 0 {
             return Ok(None);
         }
+        let row = Self::finding_row(&connection, repo, pr_number, stable_id, head_sha)?;
+        Ok(row)
+    }
+
+    fn finding_row(
+        connection: &Connection,
+        repo: &str,
+        pr_number: i64,
+        stable_id: &str,
+        head_sha: &str,
+    ) -> rusqlite::Result<Option<ReviewFindingRow>> {
         let mut statement = connection.prepare(
             "SELECT id, session_id, repo, pr_number, stable_id, severity, status,
                     title, path, line, raised_by, angle, head_sha, created_at,
-                    decided_by, decided_reason, decided_at
+                    decided_by, decided_reason, decided_at, waiver_id
                FROM review_findings
               WHERE repo = ?1 AND pr_number = ?2 AND stable_id = ?3 AND head_sha = ?4
               ORDER BY id DESC LIMIT 1",
         )?;
-        let row = statement
+        statement
             .query_row(
                 rusqlite::params![repo, pr_number, stable_id, head_sha],
                 |row| {
@@ -764,11 +784,133 @@ impl SqliteStore {
                         decided_by: row.get(14)?,
                         decided_reason: row.get(15)?,
                         decided_at: row.get(16)?,
+                        waiver_id: row.get(17)?,
                     })
                 },
             )
-            .optional()?;
-        Ok(row)
+            .optional()
+    }
+
+    /// ADR 038 v2 in one transaction: flip the finding to `waived` under the
+    /// head-sha compare-and-swap, mint the repo-scoped waiver from the
+    /// finding's own council-authored title and path, link the two. The
+    /// author's reason lands on the finding row only — the waiver's text is
+    /// what future chairs are shown, and it must never be the author's prose
+    /// (ADR 038 point 7).
+    #[allow(clippy::too_many_arguments)]
+    pub fn waive_review_finding(
+        &self,
+        repo: &str,
+        pr_number: i64,
+        stable_id: &str,
+        head_sha: &str,
+        decided_by: &str,
+        reason: &str,
+        expires_at: i64,
+    ) -> rusqlite::Result<WaiveAdmission> {
+        let mut connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = now_unix();
+        // `status != 'waived'` is the idempotency guard (council #383 F1):
+        // without it a repeated waive re-matched the row, minted a SECOND
+        // waiver, overwrote the finding's link and orphaned the first — live
+        // in the ledger, injected into every future round, and unreachable by
+        // `reopen`, which only revokes the finding's current waiver_id.
+        let changed = transaction.execute(
+            "UPDATE review_findings
+                SET status = 'waived', decided_by = ?5, decided_reason = ?6, decided_at = ?7
+              WHERE repo = ?1 AND pr_number = ?2 AND stable_id = ?3 AND head_sha = ?4
+                AND status != 'waived'",
+            rusqlite::params![repo, pr_number, stable_id, head_sha, decided_by, reason, now,],
+        )?;
+        if changed == 0 {
+            // Already waived, or not on this head at all — tell the caller
+            // which, because they need different replies.
+            let row = Self::finding_row(&transaction, repo, pr_number, stable_id, head_sha)?;
+            return Ok(match row {
+                Some(row) if row.status == "waived" => {
+                    let waiver = row
+                        .waiver_id
+                        .as_deref()
+                        .map(|id| Self::waiver_row(&transaction, id))
+                        .transpose()?
+                        .flatten();
+                    WaiveAdmission::AlreadyWaived(row, waiver)
+                }
+                _ => WaiveAdmission::NoMatch,
+            });
+        }
+        let Some(row) = Self::finding_row(&transaction, repo, pr_number, stable_id, head_sha)?
+        else {
+            return Ok(WaiveAdmission::NoMatch);
+        };
+        let waiver = ReviewWaiver {
+            id: super::new_waiver_id(),
+            repo: repo.into(),
+            path_class: row.path.clone(),
+            text: row.title.clone(),
+            origin_pr: Some(format!("{repo}#{pr_number}")),
+            created_by: decided_by.into(),
+            created_at: now,
+            expires_at,
+            revoked_at: None,
+            fired_count: 0,
+            last_fired_at: None,
+            source: super::WAIVER_SOURCE_AUTHOR.into(),
+        };
+        transaction.execute(
+            "INSERT INTO review_waivers
+                (id, repo, path_class, text, origin_pr, created_by, created_at,
+                 expires_at, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                waiver.id,
+                waiver.repo,
+                waiver.path_class,
+                waiver.text,
+                waiver.origin_pr,
+                waiver.created_by,
+                waiver.created_at,
+                waiver.expires_at,
+                waiver.source,
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE review_findings SET waiver_id = ?2 WHERE id = ?1",
+            rusqlite::params![row.id, waiver.id],
+        )?;
+        transaction.commit()?;
+        let row = ReviewFindingRow {
+            waiver_id: Some(waiver.id.clone()),
+            ..row
+        };
+        Ok(WaiveAdmission::Waived(row, waiver))
+    }
+
+    fn waiver_row(connection: &Connection, id: &str) -> rusqlite::Result<Option<ReviewWaiver>> {
+        let mut statement = connection.prepare(
+            "SELECT id, repo, path_class, text, origin_pr, created_by,
+                    created_at, expires_at, revoked_at, fired_count, last_fired_at, source
+               FROM review_waivers WHERE id = ?1",
+        )?;
+        statement
+            .query_row([id], |row| {
+                Ok(ReviewWaiver {
+                    id: row.get(0)?,
+                    repo: row.get(1)?,
+                    path_class: row.get(2)?,
+                    text: row.get(3)?,
+                    origin_pr: row.get(4)?,
+                    created_by: row.get(5)?,
+                    created_at: row.get(6)?,
+                    expires_at: row.get(7)?,
+                    revoked_at: row.get(8)?,
+                    fired_count: row.get(9)?,
+                    last_fired_at: row.get(10)?,
+                    source: row.get(11)?,
+                })
+            })
+            .optional()
     }
 
     pub fn record_review_findings(
@@ -1313,6 +1455,7 @@ impl ProductStore for SqliteStore {
         origin_pr: Option<&str>,
         created_by: &str,
         expires_at: i64,
+        source: &str,
     ) -> StoreResult<ReviewWaiver> {
         let waiver = ReviewWaiver {
             id: super::new_waiver_id(),
@@ -1326,12 +1469,14 @@ impl ProductStore for SqliteStore {
             revoked_at: None,
             fired_count: 0,
             last_fired_at: None,
+            source: source.into(),
         };
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         connection.execute(
             "INSERT INTO review_waivers
-                (id, repo, path_class, text, origin_pr, created_by, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                (id, repo, path_class, text, origin_pr, created_by, created_at,
+                 expires_at, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 waiver.id,
                 waiver.repo,
@@ -1340,10 +1485,27 @@ impl ProductStore for SqliteStore {
                 waiver.origin_pr,
                 waiver.created_by,
                 waiver.created_at,
-                waiver.expires_at
+                waiver.expires_at,
+                waiver.source,
             ],
         )?;
         Ok(waiver)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn waive_review_finding(
+        &self,
+        repo: &str,
+        pr_number: i64,
+        stable_id: &str,
+        head_sha: &str,
+        decided_by: &str,
+        reason: &str,
+        expires_at: i64,
+    ) -> StoreResult<WaiveAdmission> {
+        Ok(SqliteStore::waive_review_finding(
+            self, repo, pr_number, stable_id, head_sha, decided_by, reason, expires_at,
+        )?)
     }
 
     async fn list_review_waivers(
@@ -1355,7 +1517,7 @@ impl ProductStore for SqliteStore {
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         let mut statement = connection.prepare(
             "SELECT id, repo, path_class, text, origin_pr, created_by,
-                    created_at, expires_at, revoked_at, fired_count, last_fired_at
+                    created_at, expires_at, revoked_at, fired_count, last_fired_at, source
                FROM review_waivers
               WHERE (?1 IS NULL OR repo = ?1)
                 AND (?2 OR (revoked_at IS NULL AND expires_at > ?3))
@@ -1374,6 +1536,7 @@ impl ProductStore for SqliteStore {
                 revoked_at: row.get(8)?,
                 fired_count: row.get(9)?,
                 last_fired_at: row.get(10)?,
+                source: row.get(11)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1732,6 +1895,209 @@ mod tests {
         assert_eq!(reopened.status, "open");
         // Undo is itself a decision: the record says who undid it and why.
         assert_eq!(reopened.decided_reason.as_deref(), Some("undo"));
+    }
+
+    #[test]
+    fn a_waive_flips_the_finding_and_mints_a_linked_repo_scoped_waiver() {
+        let store = SqliteStore::memory().unwrap();
+        store
+            .record_review_findings(
+                "ses_1",
+                "zeabur/backend",
+                2382,
+                Some("h"),
+                &[finding("F1", "red")],
+            )
+            .unwrap();
+        let expires = now_unix() + 90 * 86_400;
+        let WaiveAdmission::Waived(row, waiver) = SqliteStore::waive_review_finding(
+            &store,
+            "zeabur/backend",
+            2382,
+            "F1",
+            "h",
+            "yuaanlin",
+            "eval traffic only, capped upstream",
+            expires,
+        )
+        .unwrap() else {
+            panic!("the reviewed head matches");
+        };
+        assert_eq!(row.status, "waived");
+        assert_eq!(row.decided_by.as_deref(), Some("yuaanlin"));
+        assert_eq!(
+            row.decided_reason.as_deref(),
+            Some("eval traffic only, capped upstream")
+        );
+        assert_eq!(row.waiver_id.as_deref(), Some(waiver.id.as_str()));
+        // The waiver carries the council's words, never the author's prose
+        // (ADR 038 point 7) — and it is repo-scoped and expiring.
+        assert_eq!(waiver.repo, "zeabur/backend");
+        assert_eq!(waiver.text, "F1 title");
+        assert_eq!(
+            waiver.path_class.as_deref(),
+            Some("internal/services/cicd/main.go")
+        );
+        assert_eq!(waiver.origin_pr.as_deref(), Some("zeabur/backend#2382"));
+        assert_eq!(waiver.created_by, "yuaanlin");
+        assert_eq!(waiver.expires_at, expires);
+        assert_eq!(waiver.source, crate::store::WAIVER_SOURCE_AUTHOR);
+        assert!(!waiver.text.contains("eval traffic"), "no author prose");
+
+        // The row reads back with the link, and the waiver is active — the
+        // exact rows the dispatch-time chair injection lists for the repo.
+        let rows = SqliteStore::review_findings(
+            &store,
+            &crate::store::ReviewFindingQuery {
+                repo: Some("zeabur/backend".into()),
+                pr_number: Some(2382),
+                status: None,
+                severity: None,
+                limit: 10,
+            },
+        )
+        .unwrap();
+        assert_eq!(rows[0].waiver_id.as_deref(), Some(waiver.id.as_str()));
+        let active =
+            futures_block_on(store.list_review_waivers(Some("zeabur/backend"), false, now_unix()))
+                .unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, waiver.id);
+        assert_eq!(active[0].source, crate::store::WAIVER_SOURCE_AUTHOR);
+    }
+
+    #[test]
+    fn a_repeated_waive_mints_no_second_waiver() {
+        // Council review of #383, F1: without the status guard a second
+        // `waive F1` re-matched the row, minted a NEW waiver, overwrote the
+        // finding's waiver_id and orphaned the first — live in the ledger,
+        // injected into every future round, and unreachable by `reopen`.
+        let store = SqliteStore::memory().unwrap();
+        store
+            .record_review_findings(
+                "ses_1",
+                "zeabur/backend",
+                2382,
+                Some("h"),
+                &[finding("F1", "red")],
+            )
+            .unwrap();
+        let WaiveAdmission::Waived(_, first) = SqliteStore::waive_review_finding(
+            &store,
+            "zeabur/backend",
+            2382,
+            "F1",
+            "h",
+            "yuaanlin",
+            "accepted",
+            now_unix() + 86_400,
+        )
+        .unwrap() else {
+            panic!("first waive lands");
+        };
+        let WaiveAdmission::AlreadyWaived(row, linked) = SqliteStore::waive_review_finding(
+            &store,
+            "zeabur/backend",
+            2382,
+            "F1",
+            "h",
+            "someone-else",
+            "again",
+            now_unix() + 86_400,
+        )
+        .unwrap() else {
+            panic!("second waive must be refused as already waived");
+        };
+        // Untouched: same decider, same reason, same linked waiver.
+        assert_eq!(row.decided_by.as_deref(), Some("yuaanlin"));
+        assert_eq!(row.decided_reason.as_deref(), Some("accepted"));
+        assert_eq!(row.waiver_id.as_deref(), Some(first.id.as_str()));
+        assert_eq!(linked.map(|waiver| waiver.id), Some(first.id.clone()));
+        let all =
+            futures_block_on(store.list_review_waivers(Some("zeabur/backend"), true, now_unix()))
+                .unwrap();
+        assert_eq!(all.len(), 1, "one waiver total, nothing orphaned");
+
+        // The council's full sequence: waive twice, then reopen and revoke
+        // the linked waiver (the caller's job) — zero active waivers remain.
+        let reopened = SqliteStore::decide_review_finding(
+            &store,
+            "zeabur/backend",
+            2382,
+            "F1",
+            "h",
+            "open",
+            "yuaanlin",
+            Some("undo"),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(futures_block_on(store.update_review_waiver(
+            reopened.waiver_id.as_deref().unwrap(),
+            None,
+            true
+        ))
+        .unwrap());
+        let active =
+            futures_block_on(store.list_review_waivers(Some("zeabur/backend"), false, now_unix()))
+                .unwrap();
+        assert!(active.is_empty(), "no active waiver survives the undo");
+    }
+
+    #[test]
+    fn a_waive_on_a_moved_head_writes_nothing_at_all() {
+        // The compare-and-swap must cover the waiver too: a stale waive that
+        // still minted a repo-scoped suppression would silence rounds on code
+        // nobody reviewed — worse than the stale dismiss it guards against.
+        let store = SqliteStore::memory().unwrap();
+        store
+            .record_review_findings(
+                "ses_1",
+                "zeabur/backend",
+                2382,
+                Some("head-old"),
+                &[finding("F1", "red")],
+            )
+            .unwrap();
+        assert_eq!(
+            SqliteStore::waive_review_finding(
+                &store,
+                "zeabur/backend",
+                2382,
+                "F1",
+                "head-new",
+                "yuaanlin",
+                "reason",
+                now_unix() + 86_400,
+            )
+            .unwrap(),
+            WaiveAdmission::NoMatch
+        );
+        let waivers =
+            futures_block_on(store.list_review_waivers(Some("zeabur/backend"), true, now_unix()))
+                .unwrap();
+        assert!(waivers.is_empty(), "no waiver may survive a missed CAS");
+        let rows = SqliteStore::review_findings(
+            &store,
+            &crate::store::ReviewFindingQuery {
+                repo: Some("zeabur/backend".into()),
+                pr_number: Some(2382),
+                status: None,
+                severity: None,
+                limit: 10,
+            },
+        )
+        .unwrap();
+        assert_eq!(rows[0].status, "open");
+    }
+
+    /// The store trait is async but SQLite's methods are sync underneath;
+    /// tests that need a trait-only method borrow a tiny executor.
+    fn futures_block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(future)
     }
 
     #[test]

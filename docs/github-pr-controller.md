@@ -91,7 +91,10 @@ hourly.
 The controller recognizes non-draft PR `opened`, `reopened`,
 `ready_for_review`, and `synchronize` events, plus trusted PR comments using
 `/review`, `/ask`, a leading configured bot mention, or a judgement on a
-finding (`dismiss F<n> <why>` / `reopen F<n>`, ADR 038). `OWNER`, `MEMBER`, and
+finding (`dismiss F<n> <why>` / `waive F<n> <why>` / `reopen F<n>`, ADR 038 —
+`dismiss` says the finding is wrong, `waive` accepts it as a real defect and
+mints a repo-scoped, expiring waiver that future rounds see; `reopen` undoes
+either and revokes the waiver a waive minted). `OWNER`, `MEMBER`, and
 `COLLABORATOR` associations are trusted. The `oab-review` label is the
 maintainer opt-in for other PR authors.
 

@@ -39,12 +39,14 @@ pub struct Trigger {
 pub struct FindingCommand {
     pub repository: String,
     pub pr_number: u64,
-    /// `dismiss` — "this is not a defect"; `reopen` — undo a dismissal.
+    /// `dismiss` — "this is not a defect"; `waive` — "it is a defect and we
+    /// accept it" (ADR 038 v2); `reopen` — undo either.
     pub verb: String,
     /// The `F<n>` label as it appears in the verdict comment.
     pub stable_id: String,
-    /// The author's stated reason. Required for `dismiss`: a judgement with no
-    /// reason is unauditable, and the reason is the whole value of the record.
+    /// The author's stated reason. Required for `dismiss` and `waive`: a
+    /// judgement with no reason is unauditable, and the reason is the whole
+    /// value of the record. The refusal happens downstream where it can reply.
     pub reason: Option<String>,
     pub comment_id: u64,
     pub author_trusted: bool,
@@ -681,7 +683,7 @@ pub fn parse_finding_command(
 /// because a typo must produce a reply, not a silent miss.
 fn parse_verb(comment: &str, handles: &[String]) -> Option<(String, String, Option<String>)> {
     let rest = leading_mention(comment, handles)?;
-    let (verb, rest) = ["dismiss", "reopen"]
+    let (verb, rest) = ["dismiss", "waive", "reopen"]
         .into_iter()
         .find_map(|verb| strip_ci_word(rest, verb).map(|rest| (verb, rest)))?;
     let mut parts = rest.splitn(2, char::is_whitespace);
@@ -704,7 +706,7 @@ fn parse_ask(comment: &str, handles: &[String]) -> Option<String> {
         }
     }
     let rest = leading_mention(comment, handles)?;
-    if ["review", "full", "dismiss", "reopen"]
+    if ["review", "full", "dismiss", "waive", "reopen"]
         .into_iter()
         .any(|word| strip_ci_word(rest, word).is_some())
     {
@@ -754,6 +756,35 @@ mod tests {
     }
 
     #[test]
+    fn waive_carries_the_finding_and_the_reason() {
+        // ADR 038 v2: "it is a defect and we accept it" — same grammar as
+        // dismiss, different claim.
+        let event = comment_event("@bot waive F3 eval traffic only, capped upstream", "MEMBER");
+        let cmd = parse_finding_command("issue_comment", &event, &handles()).unwrap();
+        assert_eq!(cmd.verb, "waive");
+        assert_eq!(cmd.stable_id, "F3");
+        assert_eq!(
+            cmd.reason.as_deref(),
+            Some("eval traffic only, capped upstream")
+        );
+    }
+
+    #[test]
+    fn waive_without_a_reason_still_parses_so_the_refusal_can_name_it() {
+        // The reason is mandatory, but the parser is not where refusals
+        // happen: eating the command here would leave the author no reply at
+        // all (ADR 025), or worse, hand it to the ask catch-all.
+        let event = comment_event("@bot waive F3", "MEMBER");
+        let cmd = parse_finding_command("issue_comment", &event, &handles()).unwrap();
+        assert_eq!(cmd.verb, "waive");
+        assert_eq!(cmd.reason, None);
+        assert!(
+            parse_trigger("issue_comment", &event, &handles()).is_none(),
+            "a reasonless waive must not burn a session as an ask"
+        );
+    }
+
+    #[test]
     fn reopen_needs_no_reason_and_the_id_is_case_insensitive() {
         let event = comment_event("@bot reopen f12", "OWNER");
         let cmd = parse_finding_command("issue_comment", &event, &handles()).unwrap();
@@ -768,7 +799,11 @@ mod tests {
     fn a_command_never_falls_through_to_the_ask_catch_all() {
         // Without the guard this burns a session asking the chair about its
         // own finding instead of dismissing it.
-        for body in ["@bot dismiss F1 reason", "@bot reopen F1"] {
+        for body in [
+            "@bot dismiss F1 reason",
+            "@bot waive F1 reason",
+            "@bot reopen F1",
+        ] {
             let event = comment_event(body, "MEMBER");
             assert!(
                 parse_trigger("issue_comment", &event, &handles()).is_none(),
