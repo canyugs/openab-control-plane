@@ -37,7 +37,7 @@ getrandom = "0.4"
 subtle = "2"
 tokio-postgres = "0.7"
 deadpool-postgres = "0.14"
-tokio-postgres-rustls = "0.13"
+tokio-postgres-rustls = "0.14"
 rustls-native-certs = "0.8.4"
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 
