@@ -79,8 +79,34 @@ pub fn plan_close(
     parsed: &ParsedResult,
     comment_id: Option<i64>,
     session_id: &str,
+    is_ask: bool,
 ) -> ClosingPlan {
     let marker = round_marker(session_id);
+    if is_ask {
+        // A follow-up question, not a review round (SEI-929). Its settled final
+        // message IS the answer — the ask template forbids tool narration and
+        // self-posting — so post it as a plain comment with no verdict, no
+        // status, and no review. No "no parseable verdict" warning either: an
+        // ask legitimately has no verdict.
+        return ClosingPlan {
+            decision: "ask".to_string(),
+            red: 0,
+            yellow: 0,
+            green: 0,
+            head_sha: target.head_sha.clone(),
+            findings: vec![],
+            fired_waivers: vec![],
+            writes: vec![(
+                KIND_COMMENT,
+                json!({
+                    "repo": target.repo,
+                    "pr_number": target.pr_number,
+                    "comment_id": comment_id,
+                    "body": format!("{}\n\n{marker}", answer_body(parsed)),
+                }),
+            )],
+        };
+    }
     let trailer = parsed.trailer.as_ref();
     let (red, yellow, green) = trailer
         .map(|t| {
@@ -237,10 +263,95 @@ fn review_body(trailer: &VerdictTrailer, reviewed_sha: Option<&str>) -> String {
     )
 }
 
+/// The follow-up answer as posted (SEI-929). The settled final message is the
+/// answer; only machine tails are removed — a trailing `[done]` and any stray
+/// `[[verdict:…]]` line the model added out of habit. No council anchor and no
+/// "no verdict" warning: an ask legitimately has neither. An empty answer
+/// becomes a short notice, never a blank comment.
+fn answer_body(parsed: &ParsedResult) -> String {
+    let text = parsed.source.trim_end();
+    let mut lines: Vec<&str> = text.lines().collect();
+    if let Some(at) = lines.iter().position(|line| line.contains("[[verdict:")) {
+        lines.truncate(at);
+    }
+    while let Some(last) = lines.last() {
+        let stripped = last.trim();
+        if stripped.is_empty() || stripped == "[done]" {
+            lines.pop();
+        } else {
+            break;
+        }
+    }
+    // The ask path has no report anchor, so the template is its primary boundary
+    // — but a misbehaving agent can still narrate. Drop the structured machine
+    // shapes the template forbids (the CLI's `✅ `…`` tool/task echoes and the
+    // runtime error banner) as a fail-closed floor (review #395 F1). Free-form
+    // prose cannot be denylisted, so this is a floor, not a fence.
+    lines.retain(|line| !is_machine_noise_line(line));
+    let body = unfence_tables(lines).join("\n").trim().to_string();
+    if body.is_empty() {
+        return "This follow-up produced no answer.".to_string();
+    }
+    body
+}
+
+/// A structured runtime/CLI transcript line, not model output: the Kiro CLI's
+/// `✅ `…`` tool/task-list echo, or the prepended agent-error banner. These have
+/// stable shapes (unlike free-form narration), so they can be positively
+/// recognised and dropped from an ask answer.
+fn is_machine_noise_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.starts_with("✅ `") {
+        return true;
+    }
+    if t.starts_with('\u{26A0}') {
+        let lc = t.to_ascii_lowercase();
+        return lc.contains("-32603") || lc.contains("internal error");
+    }
+    false
+}
+
 /// Where the chair's report begins. The task template requires the verdict
 /// comment to start with this line, which makes it a protocol anchor: anything
 /// before it in the settled text is working noise, not report.
 const REPORT_START: &str = "<!-- openab-council -->";
+
+/// Posted when the session closed with no verdict we can stand behind.
+const NO_VERDICT_NOTICE: &str = "⚠️ The council closed without a parseable verdict. \
+     No formal review was submitted.";
+
+/// The structured findings block by its own delimiters. It survives an
+/// anchorless close because — unlike the free-form report prose — it has stable
+/// markers, so it can be lifted out of a broken settled text and kept with the
+/// degraded comment to keep the round self-describing.
+fn findings_block(text: &str) -> Option<&str> {
+    let start = text.find("<!-- openab-findings")?;
+    let end = text[start..].find("-->").map(|rel| start + rel + 3)?;
+    Some(&text[start..end])
+}
+
+/// The comment for an anchorless close that still parsed a verdict (a chair
+/// whose synthesis turn failed mid-write). We refuse to publish the raw text,
+/// but the verdict and findings are structured data we trust — the status and
+/// review are posted from the same trailer — so the comment states the verdict
+/// and carries the findings block, without the lost report prose.
+fn degraded_body(trailer: &VerdictTrailer, findings: Option<&str>) -> String {
+    let mut body = format!(
+        "⚠️ The council reached **{}** — 🔴{} 🟡{} 🟢{} — but its written report \
+         could not be recovered (the synthesis turn failed mid-write). The \
+         verdict and findings stand; comment `@opencodezebra review` to re-run \
+         the council for a full report.",
+        trailer.decision,
+        trailer.red.unwrap_or_default(),
+        trailer.yellow.unwrap_or_default(),
+        trailer.green.unwrap_or_default(),
+    );
+    if let Some(block) = findings {
+        body.push_str("\n\n");
+        body.push_str(block);
+    }
+    body
+}
 
 /// The chair's report is the comment. The settled text arrives with working
 /// noise around it — the Kiro CLI transcribes its tool calls into message
@@ -257,16 +368,26 @@ fn comment_body(parsed: &ParsedResult, trailer: Option<&VerdictTrailer>) -> Stri
     // settled text, and anchoring there published 4KB of tool transcript), and
     // the protocol puts the real report last. A re-draft supersedes its draft
     // the same way.
-    let text = match text.rfind(REPORT_START) {
-        Some(at) => &text[at..],
-        // No anchor, nothing to trust as "the report" — keep everything.
-        None => text,
+    //
+    // The anchor is authoritative: it is the ONLY marker that says "the report
+    // starts here". Without it we cannot separate report from working-noise —
+    // not by denylisting tool lines (the chair's free-form narration has no
+    // stable shape and reads exactly like report prose), so we must never
+    // publish the raw text. A mid-synthesis error is the real no-anchor case:
+    // the runtime prepends a banner and the chair never emits the anchor
+    // (backend#2418 round 4, a -32603 error that leaked the whole transcript;
+    // infra-zeabur-system#208, a Solo follow-up). Rebuild from structured data.
+    let Some(at) = text.rfind(REPORT_START) else {
+        return match trailer {
+            None => NO_VERDICT_NOTICE.to_string(),
+            Some(t) => degraded_body(t, findings_block(text)),
+        };
     };
+    let text = &text[at..];
     if trailer.is_none() {
-        return format!(
-            "{text}\n\n---\n⚠️ The council closed without a parseable verdict. \
-             No formal review was submitted."
-        );
+        // A real report (it has the anchor) that only failed to emit its
+        // verdict line — keep it, flag the missing verdict below.
+        return format!("{text}\n\n---\n{NO_VERDICT_NOTICE}");
     }
     let mut lines: Vec<&str> = text.lines().collect();
     // The report ends at its trailer. Anything after that line is working
@@ -329,6 +450,7 @@ mod tests {
             repo: "example/repo".into(),
             pr_number: 7,
             head_sha: Some("openingsha".into()),
+            reason: None,
         }
     }
 
@@ -347,8 +469,10 @@ mod tests {
 
     #[test]
     fn an_approve_becomes_a_comment_a_success_status_and_a_formal_approval() {
-        let parsed = parse_final_messages(&["LGTM\n[[verdict:approve r=0 y=0 g=2]] [done]".into()]);
-        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let parsed = parse_final_messages(
+            &["<!-- openab-council -->\nLGTM\n[[verdict:approve r=0 y=0 g=2]] [done]".into()],
+        );
+        let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_STATUS, KIND_REVIEW]);
         assert_eq!(plan.decision, "approve");
         assert_eq!((plan.red, plan.yellow, plan.green), (0, 0, 2));
@@ -362,7 +486,7 @@ mod tests {
         assert_eq!(write(&plan, KIND_REVIEW)["event"], "APPROVE");
         assert_eq!(
             write(&plan, KIND_COMMENT)["body"],
-            format!("LGTM\n\n{}", round_marker("ses_t")),
+            format!("<!-- openab-council -->\nLGTM\n\n{}", round_marker("ses_t")),
             "the comment carries its round marker"
         );
     }
@@ -386,7 +510,7 @@ mod tests {
              ```\n\
              [[verdict:request_changes r=0 y=1 g=0]] [done]";
         let parsed = parse_final_messages(&[report.into()]);
-        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(!body.contains("```\n| ID"), "table header unfenced");
         assert!(body.contains("| ID | Severity | Title |\n| -- | -------- | ----- |"));
@@ -411,7 +535,7 @@ mod tests {
              -->\n\
              [[verdict:approve r=0 y=0 g=1]] [done]";
         let parsed = parse_final_messages(&[synthesis.into(), closing.into()]);
-        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(
             body.starts_with("<!-- openab-council -->"),
@@ -445,7 +569,7 @@ mod tests {
              ## Findings\n\n| F1 | 🟡 | real |\n\n\
              [[verdict:request_changes r=0 y=1 g=0]] [done]";
         let parsed = parse_final_messages(&[noisy.into()]);
-        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(
             body.starts_with("<!-- openab-council -->\nCHANGES REQUESTED ⚠️ — the real report."),
@@ -472,7 +596,7 @@ mod tests {
             one_draft_then_noise.into(),
             "footer\n[[verdict:request_changes r=0 y=2 g=1]] [done]".into(),
         ]);
-        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(
             !body.contains("octobroker") && !body.contains("Let me fetch"),
@@ -491,7 +615,7 @@ mod tests {
              CHANGES REQUESTED ⚠️ — the final draft.\n\
              [[verdict:request_changes r=0 y=2 g=1]] [done]";
         let parsed = parse_final_messages(&[redraft.into()]);
-        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(
             body.contains("the final draft") && !body.contains("superseded draft"),
@@ -508,7 +632,7 @@ mod tests {
         let parsed = parse_final_messages(&[
             "report\n<!-- openab-findings\n{\"head_sha\":\"feedc0de\",\"findings\":[]}\n-->\n[[verdict:approve r=0 y=0 g=1]] [done]".into(),
         ]);
-        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_REVIEW)["body"].as_str().unwrap();
         assert!(
             body.contains("Reviewed at feedc0de"),
@@ -522,7 +646,7 @@ mod tests {
         // the counts already overrode the word in the parser.
         let parsed =
             parse_final_messages(&["report\n[[verdict:approve r=0 y=1 g=2]] [done]".into()]);
-        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         assert_eq!(plan.decision, "request_changes");
         assert_eq!(write(&plan, KIND_STATUS)["state"], "failure");
         assert_eq!(write(&plan, KIND_REVIEW)["event"], "REQUEST_CHANGES");
@@ -531,7 +655,7 @@ mod tests {
     #[test]
     fn an_unparseable_close_says_so_and_submits_no_review() {
         let parsed = parse_final_messages(&["the council rambled and stopped".into()]);
-        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_STATUS]);
         assert_eq!(plan.decision, "unknown");
         assert_eq!(write(&plan, KIND_STATUS)["state"], "error");
@@ -539,6 +663,132 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("without a parseable verdict"));
+    }
+
+    #[test]
+    fn an_anchorless_unparseable_close_never_publishes_the_transcript() {
+        // A Solo follow-up (@bot reply) whose settled text is a raw Kiro
+        // transcript with no report anchor and no verdict must not be dumped
+        // into the PR — infra-zeabur-system#208 leaked 7KB of tool log this way.
+        let transcript =
+            "✅ Running: gh pr diff 208\n<thinking>secret plan</thinking>\nanswer.md\n[done]";
+        let parsed = parse_final_messages(&[transcript.into()]);
+        let plan = plan_close(&target(), &parsed, None, "ses_t", false);
+        let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
+        assert!(body.contains("without a parseable verdict"));
+        assert!(
+            !body.contains("Running") && !body.contains("thinking"),
+            "raw transcript leaked into the comment: {body}"
+        );
+    }
+
+    #[test]
+    fn an_anchored_close_missing_only_its_trailer_keeps_the_report() {
+        // The other no-trailer case: a real report (has the anchor) that just
+        // failed to emit a verdict line. That body is trustworthy — keep it.
+        let parsed = parse_final_messages(&[format!(
+            "noise before\n{REPORT_START}\nThe report body says X."
+        )]);
+        let plan = plan_close(&target(), &parsed, None, "ses_t", false);
+        let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
+        assert!(body.contains("The report body says X."));
+        assert!(!body.contains("noise before"));
+        assert!(body.contains("without a parseable verdict"));
+    }
+
+    #[test]
+    fn an_ask_close_posts_only_a_plain_answer_comment() {
+        // A follow-up (@bot <question>): the settled message is the answer.
+        // No status, no review, no verdict warning — just the comment (SEI-929).
+        let parsed = parse_final_messages(&[
+            "Regarding F1: the mapping is keyed by request region, so cgk1 is correct.\n[done]"
+                .into(),
+        ]);
+        let plan = plan_close(&target(), &parsed, None, "ses_ask", true);
+        assert_eq!(kinds(&plan), [KIND_COMMENT]);
+        assert_eq!(plan.decision, "ask");
+        let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
+        assert!(body.contains("cgk1 is correct"));
+        assert!(!body.contains("[done]"), "machine tail leaked: {body}");
+        assert!(
+            !body.contains("parseable verdict"),
+            "ask has no verdict — must not warn: {body}"
+        );
+    }
+
+    #[test]
+    fn an_ask_close_strips_a_stray_verdict_trailer_the_model_added() {
+        let parsed = parse_final_messages(&[
+            "Short answer here.\n[[verdict:approve r=0 y=0 g=0]]\n[done]".into(),
+        ]);
+        let plan = plan_close(&target(), &parsed, None, "ses_ask", true);
+        let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
+        assert!(body.contains("Short answer here."));
+        assert!(!body.contains("[[verdict:"), "verdict trailer leaked: {body}");
+        assert_eq!(kinds(&plan), [KIND_COMMENT]);
+    }
+
+    #[test]
+    fn an_ask_answer_strips_leaked_machine_noise_lines() {
+        // #395 F1: the template forbids tool narration, but if the agent emits
+        // it anyway the known machine shapes (`✅ `…`` echoes, error banner) are
+        // dropped as a fail-closed floor; the real answer survives.
+        let parsed = parse_final_messages(&[concat!(
+            "⚠️ **Internal Error** (code: -32603)\n",
+            "✅ `Running: gh pr view 208`\n",
+            "The answer is that cgk1 is a request region.\n",
+            "✅ `Completing #1`\n",
+            "[done]"
+        )
+        .into()]);
+        let plan = plan_close(&target(), &parsed, None, "ses_ask", true);
+        let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
+        assert!(body.contains("cgk1 is a request region"));
+        assert!(
+            !body.contains("Running") && !body.contains("Internal Error") && !body.contains("✅"),
+            "machine noise leaked: {body}"
+        );
+    }
+
+    #[test]
+    fn an_empty_ask_close_posts_a_notice_not_a_blank_comment() {
+        let parsed = parse_final_messages(&["[done]".into()]);
+        let plan = plan_close(&target(), &parsed, None, "ses_ask", true);
+        let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
+        assert!(body.contains("produced no answer"), "got: {body}");
+    }
+
+    #[test]
+    fn an_anchorless_close_with_a_verdict_posts_a_summary_not_the_transcript() {
+        // backend#2418 round 4: a -32603 mid-synthesis error prepended an error
+        // banner and a tool transcript, the chair never emitted the council
+        // anchor, but a verdict still parsed. The comment must carry the verdict
+        // and findings — never the banner or the transcript.
+        let parsed = parse_final_messages(&[concat!(
+            "⚠️ **Internal Error** (code: -32603)\n",
+            "✅ `Running: octobroker-mcp call pull_request_read`\n",
+            "Received rev-codex's report. Waiting for rev-claude.\n",
+            "<!-- openab-findings\n",
+            "{\"head_sha\":\"96f66e1\",\"findings\":[{\"id\":\"F7\",\"severity\":\"green\",\"title\":\"skip\"}]}\n-->\n",
+            "[[verdict:approve r=0 y=0 g=2]] [done]"
+        )
+        .into()]);
+        let plan = plan_close(&target(), &parsed, None, "ses_r4", false);
+        // Verdict still drives status + review.
+        assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_STATUS, KIND_REVIEW]);
+        let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
+        assert!(
+            !body.contains("Internal Error")
+                && !body.contains("Running")
+                && !body.contains("rev-claude"),
+            "banner/transcript leaked: {body}"
+        );
+        assert!(body.contains("approve"), "verdict summary missing: {body}");
+        assert!(
+            body.contains("openab-findings") && body.contains("F7"),
+            "findings block should survive: {body}"
+        );
+        assert!(!body.contains("[[verdict:"), "raw trailer leaked: {body}");
     }
 
     #[test]
@@ -554,7 +804,7 @@ mod tests {
             "[[verdict:request_changes r=0 y=1 g=0]] [done]"
         )
         .into()]);
-        let plan = plan_close(&target(), &parsed, None, "ses_t");
+        let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         assert_eq!(plan.head_sha.as_deref(), Some("reviewedsha"));
         assert_eq!(
             write(&plan, KIND_STATUS)["sha"],
@@ -568,7 +818,7 @@ mod tests {
     #[test]
     fn a_known_comment_id_turns_the_comment_into_an_upsert() {
         let parsed = parse_final_messages(&["LGTM\n[[verdict:approve r=0 y=0 g=1]] [done]".into()]);
-        let plan = plan_close(&target(), &parsed, Some(4242), "ses_t");
+        let plan = plan_close(&target(), &parsed, Some(4242), "ses_t", false);
         assert_eq!(write(&plan, KIND_COMMENT)["comment_id"], 4242);
     }
 
@@ -577,23 +827,23 @@ mod tests {
         let mut target = target();
         target.head_sha = None;
         let parsed = parse_final_messages(&["LGTM\n[[verdict:approve r=0 y=0 g=1]] [done]".into()]);
-        let plan = plan_close(&target, &parsed, None, "ses_t");
+        let plan = plan_close(&target, &parsed, None, "ses_t", false);
         assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_REVIEW]);
     }
 
     #[test]
     fn the_comment_drops_machine_tails_but_keeps_the_findings_block() {
         let parsed = parse_final_messages(&[concat!(
-            "## Verdict\n\nprose here\n\n",
+            "<!-- openab-council -->\n## Verdict\n\nprose here\n\n",
             "<!-- openab-findings\n{\"findings\":[]}\n-->\n",
             "[[verdict:approve r=0 y=0 g=0]] [done]"
         )
         .into()]);
-        let body = write(&plan_close(&target(), &parsed, None, "ses_t"), KIND_COMMENT)["body"]
+        let body = write(&plan_close(&target(), &parsed, None, "ses_t", false), KIND_COMMENT)["body"]
             .as_str()
             .unwrap()
             .to_string();
-        assert!(body.starts_with("## Verdict"));
+        assert!(body.starts_with("<!-- openab-council -->\n## Verdict"));
         assert!(
             body.contains("openab-findings"),
             "block is invisible, keep it"

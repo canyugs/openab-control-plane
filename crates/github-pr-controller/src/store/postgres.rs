@@ -229,6 +229,9 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_recorded ON audit_events(recorded_at
     // is exactly the history ADR 038's "a waiver renewed twice is a rule
     // wearing a waiver's clothes" classifier reads.
     "ALTER TABLE review_waivers ADD COLUMN IF NOT EXISTS renewal_count BIGINT NOT NULL DEFAULT 0;",
+    // 9 — SEI-929: ask (follow-up) sessions post a plain answer, not a verdict.
+    // Older rows have NULL reason and read as council, the safe default.
+    "ALTER TABLE session_targets ADD COLUMN IF NOT EXISTS reason TEXT;",
 ];
 
 /// Serializes concurrent boots racing the migration list; any constant that
@@ -793,18 +796,20 @@ impl ProductStore for PostgresStore {
         repo: &str,
         pr_number: i64,
         head_sha: Option<&str>,
+        reason: Option<&str>,
     ) -> StoreResult<()> {
         let client = self.client().await?;
         client
             .execute(
                 "INSERT INTO session_targets
-                   (session_id, repo, pr_number, head_sha, created_at)
-                 VALUES ($1, $2, $3, $4, $5)
+                   (session_id, repo, pr_number, head_sha, reason, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6)
                  ON CONFLICT (session_id) DO UPDATE SET
                    repo = excluded.repo,
                    pr_number = excluded.pr_number,
-                   head_sha = COALESCE(excluded.head_sha, session_targets.head_sha)",
-                &[&session_id, &repo, &pr_number, &head_sha, &now_unix()],
+                   head_sha = COALESCE(excluded.head_sha, session_targets.head_sha),
+                   reason = COALESCE(excluded.reason, session_targets.reason)",
+                &[&session_id, &repo, &pr_number, &head_sha, &reason, &now_unix()],
             )
             .await?;
         Ok(())
@@ -814,7 +819,7 @@ impl ProductStore for PostgresStore {
         let client = self.client().await?;
         Ok(client
             .query_opt(
-                "SELECT repo, pr_number, head_sha FROM session_targets WHERE session_id = $1",
+                "SELECT repo, pr_number, head_sha, reason FROM session_targets WHERE session_id = $1",
                 &[&session_id],
             )
             .await?
@@ -822,6 +827,7 @@ impl ProductStore for PostgresStore {
                 repo: row.get(0),
                 pr_number: row.get(1),
                 head_sha: row.get(2),
+                reason: row.get(3),
             }))
     }
 

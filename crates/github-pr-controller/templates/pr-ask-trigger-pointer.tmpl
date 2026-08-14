@@ -15,11 +15,16 @@ question is empty, give a short summary of the PR and its main risks.
 
 If the question asks for a re-review or another review round, answer: push new commits or comment `/review` to trigger a re-review round. Do not attempt to perform the review inside this ask session.
 
-Post your answer as a NEW comment (this is a conversation reply, NOT the review
-verdict — do NOT touch the verdict comment, do NOT use --edit-last). Write the body to
-a file first, then:
-  1. Write your answer to /tmp/answer.md (use your file-writing tool, not an inline --body string).
-  2. gh pr comment {{NUM}} --repo {{REPO}} --body-file /tmp/answer.md
+HOW YOUR ANSWER IS PUBLISHED — read carefully:
+The control plane posts your FINAL MESSAGE verbatim as a new PR comment. You do NOT post
+it yourself. Therefore:
+  - Do NOT run `gh pr comment`, do NOT write to /tmp/answer.md, do NOT try to post,
+    edit, or touch any comment. You have no GitHub write access and none is needed.
+  - Your final message must be ONLY the reader-facing answer, in Markdown. No tool-call
+    narration, no step-by-step log, no "I ran / I checked / I found" scaffolding, no
+    file paths, no environment or auth notes, no verdict trailer.
+  - This is a conversation reply, not the review verdict — do not restate the verdict.
 
-End your final message with the token [done] (on its own, at the end) — that is what
-closes this follow-up session. Send it exactly once, when you have posted the answer.
+End your final message with the token [done] (on its own line, at the very end) — that
+is what closes this follow-up session and publishes the answer above it. Send it exactly
+once, when your answer is complete.
