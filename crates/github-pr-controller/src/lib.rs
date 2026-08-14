@@ -2106,6 +2106,9 @@ async fn dispatch_terminal(
             }
         }
         tracing::info!(session_id, "ask follow-up answer queued");
+        // Post now, not on the next 60 s sweep — the same event-driven drain the
+        // council path fires after enqueue (review #395 F2).
+        spawn_write_drain(state);
         return true;
     }
 

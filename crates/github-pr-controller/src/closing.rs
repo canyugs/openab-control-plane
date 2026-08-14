@@ -282,11 +282,33 @@ fn answer_body(parsed: &ParsedResult) -> String {
             break;
         }
     }
+    // The ask path has no report anchor, so the template is its primary boundary
+    // — but a misbehaving agent can still narrate. Drop the structured machine
+    // shapes the template forbids (the CLI's `✅ `…`` tool/task echoes and the
+    // runtime error banner) as a fail-closed floor (review #395 F1). Free-form
+    // prose cannot be denylisted, so this is a floor, not a fence.
+    lines.retain(|line| !is_machine_noise_line(line));
     let body = unfence_tables(lines).join("\n").trim().to_string();
     if body.is_empty() {
         return "This follow-up produced no answer.".to_string();
     }
     body
+}
+
+/// A structured runtime/CLI transcript line, not model output: the Kiro CLI's
+/// `✅ `…`` tool/task-list echo, or the prepended agent-error banner. These have
+/// stable shapes (unlike free-form narration), so they can be positively
+/// recognised and dropped from an ask answer.
+fn is_machine_noise_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.starts_with("✅ `") {
+        return true;
+    }
+    if t.starts_with('\u{26A0}') {
+        let lc = t.to_ascii_lowercase();
+        return lc.contains("-32603") || lc.contains("internal error");
+    }
+    false
 }
 
 /// Where the chair's report begins. The task template requires the verdict
@@ -704,6 +726,28 @@ mod tests {
         assert!(body.contains("Short answer here."));
         assert!(!body.contains("[[verdict:"), "verdict trailer leaked: {body}");
         assert_eq!(kinds(&plan), [KIND_COMMENT]);
+    }
+
+    #[test]
+    fn an_ask_answer_strips_leaked_machine_noise_lines() {
+        // #395 F1: the template forbids tool narration, but if the agent emits
+        // it anyway the known machine shapes (`✅ `…`` echoes, error banner) are
+        // dropped as a fail-closed floor; the real answer survives.
+        let parsed = parse_final_messages(&[concat!(
+            "⚠️ **Internal Error** (code: -32603)\n",
+            "✅ `Running: gh pr view 208`\n",
+            "The answer is that cgk1 is a request region.\n",
+            "✅ `Completing #1`\n",
+            "[done]"
+        )
+        .into()]);
+        let plan = plan_close(&target(), &parsed, None, "ses_ask", true);
+        let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
+        assert!(body.contains("cgk1 is a request region"));
+        assert!(
+            !body.contains("Running") && !body.contains("Internal Error") && !body.contains("✅"),
+            "machine noise leaked: {body}"
+        );
     }
 
     #[test]
