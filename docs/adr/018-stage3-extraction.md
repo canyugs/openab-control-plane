@@ -8,6 +8,36 @@ review of the S1 PR. Amends [ADR 007](007-control-plugins-and-oab-father.md),
 proposed → accepted-as-amended in the same PR) and the boundary review's
 verdict-column phrasing (boundary-review-2026-07.md, "verdict columns move
 with the Stage 3 plugin").
+Amended by [ADR 031](031-provider-neutral-kernel.md) (ratified 2026-08-14):
+the same-crate compatibility implementation these rulings govern has since
+been removed — see Amendment below.
+
+> **Amendment (2026-08-14, ADR 031 ratification) — the Stage 3 compatibility
+> implementation is gone; the GitHub-residue exit triggers fired.** This ADR
+> remains the historical Stage 3 ruling (ADR 031 keeps it as the migration
+> starting point), but the shipped kernel has moved past several of its
+> surfaces:
+>
+> - **Ruling 2's `review_council` arm went with the embedded plugin.** The
+>   external `github-pr-controller` took GitHub ingress and writes at the
+>   2026-07-31 prod cutover; the embedded ingress was deleted in v0.1.67 after
+>   zero-use evidence on both lanes (ADR 031 invariant #9, #361); the v0.1.70
+>   kernel slim (#366) renamed `plugins/pr_review` to the generic
+>   `plugins/council`. `coordinator::lookup("review_council")` now returns
+>   `None`, guarded by the S9 fail-loud unknown-mode dispatch. The S12 grep
+>   gate outlived the plugin as the permanent kernel-purity gate in CI.
+> - **Ruling 4's "M4 plugin-owned findings table" was overtaken by ADR 031
+>   §6:** findings are controller product state, not plane state. The findings
+>   ledger moved to `github-pr-controller` (SEI-895, #364) and
+>   `pr_review_findings` is dropped from the plane's schemas.
+> - **The residue ledger's "ADR 008 transport era, if it fires" trigger
+>   fired.** The review lookup arm is deleted; the generic `triage_council`
+>   arm remains by design (dispatch safety).
+>
+> Ruling 6's frozen v1 wire contracts and the ADR 013 verdict columns
+> (Rulings 3/4 storage, `set_session_verdict`) remain live kernel surfaces:
+> ADR 031 §8 deprecates review-shaped compatibility contracts with live
+> consumers; it does not delete them.
 
 ## Context
 

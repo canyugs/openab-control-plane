@@ -5,7 +5,26 @@ at Stage 3 S1; amendments in [ADR 018](018-stage3-extraction.md): the
 in-process ControllerAction structs are the v1 action vocabulary
 (OpenSession/PostMessage implemented; AddRoster/CloseSession/EmitStatus
 reserved with pinned serialized shapes); the external transport stays dormant
-until a plugin needs independent deploy cadence or a third-party author appears
+until a plugin needs independent deploy cadence or a third-party author appears.
+Further amended by [ADR 031](031-provider-neutral-kernel.md) (ratified
+2026-08-14): controllers own raw provider ingress — see Amendment below.
+
+> **Amendment (2026-08-14, ADR 031 ratification) — controllers own raw
+> ingress; OCP emits only generic runtime events.** The Decision diagram and
+> "Event Delivery" below have raw provider webhooks terminating at OCP, which
+> then sends *signed normalized provider events* to the controller. ADR 031 §2
+> reverses that direction on the shipped path: raw GitHub webhooks terminate
+> at the external `github-pr-controller`, and OCP never parses or normalizes a
+> provider payload (prod cutover 2026-07-31; the embedded GitHub ingress was
+> deleted in v0.1.67, ADR 031 invariant #9). The delivery envelope specified
+> below — HMAC signing, skew/replay windows, retry budget, dead-letter —
+> survives as the transport for OCP's *generic runtime events* (session
+> progress, close, timeout, action failure), not for provider events. The
+> "Bundled Controllers" stage is likewise closed: the bundled path was deleted
+> rather than externalized in place (v0.1.67 #361, v0.1.70 kernel slim #366).
+> Everything else — the declarative action contract, install-scoped tokens,
+> idempotency, opaque `trigger_ref`, manifests/grants, quotas — is the live
+> shipped model.
 
 ## Context
 
@@ -60,6 +79,11 @@ prompt to send, and which side effects it expects pods or controller-owned tools
 to perform.
 
 ## Event Delivery
+
+> Amended by ADR 031 §2 (2026-08-14): OCP does not deliver normalized
+> provider events on the shipped path — the controller owns raw ingress and
+> provider parsing. The signing and delivery rules below apply to OCP's
+> generic runtime events. See the Amendment at the top.
 
 OCP sends normalized events to a controller endpoint. Raw provider webhooks may
 be retained for audit/debug, but the v1 controller contract is not "parse
@@ -297,6 +321,11 @@ Controller registrations start in typed tables, not an untyped CRD blob table:
 - `controller_action_idempotency`
 
 ## Bundled Controllers
+
+> Superseded by ADR 031 §7 and invariant #9 (2026-08-14): the bundled stage
+> completed and the embedded path was deleted (v0.1.67 #361, v0.1.70 #366).
+> The external `github-pr-controller` is the only GitHub path; GitHub events
+> are not normalized into OCP events.
 
 The current PR-review path should become the bundled `pr-review` controller over
 time:
