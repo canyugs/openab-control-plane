@@ -4,7 +4,24 @@ Status: accepted-as-amended · 2026-07-09 (was proposed 2026-06-30) — ratified
 at Stage 3 S1; amendments in [ADR 018](018-stage3-extraction.md): the
 kernel→plugins static lookup arms are by-design (dispatch safety), kernel
 purity is proven by the S12 grep gate, and the extraction sequence lives in
-[stage3-extraction-plan.md](../stage3-extraction-plan.md)
+[stage3-extraction-plan.md](../stage3-extraction-plan.md).
+Further amended by [ADR 031](031-provider-neutral-kernel.md) (ratified
+2026-08-14) — see Amendment below.
+
+> **Amendment (2026-08-14, ADR 031 ratification) — the in-process plugin stage
+> is closed; the control plugin is now an external controller.** Decision 5's
+> "extract only when it blocks" caution and the Status note (B1) below describe
+> a grandfathered in-kernel PR-review controller awaiting extraction to
+> `plugins/pr_review`. That era is over: PR review runs as the external
+> `github-pr-controller`, which owns GitHub ingress, credentials, and product
+> state ([ADR 031](031-provider-neutral-kernel.md); prod cutover 2026-07-31).
+> The embedded GitHub ingress was deleted in v0.1.67 once both lanes showed
+> zero use (ADR 031 invariant #9, #361), and the v0.1.70 kernel slim (#366)
+> renamed `plugins/pr_review` to the generic `plugins/council` — no GitHub
+> code, credentials, or product tables remain in the plane. The kernel-vs-
+> control-plugin product boundary this ADR drew still holds (ADR 031 names it
+> "the product boundary"); what changed is the packaging unit of Decision 3:
+> an independently deployed controller process, not an in-process module.
 
 ## Context
 
@@ -62,6 +79,10 @@ At the same time, the useful abstraction is now visible:
 is already a bundled first-party controller in code rather than a pure external
 shim. Extraction to `plugins/pr_review` is queued for Phase 2 / boundary Stage 3;
 until then the current in-kernel controller is grandfathered, not generalized.
+
+**Status-note update (2026-08-14):** the queued extraction executed and went
+past the module stage — the plugin left the process entirely. See the ADR 031
+amendment above.
 
 ## Target Shape
 

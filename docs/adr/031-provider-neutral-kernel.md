@@ -1,11 +1,16 @@
 # ADR 031 — Provider-neutral OCP kernel and controller-owned ingress
 
-Status: proposed · 2026-07-22
+Status: accepted · 2026-08-14 (was proposed 2026-07-22) — ratified as the
+shipped state: prod cutover to the external `github-pr-controller` 2026-07-31,
+kernel slim complete in v0.1.70 (#366 — no GitHub code, credentials, or
+product tables in the plane), and the invariant-#9 plugin removal is held by a
+permanent kernel-purity grep gate in CI.
 
-Amends, if accepted:
+Amends
 [ADR 007](007-control-plugins-and-oab-father.md),
 [ADR 008](008-external-controller-protocol.md), and
-[ADR 018](018-stage3-extraction.md).
+[ADR 018](018-stage3-extraction.md) — amendment notes added in each at
+ratification (2026-08-14).
 
 ## Context
 
