@@ -1008,6 +1008,7 @@ async fn handle_webhook(
                                 &plan.repository,
                                 plan.pr_number as i64,
                                 head_sha.as_deref(),
+                                Some(plan.reason.as_str()),
                             )
                             .await
                         {
@@ -2081,13 +2082,32 @@ async fn dispatch_terminal(
         })
         .unwrap_or_default();
     let parsed = verdict::parse_final_messages(&final_messages);
+    // A follow-up (`@bot <question>`) is an ask session: it posts a plain answer,
+    // not a verdict. NULL reason on older rows reads as council, the safe
+    // default (SEI-929).
+    let is_ask = target.reason.as_deref() == Some("ask");
     // Every round posts its OWN comment (operator decision, 2026-08-01):
     // updating one standing comment in place erased each earlier round's
     // report from the pull request — four rounds of audit trail collapsed
     // into one surviving body. The in-place design (council F3, #305) solved
     // duplicate-comment noise; the round marker plus per-round bodies keep
     // idempotency without destroying history.
-    let plan = closing::plan_close(&target, &parsed, None, session_id);
+    let plan = closing::plan_close(&target, &parsed, None, session_id, is_ask);
+
+    if is_ask {
+        // A follow-up answer is not a review: no round, no findings, no status,
+        // no verdict. Just the comment. Redelivery is idempotent through the
+        // outbox's UNIQUE(session_id, kind), so a re-enqueue is swallowed and we
+        // never touch review_rounds (which would inflate round numbers and let
+        // the ask comment masquerade as the verdict comment) — SEI-929.
+        for (kind, payload) in &plan.writes {
+            if let Err(error) = store.enqueue_write(session_id, kind, payload).await {
+                tracing::error!(%error, session_id, kind, "ask write enqueue failed");
+            }
+        }
+        tracing::info!(session_id, "ask follow-up answer queued");
+        return true;
+    }
 
     let round = match store
         .record_review_round(&store::ReviewRound {
@@ -3852,8 +3872,9 @@ mod tests {
             repo: "example/repo".into(),
             pr_number: 7,
             head_sha: None,
+            reason: None,
         };
-        let plan = closing::plan_close(&target, &parsed, None, "ses_waiver_test");
+        let plan = closing::plan_close(&target, &parsed, None, "ses_waiver_test", false);
         assert_eq!(plan.fired_waivers.len(), 2);
         assert_eq!(
             plan.findings
@@ -4789,7 +4810,7 @@ mod tests {
         .unwrap();
         let store = SqliteStore::memory().unwrap();
         store
-            .record_session_target("ses_1", "example/repo", 7, Some("openingsha"))
+            .record_session_target("ses_1", "example/repo", 7, Some("openingsha"), None)
             .unwrap();
         let state = Arc::new(AppState::with_components(
             config,
@@ -4870,7 +4891,7 @@ mod tests {
         .unwrap();
         let store = SqliteStore::memory().unwrap();
         store
-            .record_session_target("ses_1", "example/repo", 7, Some("openingsha"))
+            .record_session_target("ses_1", "example/repo", 7, Some("openingsha"), None)
             .unwrap();
         let state = Arc::new(AppState::with_components(
             config,
@@ -5575,7 +5596,7 @@ mod tests {
         .unwrap();
         let store = SqliteStore::memory().unwrap();
         store
-            .record_session_target("ses_1", "example/repo", 7, Some("openingsha"))
+            .record_session_target("ses_1", "example/repo", 7, Some("openingsha"), None)
             .unwrap();
         let state = Arc::new(AppState::with_components(
             config,
@@ -5599,7 +5620,7 @@ mod tests {
             "occurred_at": 1_000,
             "payload": {
                 "reason": "normal",
-                "final_messages": ["## Verdict\n\nblocked\n[[verdict:request_changes r=1 y=0 g=0]] [done]"]
+                "final_messages": ["<!-- openab-council -->\n## Verdict\n\nblocked\n[[verdict:request_changes r=1 y=0 g=0]] [done]"]
             }
         })
         .to_string();
@@ -5628,7 +5649,7 @@ mod tests {
         assert_eq!(
             *seen.lock().unwrap(),
             [
-                "comment:## Verdict",
+                "comment:<!-- openab-council -->",
                 "status:openingsha:failure",
                 "review:REQUEST_CHANGES"
             ]
@@ -5652,7 +5673,7 @@ mod tests {
         .unwrap();
         let store = SqliteStore::memory().unwrap();
         store
-            .record_session_target("ses_ours", "example/repo", 7, Some("sha"))
+            .record_session_target("ses_ours", "example/repo", 7, Some("sha"), None)
             .unwrap();
         let state = Arc::new(AppState::with_components(
             config,
@@ -5703,6 +5724,71 @@ mod tests {
             assert_eq!(value["closed"], false, "{reason} on {session_id}");
         }
         assert!(store.pending_writes(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_ask_terminal_queues_only_a_plain_answer_comment() {
+        // SEI-929 end to end: a follow-up (reason "ask") closes into exactly one
+        // comment carrying the settled answer — no status, no review, no verdict
+        // warning, and no raw transcript.
+        let event_secret = vec![7; 32];
+        let config = external_config(&event_secret);
+        let verifier = runtime_events::RuntimeEventVerifier::new(
+            "github-canary",
+            config.event_signing_secret.as_deref().unwrap(),
+        )
+        .unwrap();
+        let store = SqliteStore::memory().unwrap();
+        store
+            .record_session_target("ses_ask", "example/repo", 7, Some("sha"), Some("ask"))
+            .unwrap();
+        let state = Arc::new(AppState::with_components(
+            config,
+            store,
+            Some(Arc::new(RecordingActionClient::new([]).0)),
+            Some(Arc::new(verifier)),
+        ));
+        let store = state.store.clone().unwrap();
+        let app = router(state);
+
+        let answer = "Regarding F1: buildRegions is keyed by request region, so cgk1 is correct.";
+        let body = json!({
+            "version": "1",
+            "event_id": "cev_ask",
+            "controller_id": "github-canary",
+            "event_type": "session.terminal",
+            "session_id": "ses_ask",
+            "occurred_at": 1_000,
+            "payload": {
+                "reason": "normal",
+                // The kind of noisy final the Kiro CLI produces; only the answer
+                // line should survive into the comment.
+                "final_messages": [format!("{answer}\n[done]")]
+            }
+        })
+        .to_string();
+        let response = app
+            .clone()
+            .oneshot(signed_runtime_event_request(
+                &event_secret,
+                "cev_ask",
+                "/api/v1/openab/events?version=1",
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let writes = store.pending_writes(10).await.unwrap();
+        assert_eq!(writes.len(), 1, "ask must queue exactly one write");
+        assert_eq!(writes[0].kind, closing::KIND_COMMENT);
+        let comment = writes[0].payload["body"].as_str().unwrap();
+        assert!(comment.contains(answer), "answer missing: {comment}");
+        assert!(!comment.contains("[done]"), "machine tail leaked: {comment}");
+        assert!(
+            !comment.contains("parseable verdict"),
+            "ask must not warn about a missing verdict: {comment}"
+        );
     }
 
     #[tokio::test]

@@ -178,6 +178,10 @@ pub struct SessionTarget {
     pub repo: String,
     pub pr_number: i64,
     pub head_sha: Option<String>,
+    /// The trigger reason the session was opened with (`ask`, `auto`, `review`,
+    /// …). The terminal path reads it to tell a follow-up **ask** — which posts
+    /// a plain answer — from a council round, which posts a verdict (SEI-929).
+    pub reason: Option<String>,
 }
 
 /// One council round as the controller knows it: the verdict it parsed out of
@@ -389,6 +393,7 @@ pub trait ProductStore: Send + Sync {
         repo: &str,
         pr_number: i64,
         head_sha: Option<&str>,
+        reason: Option<&str>,
     ) -> StoreResult<()>;
 
     /// `None` means this controller did not open the session — the terminal

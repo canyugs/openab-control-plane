@@ -201,6 +201,10 @@ const MIGRATIONS: &[&str] = &[
     // is exactly the history ADR 038's "a waiver renewed twice is a rule
     // wearing a waiver's clothes" classifier reads.
     "ALTER TABLE review_waivers ADD COLUMN renewal_count INTEGER NOT NULL DEFAULT 0;",
+    // 9 — SEI-929: the terminal path must tell an ask (follow-up question)
+    // session from a council round, so it posts a plain answer instead of a
+    // verdict. Older rows have NULL reason and read as council, the safe default.
+    "ALTER TABLE session_targets ADD COLUMN reason TEXT;",
 ];
 
 pub struct SqliteStore {
@@ -532,17 +536,19 @@ impl SqliteStore {
         repo: &str,
         pr_number: i64,
         head_sha: Option<&str>,
+        reason: Option<&str>,
     ) -> rusqlite::Result<()> {
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         connection.execute(
             "INSERT INTO session_targets
-               (session_id, repo, pr_number, head_sha, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+               (session_id, repo, pr_number, head_sha, reason, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(session_id) DO UPDATE SET
                repo = excluded.repo,
                pr_number = excluded.pr_number,
-               head_sha = COALESCE(excluded.head_sha, session_targets.head_sha)",
-            params![session_id, repo, pr_number, head_sha, now_unix()],
+               head_sha = COALESCE(excluded.head_sha, session_targets.head_sha),
+               reason = COALESCE(excluded.reason, session_targets.reason)",
+            params![session_id, repo, pr_number, head_sha, reason, now_unix()],
         )?;
         Ok(())
     }
@@ -553,13 +559,14 @@ impl SqliteStore {
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         connection
             .query_row(
-                "SELECT repo, pr_number, head_sha FROM session_targets WHERE session_id = ?1",
+                "SELECT repo, pr_number, head_sha, reason FROM session_targets WHERE session_id = ?1",
                 [session_id],
                 |row| {
                     Ok(SessionTarget {
                         repo: row.get(0)?,
                         pr_number: row.get(1)?,
                         head_sha: row.get(2)?,
+                        reason: row.get(3)?,
                     })
                 },
             )
@@ -1404,9 +1411,10 @@ impl ProductStore for SqliteStore {
         repo: &str,
         pr_number: i64,
         head_sha: Option<&str>,
+        reason: Option<&str>,
     ) -> StoreResult<()> {
         Ok(SqliteStore::record_session_target(
-            self, session_id, repo, pr_number, head_sha,
+            self, session_id, repo, pr_number, head_sha, reason,
         )?)
     }
 
