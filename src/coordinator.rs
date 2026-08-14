@@ -364,7 +364,13 @@ pub(crate) fn council_on_done_with_reviewer_rerequest_attempts(
         // and fail-closed error statuses are exactly what this path
         // prevents. Smoke tests and manual sessions carry neither marker.
         let parseable = crate::plugins::council::verdict::trailer(&verdict).is_some();
-        if contract && !parseable && cx.synthesis_attempts() < MAX_SYNTHESIS_ATTEMPTS {
+        // #344 caught the no-trailer failures; SEI-931 adds the one that still
+        // parses: a synthesis turn that failed mid-write carries the runtime's
+        // prepended `-32603` error banner ABOVE a full report that kept its
+        // verdict trailer (backend#2418 round 4). Parseable-but-errored is still
+        // a failed turn — requeue it too, or a bogus verdict closes the round.
+        let failed = !parseable || chair_turn_errored(&verdict);
+        if contract && failed && cx.synthesis_attempts() < MAX_SYNTHESIS_ATTEMPTS {
             actions.extend(requeue_synthesis(cx, bot));
         } else {
             actions.push(Action::Close {
@@ -382,6 +388,26 @@ pub(crate) fn council_on_done_with_reviewer_rerequest_attempts(
     }
 
     actions
+}
+
+/// A chair synthesis turn that failed mid-write. The bot gateway prepends the
+/// runtime's agent-error banner (`⚠️ … Internal Error … -32603`) to the settled
+/// text; a partial report can sit below it and still carry a parseable verdict
+/// trailer, so the trailer check alone is not enough (backend#2418 round 4,
+/// SEI-931).
+///
+/// We look only at the HEAD: the banner is always prepended first, and — unlike
+/// `orchestrator::is_agent_error_frame`, which gates on a short whole frame to
+/// avoid matching prose (council F2) — a real report is long, so a whole-text
+/// gate cannot see the buried banner. Real report prose never opens with the
+/// warning-emoji error frame, so the head check stays specific.
+fn chair_turn_errored(settled: &str) -> bool {
+    let first = settled.trim_start().lines().next().unwrap_or_default();
+    if !first.starts_with('\u{26A0}') {
+        return false; // ⚠ — only the runtime banner opens this way
+    }
+    let lc = first.to_ascii_lowercase();
+    lc.contains("-32603") || lc.contains("internal error")
 }
 
 /// The requeue: pick the next chair (rotation prefers a different candidate),
@@ -736,6 +762,42 @@ mod tests {
             a,
             Action::Prompt { to, content } if to == "chair" && content.starts_with("Quorum reached.")
         )));
+    }
+
+    #[test]
+    fn error_banner_over_a_parseable_verdict_still_requeues() {
+        // backend#2418 round 4 (SEI-931): a -32603 banner was prepended above a
+        // full report that still carried a verdict trailer. The parseable check
+        // alone let it close; the turn had failed, so it must requeue.
+        let poisoned = format!(
+            "⚠️ **Internal Error** (code: -32603)\nInternal error\n\n{}",
+            trailed()
+        );
+        let actions = council_on_done(&quorum_ctx(&poisoned), "chair", COUNCIL_QUORUM_PROMPT, true);
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::Close { .. })),
+            "an errored synthesis must not close even with a parseable trailer"
+        );
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            Action::Prompt { to, content } if to == "chair" && content.starts_with("Quorum reached.")
+        )));
+    }
+
+    #[test]
+    fn a_clean_report_that_merely_mentions_an_error_still_closes() {
+        // Council F2 guard: a real verdict whose prose discusses -32603 must not
+        // be mistaken for a failed turn. Only a banner at the head counts.
+        let discusses = format!(
+            "The reconnect path can surface a JSON-RPC -32603 to the user.\n{}",
+            trailed()
+        );
+        let actions =
+            council_on_done(&quorum_ctx(&discusses), "chair", COUNCIL_QUORUM_PROMPT, true);
+        assert!(
+            actions.iter().any(|a| matches!(a, Action::Close { .. })),
+            "prose mentioning an error code is not a failed turn"
+        );
     }
 
     #[test]
