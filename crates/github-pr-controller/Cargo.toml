@@ -15,7 +15,7 @@ getrandom = "0.4"
 hex = "0.4"
 hmac = "0.12"
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-postgres = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio-postgres-rustls = "0.13"
+tokio-postgres-rustls = "0.14"
 rustls-native-certs = "0.8.4"
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 
