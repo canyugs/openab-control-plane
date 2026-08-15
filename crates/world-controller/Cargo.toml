@@ -11,7 +11,7 @@ base64 = "0.23"
 controller-protocol = { path = "../controller-protocol" }
 hex = "0.4"
 hmac = "0.12"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
