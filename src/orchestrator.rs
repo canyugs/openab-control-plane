@@ -1160,10 +1160,12 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
     // whose turn was already in flight at close time would otherwise append a
     // post-verdict message, often a "…" stub) and reject edits/deletes — the
     // recorded result span is on disk (ADR 028) and its text must stay
-    // immutable. A streaming bot's legit stub fill-in lands BEFORE close (that
-    // edit itself carries the done-signal that closes), so this does not break
-    // streaming. Reactions stay harmless (delivery is already gated in
-    // deliver_event).
+    // immutable. Exception: a streaming chair's 1500ms edit loop may fire
+    // intermediate edit_message frames after the session was closed by an
+    // earlier [done] snapshot.  Allow the chair to update the stored message
+    // so the final synthesis report is visible, but skip check_text_done to
+    // avoid any re-close attempt.  All other bots' edits remain rejected.
+    // Reactions stay harmless (delivery is already gated in deliver_event).
     let closed = matches!(
         SessionState::from_db_str(&session.state),
         SessionState::Closed | SessionState::Aborted
@@ -1172,7 +1174,22 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
         None if closed => {}
         Some("create_topic") if closed => {}
         Some("edit_message") if closed => {
-            tracing::warn!("edit_message from {bot_id} on closed session {session_id} rejected");
+            let is_chair = state
+                .store
+                .roster(session_id)?
+                .first()
+                .map(|id| id == bot_id)
+                .unwrap_or(false);
+            if is_chair {
+                if let Some(target) = target_msg(&reply) {
+                    state.store.edit_message(target, &reply.content.text)?;
+                    ack(state, bot_id, &reply, None, Some(target));
+                }
+            } else {
+                tracing::warn!(
+                    "edit_message from {bot_id} on closed session {session_id} rejected"
+                );
+            }
         }
         Some("delete_message") if closed => {
             tracing::warn!("delete_message from {bot_id} on closed session {session_id} rejected");
