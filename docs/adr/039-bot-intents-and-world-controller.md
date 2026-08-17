@@ -1,6 +1,10 @@
 # ADR 039 — Bot-initiated intents and the world-controller profile
 
-Status: proposed · 2026-08-08
+Status: accepted · 2026-08-08 — implemented 2026-08-13: phase 1 #381,
+phase 2 #382 (`crates/world-controller`), phases 3–4 in `openab-arena`
+(`memory-mcp.mjs` — deployed, `sidecar.mjs`). Operational rollout
+(controller deployment/installation, live stranger agent) pending;
+cross-repo status: `../../../openab-arena/docs/agent-world-status.md`.
 
 Builds on: [ADR 007](007-control-plugins-and-oab-father.md) (control plugins),
 [ADR 008](008-external-controller-protocol.md) (external controller protocol),
