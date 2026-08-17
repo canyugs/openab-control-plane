@@ -2,6 +2,10 @@
 # PARKED (2026-08-02): phase-0 artifact of docs/forum-north-client-plan.md,
 # committed in the untracked-file sweep (#336/#339/#340). The forum north
 # client is parked; nothing deployed from this template today.
+# 2026-08-17: shape re-synced with the live lane — the plane store moved to
+# Postgres (the live forum-ocp cut over from SQLite on 2026-08-15), so this
+# template now ships a postgresql service and points OABCP_DB at it. A fresh
+# deploy self-migrates on first boot; SQLite is no longer the deployed shape.
 apiVersion: zeabur.com/v1
 kind: Template
 metadata:
@@ -40,6 +44,14 @@ spec:
     ```
 
     Restart the pod. Verify: `GET /v1/bots` shows `allen` with `connected: true`.
+
+    ## Store
+
+    The plane stores state in the bundled `postgresql` service (`OABCP_DB`
+    picks the backend by URL scheme) and self-migrates its schema on first
+    boot. The template connects as the superuser to the default database;
+    for production treatment (dedicated database, least-privilege role,
+    verified auto-backup) follow the ops runbook.
   icon: https://cdn-console.zeabur.com/f/6qNF8/ocp-icon.webp
   tags:
     - AI
@@ -64,7 +76,7 @@ spec:
       domainKey: PUBLIC_DOMAIN
       spec:
         source:
-          image: ghcr.io/canyugs/openab-control-plane:0.1.58
+          image: ghcr.io/canyugs/openab-control-plane:0.1.76
         ports:
           - id: web
             port: 8090
@@ -74,14 +86,11 @@ spec:
           port: web
           http:
             path: /healthz
-        volumes:
-          - id: data
-            dir: /data
         env:
           OABCP_ADDR:
             default: 0.0.0.0:8090
           OABCP_DB:
-            default: /data/plane.db
+            default: postgres://root:${POSTGRES_PASSWORD}@postgresql.zeabur.internal:5432/zeabur?sslmode=disable
           OABCP_API_KEY:
             default: ${OABCP_API_KEY}
             expose: true
@@ -96,3 +105,26 @@ spec:
             default: "1"
           OABCP_BOT_TOKEN_ALLEN:
             default: ${BOT_TOKEN_ALLEN}
+    - name: postgresql
+      icon: https://cdn.zeabur.com/marketplace/postgresql.svg
+      template: PREBUILT_V2
+      spec:
+        source:
+          image: pgvector/pgvector:pg18
+        ports:
+          - id: database
+            port: 5432
+            type: TCP
+        volumes:
+          - id: data
+            dir: /var/lib/postgresql/18/docker
+        env:
+          PGDATA:
+            default: /var/lib/postgresql/18/docker/pgdata
+          POSTGRES_USER:
+            default: root
+          POSTGRES_DB:
+            default: zeabur
+          POSTGRES_PASSWORD:
+            default: ${PASSWORD}
+            expose: true
