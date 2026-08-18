@@ -1182,8 +1182,20 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
                 .unwrap_or(false);
             if is_chair {
                 if let Some(target) = target_msg(&reply) {
-                    state.store.edit_message(target, &reply.content.text)?;
-                    ack(state, bot_id, &reply, None, Some(target));
+                    // Verify the target message belongs to this session and was authored by the chair.
+                    let owned = state.store.message(target)?.is_some_and(|m| {
+                        m.session_id == session_id
+                            && m.author_id.as_deref() == Some(bot_id)
+                    });
+                    if owned {
+                        state.store.edit_message(target, &reply.content.text)?;
+                        ack(state, bot_id, &reply, None, Some(target));
+                    } else {
+                        tracing::warn!(
+                            "edit_message from chair {bot_id} on closed session {session_id} \
+                             rejected: target {target} not owned by this bot in this session"
+                        );
+                    }
                 }
             } else {
                 tracing::warn!(
