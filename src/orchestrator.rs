@@ -1174,12 +1174,7 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
         None if closed => {}
         Some("create_topic") if closed => {}
         Some("edit_message") if closed => {
-            let is_chair = state
-                .store
-                .roster(session_id)?
-                .first()
-                .map(|id| id == bot_id)
-                .unwrap_or(false);
+            let is_chair = session.chair_bot.as_deref() == Some(bot_id);
             if is_chair {
                 if let Some(target) = target_msg(&reply) {
                     // Verify the target message belongs to this session and was authored by the chair.
@@ -1189,6 +1184,11 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
                     });
                     if owned {
                         state.store.edit_message(target, &reply.content.text)?;
+                        state.emit_north(
+                            "message_edit",
+                            session_id,
+                            json!({ "message_id": target, "content": reply.content.text }),
+                        );
                         ack(state, bot_id, &reply, None, Some(target));
                     } else {
                         tracing::warn!(
