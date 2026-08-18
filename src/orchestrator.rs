@@ -1186,7 +1186,7 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
                         state.store.edit_message(target, &reply.content.text)?;
                         state.emit_north(
                             "message_edit",
-                            session_id,
+                            &session_id,
                             json!({ "message_id": target, "content": reply.content.text }),
                         );
                         ack(state, bot_id, &reply, None, Some(target));
