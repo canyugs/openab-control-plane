@@ -1270,11 +1270,9 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
     // whose turn was already in flight at close time would otherwise append a
     // post-verdict message, often a "…" stub) and reject edits/deletes — the
     // recorded result span is on disk (ADR 028) and its text must stay
-    // immutable. Exception: a streaming chair's 1500ms edit loop may fire
-    // intermediate edit_message frames after the session was closed by an
-    // earlier [done] snapshot.  Allow the chair to update the stored message
-    // so the final synthesis report is visible, but skip check_text_done to
-    // avoid any re-close attempt.  All other bots' edits remain rejected.
+    // immutable. Council bot configs use send-once delivery, so the settled
+    // content arrives before OCP can interpret its [done] signal and close the
+    // session. A late edit is stale delivery, not a continuation of the turn.
     // Reactions stay harmless (delivery is already gated in deliver_event).
     let closed = matches!(
         SessionState::from_db_str(&session.state),
@@ -1284,46 +1282,7 @@ pub fn handle_reply(state: &Arc<AppState>, bot_id: &str, reply: GatewayReply) ->
         None if closed => {}
         Some("create_topic") if closed => {}
         Some("edit_message") if closed => {
-            // Streaming race exception: only applies to Closed (clean [done] path).
-            // Aborted sessions have no in-flight stream; editing them weakens immutability.
-            let is_graceful_close = matches!(
-                SessionState::from_db_str(&session.state),
-                SessionState::Closed
-            );
-            let is_chair = session.chair_bot.as_deref() == Some(bot_id);
-            if is_chair && is_graceful_close {
-                match target_msg(&reply) {
-                    None => tracing::warn!(
-                        "edit_message from chair {bot_id} on closed session {session_id} \
-                         has no target message id — ignoring"
-                    ),
-                    Some(target) => {
-                        // Verify the target message belongs to this session and was authored by the chair.
-                        let owned = state.store.message(target)?.is_some_and(|m| {
-                            m.session_id == session_id
-                                && m.author_id.as_deref() == Some(bot_id)
-                        });
-                        if owned {
-                            state.store.edit_message(target, &reply.content.text)?;
-                            state.emit_north(
-                                "message_edit",
-                                &session_id,
-                                json!({ "message_id": target, "content": reply.content.text }),
-                            );
-                            ack(state, bot_id, &reply, None, Some(target));
-                        } else {
-                            tracing::warn!(
-                                "edit_message from chair {bot_id} on closed session {session_id} \
-                                 rejected: target {target} not owned by this bot in this session"
-                            );
-                        }
-                    }
-                }
-            } else {
-                tracing::warn!(
-                    "edit_message from {bot_id} on closed session {session_id} rejected"
-                );
-            }
+            tracing::warn!("edit_message from {bot_id} on closed session {session_id} rejected");
         }
         Some("delete_message") if closed => {
             tracing::warn!("delete_message from {bot_id} on closed session {session_id} rejected");
