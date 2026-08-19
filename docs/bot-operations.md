@@ -444,7 +444,13 @@ token = "${OABCP_BOT_TOKEN}"      # OCP gateway token (env-expanded at boot, ADR
 allow_all_users = true
 allow_bot_messages = true
 bot_username = "<id>"
-streaming = true
+# OCP reads delivered content as control input; publish only the terminal turn.
+streaming = false
+
+[pool]
+# Merge these into an existing [pool] table rather than declaring it twice.
+prompt_hard_timeout_secs = 480
+liveness_check_secs = 30
 ```
 
 **A11 MUST:** keep `allow_bot_messages = true` on attached Path B bots. If it is
@@ -454,6 +460,13 @@ thread goes quiet until the watchdog. `allow_all_users = true` is belt-only here
 because OAB already allows all users when the list is empty, but keep it explicit
 so the WS token remains the trust boundary. This requirement also belongs on
 upstream OAB's gateway compliance list; that upstream note is outside this PR.
+
+Keep the OAB prompt ceiling below OCP's session-silence watchdog. The values
+above bound an ACP turn at 8 minutes; including the 30-second check precision
+and 5-second gateway reply cap, final delivery still precedes OCP's default
+10-minute watchdog by 85 seconds. Do not enable gateway streaming for an OCP
+bot: OCP interprets message content (including `[done]`) as control input, so a
+preview edit cannot be allowed to race session close.
 
 Keep starting the instance with **your own** config
 (`openab run -c <your-configUrl>`). All original settings are preserved; OCP only

@@ -40,7 +40,13 @@ spec:
     allow_all_users = true
     allow_bot_messages = true
     bot_username = "allen"
-    streaming = true
+    # OCP reads delivered content as control input; publish only the terminal turn.
+    streaming = false
+
+    [pool]
+    # Merge these into an existing [pool] table rather than declaring it twice.
+    prompt_hard_timeout_secs = 480
+    liveness_check_secs = 30
     ```
 
     Restart the pod. Verify: `GET /v1/bots` shows `allen` with `connected: true`.

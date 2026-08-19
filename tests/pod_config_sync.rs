@@ -146,10 +146,12 @@ fn pod_config_pins_match_the_bot_config_golden() {
         "platform = \"feishu\"",
         "allow_all_users = true",
         "allow_bot_messages = true",
-        "streaming = true",
+        "streaming = false",
         "message_processing_mode = \"per-thread\"",
         "max_sessions = 4",
         "session_ttl_hours = 2",
+        "prompt_hard_timeout_secs = 480",
+        "liveness_check_secs = 30",
         "remove_after_reply = false",
     ] {
         assert!(

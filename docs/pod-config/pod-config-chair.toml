@@ -27,7 +27,9 @@ token = "${OABCP_BOT_TOKEN}"
 allow_all_users = true
 allow_bot_messages = true
 bot_username = "${OABCP_BOT_NAME}"
-streaming = true
+# OCP interprets delivered content as session control. Send only the
+# ACP-terminal content so session close freezes the canonical transcript.
+streaming = false
 # OCP backfill and council cross-talk intentionally arrive as in-thread bursts;
 # per-thread mode lets OAB batch that burst into one context turn.
 message_processing_mode = "per-thread"
@@ -40,6 +42,10 @@ inherit_env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
 [pool]
 max_sessions = 4
 session_ttl_hours = 2
+# Keep the OAB turn ceiling below OCP's default 600s silence watchdog.
+# 480s + the 30s check interval + the 5s gateway ACK cap leaves 85s margin.
+prompt_hard_timeout_secs = 480
+liveness_check_secs = 30
 
 [reactions]
 # A6: a cosmetic OAB flag must not be able to erase quorum votes.
