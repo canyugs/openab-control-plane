@@ -140,8 +140,8 @@ class, all missed by a first-pass review):
   session store's own "closed transcripts are immutable" contract said the
   post-close edit should not exist; a follow-up reverted the whole approach).
 
-These probes stay inside the changed surface; the contract one reads the
-guarantee the changed code depends on, it is not a license to audit unrelated
+These probes stay inside the changed surface. The contract probe reads the
+guarantee the changed code depends on — that is not a license to audit unrelated
 code.
 
 When a finding hinges on what a symbol the diff *consumes* actually does (a
