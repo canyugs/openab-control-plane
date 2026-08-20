@@ -127,9 +127,22 @@ class, all missed by a first-pass review):
   miss: an IAM get-policy that omits conditional bindings unless the correct
   policy version is requested, then a full set-policy replaced the policy
   without them — silent access-control data loss).
+- **Invariant/contract violation:** when the diff makes a new behavior possible
+  (a new edit path, a new state transition, a relaxed guard), does that
+  behavior break a guarantee the changed code is party to — an immutability
+  contract, an ordering rule, a "written once" or "closed means frozen"
+  promise — asserted at the boundary this code touches? Optimizing the new
+  mechanism (adding an ownership check, a null guard) is NOT the finish line if
+  the mechanism should not exist under the contract at all. Read the contract
+  the changed surface depends on before judging the mechanism sound (a real
+  miss: a fix let a chair edit messages *after* a session closed and the review
+  optimized that path — an id-ownership check, an event emission — while the
+  session store's own "closed transcripts are immutable" contract said the
+  post-close edit should not exist; a follow-up reverted the whole approach).
 
-These probes stay inside the changed surface; they are not a license to audit
-unrelated code.
+These probes stay inside the changed surface. The contract probe reads the
+guarantee the changed code depends on — that is not a license to audit unrelated
+code.
 
 When a finding hinges on what a symbol the diff *consumes* actually does (a
 guard reading a summary built elsewhere, a helper whose edge behavior decides
