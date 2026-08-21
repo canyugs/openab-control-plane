@@ -2093,6 +2093,7 @@ mod tests {
                 Some("chair"),
                 Some(&serde_json::to_string(&vec![message.id.clone()]).unwrap()),
                 std::slice::from_ref(&message.content),
+                crate::session::ReviewerCompletion::default(),
             )
             .unwrap();
 

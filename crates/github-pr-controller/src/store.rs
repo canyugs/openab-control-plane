@@ -182,6 +182,10 @@ pub struct SessionTarget {
     /// …). The terminal path reads it to tell a follow-up **ask** — which posts
     /// a plain answer — from a council round, which posts a verdict (SEI-929).
     pub reason: Option<String>,
+    /// Reviewer evidence the controller required when it opened this session.
+    /// NULL marks a pre-migration target and therefore cannot authorize a
+    /// formal approval.
+    pub required_valid_reviewers: Option<i64>,
 }
 
 /// One council round as the controller knows it: the verdict it parsed out of
@@ -394,6 +398,7 @@ pub trait ProductStore: Send + Sync {
         pr_number: i64,
         head_sha: Option<&str>,
         reason: Option<&str>,
+        required_valid_reviewers: Option<i64>,
     ) -> StoreResult<()>;
 
     /// `None` means this controller did not open the session — the terminal

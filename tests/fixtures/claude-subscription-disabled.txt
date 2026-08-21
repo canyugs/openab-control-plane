@@ -1,0 +1,6 @@
+⚠️ **Internal Error** (code: -32603)
+Internal error: Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access
+
+_The agent did not return any error details. Please check the agent's own logs for more information._
+
+Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access

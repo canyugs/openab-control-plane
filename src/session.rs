@@ -6,6 +6,15 @@
 
 pub const DONE_EMOJI: &str = "🆗";
 
+/// Evidence attached to a normal terminal event for an independent controller
+/// write gate. The required count is the session's immutable quorum contract;
+/// the valid count includes only settled reports accepted by that contract.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReviewerCompletion {
+    pub required_valid_reviewers: i64,
+    pub valid_reviewers: i64,
+}
+
 /// Reviewers that count toward quorum = roster minus chair.
 pub fn reviewers(roster: &[String], chair: Option<&str>) -> Vec<String> {
     roster
