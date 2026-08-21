@@ -232,6 +232,8 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_recorded ON audit_events(recorded_at
     // 9 — SEI-929: ask (follow-up) sessions post a plain answer, not a verdict.
     // Older rows have NULL reason and read as council, the safe default.
     "ALTER TABLE session_targets ADD COLUMN IF NOT EXISTS reason TEXT;",
+    // 10 — SEI-958: immutable reviewer evidence owned by the GitHub writer.
+    "ALTER TABLE session_targets ADD COLUMN IF NOT EXISTS required_valid_reviewers BIGINT;",
 ];
 
 /// Serializes concurrent boots racing the migration list; any constant that
@@ -797,19 +799,29 @@ impl ProductStore for PostgresStore {
         pr_number: i64,
         head_sha: Option<&str>,
         reason: Option<&str>,
+        required_valid_reviewers: Option<i64>,
     ) -> StoreResult<()> {
         let client = self.client().await?;
         client
             .execute(
                 "INSERT INTO session_targets
-                   (session_id, repo, pr_number, head_sha, reason, created_at)
-                 VALUES ($1, $2, $3, $4, $5, $6)
+                   (session_id, repo, pr_number, head_sha, reason, required_valid_reviewers, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                  ON CONFLICT (session_id) DO UPDATE SET
                    repo = excluded.repo,
                    pr_number = excluded.pr_number,
                    head_sha = COALESCE(excluded.head_sha, session_targets.head_sha),
-                   reason = COALESCE(excluded.reason, session_targets.reason)",
-                &[&session_id, &repo, &pr_number, &head_sha, &reason, &now_unix()],
+                   reason = COALESCE(excluded.reason, session_targets.reason),
+                   required_valid_reviewers = COALESCE(excluded.required_valid_reviewers, session_targets.required_valid_reviewers)",
+                &[
+                    &session_id,
+                    &repo,
+                    &pr_number,
+                    &head_sha,
+                    &reason,
+                    &required_valid_reviewers,
+                    &now_unix(),
+                ],
             )
             .await?;
         Ok(())
@@ -819,7 +831,7 @@ impl ProductStore for PostgresStore {
         let client = self.client().await?;
         Ok(client
             .query_opt(
-                "SELECT repo, pr_number, head_sha, reason FROM session_targets WHERE session_id = $1",
+                "SELECT repo, pr_number, head_sha, reason, required_valid_reviewers FROM session_targets WHERE session_id = $1",
                 &[&session_id],
             )
             .await?
@@ -828,6 +840,7 @@ impl ProductStore for PostgresStore {
                 pr_number: row.get(1),
                 head_sha: row.get(2),
                 reason: row.get(3),
+                required_valid_reviewers: row.get(4),
             }))
     }
 

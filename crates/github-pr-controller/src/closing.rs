@@ -67,6 +67,55 @@ pub struct ClosingPlan {
     pub writes: Vec<(&'static str, Value)>,
 }
 
+/// Fail-closed projection for a review that reached terminal state without the
+/// reviewer evidence captured by this controller at open. It deliberately
+/// emits an error status and a diagnostic comment, but no formal review.
+pub fn plan_insufficient_reviewers(
+    target: &SessionTarget,
+    session_id: &str,
+    required: Option<i64>,
+    valid: Option<i64>,
+) -> ClosingPlan {
+    let marker = round_marker(session_id);
+    let counts = match (valid, required) {
+        (Some(valid), Some(required)) => format!(" ({valid}/{required} valid reviewers)"),
+        _ => " (reviewer evidence missing)".to_string(),
+    };
+    let mut writes = vec![(
+        KIND_COMMENT,
+        json!({
+            "repo": target.repo,
+            "pr_number": target.pr_number,
+            "comment_id": Value::Null,
+            "body": format!(
+                "⚠️ The council failed closed{counts}; no approval or change-request review was submitted. Re-run after reviewer readiness is restored.\n\n{marker}"
+            ),
+        }),
+    )];
+    if let Some(sha) = target.head_sha.as_deref() {
+        writes.push((
+            KIND_STATUS,
+            json!({
+                "repo": target.repo,
+                "sha": sha,
+                "state": "error",
+                "context": STATUS_CONTEXT,
+                "description": "council error - insufficient valid reviewers",
+            }),
+        ));
+    }
+    ClosingPlan {
+        decision: "unknown".to_string(),
+        red: 0,
+        yellow: 0,
+        green: 0,
+        head_sha: target.head_sha.clone(),
+        findings: vec![],
+        fired_waivers: vec![],
+        writes,
+    }
+}
+
 /// Decide the round from the parsed chair text.
 ///
 /// The unparseable case is deliberate and not an error: the session really did
@@ -451,6 +500,7 @@ mod tests {
             pr_number: 7,
             head_sha: Some("openingsha".into()),
             reason: None,
+            required_valid_reviewers: Some(2),
         }
     }
 

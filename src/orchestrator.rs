@@ -608,6 +608,33 @@ fn trim_reviewer_body(
     };
     let roster = state.store.roster(session_id)?;
     let reviewers = crate::session::reviewers(&roster, session.chair_bot.as_deref()).len() as i64;
+    // An external controller opened a formal review with an immutable reviewer
+    // minimum. Availability handling may replace a failed slot, but it may not
+    // silently redefine the evidence needed for a GitHub verdict. PR 0 has no
+    // in-flight standby yet, so loss below the minimum closes fail-closed.
+    let fixed_review_contract = session
+        .trigger_ref
+        .as_deref()
+        .is_some_and(|trigger| trigger.starts_with("controller:"))
+        && session.quorum_n > 0;
+    if fixed_review_contract && reviewers < session.quorum_n {
+        close_session_by_controller(state, session_id, "insufficient_valid_reviewers")?;
+        state.emit_north(
+            "insufficient_valid_reviewers",
+            session_id,
+            json!({
+                "last_trimmed": bot_id,
+                "reason": reason,
+                "required_valid_reviewers": session.quorum_n,
+                "remaining_reviewers": reviewers,
+            }),
+        );
+        tracing::warn!(
+            "reviewer minimum lost on {session_id} ({reviewers}/{}); session fail-closed",
+            session.quorum_n
+        );
+        return Ok(());
+    }
     // Trimming the LAST reviewer must not leave quorum_n = 0: `0 >= 0` is
     // trivially a quorum, so the very next roster-change evaluation would
     // convene the chair to synthesize from nothing — the failure class
@@ -1318,22 +1345,7 @@ fn health_error_threshold() -> i64 {
 /// model prose. ponytail: text-matching until a frame-level `is_error` flag is
 /// added at the gateway (ADR 023 build-order §6).
 pub fn is_agent_error_frame(content: &str) -> bool {
-    let c = content.trim();
-    if c.is_empty() {
-        return false;
-    }
-    let lc = c.to_ascii_lowercase();
-    // The frame must LOOK like an error object, not merely mention one: a real
-    // gateway-wrapped JSON-RPC failure is either short or carries the structure
-    // (`jsonrpc` / `"code"`). Council F2: an unbounded `-32603` substring match
-    // false-degraded a reviewer that discussed the code in long prose — and with
-    // Phase 4 failover that would swap the standing roster on a false positive.
-    // Bound BOTH signals by this "error-shaped" gate.
-    let error_shaped = c.len() <= 200 || lc.contains("jsonrpc") || lc.contains("\"code\"");
-    if !error_shaped {
-        return false;
-    }
-    c.contains("-32603") || lc.contains("internal error")
+    crate::turn_failure::classify_legacy_turn_failure(content).is_some()
 }
 
 /// A streaming stub — the empty / "…" placeholder a bot sends first, filled in
@@ -1971,12 +1983,13 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                 // ADR 013: the chair's structured verdict, parsed from the
                 // closing text. Computed BEFORE the close CAS so it lands in
                 // the same transaction (the close webhook re-reads the row).
+                let roster = state.store.roster(&session.id)?;
+                let cx = OrchCtx {
+                    state,
+                    session,
+                    roster,
+                };
                 let structured_verdict = if let Some(coord) = coordinator::lookup(&session.mode) {
-                    let cx = OrchCtx {
-                        state,
-                        session,
-                        roster: state.store.roster(&session.id)?,
-                    };
                     coord.structured_verdict(&cx, &verdict)
                 } else {
                     None
@@ -2000,6 +2013,7 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                         .map(|m| m.content.clone())
                         .collect()
                 };
+                let reviewer_completion = coordinator::reviewer_completion(&cx, false);
                 // One transaction: close CAS + verdict columns + result
                 // identity. On error nothing landed — the session stays open
                 // and the watchdog timeout path remains the termination
@@ -2014,6 +2028,7 @@ fn run_actions(state: &Arc<AppState>, session: &Session, actions: Vec<Action>) -
                     ids_json.as_ref().map(|_| author.as_str()),
                     ids_json.as_deref(),
                     &final_messages,
+                    reviewer_completion,
                 ) {
                     Ok(won) => won,
                     Err(e) => {
@@ -3257,6 +3272,107 @@ mod tests {
         assert_eq!(
             store.bot_inventory(&rev2).unwrap().unwrap().health,
             "unreachable",
+        );
+    }
+
+    #[test]
+    fn controller_review_never_shrinks_its_required_reviewer_minimum() {
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev1 = store.register_bot("rev1", "reviewer", "h2", "t2").unwrap();
+        let rev2 = store.register_bot("rev2", "reviewer", "h3", "t3").unwrap();
+        let session = store
+            .create_session(
+                "controller review",
+                Some("controller:github-prod:test"),
+                2,
+                Some(&chair.id),
+                &[chair.id.clone(), rev1.id.clone(), rev2.id.clone()],
+                "council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+
+        trim_reviewer_body(&state, &session.id, &rev2.id, "report_not_delivered").unwrap();
+
+        let current = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(current.quorum_n, 2, "the opening minimum is immutable");
+        assert_eq!(
+            SessionState::from_db_str(&current.state),
+            SessionState::Closed,
+            "falling below the minimum must fail closed"
+        );
+        assert!(current.decision.is_none());
+        assert_eq!(store.roster(&session.id).unwrap(), vec![chair.id, rev1.id]);
+    }
+
+    #[test]
+    fn production_subscription_failure_never_counts_as_report_or_quorum() {
+        let frame = include_str!("../tests/fixtures/claude-subscription-disabled.txt").trim_end();
+        let store = Arc::new(SqliteStore::memory().unwrap());
+        let state = AppState::new(store.clone());
+        let chair = store.register_bot("chair", "chair", "h1", "t1").unwrap();
+        let rev_claude = store
+            .register_bot("rev-claude", "reviewer", "h2", "t2")
+            .unwrap();
+        let rev_codex = store
+            .register_bot("rev-codex", "reviewer", "h3", "t3")
+            .unwrap();
+        let session = store
+            .create_session(
+                "controller review",
+                Some("controller:github-prod:subscription-disabled"),
+                2,
+                Some(&chair.id),
+                &[
+                    chair.id.clone(),
+                    rev_claude.id.clone(),
+                    rev_codex.id.clone(),
+                ],
+                "council",
+            )
+            .unwrap();
+        store
+            .advance_state(&session.id, SessionState::Open, SessionState::Deliberating)
+            .unwrap();
+        let opening = post_client_message(&state, &session.id, "review this change").unwrap();
+
+        for attempt in 0..3 {
+            handle_reply(&state, &rev_claude.id, msg_reply(&session.id, frame)).unwrap();
+            handle_reply(
+                &state,
+                &rev_claude.id,
+                reaction_reply(&session.id, &opening.id, DONE_EMOJI),
+            )
+            .unwrap();
+
+            let current = store.session(&session.id).unwrap().unwrap();
+            if attempt < 2 {
+                assert_eq!(
+                    SessionState::from_db_str(&current.state),
+                    SessionState::Deliberating,
+                    "an error reaction is not reviewer quorum"
+                );
+            }
+        }
+
+        let current = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(current.quorum_n, 2);
+        assert_eq!(
+            SessionState::from_db_str(&current.state),
+            SessionState::Closed
+        );
+        assert!(current.decision.is_none(), "no verdict may be fabricated");
+        assert!(
+            store
+                .messages(&session.id)
+                .unwrap()
+                .iter()
+                .all(|message| message.audience.as_deref() != Some(chair.id.as_str())),
+            "the failed frame must never be relayed as a reviewer report"
         );
     }
 

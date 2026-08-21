@@ -1009,6 +1009,7 @@ async fn handle_webhook(
                                 plan.pr_number as i64,
                                 head_sha.as_deref(),
                                 Some(plan.reason.as_str()),
+                                Some(plan.quorum_n),
                             )
                             .await
                         {
@@ -2056,10 +2057,11 @@ async fn dispatch_terminal(
     let Some(session_id) = event.session_id.as_deref() else {
         return false;
     };
-    // Timeout and supersede close a session without a result. There is nothing
-    // to say about the pull request that is not already said — and a review
-    // submitted on a guess would be worse than silence.
-    if event.payload["reason"].as_str() != Some("normal") {
+    let reason = event.payload["reason"].as_str().unwrap_or_default();
+    // Timeout and supersede have their own opening-comment tombstone. The
+    // reviewer-minimum terminal is different: it must publish an error status
+    // while withholding every formal review write.
+    if reason != "normal" && reason != "insufficient_valid_reviewers" {
         return false;
     }
     let target = match store.session_target(session_id).await {
@@ -2086,13 +2088,46 @@ async fn dispatch_terminal(
     // not a verdict. NULL reason on older rows reads as council, the safe
     // default (SEI-929).
     let is_ask = target.reason.as_deref() == Some("ask");
+    if is_ask && reason != "normal" {
+        return false;
+    }
     // Every round posts its OWN comment (operator decision, 2026-08-01):
     // updating one standing comment in place erased each earlier round's
     // report from the pull request — four rounds of audit trail collapsed
     // into one surviving body. The in-place design (council F3, #305) solved
     // duplicate-comment noise; the round marker plus per-round bodies keep
     // idempotency without destroying history.
-    let plan = closing::plan_close(&target, &parsed, None, session_id, is_ask);
+    let reported_required = event.payload["required_valid_reviewers"].as_i64();
+    let valid_reviewers = event.payload["valid_reviewers"].as_i64();
+    let reviewer_gate_passed = is_ask
+        || (reason == "normal"
+            && target
+                .required_valid_reviewers
+                .is_some_and(|required| required > 0)
+            && reported_required == target.required_valid_reviewers
+            && valid_reviewers.is_some_and(|valid| {
+                target
+                    .required_valid_reviewers
+                    .is_some_and(|required| valid >= required)
+            }));
+    let plan = if reviewer_gate_passed {
+        closing::plan_close(&target, &parsed, None, session_id, is_ask)
+    } else {
+        tracing::warn!(
+            session_id,
+            reason,
+            expected_required = target.required_valid_reviewers,
+            reported_required,
+            valid_reviewers,
+            "terminal reviewer evidence failed closed"
+        );
+        closing::plan_insufficient_reviewers(
+            &target,
+            session_id,
+            target.required_valid_reviewers,
+            valid_reviewers,
+        )
+    };
 
     if is_ask {
         // A follow-up answer is not a review: no round, no findings, no status,
@@ -3876,6 +3911,7 @@ mod tests {
             pr_number: 7,
             head_sha: None,
             reason: None,
+            required_valid_reviewers: Some(2),
         };
         let plan = closing::plan_close(&target, &parsed, None, "ses_waiver_test", false);
         assert_eq!(plan.fired_waivers.len(), 2);
@@ -4813,7 +4849,14 @@ mod tests {
         .unwrap();
         let store = SqliteStore::memory().unwrap();
         store
-            .record_session_target("ses_1", "example/repo", 7, Some("openingsha"), None)
+            .record_session_target(
+                "ses_1",
+                "example/repo",
+                7,
+                Some("openingsha"),
+                None,
+                Some(2),
+            )
             .unwrap();
         let state = Arc::new(AppState::with_components(
             config,
@@ -4894,7 +4937,14 @@ mod tests {
         .unwrap();
         let store = SqliteStore::memory().unwrap();
         store
-            .record_session_target("ses_1", "example/repo", 7, Some("openingsha"), None)
+            .record_session_target(
+                "ses_1",
+                "example/repo",
+                7,
+                Some("openingsha"),
+                None,
+                Some(2),
+            )
             .unwrap();
         let state = Arc::new(AppState::with_components(
             config,
@@ -4914,6 +4964,8 @@ mod tests {
             "occurred_at": 1_000,
             "payload": {
                 "reason": "normal",
+                "required_valid_reviewers": 2,
+                "valid_reviewers": 2,
                 "final_messages": [
                     "## Verdict\n\nprose\n<!-- openab-findings\n{\"head_sha\":\"reviewedsha\",\"findings\":[{\"id\":\"F1\",\"severity\":\"yellow\",\"title\":\"races on close\"}]}\n-->\n[[verdict:request_changes r=0 y=1 g=2]] [done]"
                 ]
@@ -5599,7 +5651,14 @@ mod tests {
         .unwrap();
         let store = SqliteStore::memory().unwrap();
         store
-            .record_session_target("ses_1", "example/repo", 7, Some("openingsha"), None)
+            .record_session_target(
+                "ses_1",
+                "example/repo",
+                7,
+                Some("openingsha"),
+                None,
+                Some(2),
+            )
             .unwrap();
         let state = Arc::new(AppState::with_components(
             config,
@@ -5623,6 +5682,8 @@ mod tests {
             "occurred_at": 1_000,
             "payload": {
                 "reason": "normal",
+                "required_valid_reviewers": 2,
+                "valid_reviewers": 2,
                 "final_messages": ["<!-- openab-council -->\n## Verdict\n\nblocked\n[[verdict:request_changes r=1 y=0 g=0]] [done]"]
             }
         })
@@ -5666,6 +5727,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn approve_is_impossible_below_the_recorded_reviewer_minimum() {
+        let event_secret = vec![7; 32];
+        let config = external_config(&event_secret);
+        let verifier = runtime_events::RuntimeEventVerifier::new(
+            "github-canary",
+            config.event_signing_secret.as_deref().unwrap(),
+        )
+        .unwrap();
+        let store = SqliteStore::memory().unwrap();
+        store
+            .record_session_target(
+                "ses_short",
+                "example/repo",
+                7,
+                Some("openingsha"),
+                None,
+                Some(2),
+            )
+            .unwrap();
+        let state = Arc::new(AppState::with_components(
+            config,
+            store,
+            Some(Arc::new(RecordingActionClient::new([]).0)),
+            Some(Arc::new(verifier)),
+        ));
+        let store = state.store.clone().unwrap();
+
+        let body = json!({
+            "version": "1",
+            "event_id": "cev_short",
+            "controller_id": "github-canary",
+            "event_type": "session.terminal",
+            "session_id": "ses_short",
+            "occurred_at": 1_000,
+            "payload": {
+                "reason": "normal",
+                "required_valid_reviewers": 2,
+                "valid_reviewers": 1,
+                "final_messages": [
+                    "<!-- openab-council -->\nLGTM\n[[verdict:approve r=0 y=0 g=2]] [done]"
+                ]
+            }
+        })
+        .to_string();
+        let response = router(state)
+            .oneshot(signed_runtime_event_request(
+                &event_secret,
+                "cev_short",
+                "/api/v1/openab/events?version=1",
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let pending = store.pending_writes(10).await.unwrap();
+        assert_eq!(
+            pending
+                .iter()
+                .map(|write| write.kind.as_str())
+                .collect::<Vec<_>>(),
+            ["comment", "status"]
+        );
+        assert_eq!(pending[1].payload["state"], "error");
+        assert!(pending.iter().all(|write| write.kind != "review"));
+        assert!(pending[0].payload["body"]
+            .as_str()
+            .unwrap()
+            .contains("failed closed"));
+    }
+
+    #[tokio::test]
     async fn terminal_events_we_do_not_own_or_cannot_act_on_are_left_alone() {
         let event_secret = vec![7; 32];
         let config = external_config(&event_secret);
@@ -5676,7 +5809,7 @@ mod tests {
         .unwrap();
         let store = SqliteStore::memory().unwrap();
         store
-            .record_session_target("ses_ours", "example/repo", 7, Some("sha"), None)
+            .record_session_target("ses_ours", "example/repo", 7, Some("sha"), None, Some(2))
             .unwrap();
         let state = Arc::new(AppState::with_components(
             config,
@@ -5743,7 +5876,14 @@ mod tests {
         .unwrap();
         let store = SqliteStore::memory().unwrap();
         store
-            .record_session_target("ses_ask", "example/repo", 7, Some("sha"), Some("ask"))
+            .record_session_target(
+                "ses_ask",
+                "example/repo",
+                7,
+                Some("sha"),
+                Some("ask"),
+                Some(0),
+            )
             .unwrap();
         let state = Arc::new(AppState::with_components(
             config,

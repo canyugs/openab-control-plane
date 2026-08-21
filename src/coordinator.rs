@@ -10,7 +10,7 @@
 //! required prior state. v1 ships `QuorumCouncil`; a second mode is a new impl
 //! selected in `lookup`, the only seam that changes.
 
-use crate::session::quorum_reached;
+use crate::session::{quorum_reached, ReviewerCompletion};
 use crate::store::SessionState;
 
 /// Read-only view a Coordinator decides from (pure → unit-testable).
@@ -209,6 +209,21 @@ fn counted_done_voters(cx: &dyn Ctx, explicit: bool) -> Vec<String> {
         .collect()
 }
 
+/// Project the reviewer evidence that crosses the external-controller seam.
+/// This reuses the report contract that decides quorum, so the controller can
+/// never receive a larger valid count than the kernel actually accepted.
+pub(crate) fn reviewer_completion(cx: &dyn Ctx, explicit: bool) -> ReviewerCompletion {
+    let rostered_reviewers = crate::session::reviewers(cx.roster(), cx.chair());
+    let valid_reviewers = counted_done_voters(cx, explicit)
+        .into_iter()
+        .filter(|bot| rostered_reviewers.iter().any(|reviewer| reviewer == bot))
+        .count() as i64;
+    ReviewerCompletion {
+        required_valid_reviewers: cx.quorum_n(),
+        valid_reviewers,
+    }
+}
+
 pub(crate) const REVIEWER_REREQUEST_PREFIX: &str = "[report-delivery re-request]";
 pub(crate) const MAX_REVIEWER_REREQUESTS: i64 = 2;
 
@@ -402,12 +417,7 @@ pub(crate) fn council_on_done_with_reviewer_rerequest_attempts(
 /// gate cannot see the buried banner. Real report prose never opens with the
 /// warning-emoji error frame, so the head check stays specific.
 fn chair_turn_errored(settled: &str) -> bool {
-    let first = settled.trim_start().lines().next().unwrap_or_default();
-    if !first.starts_with('\u{26A0}') {
-        return false; // ⚠ — only the runtime banner opens this way
-    }
-    let lc = first.to_ascii_lowercase();
-    lc.contains("-32603") || lc.contains("internal error")
+    crate::turn_failure::starts_with_runtime_error_banner(settled)
 }
 
 /// The requeue: pick the next chair (rotation prefers a different candidate),
@@ -792,8 +802,12 @@ mod tests {
             "The reconnect path can surface a JSON-RPC -32603 to the user.\n{}",
             trailed()
         );
-        let actions =
-            council_on_done(&quorum_ctx(&discusses), "chair", COUNCIL_QUORUM_PROMPT, true);
+        let actions = council_on_done(
+            &quorum_ctx(&discusses),
+            "chair",
+            COUNCIL_QUORUM_PROMPT,
+            true,
+        );
         assert!(
             actions.iter().any(|a| matches!(a, Action::Close { .. })),
             "prose mentioning an error code is not a failed turn"

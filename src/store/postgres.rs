@@ -2914,6 +2914,7 @@ impl Store for PostgresStore {
         result_author_id: Option<&str>,
         result_message_ids_json: Option<&str>,
         final_messages: &[String],
+        reviewer_completion: crate::session::ReviewerCompletion,
     ) -> Result<bool> {
         self.block(async {
             let mut client = self.client().await?;
@@ -2994,6 +2995,8 @@ impl Store for PostgresStore {
                     "findings_yellow": yellow,
                     "findings_green": green,
                     "final_messages": kept,
+                    "required_valid_reviewers": reviewer_completion.required_valid_reviewers,
+                    "valid_reviewers": reviewer_completion.valid_reviewers,
                 });
                 if truncated {
                     payload["final_messages_truncated"] = json!(true);
@@ -4241,6 +4244,7 @@ mod tests {
                 Some("chair"),
                 None,
                 &["report".to_string()],
+                crate::session::ReviewerCompletion::default(),
             )
             .unwrap());
         let closed = s.session(&ses.id).unwrap().unwrap();
@@ -4715,6 +4719,7 @@ mod tests {
                 None,
                 None,
                 &[],
+                crate::session::ReviewerCompletion::default(),
             )
             .unwrap());
         let stats = s.stats(now_ms()).unwrap();

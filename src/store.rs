@@ -5,6 +5,7 @@
 //! so the swap touches only this file. ponytail: one impl for now, but the seam
 //! is deliberate (see design §6c "12-factor posture").
 
+use crate::session::ReviewerCompletion;
 use anyhow::{Context, Result};
 use controller_protocol::audit::{
     AuditActor, AuditCorrelation, AuditCursor, AuditError, AuditEvent, AuditEventPage,
@@ -743,6 +744,7 @@ pub trait Store: Send + Sync {
         result_author_id: Option<&str>,
         result_message_ids_json: Option<&str>,
         final_messages: &[String],
+        reviewer_completion: ReviewerCompletion,
     ) -> Result<bool>;
     /// Reopen a terminal session for a follow-up turn (ADR 011 solo pattern),
     /// clearing the recorded result identity in the same guarded UPDATE — the
@@ -4057,6 +4059,7 @@ impl Store for SqliteStore {
         result_author_id: Option<&str>,
         result_message_ids_json: Option<&str>,
         final_messages: &[String],
+        reviewer_completion: ReviewerCompletion,
     ) -> Result<bool> {
         let mut c = self.conn.lock().unwrap();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -4138,6 +4141,8 @@ impl Store for SqliteStore {
                 "findings_yellow": yellow,
                 "findings_green": green,
                 "final_messages": kept,
+                "required_valid_reviewers": reviewer_completion.required_valid_reviewers,
+                "valid_reviewers": reviewer_completion.valid_reviewers,
             });
             if truncated {
                 payload["final_messages_truncated"] = json!(true);
@@ -5181,6 +5186,7 @@ mod tests {
                 Some("bot-a"),
                 Some(r#"["msg_1"]"#),
                 &[],
+                ReviewerCompletion::default(),
             )
             .unwrap());
         let row = store.session(&s.id).unwrap().unwrap();
@@ -5199,6 +5205,7 @@ mod tests {
                 Some("bot-a"),
                 Some(r#"["msg_1","msg_2"]"#),
                 &[],
+                ReviewerCompletion::default(),
             )
             .unwrap());
         let row = store.session(&s.id).unwrap().unwrap();
@@ -5270,6 +5277,10 @@ mod tests {
                 Some("chair"),
                 Some(r#"["m1","m2"]"#),
                 &span,
+                ReviewerCompletion {
+                    required_valid_reviewers: 2,
+                    valid_reviewers: 2,
+                },
             )
             .unwrap());
 
@@ -5280,6 +5291,8 @@ mod tests {
             .expect("terminal event enqueued");
         let body: serde_json::Value = serde_json::from_str(&terminal.body_json).unwrap();
         assert_eq!(body["payload"]["decision"], "approve");
+        assert_eq!(body["payload"]["required_valid_reviewers"], 2);
+        assert_eq!(body["payload"]["valid_reviewers"], 2);
         assert_eq!(
             body["payload"]["final_messages"],
             json!([
@@ -5400,6 +5413,7 @@ mod tests {
                 Some("chair"),
                 Some(r#"["m1","m2","m3"]"#),
                 &span,
+                ReviewerCompletion::default(),
             )
             .unwrap());
 
@@ -5465,6 +5479,7 @@ mod tests {
                 Some("chair"),
                 Some(r#"["m1"]"#),
                 std::slice::from_ref(&single),
+                ReviewerCompletion::default(),
             )
             .unwrap());
 

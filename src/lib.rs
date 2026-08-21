@@ -15,6 +15,7 @@ pub mod routing;
 pub mod session;
 pub mod state;
 pub mod store;
+pub mod turn_failure;
 pub mod ws;
 
 use axum::routing::get;

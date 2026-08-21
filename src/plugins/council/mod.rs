@@ -7,7 +7,9 @@ pub const MIN_REPORT_CHARS: usize = 20;
 
 pub fn report_delivered(text: &str) -> bool {
     let text = text.trim();
-    text.chars().count() >= MIN_REPORT_CHARS && !is_bare_tool_echo(text)
+    text.chars().count() >= MIN_REPORT_CHARS
+        && crate::turn_failure::classify_legacy_turn_failure(text).is_none()
+        && !is_bare_tool_echo(text)
 }
 
 fn is_bare_tool_echo(text: &str) -> bool {
@@ -109,6 +111,12 @@ mod tests {
         assert!(!report_delivered(
             "{\n  \"jsonrpc\": \"2.0\",\n  \"error\": {\"code\": -32603}\n}"
         ));
+    }
+
+    #[test]
+    fn report_delivery_rejects_the_production_subscription_failure() {
+        let frame = include_str!("../../../tests/fixtures/claude-subscription-disabled.txt");
+        assert!(!report_delivered(frame));
     }
 
     #[test]

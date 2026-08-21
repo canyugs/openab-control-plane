@@ -205,6 +205,9 @@ const MIGRATIONS: &[&str] = &[
     // session from a council round, so it posts a plain answer instead of a
     // verdict. Older rows have NULL reason and read as council, the safe default.
     "ALTER TABLE session_targets ADD COLUMN reason TEXT;",
+    // 10 — SEI-958: the GitHub writer independently remembers the reviewer
+    // evidence it required at open. Pre-migration NULL rows fail closed.
+    "ALTER TABLE session_targets ADD COLUMN required_valid_reviewers INTEGER;",
 ];
 
 pub struct SqliteStore {
@@ -537,18 +540,20 @@ impl SqliteStore {
         pr_number: i64,
         head_sha: Option<&str>,
         reason: Option<&str>,
+        required_valid_reviewers: Option<i64>,
     ) -> rusqlite::Result<()> {
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         connection.execute(
             "INSERT INTO session_targets
-               (session_id, repo, pr_number, head_sha, reason, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+               (session_id, repo, pr_number, head_sha, reason, required_valid_reviewers, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(session_id) DO UPDATE SET
                repo = excluded.repo,
                pr_number = excluded.pr_number,
                head_sha = COALESCE(excluded.head_sha, session_targets.head_sha),
-               reason = COALESCE(excluded.reason, session_targets.reason)",
-            params![session_id, repo, pr_number, head_sha, reason, now_unix()],
+               reason = COALESCE(excluded.reason, session_targets.reason),
+               required_valid_reviewers = COALESCE(excluded.required_valid_reviewers, session_targets.required_valid_reviewers)",
+            params![session_id, repo, pr_number, head_sha, reason, required_valid_reviewers, now_unix()],
         )?;
         Ok(())
     }
@@ -559,7 +564,7 @@ impl SqliteStore {
         let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
         connection
             .query_row(
-                "SELECT repo, pr_number, head_sha, reason FROM session_targets WHERE session_id = ?1",
+                "SELECT repo, pr_number, head_sha, reason, required_valid_reviewers FROM session_targets WHERE session_id = ?1",
                 [session_id],
                 |row| {
                     Ok(SessionTarget {
@@ -567,6 +572,7 @@ impl SqliteStore {
                         pr_number: row.get(1)?,
                         head_sha: row.get(2)?,
                         reason: row.get(3)?,
+                        required_valid_reviewers: row.get(4)?,
                     })
                 },
             )
@@ -1412,9 +1418,16 @@ impl ProductStore for SqliteStore {
         pr_number: i64,
         head_sha: Option<&str>,
         reason: Option<&str>,
+        required_valid_reviewers: Option<i64>,
     ) -> StoreResult<()> {
         Ok(SqliteStore::record_session_target(
-            self, session_id, repo, pr_number, head_sha, reason,
+            self,
+            session_id,
+            repo,
+            pr_number,
+            head_sha,
+            reason,
+            required_valid_reviewers,
         )?)
     }
 
