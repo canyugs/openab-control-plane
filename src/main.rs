@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState::new(store);
     spawn_watchdog(state.clone());
     spawn_liveness(state.clone());
+    spawn_stall_monitor(state.clone());
     spawn_audit_retention(state.clone());
     openab_control_plane::controller_events::spawn_dispatcher(state.clone());
     let app = build_router(state);
@@ -69,6 +70,10 @@ fn spawn_watchdog(state: Arc<AppState>) {
             let cutoff = now_ms() - timeout_secs * 1000;
             match state.store.active_sessions_before(cutoff) {
                 Ok(ids) => {
+                    // Store answered — the pipeline's DB path is live. Drives
+                    // /readyz (SEI-962 deep liveness). A wedged store never
+                    // returns here, so this stops bumping and /readyz fails.
+                    state.mark_store_ok();
                     for id in ids {
                         if let Err(e) = orchestrator::force_close_timeout(&state, &id, cutoff) {
                             tracing::error!("watchdog close {id} failed: {e}");
@@ -169,6 +174,34 @@ fn spawn_liveness(state: Arc<AppState>) {
             tick.tick().await;
             if let Err(e) = orchestrator::sweep_liveness(&state, grace_secs * 1000) {
                 tracing::error!("liveness sweep failed: {e}");
+            }
+        }
+    });
+}
+
+/// Store-free wedge-onset log (SEI-962). Reads only the `last_store_ok_ms`
+/// heartbeat, so it keeps running and can name the stall even while every
+/// store-touching task is parked. Transition-only: one WARN on entering
+/// stalled, one INFO on recovery. (A *fully* starved runtime can't run this
+/// either — that mode is the one the static `/healthz` hang still catches.)
+fn spawn_stall_monitor(state: Arc<AppState>) {
+    let threshold = openab_control_plane::readyz_stall_secs();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(30));
+        let mut warned = false;
+        loop {
+            tick.tick().await;
+            let stalled = state.store_stalled_secs();
+            if stalled > threshold && !warned {
+                tracing::warn!(
+                    stalled_secs = stalled,
+                    threshold,
+                    "store heartbeat stalled — pipeline may be wedged; /readyz is failing"
+                );
+                warned = true;
+            } else if stalled <= threshold && warned {
+                tracing::info!(stalled_secs = stalled, "store heartbeat recovered");
+                warned = false;
             }
         }
     });
