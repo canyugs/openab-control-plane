@@ -131,6 +131,26 @@ impl PostgresStore {
             .map_err(|error| anyhow::anyhow!("postgres pool: {error}"))
     }
 
+    /// Run one maintenance DELETE/UPDATE exempt from the runtime
+    /// `statement_timeout`. Large backlogs — audit prune, delivered-event prune,
+    /// terminal-outbox purge — can legitimately exceed 15s and must not fail
+    /// (council F2; the boot outbox purge would otherwise crash-loop the pod).
+    /// `lock_timeout` is kept, so the statement still yields rather than blocking
+    /// writers, and `SET LOCAL` reverts on commit, leaving the pooled connection
+    /// clean for runtime queries.
+    async fn exec_maintenance(
+        &self,
+        sql: &str,
+        params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+    ) -> Result<u64> {
+        let mut client = self.client().await?;
+        let tx = client.transaction().await?;
+        tx.batch_execute("SET LOCAL statement_timeout = 0").await?;
+        let affected = tx.execute(sql, params).await?;
+        tx.commit().await?;
+        Ok(affected)
+    }
+
     async fn migrate_pg(&self) -> Result<()> {
         let mut client = self.client().await?;
         let transaction = client.transaction().await?;
@@ -1660,9 +1680,8 @@ impl Store for PostgresStore {
 
     fn prune_delivered_controller_events(&self, before: i64) -> Result<usize> {
         self.block(async {
-            let client = self.client().await?;
-            Ok(client
-                .execute(
+            Ok(self
+                .exec_maintenance(
                     "DELETE FROM controller_events
                      WHERE state = 'delivered' AND delivered_at < $1",
                     &[&before],
@@ -1856,9 +1875,8 @@ impl Store for PostgresStore {
 
     fn prune_audit_events(&self, before: i64, extended_before: i64) -> Result<usize> {
         self.block(async {
-            let client = self.client().await?;
-            Ok(client
-                .execute(
+            Ok(self
+                .exec_maintenance(
                     "DELETE FROM audit_events
                      WHERE (recorded_at < $1 AND NOT (
                                outcome IN ('failed', 'outcome_unknown', 'reconciled')
@@ -3536,17 +3554,15 @@ impl Store for PostgresStore {
 
     fn purge_terminal_outbox(&self) -> Result<()> {
         self.block(async {
-            let client = self.client().await?;
-            client
-                .execute(
-                    "DELETE FROM outbox
+            self.exec_maintenance(
+                "DELETE FROM outbox
                      WHERE session_id IN (
                          SELECT id FROM sessions WHERE state IN ('closed', 'aborted')
                      )
                      OR session_id IS NULL",
-                    &[],
-                )
-                .await?;
+                &[],
+            )
+            .await?;
             Ok(())
         })
     }
