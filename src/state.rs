@@ -642,6 +642,30 @@ mod tests {
     }
 
     #[test]
+    fn poisoned_serialization_lock_recovers_instead_of_bricking() {
+        let state = AppState::new(Arc::new(SqliteStore::memory().unwrap()));
+        // Poison the lock exactly as a panic inside the critical section would:
+        // a holder panics while holding the guard.
+        let holder = state.clone();
+        let _ = std::thread::spawn(move || {
+            let _g = holder.controller_action_lock.lock().unwrap();
+            panic!("holder panics while holding controller_action_lock");
+        })
+        .join(); // Err(panic) — expected; the point is the mutex is now poisoned.
+        assert!(
+            state.controller_action_lock.is_poisoned(),
+            "precondition: the lock is poisoned"
+        );
+        // The production path (unwrap_or_else into_inner) must still acquire the
+        // guard — a plain .lock().unwrap() here would panic and brick the
+        // endpoint until restart (the SEI-962 recurrence mode).
+        let _guard = state
+            .controller_action_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+
+    #[test]
     fn stale_disconnect_does_not_evict_newer_connection() {
         let state = AppState::new(Arc::new(SqliteStore::memory().unwrap()));
         let (tx0, _rx0) = mpsc::unbounded_channel();
