@@ -226,6 +226,14 @@ pub struct AppState {
     /// marked offline. `connected` = "this stack is non-empty".
     hub: Mutex<HashMap<String, Vec<Conn>>>,
     conn_seq: AtomicU64,
+    /// Store-liveness heartbeat: epoch-ms of the last successful background store
+    /// read (bumped by the watchdog every 30s tick). `/readyz` fails once this
+    /// goes stale — the SEI-962 wedge signal the static `/healthz` is blind to
+    /// (postmortem 2026-08-27). Read without touching the store, so it stays
+    /// answerable while the store itself is wedged. Bumped after a read (not a
+    /// PR event), so an idle plane and a slow-but-alive turn both stay fresh;
+    /// only a genuine store stall lets it grow.
+    last_store_ok_ms: AtomicU64,
     /// Per-bot flush mutexes. Entries are retained for process lifetime; the set
     /// is bounded by bot inventory and avoids reconnect-storm duplicate sends.
     flush_locks: Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>,
@@ -289,6 +297,24 @@ impl AppState {
         if self.compatibility_seen.lock().unwrap().insert(key) {
             self.record_compatibility_use(surface, 1);
         }
+    }
+
+    /// Mark the store as responsive right now — called by the watchdog after a
+    /// successful background read. Drives `/readyz` (SEI-962 deep liveness).
+    pub fn mark_store_ok(&self) {
+        self.last_store_ok_ms.store(
+            crate::store::now_ms() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Seconds since the store last answered a background read. Grows without
+    /// bound while the pipeline is wedged; readable without touching the store.
+    pub fn store_stalled_secs(&self) -> u64 {
+        let last = self
+            .last_store_ok_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (crate::store::now_ms() as u64).saturating_sub(last) / 1000
     }
 
     pub fn new(store: Arc<dyn Store>) -> Arc<AppState> {
@@ -381,6 +407,7 @@ impl AppState {
             council_config,
             hub: Mutex::new(HashMap::new()),
             conn_seq: AtomicU64::new(0),
+            last_store_ok_ms: AtomicU64::new(crate::store::now_ms() as u64),
             flush_locks: Mutex::new(HashMap::new()),
             north_tx,
             platform: "feishu".into(),
@@ -594,6 +621,49 @@ mod tests {
     use super::*;
     use crate::store::{SqliteStore, Store};
     use tokio::sync::mpsc;
+
+    #[test]
+    fn store_heartbeat_freshness_drives_readyz_signal() {
+        let state = AppState::new(Arc::new(SqliteStore::memory().unwrap()));
+        // Fresh state: heartbeat is current, so /readyz would report ready.
+        assert!(state.store_stalled_secs() <= 2, "fresh state is not stalled");
+        // Simulate a wedge: no watchdog bump for 300s.
+        state.last_store_ok_ms.store(
+            (crate::store::now_ms() as u64).saturating_sub(300_000),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        assert!(
+            state.store_stalled_secs() >= 299,
+            "backdated heartbeat reads as stalled"
+        );
+        // A successful watchdog read clears it.
+        state.mark_store_ok();
+        assert!(state.store_stalled_secs() <= 2, "mark_store_ok refreshes");
+    }
+
+    #[test]
+    fn poisoned_serialization_lock_recovers_instead_of_bricking() {
+        let state = AppState::new(Arc::new(SqliteStore::memory().unwrap()));
+        // Poison the lock exactly as a panic inside the critical section would:
+        // a holder panics while holding the guard.
+        let holder = state.clone();
+        let _ = std::thread::spawn(move || {
+            let _g = holder.controller_action_lock.lock().unwrap();
+            panic!("holder panics while holding controller_action_lock");
+        })
+        .join(); // Err(panic) — expected; the point is the mutex is now poisoned.
+        assert!(
+            state.controller_action_lock.is_poisoned(),
+            "precondition: the lock is poisoned"
+        );
+        // The production path (unwrap_or_else into_inner) must still acquire the
+        // guard — a plain .lock().unwrap() here would panic and brick the
+        // endpoint until restart (the SEI-962 recurrence mode).
+        let _guard = state
+            .controller_action_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
 
     #[test]
     fn stale_disconnect_does_not_evict_newer_connection() {

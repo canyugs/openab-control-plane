@@ -52,6 +52,26 @@ fn tls_connector() -> Result<tokio_postgres_rustls::MakeRustlsConnect> {
     Ok(tokio_postgres_rustls::MakeRustlsConnect::new(config))
 }
 
+/// libpq startup `options` applied to every pooled connection. The three
+/// timeouts are the SEI-962 wedge fix: without them a stuck query, advisory
+/// lock, or row lock waits forever, parks the `block_on` caller, and freezes
+/// the whole pipeline while the static `/healthz` still answers "ok". Any
+/// `options` already parsed from the URL are preserved; `search_path` carves
+/// out a per-test schema.
+fn connect_options(existing: Option<&str>, search_path: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(existing) = existing.map(str::trim).filter(|s| !s.is_empty()) {
+        parts.push(existing.to_string());
+    }
+    parts.push("-c statement_timeout=15000".into());
+    parts.push("-c lock_timeout=5000".into());
+    parts.push("-c idle_in_transaction_session_timeout=30000".into());
+    if let Some(schema) = search_path {
+        parts.push(format!("-c search_path={schema}"));
+    }
+    parts.join(" ")
+}
+
 pub struct PostgresStore {
     pool: Pool,
     /// Dedicated runtime driving connections and timers; kept alive for the
@@ -74,9 +94,11 @@ impl PostgresStore {
                 .build()?,
         );
         let mut config: tokio_postgres::Config = url.parse()?;
-        if let Some(schema) = search_path {
-            config.options(format!("-c search_path={schema}"));
-        }
+        // SEI-962 wedge fix: bound every pooled connection so a stuck query,
+        // advisory lock, or row lock cannot park the `block_on` caller forever
+        // (ops repo postmortem 2026-08-27). search_path stays the test carve-out.
+        let existing = config.get_options().map(str::to_owned);
+        config.options(connect_options(existing.as_deref(), search_path));
         let manager_config = ManagerConfig {
             recycling_method: RecyclingMethod::Fast,
         };
@@ -109,17 +131,47 @@ impl PostgresStore {
             .map_err(|error| anyhow::anyhow!("postgres pool: {error}"))
     }
 
+    /// Run one maintenance DELETE/UPDATE exempt from the runtime
+    /// `statement_timeout`. Large backlogs — audit prune, delivered-event prune,
+    /// terminal-outbox purge — can legitimately exceed 15s and must not fail
+    /// (council F2; the boot outbox purge would otherwise crash-loop the pod).
+    /// `lock_timeout` is kept, so the statement still yields rather than blocking
+    /// writers, and `SET LOCAL` reverts on commit, leaving the pooled connection
+    /// clean for runtime queries.
+    async fn exec_maintenance(
+        &self,
+        sql: &str,
+        params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+    ) -> Result<u64> {
+        let mut client = self.client().await?;
+        let tx = client.transaction().await?;
+        tx.batch_execute("SET LOCAL statement_timeout = 0").await?;
+        let affected = tx.execute(sql, params).await?;
+        tx.commit().await?;
+        Ok(affected)
+    }
+
     async fn migrate_pg(&self) -> Result<()> {
         let mut client = self.client().await?;
-        client
+        let transaction = client.transaction().await?;
+        // Migrations must NOT inherit the runtime statement/lock timeouts. The
+        // advisory lock below serializes concurrent pod boots (rolling deploys):
+        // waiting there is correct, and the global 5s lock_timeout would make
+        // the second pod's migration error out and crash-loop (council finding
+        // on the timeouts change). A large DDL likewise must not hit the 15s
+        // statement_timeout. SET LOCAL reverts on commit, so the pooled
+        // connection returns clean and runtime queries keep the tight timeouts.
+        transaction
+            .batch_execute("SET LOCAL lock_timeout = 0; SET LOCAL statement_timeout = 0")
+            .await?;
+        transaction
+            .query("SELECT pg_advisory_xact_lock($1)", &[&0x0CB_0334_i64])
+            .await?;
+        transaction
             .batch_execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations (
                    version BIGINT PRIMARY KEY, applied_at BIGINT NOT NULL);",
             )
-            .await?;
-        let transaction = client.transaction().await?;
-        transaction
-            .query("SELECT pg_advisory_xact_lock($1)", &[&0x0CB_0334_i64])
             .await?;
         let applied: i64 = transaction
             .query_one("SELECT COUNT(*) FROM schema_migrations", &[])
@@ -1628,9 +1680,8 @@ impl Store for PostgresStore {
 
     fn prune_delivered_controller_events(&self, before: i64) -> Result<usize> {
         self.block(async {
-            let client = self.client().await?;
-            Ok(client
-                .execute(
+            Ok(self
+                .exec_maintenance(
                     "DELETE FROM controller_events
                      WHERE state = 'delivered' AND delivered_at < $1",
                     &[&before],
@@ -1824,9 +1875,8 @@ impl Store for PostgresStore {
 
     fn prune_audit_events(&self, before: i64, extended_before: i64) -> Result<usize> {
         self.block(async {
-            let client = self.client().await?;
-            Ok(client
-                .execute(
+            Ok(self
+                .exec_maintenance(
                     "DELETE FROM audit_events
                      WHERE (recorded_at < $1 AND NOT (
                                outcome IN ('failed', 'outcome_unknown', 'reconciled')
@@ -3504,17 +3554,15 @@ impl Store for PostgresStore {
 
     fn purge_terminal_outbox(&self) -> Result<()> {
         self.block(async {
-            let client = self.client().await?;
-            client
-                .execute(
-                    "DELETE FROM outbox
+            self.exec_maintenance(
+                "DELETE FROM outbox
                      WHERE session_id IN (
                          SELECT id FROM sessions WHERE state IN ('closed', 'aborted')
                      )
                      OR session_id IS NULL",
-                    &[],
-                )
-                .await?;
+                &[],
+            )
+            .await?;
             Ok(())
         })
     }
@@ -4048,6 +4096,27 @@ fn map_message_pg(r: &tokio_postgres::Row) -> Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_options_sets_timeouts_and_preserves_context() {
+        // The three wedge-fix bounds are always present, even with no context.
+        let o = connect_options(None, None);
+        assert!(o.contains("-c statement_timeout=15000"), "{o}");
+        assert!(o.contains("-c lock_timeout=5000"), "{o}");
+        assert!(o.contains("-c idle_in_transaction_session_timeout=30000"), "{o}");
+        assert!(!o.contains("search_path"), "{o}");
+
+        // search_path is appended; timeouts survive.
+        let o = connect_options(None, Some("oab_kernel_x"));
+        assert!(o.contains("-c search_path=oab_kernel_x"), "{o}");
+        assert!(o.contains("-c lock_timeout=5000"), "{o}");
+
+        // URL-provided options are preserved, not clobbered.
+        let o = connect_options(Some("-c application_name=plane"), Some("s1"));
+        assert!(o.contains("application_name=plane"), "{o}");
+        assert!(o.contains("statement_timeout=15000"), "{o}");
+        assert!(o.contains("search_path=s1"), "{o}");
+    }
 
     fn store(tag: &str) -> Option<PostgresStore> {
         let Ok(url) = std::env::var("TEST_POSTGRES_URL") else {
