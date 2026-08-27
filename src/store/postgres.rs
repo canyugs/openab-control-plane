@@ -133,15 +133,25 @@ impl PostgresStore {
 
     async fn migrate_pg(&self) -> Result<()> {
         let mut client = self.client().await?;
-        client
+        let transaction = client.transaction().await?;
+        // Migrations must NOT inherit the runtime statement/lock timeouts. The
+        // advisory lock below serializes concurrent pod boots (rolling deploys):
+        // waiting there is correct, and the global 5s lock_timeout would make
+        // the second pod's migration error out and crash-loop (council finding
+        // on the timeouts change). A large DDL likewise must not hit the 15s
+        // statement_timeout. SET LOCAL reverts on commit, so the pooled
+        // connection returns clean and runtime queries keep the tight timeouts.
+        transaction
+            .batch_execute("SET LOCAL lock_timeout = 0; SET LOCAL statement_timeout = 0")
+            .await?;
+        transaction
+            .query("SELECT pg_advisory_xact_lock($1)", &[&0x0CB_0334_i64])
+            .await?;
+        transaction
             .batch_execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations (
                    version BIGINT PRIMARY KEY, applied_at BIGINT NOT NULL);",
             )
-            .await?;
-        let transaction = client.transaction().await?;
-        transaction
-            .query("SELECT pg_advisory_xact_lock($1)", &[&0x0CB_0334_i64])
             .await?;
         let applied: i64 = transaction
             .query_one("SELECT COUNT(*) FROM schema_migrations", &[])
