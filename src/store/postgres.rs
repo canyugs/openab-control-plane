@@ -52,6 +52,26 @@ fn tls_connector() -> Result<tokio_postgres_rustls::MakeRustlsConnect> {
     Ok(tokio_postgres_rustls::MakeRustlsConnect::new(config))
 }
 
+/// libpq startup `options` applied to every pooled connection. The three
+/// timeouts are the SEI-962 wedge fix: without them a stuck query, advisory
+/// lock, or row lock waits forever, parks the `block_on` caller, and freezes
+/// the whole pipeline while the static `/healthz` still answers "ok". Any
+/// `options` already parsed from the URL are preserved; `search_path` carves
+/// out a per-test schema.
+fn connect_options(existing: Option<&str>, search_path: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(existing) = existing.map(str::trim).filter(|s| !s.is_empty()) {
+        parts.push(existing.to_string());
+    }
+    parts.push("-c statement_timeout=15000".into());
+    parts.push("-c lock_timeout=5000".into());
+    parts.push("-c idle_in_transaction_session_timeout=30000".into());
+    if let Some(schema) = search_path {
+        parts.push(format!("-c search_path={schema}"));
+    }
+    parts.join(" ")
+}
+
 pub struct PostgresStore {
     pool: Pool,
     /// Dedicated runtime driving connections and timers; kept alive for the
@@ -74,9 +94,11 @@ impl PostgresStore {
                 .build()?,
         );
         let mut config: tokio_postgres::Config = url.parse()?;
-        if let Some(schema) = search_path {
-            config.options(format!("-c search_path={schema}"));
-        }
+        // SEI-962 wedge fix: bound every pooled connection so a stuck query,
+        // advisory lock, or row lock cannot park the `block_on` caller forever
+        // (ops repo postmortem 2026-08-27). search_path stays the test carve-out.
+        let existing = config.get_options().map(str::to_owned);
+        config.options(connect_options(existing.as_deref(), search_path));
         let manager_config = ManagerConfig {
             recycling_method: RecyclingMethod::Fast,
         };
@@ -4048,6 +4070,27 @@ fn map_message_pg(r: &tokio_postgres::Row) -> Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_options_sets_timeouts_and_preserves_context() {
+        // The three wedge-fix bounds are always present, even with no context.
+        let o = connect_options(None, None);
+        assert!(o.contains("-c statement_timeout=15000"), "{o}");
+        assert!(o.contains("-c lock_timeout=5000"), "{o}");
+        assert!(o.contains("-c idle_in_transaction_session_timeout=30000"), "{o}");
+        assert!(!o.contains("search_path"), "{o}");
+
+        // search_path is appended; timeouts survive.
+        let o = connect_options(None, Some("oab_kernel_x"));
+        assert!(o.contains("-c search_path=oab_kernel_x"), "{o}");
+        assert!(o.contains("-c lock_timeout=5000"), "{o}");
+
+        // URL-provided options are preserved, not clobbered.
+        let o = connect_options(Some("-c application_name=plane"), Some("s1"));
+        assert!(o.contains("application_name=plane"), "{o}");
+        assert!(o.contains("statement_timeout=15000"), "{o}");
+        assert!(o.contains("search_path=s1"), "{o}");
+    }
 
     fn store(tag: &str) -> Option<PostgresStore> {
         let Ok(url) = std::env::var("TEST_POSTGRES_URL") else {
