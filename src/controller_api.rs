@@ -949,7 +949,13 @@ fn execute_action_request(state: &Arc<AppState>, headers: &HeaderMap, body: &[u8
     // One in-process serialization point closes the duplicate-action race
     // around interpreter execution. SQLite's IMMEDIATE transaction still owns
     // the durable admission decision and protects multi-threaded store callers.
-    let _execution_guard = state.controller_action_lock.lock().unwrap();
+    // Recover from poison: this guards `()`, so a prior holder panicking left
+    // nothing inconsistent. `.unwrap()` here would brick every later action
+    // until restart — the SEI-962 recurrence mode (postmortem 2026-08-27).
+    let _execution_guard = state
+        .controller_action_lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let credential_hashes = auth.credential_hashes(token);
     let mut request_digest = Sha256::new();
     request_digest.update(scope.as_bytes());

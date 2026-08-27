@@ -1453,7 +1453,12 @@ fn attempt_failover(state: &Arc<AppState>, degraded_bot_id: &str) {
     // and the later `set_standing_roster` would clobber the earlier swap. The
     // roster is (re-)read below *inside* this lock, so each swap sees the prior
     // one. Cheap — failover is rare — and the path is fully synchronous.
-    let _swap = state.failover_lock.lock().unwrap();
+    // Recover from poison (guards `()`; see controller_action_lock note): a
+    // panicked prior holder must not brick all future failovers until restart.
+    let _swap = state
+        .failover_lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Ok((roster, _)) = crate::plugins::council::runtime_council_roster(state) else {
         return;
     };
