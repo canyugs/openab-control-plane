@@ -3,12 +3,16 @@
 //! The [`Store`] trait is sync and stays sync — 86 methods with callers in
 //! every kernel module. This backend owns a dedicated tokio runtime thread;
 //! each sync method enters that runtime's context and drives its future with
-//! `futures::executor::block_on` (the `reqwest::blocking` pattern).
-//! `tokio::task::block_in_place` is NOT used (panics on the current-thread
-//! runtimes `#[tokio::test]` defaults to), and `Handle::block_on` is NOT used
-//! (panics when the caller is already inside a runtime). Blocking the caller
-//! on a lane-internal ~1ms query matches the SQLite backend's cost, where
-//! every call already serializes behind one `Mutex<Connection>`.
+//! `futures::executor::block_on`. On the multi-thread main runtime the wait is
+//! wrapped in `tokio::task::block_in_place` (SEI-978) so a slow or stuck DB
+//! round-trip yields its worker back — the runtime spins up a replacement —
+//! instead of parking a main worker and, in aggregate, starving the runtime.
+//! `block_in_place` panics on the current-thread runtime `#[tokio::test]` uses
+//! and off any runtime, so those paths fall back to a plain `block_on`.
+//! `Handle::block_on` is NOT used (panics when the caller is already inside a
+//! runtime). Blocking the caller on a lane-internal query matches the SQLite
+//! backend's cost, where every call already serializes behind one
+//! `Mutex<Connection>`.
 //!
 //! Dialect mapping is the one the controller backend shipped and soaked:
 //! BIGSERIAL ids, BIGINT integers, BYTEA blobs, `$N` params,
@@ -120,8 +124,24 @@ impl PostgresStore {
     /// the caller is inside a tokio runtime. See module docs for why this
     /// exact combination and not the alternatives.
     fn block<F: std::future::Future>(&self, future: F) -> F::Output {
-        let _guard = self.runtime.handle().enter();
-        futures::executor::block_on(future)
+        // Decide from the runtime that owns THIS worker, before entering the
+        // pg-store context below. On the multi-thread main runtime, wrap the
+        // blocking wait in block_in_place so a slow DB round-trip yields the
+        // worker back rather than starving the runtime (SEI-978). It panics on a
+        // current-thread runtime (tests) and off-runtime, so fall back there.
+        let multithread = matches!(
+            tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()),
+            Ok(tokio::runtime::RuntimeFlavor::MultiThread)
+        );
+        let run = || {
+            let _guard = self.runtime.handle().enter();
+            futures::executor::block_on(future)
+        };
+        if multithread {
+            tokio::task::block_in_place(run)
+        } else {
+            run()
+        }
     }
 
     async fn client(&self) -> Result<deadpool_postgres::Client> {
