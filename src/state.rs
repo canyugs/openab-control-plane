@@ -249,9 +249,13 @@ pub struct AppState {
     /// Versioned signing keys plus an HTTPS transport for durable controller
     /// runtime events. None keeps event configuration and dispatch fail-closed.
     pub controller_events: Option<Arc<crate::controller_events::ControllerEventRuntime>>,
-    /// Serializes action execution after durable admission so concurrent replay
-    /// cannot execute the interpreter twice in this single-process SQLite runtime.
-    pub controller_action_lock: std::sync::Mutex<()>,
+    /// Per-controller serialization of action execution after durable admission,
+    /// keyed by controller_id — the same granularity as the store's per-controller
+    /// advisory lock. Closes the concurrent-replay double-execute race within one
+    /// controller without letting a stuck action block every other controller's
+    /// PRs (SEI-978). Entries are retained for process lifetime; the set is bounded
+    /// by the installed controllers (a handful), like `flush_locks`.
+    controller_action_locks: std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>,
     /// Scoped bootstrap token for `/v1/bots/discover`. None = discovery disabled.
     pub bot_discovery_token: Option<String>,
     /// Public/internal base URL returned by `/v1/bots/discover` for `/bot-config`.
@@ -315,6 +319,19 @@ impl AppState {
             .last_store_ok_ms
             .load(std::sync::atomic::Ordering::Relaxed);
         (crate::store::now_ms() as u64).saturating_sub(last) / 1000
+    }
+
+    /// The action-execution lock for one controller (get-or-insert), keyed by
+    /// controller_id. Different controllers get different locks, so one stuck
+    /// action serializes only its own controller (SEI-978). Recovers the map
+    /// mutex from poison — a panicked holder left the map itself consistent.
+    pub fn controller_action_lock(&self, controller_id: &str) -> Arc<std::sync::Mutex<()>> {
+        self.controller_action_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(controller_id.to_string())
+            .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
+            .clone()
     }
 
     pub fn new(store: Arc<dyn Store>) -> Arc<AppState> {
@@ -414,7 +431,7 @@ impl AppState {
             api_key,
             controller_auth,
             controller_events,
-            controller_action_lock: std::sync::Mutex::new(()),
+            controller_action_locks: std::sync::Mutex::new(HashMap::new()),
             bot_discovery_token,
             config_base_url,
             close_webhook_url,
@@ -642,27 +659,33 @@ mod tests {
     }
 
     #[test]
-    fn poisoned_serialization_lock_recovers_instead_of_bricking() {
+    fn per_controller_action_lock_isolates_and_recovers_from_poison() {
         let state = AppState::new(Arc::new(SqliteStore::memory().unwrap()));
-        // Poison the lock exactly as a panic inside the critical section would:
-        // a holder panics while holding the guard.
+        // Same controller_id → same lock; different ids → independent locks
+        // (SEI-978: one controller cannot serialize another's actions).
+        assert!(Arc::ptr_eq(
+            &state.controller_action_lock("c1"),
+            &state.controller_action_lock("c1")
+        ));
+        assert!(!Arc::ptr_eq(
+            &state.controller_action_lock("c1"),
+            &state.controller_action_lock("c2")
+        ));
+        // Poison c1's lock the way a panic in the critical section would.
         let holder = state.clone();
         let _ = std::thread::spawn(move || {
-            let _g = holder.controller_action_lock.lock().unwrap();
-            panic!("holder panics while holding controller_action_lock");
+            let lock = holder.controller_action_lock("c1");
+            let _g = lock.lock().unwrap();
+            panic!("holder panics while holding c1's action lock");
         })
-        .join(); // Err(panic) — expected; the point is the mutex is now poisoned.
-        assert!(
-            state.controller_action_lock.is_poisoned(),
-            "precondition: the lock is poisoned"
-        );
-        // The production path (unwrap_or_else into_inner) must still acquire the
-        // guard — a plain .lock().unwrap() here would panic and brick the
-        // endpoint until restart (the SEI-962 recurrence mode).
-        let _guard = state
-            .controller_action_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        .join(); // Err(panic) — expected; c1's lock is now poisoned.
+        assert!(state.controller_action_lock("c1").is_poisoned());
+        // c2 is untouched — a panicked/stuck controller does not brick others.
+        assert!(!state.controller_action_lock("c2").is_poisoned());
+        // The production path recovers c1's guard instead of bricking it — a
+        // plain .lock().unwrap() would panic here (the SEI-962 recurrence mode).
+        let c1 = state.controller_action_lock("c1");
+        let _guard = c1.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     }
 
     #[test]
