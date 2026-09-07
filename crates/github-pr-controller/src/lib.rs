@@ -2749,6 +2749,18 @@ async fn org_membership_fallback(state: &AppState, trigger: &planner::Trigger) -
     org_member(state, &trigger.repository, trigger.author_login.as_deref()).await
 }
 
+/// Trigger-only trust for configured non-org authors (a first-party bot like
+/// `nuphos[bot]` that opens PRs). The login is authoritative: the webhook is
+/// HMAC-verified, so GitHub — not the sender — sets `user.login`, and `[bot]`
+/// logins are reserved for Apps. Grants only "open a review"; it confers no
+/// write/merge/finding-dismiss authority, which keep their own live probes.
+fn author_allowlisted(state: &AppState, trigger: &planner::Trigger) -> bool {
+    trigger
+        .author_login
+        .as_deref()
+        .is_some_and(|login| state.config.trusted_authors.contains(login))
+}
+
 /// Live membership probe. The payload's `author_association` renders against
 /// PUBLIC org membership only, so a private member arrives as CONTRIBUTOR and
 /// would be refused without this (SEI-884).
@@ -3211,7 +3223,11 @@ async fn candidate_plan(
     {
         return Err("repo_not_allowed");
     }
-    if !trigger.author_trusted && !org_membership_fallback(state, &trigger).await {
+    // Allowlist first so a configured bot skips the network probe entirely.
+    if !trigger.author_trusted
+        && !author_allowlisted(state, &trigger)
+        && !org_membership_fallback(state, &trigger).await
+    {
         return Err("author_not_trusted");
     }
     // #326: a plain `/review` (no notes, not from-scratch, not an ask) is an
@@ -3549,6 +3565,7 @@ mod tests {
             operator_write_secret: None,
             canary_repository: None,
             allowed_repos: BTreeSet::from(["example/repo".into()]),
+            trusted_authors: BTreeSet::new(),
             bot_handle: Some("fixture-council".into()),
             roster: vec!["chair".into(), "rev1".into(), "rev2".into()],
             council_preset: None,
@@ -5351,6 +5368,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_allowlisted_bot_author_triggers_without_org_membership() {
+        // A first-party bot (nuphos[bot]) opens PRs with author_association
+        // NONE and is not an org member, so the standing gate refuses it. The
+        // GITHUB_CONTROLLER_TRUSTED_AUTHORS allowlist trusts its exact login to
+        // TRIGGER — and does so with no GitHub client (writes off), proving the
+        // allowlist short-circuits before the membership probe.
+        let mut config = test_config();
+        config.trusted_authors = ["nuphos[bot]".to_string()].into_iter().collect();
+        let state = AppState {
+            config,
+            store: None,
+            store_error: None,
+            action_client: None,
+            action_client_error: None,
+            event_verifier: None,
+            event_verifier_error: None,
+            github: None,
+            bot_identity: ComponentReadiness::disabled("handle unverified"),
+            bot_handles: vec!["bot".into()],
+        };
+
+        let payload = |login: &str| {
+            json!({
+                "action": "opened",
+                "repository": {"full_name": "example/repo"},
+                "pull_request": {
+                    "author_association": "NONE",
+                    "number": 9,
+                    "draft": false,
+                    "head": {"sha": "def456"},
+                    "labels": [],
+                    "user": {"login": login}
+                }
+            })
+        };
+
+        let plan = candidate_plan(&state, "d1", "pull_request", &payload("nuphos[bot]"))
+            .await
+            .expect("an allowlisted author triggers with no probe");
+        assert_eq!(plan.repository, "example/repo");
+
+        // A login not on the list still fails closed, probe or no probe.
+        let denied = candidate_plan(&state, "d2", "pull_request", &payload("other[bot]")).await;
+        assert_eq!(denied.unwrap_err(), "author_not_trusted");
+    }
+
+    #[tokio::test]
     async fn a_replayed_write_reconciles_instead_of_posting_twice() {
         // Council F5 on #305, the P7 gate: a crash between sending and marking
         // done replays the write after the claim lease lapses, and neither a
@@ -5927,7 +5991,10 @@ mod tests {
         assert_eq!(writes[0].kind, closing::KIND_COMMENT);
         let comment = writes[0].payload["body"].as_str().unwrap();
         assert!(comment.contains(answer), "answer missing: {comment}");
-        assert!(!comment.contains("[done]"), "machine tail leaked: {comment}");
+        assert!(
+            !comment.contains("[done]"),
+            "machine tail leaked: {comment}"
+        );
         assert!(
             !comment.contains("parseable verdict"),
             "ask must not warn about a missing verdict: {comment}"
