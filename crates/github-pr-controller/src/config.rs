@@ -84,6 +84,13 @@ pub struct Config {
     pub operator_write_secret: Option<String>,
     pub canary_repository: Option<String>,
     pub allowed_repos: BTreeSet<String>,
+    /// Author logins trusted to TRIGGER a review without org membership —
+    /// first-party bots like `nuphos[bot]` that open PRs. The login is
+    /// authoritative because the webhook is HMAC-verified (GitHub, not the
+    /// sender, sets `user.login`) and `[bot]` logins are reserved for Apps.
+    /// This confers trigger authority only; write/merge/finding-dismiss stay
+    /// behind their own live permission probes.
+    pub trusted_authors: BTreeSet<String>,
     pub bot_handle: Option<String>,
     pub roster: Vec<String>,
     pub council_preset: Option<String>,
@@ -109,6 +116,9 @@ impl Config {
         let allowed_repos = csv(value("GITHUB_CONTROLLER_ALLOWED_REPOS"))
             .into_iter()
             .collect();
+        let trusted_authors = csv(value("GITHUB_CONTROLLER_TRUSTED_AUTHORS"))
+            .into_iter()
+            .collect();
         let roster = {
             let configured = csv(value("GITHUB_CONTROLLER_ROSTER"));
             if configured.is_empty() {
@@ -132,6 +142,7 @@ impl Config {
             operator_write_secret: nonempty(value("GITHUB_CONTROLLER_OPERATOR_WRITE_SECRET")),
             canary_repository: nonempty(value("GITHUB_CONTROLLER_CANARY_REPOSITORY")),
             allowed_repos,
+            trusted_authors,
             bot_handle: nonempty(value("GITHUB_CONTROLLER_BOT_HANDLE"))
                 .map(|handle| handle.trim_start_matches('@').to_string()),
             roster,
@@ -368,6 +379,10 @@ mod tests {
                 "example/repo, other/repo",
             ),
             ("GITHUB_CONTROLLER_BOT_HANDLE", "@review-bot"),
+            (
+                "GITHUB_CONTROLLER_TRUSTED_AUTHORS",
+                "nuphos[bot], dependabot[bot]",
+            ),
             ("GITHUB_CONTROLLER_ROSTER", "chair,reviewer"),
             ("GITHUB_CONTROLLER_COUNCIL_PRESET", "standard"),
             ("GITHUB_CONTROLLER_REVIEW_MODE", "enforce"),
@@ -380,6 +395,8 @@ mod tests {
         assert_eq!(config.council_preset.as_deref(), Some("standard"));
         assert_eq!(config.review_mode, "enforce");
         assert_eq!(config.allowed_repos.len(), 2);
+        assert!(config.trusted_authors.contains("nuphos[bot]"));
+        assert!(config.trusted_authors.contains("dependabot[bot]"));
         assert_ne!(config.db_path, values["OABCP_DB"]);
         assert_eq!(config.mode, OperatingMode::PlanOnly);
         assert!(config.ocp_action.is_empty());
