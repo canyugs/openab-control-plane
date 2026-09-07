@@ -3019,6 +3019,7 @@ mod tests {
             operator_write_secret: None,
             canary_repository: Some("example/repo".into()),
             allowed_repos: std::collections::BTreeSet::from(["example/repo".into()]),
+            trusted_authors: std::collections::BTreeSet::new(),
             bot_handle: Some("fixture-council".into()),
             roster: vec!["chair".into(), "rev1".into(), "rev2".into()],
             council_preset: None,
