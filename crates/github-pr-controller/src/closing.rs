@@ -57,8 +57,8 @@ pub struct ClosingPlan {
     pub red: i64,
     pub yellow: i64,
     pub green: i64,
-    /// What the council says it read — recorded with the round and its
-    /// findings. NOT what the commit status is posted against; see `plan_close`.
+    /// Validated reviewed commit for a formal verdict. Rejected provenance
+    /// is not recorded as a reviewed commit; see `plan_close`.
     pub head_sha: Option<String>,
     pub findings: Vec<ReviewFinding>,
     /// ADR 035: waiver ids named by `status:"waived"` findings — the terminal
@@ -92,7 +92,7 @@ pub fn plan_insufficient_reviewers(
             ),
         }),
     )];
-    if let Some(sha) = target.head_sha.as_deref() {
+    if let Some(sha) = canonical_sha(target.head_sha.as_deref()) {
         writes.push((
             KIND_STATUS,
             json!({
@@ -110,6 +110,58 @@ pub fn plan_insufficient_reviewers(
         yellow: 0,
         green: 0,
         head_sha: target.head_sha.clone(),
+        findings: vec![],
+        fired_waivers: vec![],
+        writes,
+    }
+}
+
+/// Canonical full Git SHA. Prefixes and placeholders are never provenance.
+pub fn canonical_sha(value: Option<&str>) -> Option<String> {
+    let value = value?;
+    (value.len() == 40 && value.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| value.to_ascii_lowercase())
+}
+
+pub fn validate_reviewed_sha(
+    target: &SessionTarget,
+    reported: Option<&str>,
+) -> Result<String, &'static str> {
+    let expected = canonical_sha(target.head_sha.as_deref()).ok_or("invalid_target_sha")?;
+    let reported = canonical_sha(reported).ok_or("missing_or_invalid_reviewed_sha")?;
+    if expected != reported {
+        return Err("reviewed_sha_mismatch");
+    }
+    Ok(expected)
+}
+
+fn plan_invalid_reviewed_sha(
+    target: &SessionTarget,
+    session_id: &str,
+    reason: &str,
+) -> ClosingPlan {
+    let sha = canonical_sha(target.head_sha.as_deref());
+    let mut writes = vec![(
+        KIND_COMMENT,
+        json!({
+            "repo": target.repo, "pr_number": target.pr_number, "comment_id": Value::Null,
+            "body": format!("⚠️ The council failed closed ({reason}); reviewed commit evidence could not be verified. No formal review was submitted. Re-run for the exact target commit.\n\n{}", round_marker(session_id)),
+        }),
+    )];
+    if let Some(sha) = sha {
+        writes.push((
+            KIND_STATUS,
+            json!({"repo": target.repo, "sha": sha,
+            "state": "error", "context": STATUS_CONTEXT,
+            "description": "council error - unverified reviewed commit"}),
+        ));
+    }
+    ClosingPlan {
+        decision: "unknown".into(),
+        red: 0,
+        yellow: 0,
+        green: 0,
+        head_sha: None,
         findings: vec![],
         fired_waivers: vec![],
         writes,
@@ -169,30 +221,26 @@ pub fn plan_close(
     let decision = trailer
         .map(|t| t.decision.clone())
         .unwrap_or_else(|| "unknown".to_string());
-    // Two head shas, two different levels of trust.
-    //
-    // `target.head_sha` came from the webhook GitHub signed: it is the commit
-    // this session was opened for. The chair's findings block carries a sha it
-    // *claims* to have reviewed — useful provenance, but agent output, and an
-    // agent that named someone else's commit could park a green
-    // `openab/council` status on code no one reviewed and satisfy branch
-    // protection with it (council F1, #305).
-    //
-    // So the status — the write with authority — is pinned to the webhook sha.
-    // The claimed sha is recorded with the findings, where it describes what
-    // was read without granting anything. A council that reviewed a newer
-    // commit than the one it was convened for is a supersede, and supersede
-    // opens a new session with its own webhook sha.
-    let status_sha = target.head_sha.clone();
-    let reviewed_sha = parsed
+    // Validate agent provenance before creating any authoritative verdict.
+    // An ask returned above; an unparseable verdict retains its diagnostic path.
+    let reported = parsed
         .findings
         .as_ref()
-        .and_then(|block| block.head_sha.clone())
-        .or_else(|| target.head_sha.clone());
+        .and_then(|block| block.head_sha.as_deref());
+    let reviewed_sha = if trailer.is_some() {
+        match validate_reviewed_sha(target, reported) {
+            Ok(sha) => Some(sha),
+            Err(reason) => return plan_invalid_reviewed_sha(target, session_id, reason),
+        }
+    } else {
+        None
+    };
+    let status_sha = canonical_sha(target.head_sha.as_deref());
 
     let findings = parsed
         .findings
         .as_ref()
+        .filter(|_| reviewed_sha.is_some())
         .map(|block| {
             block
                 .findings
@@ -213,6 +261,7 @@ pub fn plan_close(
     let fired_waivers: Vec<String> = parsed
         .findings
         .as_ref()
+        .filter(|_| reviewed_sha.is_some())
         .map(|block| {
             block
                 .findings
@@ -240,6 +289,7 @@ pub fn plan_close(
             json!({
                 "repo": target.repo,
                 "sha": sha,
+                "reviewed_sha": reviewed_sha,
                 "state": status_state(trailer),
                 "context": STATUS_CONTEXT,
                 "description": status_description(trailer),
@@ -252,6 +302,8 @@ pub fn plan_close(
             json!({
                 "repo": target.repo,
                 "pr_number": target.pr_number,
+                "commit_id": reviewed_sha,
+                "reviewed_sha": reviewed_sha,
                 // Blocking counts outrank the word; `VerdictTrailer` has
                 // already applied that rule, so this reads the decision.
                 "event": if trailer.blocking() || trailer.decision == "request_changes" {
@@ -494,11 +546,24 @@ mod tests {
     use super::*;
     use crate::verdict::parse_final_messages;
 
+    // Rendering tests supply verified metadata independently of report formatting.
+    // Integrity tests below exercise the unmodified parser explicitly.
+    fn parse_verified_report(messages: &[String]) -> crate::verdict::ParsedResult {
+        let mut parsed = parse_final_messages(messages);
+        parsed
+            .findings
+            .get_or_insert(crate::verdict::FindingsBlock {
+                head_sha: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+                findings: vec![],
+            });
+        parsed
+    }
+
     fn target() -> SessionTarget {
         SessionTarget {
             repo: "example/repo".into(),
             pr_number: 7,
-            head_sha: Some("openingsha".into()),
+            head_sha: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
             reason: None,
             required_valid_reviewers: Some(2),
         }
@@ -519,9 +584,9 @@ mod tests {
 
     #[test]
     fn an_approve_becomes_a_comment_a_success_status_and_a_formal_approval() {
-        let parsed = parse_final_messages(
-            &["<!-- openab-council -->\nLGTM\n[[verdict:approve r=0 y=0 g=2]] [done]".into()],
-        );
+        let parsed = parse_verified_report(&[
+            "<!-- openab-council -->\nLGTM\n[[verdict:approve r=0 y=0 g=2]] [done]".into(),
+        ]);
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_STATUS, KIND_REVIEW]);
         assert_eq!(plan.decision, "approve");
@@ -559,7 +624,7 @@ mod tests {
              let keep = me;\n\
              ```\n\
              [[verdict:request_changes r=0 y=1 g=0]] [done]";
-        let parsed = parse_final_messages(&[report.into()]);
+        let parsed = parse_verified_report(&[report.into()]);
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(!body.contains("```\n| ID"), "table header unfenced");
@@ -577,14 +642,14 @@ mod tests {
              Good — the head SHA is unchanged. I've verified the file. No issues.\
              <!-- openab-council -->\n\
              LGTM ✅ — Docs-only change.\n\
-             Reviewed at 701a1bf (round 3)\n\n\
+             Reviewed at aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (round 3)\n\n\
              ## Delta since d3fbb56\n\n- One appended line.";
         let closing = "🔴×0 🟡×0 🟢×1 · 💬 Comment `@bot <question>` for a follow-up\n\n\
              <!-- openab-findings\n\
-             {\"head_sha\":\"701a1bf\",\"findings\":[]}\n\
+             {\"head_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"findings\":[]}\n\
              -->\n\
              [[verdict:approve r=0 y=0 g=1]] [done]";
-        let parsed = parse_final_messages(&[synthesis.into(), closing.into()]);
+        let parsed = parse_verified_report(&[synthesis.into(), closing.into()]);
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(
@@ -618,7 +683,7 @@ mod tests {
              CHANGES REQUESTED ⚠️ — the real report.\n\n\
              ## Findings\n\n| F1 | 🟡 | real |\n\n\
              [[verdict:request_changes r=0 y=1 g=0]] [done]";
-        let parsed = parse_final_messages(&[noisy.into()]);
+        let parsed = parse_verified_report(&[noisy.into()]);
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(
@@ -642,7 +707,7 @@ mod tests {
              [[verdict:request_changes r=0 y=2 g=1]] [done]\n\
              ✅ `Running: printf '%s' '{\"pullNumber\":725}' | /home/agent/bin/octobroker-mcp call pull_request_read`\n\
              Let me fetch the head SHA again.";
-        let parsed = parse_final_messages(&[
+        let parsed = parse_verified_report(&[
             one_draft_then_noise.into(),
             "footer\n[[verdict:request_changes r=0 y=2 g=1]] [done]".into(),
         ]);
@@ -664,7 +729,7 @@ mod tests {
              <!-- openab-council -->\n\
              CHANGES REQUESTED ⚠️ — the final draft.\n\
              [[verdict:request_changes r=0 y=2 g=1]] [done]";
-        let parsed = parse_final_messages(&[redraft.into()]);
+        let parsed = parse_verified_report(&[redraft.into()]);
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(
@@ -679,13 +744,13 @@ mod tests {
 
     #[test]
     fn the_review_names_the_sha_it_stands_behind() {
-        let parsed = parse_final_messages(&[
-            "report\n<!-- openab-findings\n{\"head_sha\":\"feedc0de\",\"findings\":[]}\n-->\n[[verdict:approve r=0 y=0 g=1]] [done]".into(),
+        let parsed = parse_verified_report(&[
+            "report\n<!-- openab-findings\n{\"head_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"findings\":[]}\n-->\n[[verdict:approve r=0 y=0 g=1]] [done]".into(),
         ]);
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_REVIEW)["body"].as_str().unwrap();
         assert!(
-            body.contains("Reviewed at feedc0de"),
+            body.contains("Reviewed at aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
             "review timeline entry must name the reviewed sha: {body}"
         );
     }
@@ -695,7 +760,7 @@ mod tests {
         // 🟡 alone blocks, and it blocks even when the chair wrote `approve` —
         // the counts already overrode the word in the parser.
         let parsed =
-            parse_final_messages(&["report\n[[verdict:approve r=0 y=1 g=2]] [done]".into()]);
+            parse_verified_report(&["report\n[[verdict:approve r=0 y=1 g=2]] [done]".into()]);
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         assert_eq!(plan.decision, "request_changes");
         assert_eq!(write(&plan, KIND_STATUS)["state"], "failure");
@@ -704,7 +769,7 @@ mod tests {
 
     #[test]
     fn an_unparseable_close_says_so_and_submits_no_review() {
-        let parsed = parse_final_messages(&["the council rambled and stopped".into()]);
+        let parsed = parse_verified_report(&["the council rambled and stopped".into()]);
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_STATUS]);
         assert_eq!(plan.decision, "unknown");
@@ -722,7 +787,7 @@ mod tests {
         // into the PR — infra-zeabur-system#208 leaked 7KB of tool log this way.
         let transcript =
             "✅ Running: gh pr diff 208\n<thinking>secret plan</thinking>\nanswer.md\n[done]";
-        let parsed = parse_final_messages(&[transcript.into()]);
+        let parsed = parse_verified_report(&[transcript.into()]);
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(body.contains("without a parseable verdict"));
@@ -736,7 +801,7 @@ mod tests {
     fn an_anchored_close_missing_only_its_trailer_keeps_the_report() {
         // The other no-trailer case: a real report (has the anchor) that just
         // failed to emit a verdict line. That body is trustworthy — keep it.
-        let parsed = parse_final_messages(&[format!(
+        let parsed = parse_verified_report(&[format!(
             "noise before\n{REPORT_START}\nThe report body says X."
         )]);
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
@@ -750,7 +815,7 @@ mod tests {
     fn an_ask_close_posts_only_a_plain_answer_comment() {
         // A follow-up (@bot <question>): the settled message is the answer.
         // No status, no review, no verdict warning — just the comment (SEI-929).
-        let parsed = parse_final_messages(&[
+        let parsed = parse_verified_report(&[
             "Regarding F1: the mapping is keyed by request region, so cgk1 is correct.\n[done]"
                 .into(),
         ]);
@@ -768,13 +833,16 @@ mod tests {
 
     #[test]
     fn an_ask_close_strips_a_stray_verdict_trailer_the_model_added() {
-        let parsed = parse_final_messages(&[
+        let parsed = parse_verified_report(&[
             "Short answer here.\n[[verdict:approve r=0 y=0 g=0]]\n[done]".into(),
         ]);
         let plan = plan_close(&target(), &parsed, None, "ses_ask", true);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(body.contains("Short answer here."));
-        assert!(!body.contains("[[verdict:"), "verdict trailer leaked: {body}");
+        assert!(
+            !body.contains("[[verdict:"),
+            "verdict trailer leaked: {body}"
+        );
         assert_eq!(kinds(&plan), [KIND_COMMENT]);
     }
 
@@ -783,7 +851,7 @@ mod tests {
         // #395 F1: the template forbids tool narration, but if the agent emits
         // it anyway the known machine shapes (`✅ `…`` echoes, error banner) are
         // dropped as a fail-closed floor; the real answer survives.
-        let parsed = parse_final_messages(&[concat!(
+        let parsed = parse_verified_report(&[concat!(
             "⚠️ **Internal Error** (code: -32603)\n",
             "✅ `Running: gh pr view 208`\n",
             "The answer is that cgk1 is a request region.\n",
@@ -802,7 +870,7 @@ mod tests {
 
     #[test]
     fn an_empty_ask_close_posts_a_notice_not_a_blank_comment() {
-        let parsed = parse_final_messages(&["[done]".into()]);
+        let parsed = parse_verified_report(&["[done]".into()]);
         let plan = plan_close(&target(), &parsed, None, "ses_ask", true);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(body.contains("produced no answer"), "got: {body}");
@@ -814,12 +882,12 @@ mod tests {
         // banner and a tool transcript, the chair never emitted the council
         // anchor, but a verdict still parsed. The comment must carry the verdict
         // and findings — never the banner or the transcript.
-        let parsed = parse_final_messages(&[concat!(
+        let parsed = parse_verified_report(&[concat!(
             "⚠️ **Internal Error** (code: -32603)\n",
             "✅ `Running: octobroker-mcp call pull_request_read`\n",
             "Received rev-codex's report. Waiting for rev-claude.\n",
             "<!-- openab-findings\n",
-            "{\"head_sha\":\"96f66e1\",\"findings\":[{\"id\":\"F7\",\"severity\":\"green\",\"title\":\"skip\"}]}\n-->\n",
+            "{\"head_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"findings\":[{\"id\":\"F7\",\"severity\":\"green\",\"title\":\"skip\"}]}\n-->\n",
             "[[verdict:approve r=0 y=0 g=2]] [done]"
         )
         .into()]);
@@ -842,32 +910,29 @@ mod tests {
     }
 
     #[test]
-    fn the_status_is_pinned_to_the_webhook_sha_not_the_one_the_chair_claims() {
-        // An agent-named sha must never decide where a green status lands: it
-        // could park one on a commit nobody reviewed (council F1, #305). The
-        // claimed sha is still recorded — it describes what was read.
+    fn mismatched_provenance_does_not_enter_the_findings_ledger() {
         let parsed = parse_final_messages(&[concat!(
-            "report\n",
             "<!-- openab-findings\n",
-            "{\"head_sha\":\"reviewedsha\",\"findings\":[",
+            "{\"head_sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"findings\":[",
             "{\"id\":\"F1\",\"severity\":\"yellow\",\"title\":\"races\"}]}\n-->\n",
             "[[verdict:request_changes r=0 y=1 g=0]] [done]"
         )
         .into()]);
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
-        assert_eq!(plan.head_sha.as_deref(), Some("reviewedsha"));
+        assert_eq!(plan.head_sha, None);
         assert_eq!(
             write(&plan, KIND_STATUS)["sha"],
-            "openingsha",
-            "the status goes to the commit GitHub told us about"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         );
-        assert_eq!(plan.findings.len(), 1);
-        assert_eq!(plan.findings[0].stable_id, "F1");
+        assert_eq!(write(&plan, KIND_STATUS)["state"], "error");
+        assert!(plan.findings.is_empty());
+        assert!(!kinds(&plan).contains(&KIND_REVIEW));
     }
 
     #[test]
     fn a_known_comment_id_turns_the_comment_into_an_upsert() {
-        let parsed = parse_final_messages(&["LGTM\n[[verdict:approve r=0 y=0 g=1]] [done]".into()]);
+        let parsed =
+            parse_verified_report(&["LGTM\n[[verdict:approve r=0 y=0 g=1]] [done]".into()]);
         let plan = plan_close(&target(), &parsed, Some(4242), "ses_t", false);
         assert_eq!(write(&plan, KIND_COMMENT)["comment_id"], 4242);
     }
@@ -876,20 +941,24 @@ mod tests {
     fn a_session_with_no_head_sha_anywhere_skips_the_status_rather_than_guessing() {
         let mut target = target();
         target.head_sha = None;
-        let parsed = parse_final_messages(&["LGTM\n[[verdict:approve r=0 y=0 g=1]] [done]".into()]);
+        let parsed =
+            parse_verified_report(&["LGTM\n[[verdict:approve r=0 y=0 g=1]] [done]".into()]);
         let plan = plan_close(&target, &parsed, None, "ses_t", false);
-        assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_REVIEW]);
+        assert_eq!(kinds(&plan), [KIND_COMMENT]);
     }
 
     #[test]
     fn the_comment_drops_machine_tails_but_keeps_the_findings_block() {
-        let parsed = parse_final_messages(&[concat!(
+        let parsed = parse_verified_report(&[concat!(
             "<!-- openab-council -->\n## Verdict\n\nprose here\n\n",
-            "<!-- openab-findings\n{\"findings\":[]}\n-->\n",
+            "<!-- openab-findings\n{\"head_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"findings\":[]}\n-->\n",
             "[[verdict:approve r=0 y=0 g=0]] [done]"
         )
         .into()]);
-        let body = write(&plan_close(&target(), &parsed, None, "ses_t", false), KIND_COMMENT)["body"]
+        let body = write(
+            &plan_close(&target(), &parsed, None, "ses_t", false),
+            KIND_COMMENT,
+        )["body"]
             .as_str()
             .unwrap()
             .to_string();
@@ -900,5 +969,77 @@ mod tests {
         );
         assert!(!body.contains("[[verdict:"), "{body}");
         assert!(!body.contains("[done]"), "{body}");
+    }
+    #[test]
+    fn formal_verdict_requires_an_explicit_matching_full_sha() {
+        let sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        for reported in [
+            Some(sha),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            Some("unavailable"),
+            Some("aaaaaaa"),
+            Some("gggggggggggggggggggggggggggggggggggggggg"),
+            None,
+        ] {
+            let mut target = target();
+            target.head_sha = Some(sha.into());
+            let block = json!({"head_sha": reported, "findings": []});
+            let parsed = parse_final_messages(&[format!(
+                "report\n<!-- openab-findings\n{block}\n-->\n[[verdict:approve r=0 y=0 g=0]] [done]"
+            )]);
+            let plan = plan_close(&target, &parsed, None, "ses_guard", false);
+            let allowed = reported == Some(sha);
+            assert_eq!(
+                plan.writes.iter().any(|(kind, _)| *kind == KIND_REVIEW),
+                allowed,
+                "reported SHA {reported:?}"
+            );
+            assert_eq!(
+                write(&plan, KIND_STATUS)["state"],
+                if allowed { "success" } else { "error" }
+            );
+            if !allowed {
+                assert!(plan.findings.is_empty());
+                assert!(plan.fired_waivers.is_empty());
+                assert_eq!(plan.decision, "unknown");
+            }
+        }
+    }
+
+    #[test]
+    fn missing_blocks_and_invalid_targets_never_authorize_a_verdict() {
+        for body in [
+            "LGTM\n[[verdict:approve]] [done]",
+            "<!-- openab-findings\nnot-json\n-->\n[[verdict:approve]] [done]",
+            "<!-- openab-findings\n{\"findings\":[]}\n-->\n[[verdict:approve]] [done]",
+        ] {
+            let parsed = parse_final_messages(&[body.into()]);
+            let plan = plan_close(&target(), &parsed, None, "ses_gap", false);
+            assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_STATUS]);
+            assert_eq!(write(&plan, KIND_STATUS)["state"], "error");
+        }
+        for sha in [None, Some("invalid")] {
+            let mut target = target();
+            target.head_sha = sha.map(str::to_string);
+            let parsed = parse_verified_report(&["[[verdict:approve]] [done]".into()]);
+            assert_eq!(
+                kinds(&plan_close(&target, &parsed, None, "ses_gap", false)),
+                [KIND_COMMENT]
+            );
+        }
+    }
+
+    #[test]
+    fn uppercase_hex_normalizes_but_whitespace_and_prefixes_do_not() {
+        assert_eq!(
+            validate_reviewed_sha(&target(), Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
+                .unwrap(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert!(validate_reviewed_sha(
+            &target(),
+            Some(" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        )
+        .is_err());
     }
 }

@@ -185,6 +185,7 @@ pub fn plan_decision(
                 "repo": repo,
                 "pr_number": pr_number,
                 "event": "APPROVE",
+                "commit_id": head_sha,
                 "body": format!(
                     "Recomputed after the author's judgement on this round's findings: \
                      no blocking findings remain on `{head_sha}`.\n\n{marker}"
@@ -783,7 +784,7 @@ mod tests {
         // A severity the ledger cannot vouch for gets the short horizon: when
         // we do not know how serious the defect is, look again sooner.
         assert_eq!(waive_expiry_secs(""), WAIVE_RED_EXPIRY_SECS);
-        assert!(WAIVE_RED_EXPIRY_SECS < WAIVE_DEFAULT_EXPIRY_SECS);
+        const { assert!(WAIVE_RED_EXPIRY_SECS < WAIVE_DEFAULT_EXPIRY_SECS) };
     }
 
     #[test]

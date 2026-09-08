@@ -73,8 +73,8 @@ fn default_status() -> String {
 }
 
 /// What a terminal event's `final_messages` says about the review. Both halves
-/// are independently optional: a chair can post a trailer with no block, and a
-/// malformed block must not cost us the verdict (or the reverse).
+/// are independently optional during parsing. Publication separately requires
+/// a valid findings block with explicit matching SHA, even if a trailer parsed.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ParsedResult {
     pub trailer: Option<VerdictTrailer>,

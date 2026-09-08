@@ -1416,6 +1416,23 @@ impl ProductStore for PostgresStore {
             .collect())
     }
 
+    async fn closing_review_payload(&self, session_id: &str) -> StoreResult<Option<Value>> {
+        let client = self.client().await?;
+        let row = client
+            .query_opt(
+                "SELECT payload_json FROM github_writes WHERE session_id = $1 AND kind = 'review'",
+                &[&session_id],
+            )
+            .await?;
+        Ok(row.and_then(|r| serde_json::from_str(&r.get::<_, String>(0)).ok()))
+    }
+
+    async fn mark_write_blocked(&self, id: i64, reason: &str) -> StoreResult<()> {
+        let client = self.client().await?;
+        client.execute("UPDATE github_writes SET state = 'blocked', last_error = $2, claimed_at = NULL WHERE id = $1", &[&id, &reason]).await?;
+        Ok(())
+    }
+
     async fn mark_write_done(&self, id: i64) -> StoreResult<()> {
         let client = self.client().await?;
         client
@@ -2387,5 +2404,41 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), total, "no write may be claimed by both drains");
         assert_eq!(total, 10, "every write is claimed by exactly one drain");
+    }
+    #[tokio::test]
+    async fn blocked_writes_keep_provenance_and_never_reenter_claims() {
+        let Some(store) = store("blocked_integrity").await else {
+            return;
+        };
+        let payload = json!({"reviewed_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"});
+        store
+            .enqueue_write("ses_blocked", "review", &payload)
+            .await
+            .unwrap();
+        let write = store.claim_writes(1).await.unwrap().remove(0);
+        store
+            .mark_write_blocked(write.id, "unverified historical round")
+            .await
+            .unwrap();
+        assert!(store
+            .claim_writes_for_test_after_lease(10)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store.closing_review_payload("ses_blocked").await.unwrap(),
+            Some(payload)
+        );
+        let client = store.client().await.unwrap();
+        let row = client
+            .query_one(
+                "SELECT state, attempts, last_error FROM github_writes WHERE id=$1",
+                &[&write.id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, String>(0), "blocked");
+        assert_eq!(row.get::<_, i64>(1), 0);
+        assert_eq!(row.get::<_, String>(2), "unverified historical round");
     }
 }

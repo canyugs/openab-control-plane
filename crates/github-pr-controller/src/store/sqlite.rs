@@ -1645,6 +1645,25 @@ impl ProductStore for SqliteStore {
         Ok(SqliteStore::pending_writes(self, limit)?)
     }
 
+    async fn closing_review_payload(&self, session_id: &str) -> StoreResult<Option<Value>> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let value: Option<String> = connection
+            .query_row(
+                "SELECT payload_json FROM github_writes WHERE session_id = ?1 AND kind = 'review'",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value.and_then(|v| serde_json::from_str(&v).ok()))
+    }
+
+    async fn mark_write_blocked(&self, id: i64, reason: &str) -> StoreResult<()> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection.execute("UPDATE github_writes SET state = 'blocked', last_error = ?2, claimed_at = NULL WHERE id = ?1",
+            params![id, reason])?;
+        Ok(())
+    }
+
     async fn mark_write_done(&self, id: i64) -> StoreResult<()> {
         Ok(SqliteStore::mark_write_done(self, id)?)
     }

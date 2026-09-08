@@ -2261,8 +2261,11 @@ async fn drain_outbox_batch(
                 }
                 Err(error) => {
                     tracing::warn!(id = write.id, kind = write.kind, %error, "github write failed");
-                    let retryable = write.attempts + 1 < WRITE_MAX_ATTEMPTS;
-                    let (audit_kind, audit_outcome) = if retryable {
+                    let blocked = error.downcast_ref::<WriteIntegrityError>().is_some();
+                    let retryable = !blocked && write.attempts + 1 < WRITE_MAX_ATTEMPTS;
+                    let (audit_kind, audit_outcome) = if blocked {
+                        ("github.write.blocked", AuditOutcome::Failed)
+                    } else if retryable {
                         ("github.write.retry_scheduled", AuditOutcome::RetryScheduled)
                     } else {
                         ("github.write.failed", AuditOutcome::Failed)
@@ -2286,11 +2289,11 @@ async fn drain_outbox_batch(
                                 "provider": {
                                     "repository": write.payload["repo"].as_str(),
                                     "pr_number": write.payload["pr_number"].as_i64(),
-                                    "head_sha": write.payload["sha"].as_str(),
+                                    "head_sha": write.payload["sha"].as_str().or(write.payload["commit_id"].as_str()),
                                 },
                             }),
                             Some(AuditError {
-                                class: "provider_write_failed".into(),
+                                class: if blocked { "review_integrity_failed" } else { "provider_write_failed" }.into(),
                                 retryable,
                                 message: None,
                                 status: None,
@@ -2298,8 +2301,12 @@ async fn drain_outbox_batch(
                         ),
                     )
                     .await;
-                    if let Err(error) = store.mark_write_failed(write.id, &error.to_string()).await
-                    {
+                    let recorded = if blocked {
+                        store.mark_write_blocked(write.id, &error.to_string()).await
+                    } else {
+                        store.mark_write_failed(write.id, &error.to_string()).await
+                    };
+                    if let Err(error) = recorded {
                         tracing::error!(%error, id = write.id, "outbox failure record failed");
                     }
                 }
@@ -2320,11 +2327,62 @@ async fn perform_write(
         .map(|_| ())
 }
 
+#[derive(Debug)]
+struct WriteIntegrityError(&'static str);
+impl std::fmt::Display for WriteIntegrityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for WriteIntegrityError {}
+
+/// Closing validation must not be bypassed by pre-upgrade queued writes or
+/// by a later finding decision based on an unverified historical round.
+async fn validate_verdict_write(
+    store: &dyn ProductStore,
+    write: &store::PendingWrite,
+) -> anyhow::Result<()> {
+    let review = write.kind == closing::KIND_REVIEW
+        || write.kind.starts_with(deciding::KIND_DECISION_REVIEW);
+    let status = write.kind == closing::KIND_STATUS
+        || write.kind.starts_with(deciding::KIND_DECISION_STATUS);
+    if !(review || status && write.payload["state"] != "error") {
+        return Ok(());
+    }
+    let invalid = |reason| anyhow::Error::new(WriteIntegrityError(reason));
+    let target = store
+        .session_target(&write.session_id)
+        .await?
+        .ok_or_else(|| invalid("missing_session_target"))?;
+    let original = store
+        .closing_review_payload(&write.session_id)
+        .await?
+        .ok_or_else(|| invalid("missing_original_review_provenance"))?;
+    let sha = closing::validate_reviewed_sha(&target, original["reviewed_sha"].as_str())
+        .map_err(invalid)?;
+    if original["repo"].as_str() != Some(&target.repo)
+        || original["pr_number"].as_i64() != Some(target.pr_number)
+        || original["commit_id"].as_str() != Some(&sha)
+        || target.required_valid_reviewers.is_none_or(|v| v <= 0)
+    {
+        return Err(invalid("invalid_original_review_provenance"));
+    }
+    let payload = &write.payload;
+    if payload["repo"].as_str() != Some(&target.repo)
+        || (review && payload["pr_number"].as_i64() != Some(target.pr_number))
+        || payload[if review { "commit_id" } else { "sha" }].as_str() != Some(&sha)
+    {
+        return Err(invalid("write_target_mismatch"));
+    }
+    Ok(())
+}
+
 async fn perform_write_with_receipt(
     github: &github::GitHubClient,
     store: &dyn ProductStore,
     write: &store::PendingWrite,
 ) -> anyhow::Result<Value> {
+    validate_verdict_write(store, write).await?;
     let payload = &write.payload;
     let request_json = serde_json::to_vec(&write.payload)?;
     let request_sha256 = hex::encode(Sha256::digest(&request_json));
@@ -2352,7 +2410,7 @@ async fn perform_write_with_receipt(
                     "provider": {
                         "repository": payload["repo"].as_str(),
                         "pr_number": payload["pr_number"].as_i64(),
-                        "head_sha": payload["sha"].as_str(),
+                        "head_sha": payload["sha"].as_str().or(payload["commit_id"].as_str()),
                     },
                 }),
                 None,
@@ -2379,7 +2437,7 @@ async fn perform_write_with_receipt(
                 "provider": {
                     "repository": payload["repo"].as_str(),
                     "pr_number": payload["pr_number"].as_i64(),
-                    "head_sha": payload["sha"].as_str(),
+                    "head_sha": payload["sha"].as_str().or(payload["commit_id"].as_str()),
                 },
             }),
             None,
@@ -2528,12 +2586,18 @@ async fn perform_write_with_receipt(
             } else {
                 closing::round_marker(&write.session_id)
             };
-            if let Some(review_id) = github.find_marked_review(repo, pr_number, &marker).await? {
+            let commit_id = payload["commit_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("review commit missing"))?;
+            if let Some(review_id) = github
+                .find_marked_review(repo, pr_number, &marker, event, commit_id)
+                .await?
+            {
                 tracing::info!(
                     session_id = write.session_id,
                     "review already on the pull request; reconciled"
                 );
-                json!({"review_id": review_id, "reconciled": true})
+                json!({"review_id": review_id, "commit_id": commit_id, "reconciled": true})
             } else {
                 // The review timeline entry must say where its evidence lives: the
                 // comment write ran earlier in this same drain and recorded its
@@ -2548,8 +2612,10 @@ async fn perform_write_with_receipt(
                         ),
                     );
                 }
-                let review_id = github.submit_review(repo, pr_number, event, &body).await?;
-                json!({"review_id": review_id, "reconciled": false})
+                let review_id = github
+                    .submit_review(repo, pr_number, event, commit_id, &body)
+                    .await?;
+                json!({"review_id": review_id, "commit_id": commit_id, "reconciled": false})
             }
         }
         other => anyhow::bail!("unknown write kind {other}"),
@@ -2580,7 +2646,7 @@ async fn perform_write_with_receipt(
                 "provider": {
                     "repository": payload["repo"].as_str(),
                     "pr_number": payload["pr_number"].as_i64(),
-                    "head_sha": payload["sha"].as_str(),
+                    "head_sha": payload["sha"].as_str().or(payload["commit_id"].as_str()),
                 },
             }),
             None,
@@ -3910,7 +3976,7 @@ mod tests {
         // The chair's block: one waived finding naming the own-repo waiver and
         // one naming the foreign repo's — the second must bump nothing.
         let body = format!(
-            "report\n<!-- openab-findings\n{{\"findings\":[\
+            "report\n<!-- openab-findings\n{{\"head_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"findings\":[\
              {{\"id\":\"F1\",\"severity\":\"yellow\",\"status\":\"waived\",\
               \"title\":\"waived one\",\"waiver_id\":\"{}\"}},\
              {{\"id\":\"F2\",\"severity\":\"yellow\",\"status\":\"waived\",\
@@ -3926,7 +3992,7 @@ mod tests {
         let target = store::SessionTarget {
             repo: "example/repo".into(),
             pr_number: 7,
-            head_sha: None,
+            head_sha: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
             reason: None,
             required_valid_reviewers: Some(2),
         };
@@ -4136,7 +4202,7 @@ mod tests {
             )
             .route(
                 "/repos/:o/:n/pulls/7",
-                axum_get(|| async { Json(json!({"head": {"sha": "deadbeef"}})) }),
+                axum_get(|| async { Json(json!({"head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}})) }),
             )
             .route(
                 "/repos/:o/:n/issues/comments/:id",
@@ -4199,8 +4265,8 @@ mod tests {
                     move |Json(body): Json<Value>| {
                         let gh = gh.clone();
                         async move {
-                            gh.reviews.lock().unwrap().push(body);
-                            Json(json!({"id": 2000, "state": "APPROVED"}))
+                            gh.reviews.lock().unwrap().push(body.clone());
+                            Json(json!({"id": 2000, "state": "APPROVED", "commit_id": body["commit_id"]}))
                         }
                     }
                 }),
@@ -4231,11 +4297,29 @@ mod tests {
         state.github.as_ref().unwrap().seed_test_token("ghs_test");
         let store = state.store.clone().unwrap();
         store
+            .record_session_target(
+                "ses_w",
+                "example/repo",
+                7,
+                Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                None,
+                Some(2),
+            )
+            .await
+            .unwrap();
+        store.enqueue_write("ses_w", closing::KIND_REVIEW, &json!({
+            "repo":"example/repo", "pr_number":7, "commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "reviewed_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "event":"REQUEST_CHANGES"
+        })).await.unwrap();
+        let original = store.pending_writes(1).await.unwrap()[0].id;
+        store.mark_write_done(original).await.unwrap();
+
+        store
             .record_review_round(&store::ReviewRound {
                 repo: "example/repo".into(),
                 pr_number: 7,
                 session_id: "ses_w".into(),
-                head_sha: Some("deadbeef".into()),
+                head_sha: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
                 decision: "request_changes".into(),
                 red: 1,
                 yellow: 0,
@@ -4249,7 +4333,7 @@ mod tests {
                 "ses_w",
                 "example/repo",
                 7,
-                Some("deadbeef"),
+                Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                 &[
                     store::ReviewFinding {
                         stable_id: "F1".into(),
@@ -4870,7 +4954,7 @@ mod tests {
                 "ses_1",
                 "example/repo",
                 7,
-                Some("openingsha"),
+                Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                 None,
                 Some(2),
             )
@@ -4958,7 +5042,7 @@ mod tests {
                 "ses_1",
                 "example/repo",
                 7,
-                Some("openingsha"),
+                Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                 None,
                 Some(2),
             )
@@ -4984,7 +5068,7 @@ mod tests {
                 "required_valid_reviewers": 2,
                 "valid_reviewers": 2,
                 "final_messages": [
-                    "## Verdict\n\nprose\n<!-- openab-findings\n{\"head_sha\":\"reviewedsha\",\"findings\":[{\"id\":\"F1\",\"severity\":\"yellow\",\"title\":\"races on close\"}]}\n-->\n[[verdict:request_changes r=0 y=1 g=2]] [done]"
+                    "## Verdict\n\nprose\n<!-- openab-findings\n{\"head_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"findings\":[{\"id\":\"F1\",\"severity\":\"yellow\",\"title\":\"races on close\"}]}\n-->\n[[verdict:request_changes r=0 y=1 g=2]] [done]"
                 ]
             }
         })
@@ -5014,7 +5098,7 @@ mod tests {
         );
         let status = pending.iter().find(|w| w.kind == "status").unwrap();
         assert_eq!(
-            status.payload["sha"], "openingsha",
+            status.payload["sha"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "the status is pinned to the webhook sha, not the chair's claim"
         );
         assert_eq!(status.payload["state"], "failure");
@@ -5448,7 +5532,7 @@ mod tests {
                                 .iter()
                                 .rev() // newest first, like the real API sorted desc
                                 .map(|(id, body, login)| {
-                                    json!({"id": id, "body": body, "user": {"login": login}})
+                                    json!({"id": id, "body": body, "user": {"login": login}, "state":"CHANGES_REQUESTED", "commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
                                 })
                                 .collect();
                             Json(Value::Array(list))
@@ -5498,7 +5582,7 @@ mod tests {
                                 .iter()
                                 .rev()
                                 .map(|(id, body, login)| {
-                                    json!({"id": id, "body": body, "user": {"login": login}})
+                                    json!({"id": id, "body": body, "user": {"login": login}, "state":"CHANGES_REQUESTED", "commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
                                 })
                                 .collect();
                             Json(Value::Array(list))
@@ -5517,7 +5601,7 @@ mod tests {
                                 body["body"].as_str().unwrap_or_default().into(),
                                 "fixture-council[bot]".into(),
                             ));
-                            Json(json!({"id": id, "state": "CHANGES_REQUESTED"}))
+                            Json(json!({"id": id, "state": "CHANGES_REQUESTED", "commit_id": body["commit_id"]}))
                         }
                     }
                 }),
@@ -5543,6 +5627,16 @@ mod tests {
             github::GitHubClient::from_config(&config).expect("writes enabled builds a client");
         client.seed_test_token("ghs_test");
         let store = SqliteStore::memory().unwrap();
+        store
+            .record_session_target(
+                "ses_1",
+                "example/repo",
+                7,
+                Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                None,
+                Some(2),
+            )
+            .unwrap();
 
         // The round's writes, as dispatch would queue them.
         let marker = closing::round_marker("ses_1");
@@ -5580,7 +5674,7 @@ mod tests {
             .enqueue_write(
                 "ses_1",
                 closing::KIND_REVIEW,
-                &json!({"repo": "example/repo", "pr_number": 7, "event": "REQUEST_CHANGES",
+                &json!({"repo": "example/repo", "pr_number": 7, "event": "REQUEST_CHANGES", "commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "reviewed_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                         "body": format!("blocked\n\n{marker}")}),
             )
             .unwrap();
@@ -5688,7 +5782,7 @@ mod tests {
                         async move {
                             let event = body["event"].as_str().unwrap_or_default().to_string();
                             seen.lock().unwrap().push(format!("review:{event}"));
-                            Json(json!({"id": 77, "state": "CHANGES_REQUESTED"}))
+                            Json(json!({"id": 77, "state": "CHANGES_REQUESTED", "commit_id": body["commit_id"]}))
                         }
                     }
                 }),
@@ -5719,7 +5813,7 @@ mod tests {
                 "ses_1",
                 "example/repo",
                 7,
-                Some("openingsha"),
+                Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                 None,
                 Some(2),
             )
@@ -5748,7 +5842,7 @@ mod tests {
                 "reason": "normal",
                 "required_valid_reviewers": 2,
                 "valid_reviewers": 2,
-                "final_messages": ["<!-- openab-council -->\n## Verdict\n\nblocked\n[[verdict:request_changes r=1 y=0 g=0]] [done]"]
+                "final_messages": ["<!-- openab-council -->\n## Verdict\n\nblocked\n<!-- openab-findings\n{\"head_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"findings\":[]}\n-->\n[[verdict:request_changes r=1 y=0 g=0]] [done]"]
             }
         })
         .to_string();
@@ -5778,7 +5872,7 @@ mod tests {
             *seen.lock().unwrap(),
             [
                 "comment:<!-- openab-council -->",
-                "status:openingsha:failure",
+                "status:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:failure",
                 "review:REQUEST_CHANGES"
             ]
         );
@@ -5805,7 +5899,7 @@ mod tests {
                 "ses_short",
                 "example/repo",
                 7,
-                Some("openingsha"),
+                Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                 None,
                 Some(2),
             )
@@ -6609,5 +6703,161 @@ mod tests {
         assert!(!valid_delivery_id(&"a".repeat(129)));
         assert!(valid_event_type("pull_request_review"));
         assert!(!valid_event_type("Pull-Request"));
+    }
+    #[tokio::test]
+    async fn signed_terminal_with_mismatched_sha_cannot_queue_a_formal_review() {
+        let secret = vec![7; 32];
+        let config = external_config(&secret);
+        let verifier = runtime_events::RuntimeEventVerifier::new(
+            "github-canary",
+            config.event_signing_secret.as_deref().unwrap(),
+        )
+        .unwrap();
+        let store = SqliteStore::memory().unwrap();
+        store
+            .record_session_target(
+                "ses_bad",
+                "example/repo",
+                7,
+                Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                None,
+                Some(2),
+            )
+            .unwrap();
+        let state = Arc::new(AppState::with_components(
+            config,
+            store,
+            Some(Arc::new(RecordingActionClient::new([]).0)),
+            Some(Arc::new(verifier)),
+        ));
+        let store = state.store.clone().unwrap();
+        let block = json!({"head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "findings":[]});
+        let body = json!({"version":"1","event_id":"cev_bad","controller_id":"github-canary",
+            "event_type":"session.terminal","session_id":"ses_bad","occurred_at":1000,
+            "payload":{"reason":"normal","required_valid_reviewers":2,"valid_reviewers":2,
+                "final_messages":[format!("<!-- openab-findings\n{block}\n-->\n[[verdict:approve r=0 y=0 g=0]] [done]")]}}).to_string();
+        let response = router(state)
+            .oneshot(signed_runtime_event_request(
+                &secret,
+                "cev_bad",
+                "/api/v1/openab/events?version=1",
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let pending = store.pending_writes(10).await.unwrap();
+        assert_eq!(
+            pending.iter().map(|w| w.kind.as_str()).collect::<Vec<_>>(),
+            ["comment", "status"]
+        );
+        assert_eq!(pending[1].payload["state"], "error");
+        assert!(store
+            .closing_review_payload("ses_bad")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn legacy_verdicts_are_retained_blocked_without_network_or_retry() {
+        let mut config = external_config(&[7; 32]);
+        config.enable_writes = true;
+        config.github_api_base = "http://127.0.0.1:1".into();
+        config.github_app = config::GitHubAppConfig {
+            app_id: Some("1".into()),
+            installation_id: Some("2".into()),
+            private_key: Some("unused".into()),
+        };
+        let state = Arc::new(AppState::with_components(
+            config,
+            SqliteStore::memory().unwrap(),
+            None,
+            None,
+        ));
+        let github = state.github.as_ref().unwrap();
+        github.seed_test_token("fixture");
+        let store = state.store.as_ref().unwrap();
+        store
+            .record_session_target(
+                "ses_old",
+                "example/repo",
+                7,
+                Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                None,
+                Some(2),
+            )
+            .await
+            .unwrap();
+        for (kind, payload) in [
+            (
+                "review",
+                json!({"repo":"example/repo","pr_number":7,"event":"APPROVE"}),
+            ),
+            (
+                "status",
+                json!({"repo":"example/repo","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"success"}),
+            ),
+            (
+                "decision_review:1",
+                json!({"repo":"example/repo","pr_number":7,"event":"APPROVE","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),
+            ),
+        ] {
+            store
+                .enqueue_write("ses_old", kind, &payload)
+                .await
+                .unwrap();
+        }
+        assert_eq!(drain_outbox_batch(store, github).await, 3);
+        assert_eq!(drain_outbox_batch(store, github).await, 0);
+        assert!(store
+            .claim_writes_for_test_after_lease(10)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(
+            store
+                .closing_review_payload("ses_old")
+                .await
+                .unwrap()
+                .is_some(),
+            "blocked evidence retained"
+        );
+        let events = store
+            .audit_events(&AuditEventQuery {
+                kind: Some("github.write.blocked".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(events.events.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn sender_checks_destinations_even_for_new_payloads() {
+        let store = SqliteStore::memory().unwrap();
+        let sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        store
+            .record_session_target("ses_new", "example/repo", 7, Some(sha), None, Some(2))
+            .unwrap();
+        let original = json!({"repo":"example/repo","pr_number":7,"reviewed_sha":sha,"commit_id":sha,"event":"APPROVE"});
+        store.enqueue_write("ses_new", "review", &original).unwrap();
+        for (field, value) in [
+            ("repo", json!("other/repo")),
+            ("pr_number", json!(8)),
+            (
+                "commit_id",
+                json!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            ),
+        ] {
+            let mut write = store.pending_writes(1).unwrap().remove(0);
+            assert!(validate_verdict_write(&store, &write).await.is_ok());
+            write.payload[field] = value;
+            assert!(validate_verdict_write(&store, &write)
+                .await
+                .unwrap_err()
+                .downcast_ref::<WriteIntegrityError>()
+                .is_some());
+        }
     }
 }

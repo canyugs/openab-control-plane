@@ -211,6 +211,7 @@ impl GitHubClient {
         repo: &str,
         pr_number: i64,
         event: ReviewEvent,
+        commit_id: &str,
         body: &str,
     ) -> Result<i64> {
         self.check_repository(repo)?;
@@ -218,7 +219,7 @@ impl GitHubClient {
             .send(
                 reqwest::Method::POST,
                 &format!("repos/{repo}/pulls/{pr_number}/reviews"),
-                Some(json!({ "event": event.as_str(), "body": body })),
+                Some(json!({ "event": event.as_str(), "body": body, "commit_id": commit_id })),
             )
             .await?;
         let state = response["state"].as_str().unwrap_or_default();
@@ -227,6 +228,9 @@ impl GitHubClient {
                 "review submitted as {state:?}, expected {:?}",
                 event.expected_state()
             );
+        }
+        if response["commit_id"].as_str() != Some(commit_id) {
+            bail!("review commit did not match requested commit");
         }
         response["id"].as_i64().context("review carried no id")
     }
@@ -407,10 +411,41 @@ impl GitHubClient {
         repo: &str,
         pr_number: i64,
         marker: &str,
+        event: ReviewEvent,
+        commit_id: &str,
     ) -> Result<Option<i64>> {
         self.check_repository(repo)?;
-        self.find_marked(&format!("repos/{repo}/pulls/{pr_number}/reviews"), marker)
-            .await
+        for page in 1..=RECONCILE_MAX_PAGES {
+            let entries = self
+                .send(
+                    reqwest::Method::GET,
+                    &format!("repos/{repo}/pulls/{pr_number}/reviews?per_page=100&page={page}"),
+                    None,
+                )
+                .await?;
+            let entries = entries
+                .as_array()
+                .context("review listing was not an array")?;
+            for entry in entries {
+                if self.is_ours(entry) && entry["body"].as_str().is_some_and(|b| b.contains(marker))
+                {
+                    if entry["commit_id"].as_str() != Some(commit_id)
+                        || entry["state"].as_str() != Some(event.expected_state())
+                    {
+                        bail!("marked review has conflicting commit or state");
+                    }
+                    return Ok(Some(
+                        entry["id"]
+                            .as_i64()
+                            .context("marked review carried no id")?,
+                    ));
+                }
+            }
+            if entries.len() < 100 {
+                return Ok(None);
+            }
+        }
+        bail!("review reconciliation exceeded page limit")
     }
 
     /// Scan a listing endpoint page by page until the marker is found or the
@@ -737,7 +772,7 @@ mod tests {
                     |State(r): State<Recorder>, Json(body): Json<Value>| async move {
                         let state = r.review_state.lock().unwrap().clone();
                         let _ = r.tx.send(("review".into(), body));
-                        Json(json!({"id": 77, "state": state}))
+                        Json(json!({"id": 77, "state": state, "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}))
                     },
                 ),
             )
@@ -883,7 +918,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             client
-                .submit_review("example/repo", 7, ReviewEvent::Approve, "LGTM")
+                .submit_review(
+                    "example/repo",
+                    7,
+                    ReviewEvent::Approve,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "LGTM"
+                )
                 .await
                 .unwrap(),
             77
@@ -904,6 +945,10 @@ mod tests {
         let (kind, body) = rx.recv().await.unwrap();
         assert_eq!(kind, "review");
         assert_eq!(body["event"], "APPROVE");
+        assert_eq!(
+            body["commit_id"],
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
     }
 
     #[tokio::test]
@@ -931,7 +976,13 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             client
-                .submit_review("other/repo", 7, ReviewEvent::Approve, "LGTM")
+                .submit_review(
+                    "other/repo",
+                    7,
+                    ReviewEvent::Approve,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "LGTM",
+                )
                 .await
                 .unwrap_err()
                 .to_string(),
@@ -952,7 +1003,13 @@ mod tests {
         // unblocked when it is not.
         let (base, _rx) = fake_github("COMMENTED").await;
         let error = client(&base)
-            .submit_review("example/repo", 7, ReviewEvent::Approve, "LGTM")
+            .submit_review(
+                "example/repo",
+                7,
+                ReviewEvent::Approve,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "LGTM",
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -960,7 +1017,13 @@ mod tests {
 
         let (base, _rx) = fake_github("APPROVED").await;
         let error = client(&base)
-            .submit_review("example/repo", 7, ReviewEvent::RequestChanges, "blocked")
+            .submit_review(
+                "example/repo",
+                7,
+                ReviewEvent::RequestChanges,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "blocked",
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -1012,5 +1075,65 @@ mod tests {
         assert!(clipped.len() <= 141 + 3);
         assert!(clipped.ends_with('…'));
         assert_eq!(truncate("short", 140), "short");
+    }
+    #[tokio::test]
+    async fn a_review_echoing_a_different_commit_is_not_success() {
+        let (base, _rx) = fake_github("APPROVED").await;
+        let error = client(&base)
+            .submit_review(
+                "example/repo",
+                7,
+                ReviewEvent::Approve,
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "LGTM",
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("commit"));
+    }
+
+    #[tokio::test]
+    async fn reconciliation_requires_the_marked_reviews_commit_and_state() {
+        let cases = [
+            ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "APPROVED", true),
+            (
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "APPROVED",
+                false,
+            ),
+            (
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "CHANGES_REQUESTED",
+                false,
+            ),
+        ];
+        for (sha, state, valid) in cases {
+            let app = axum::Router::new().route(
+                "/repos/example/repo/pulls/7/reviews",
+                axum::routing::get(move || async move {
+                    axum::Json(json!([{"id":77,"body":"<!-- round -->", "commit_id":sha,
+                        "state":state,"performed_via_github_app":{"id":4235962}}]))
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let task = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let result = client(&format!("http://{addr}"))
+                .find_marked_review(
+                    "example/repo",
+                    7,
+                    "<!-- round -->",
+                    ReviewEvent::Approve,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .await;
+            assert_eq!(result.is_ok(), valid);
+            if valid {
+                assert_eq!(result.unwrap(), Some(77));
+            }
+            task.abort();
+        }
     }
 }
