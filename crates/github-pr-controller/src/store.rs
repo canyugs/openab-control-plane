@@ -545,6 +545,10 @@ pub trait ProductStore: Send + Sync {
     /// sending goes through `claim_writes`.
     async fn pending_writes(&self, limit: i64) -> StoreResult<Vec<PendingWrite>>;
 
+    /// Original closing review payload, retained as provenance for later decisions.
+    async fn closing_review_payload(&self, session_id: &str) -> StoreResult<Option<Value>>;
+    /// Retain an unsafe write without retrying or sending it.
+    async fn mark_write_blocked(&self, id: i64, reason: &str) -> StoreResult<()>;
     async fn mark_write_done(&self, id: i64) -> StoreResult<()>;
 
     /// Count the attempt and keep the row retryable until it has burned
