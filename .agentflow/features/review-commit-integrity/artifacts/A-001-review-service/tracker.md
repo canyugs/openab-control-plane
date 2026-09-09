@@ -8,7 +8,7 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-09 12:01:57 Asia/Taipei.
+- **Last update:** 2026-09-09 12:05:30 Asia/Taipei.
 
 - **Evidence commit:** 8b35b4c581ac3d2f5f6669511eaa7b318310fc40.
 
@@ -42,11 +42,11 @@
 
 - **Last proven result:** Requirements, boundary discovery, and Stage 1 specification accepted; design.md and verification contract recorded.
 
-- **Active blocker or running process:** Exact Design Go required by the active Agentflow skill; no worker running.
+- **Active blocker or running process:** No blocker; preparing isolated implementation worker.
 
-- **Next safe action:** Obtain Design Go for the committed design, then start red-first Stage 1 implementation.
+- **Next safe action:** Execute Stage 1 red-first implementation for approved design 8b35b4c.
 
-- **Expected changed files:** .agentflow/features/review-commit-integrity/artifacts/A-001-review-service/*; stream notebook; stream ag.json; .gitignore.
+- **Expected changed files:** crates/github-pr-controller/src/{closing.rs,github.rs,lib.rs,deciding.rs,store.rs,store/sqlite.rs,store/postgres.rs}; stream notebook and artifacts.
 
 ## Completion proof
 

@@ -12,9 +12,9 @@ Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7
 
 Proven: requirements, boundary discovery, Stage 1 design; external reports only changed declared files.
 
-Open: exact Design Go for 8b35b4c581ac3d2f5f6669511eaa7b318310fc40; Stage 1 code and later-stage designs remain.
+Open: Stage 1 implementation and validation; later-stage designs remain.
 
-Next: after Design Go, red-first SHA-integrity implementation and independent security/acceptance checks.
+Next: red-first SHA-integrity implementation under approved Design Go, then independent security/acceptance checks.
 
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service/design.md; .agentflow/features/review-commit-integrity/artifacts/A-001-review-service/tracker.md.
 
@@ -90,3 +90,15 @@ Specification accepted with spec-resolution.md implementation clarification; can
 * _2026-09-09 12:02:46 (GPT-6/default)_
 
 Design commit 8b35b4c581ac3d2f5f6669511eaa7b318310fc40. Tracker proof formatting corrected and revalidated; no design/source changes. Handoff awaits Design Go on that exact commit. Required skill instruction: Source work starts only after a later Design Go: <commit>. No implicit Design Go inferred from earlier generic approval.
+
+使用者原文（設計確認）：
+
+> 是
+
+Design Go: 8b35b4c581ac3d2f5f6669511eaa7b318310fc40 — approved by the owner in response to the exact design approval question.
+
+## [RUN-009] Event (during round A-001)
+
+* _2026-09-09 12:05:30 (GPT-6/default)_
+
+Owner said 是 to the exact design-commit question. Design Go: 8b35b4c581ac3d2f5f6669511eaa7b318310fc40. Requirements/spec accepted earlier; source baseline unchanged. Begin Stage 1 only. Stage 2/3 and production rollout remain later work.
