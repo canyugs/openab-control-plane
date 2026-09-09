@@ -6,8 +6,8 @@ Current commit: d6e96c32abfd766588c549e8922e3077d6abcb00 — Stage 1 implementat
 Tests/scenarios: host package 170 tests and root suite 327 tests passed; build, package fmt and clippy passed; workspace fmt has three unchanged baseline differences.
 Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex; root ag.json remains untracked bootstrap.
 Proven: approved design, baseline red failure, delivered SHA tests and real PostgreSQL; security pass resolved with explicit immutable-target recovery limit.
-Open: exact Stage 2 Design Go 5f18484; Stage 2/3 implementation remains.
-Next: approve frozen Stage 2 design 5f18484, then implement offline report; Stage 1 Result Go recorded, no worker running.
+Open: owner-approved automatic model evaluation replaces Stage 2 design 5f18484; revised design underway.
+Next: freeze functional model-evaluation design, then implement under its exact gate; cost is observed, not optimized first.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
 Archived eras: none.
 Streams: fix/review-commit-integrity in isolated worktree.
@@ -330,3 +330,9 @@ New owner messages verbatim:
 Scope amendment: deliver a functional automatic quality-evaluation path, not a report awaiting humans. Two distinct models independently assess findings against frozen same-SHA evidence; a synthesis model combines evidence/disagreements. Independent escape discovery and subsequent candidate validation are included, with automated labels distinct from human judgments. Owner accepts added model calls/cost and explicitly prioritizes capability before cost savings. Costs are measured, not used to omit core stages. Existing Stage 2 three-file/no-model-call restriction and design gate 5f18484 are superseded; reopen design. Stage 1 Result Go remains valid. No automatic merge/review authority or production rollout was requested.
 
 Route remains full_pipeline; authorizing requirement source is the exact owner sentences above. Refresh requirements and source map/spec for this actual scope change, not an extra review of unchanged Stage 1. New work root A-001-model-evaluation; previous Stage 2 design remains historical until replacement accepted.
+
+## [RUN-035] Event (during round A-001)
+
+* _2026-09-09 21:02:26 (GPT-6/default)_
+
+Route full_pipeline; allow-ag on; owner approved handoff. Dispatch design-proposal, codex-default, better, gpt-5.6-terra/high, external-runner-v1. Executable and ChatGPT login verified. Clone-only report authority; no production access. Root configuration remains local bootstrap; main checkout untouched.

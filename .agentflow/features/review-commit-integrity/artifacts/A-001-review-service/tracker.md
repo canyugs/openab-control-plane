@@ -30,7 +30,7 @@
 
 - [x] **T-2:** Implement SHA integrity only after the exact design gate; preserve ask/dismiss and retry workflows; prove malformed and mismatched SHA rejection, valid controls, and required Rust checks. Source: A-001. Proof: acceptance-report.md; acceptance-resolution.md; d6e96c32abfd766588c549e8922e3077d6abcb00; Result-Go-RUN-027.
 
-- [ ] **T-3:** Add round measurement/reporting and offline comparison after their design gates; prove unknown cost handling and no production writes; retain human quality adjudication and rollout decisions. Source: A-001.
+- [ ] **T-3:** Deliver automatic multi-model finding assessment, evidence validation, synthesis, escape discovery/validation and weekly metrics after the revised design gate; prove a real model journey, unknown/partial cost honesty, model-versus-human labels and no live GitHub effects; retain later separately gated council comparison. Source: A-001.
 
 ## Accepted scope changes
 
@@ -42,7 +42,7 @@
 
 - **Last proven result:** Stage 1 Result Go d6e96c3; Stage 2 design and source-backed resolution frozen in 5f18484.
 
-- **Active blocker or running process:** Preparing revised requirements and design for model evaluation.
+- **Active blocker or running process:** Requirements/design amendment worker exec session 10504.
 
 - **Next safe action:** Freeze an end-to-end model evaluation design under the amended owner scope.
 
@@ -54,7 +54,7 @@
 
 - **Blocking accepted decision:** none.
 
-- **Operation running:** no.
+- **Operation running:** yes.
 
 - **Next action remaining:** T-3.
 
