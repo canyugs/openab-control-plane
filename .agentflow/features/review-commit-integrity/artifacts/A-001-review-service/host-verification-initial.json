@@ -1,0 +1,80 @@
+[
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--check"
+    ],
+    "exit_code": 1,
+    "seconds": 0.48,
+    "summaries": [],
+    "postgres_configured": true,
+    "postgres_skip_observed": false,
+    "output_tail": "Diff in /Users/can/Documents/zeabur/ocp-review-commit-integrity/src/state.rs:643:\n     fn store_heartbeat_freshness_drives_readyz_signal() {\n         let state = AppState::new(Arc::new(SqliteStore::memory().unwrap()));\n         // Fresh state: heartbeat is current, so /readyz would report ready.\n\u001b[31m-        assert!(state.store_stalled_secs() <= 2, \"fresh state is not stalled\");\n\u001b(B\u001b[m\u001b[32m+        assert!(\n\u001b(B\u001b[m\u001b[32m+            state.store_stalled_secs() <= 2,\n\u001b(B\u001b[m\u001b[32m+            \"fresh state is not stalled\"\n\u001b(B\u001b[m\u001b[32m+        );\n\u001b(B\u001b[m         // Simulate a wedge: no watchdog bump for 300s.\n         state.last_store_ok_ms.store(\n             (crate::store::now_ms() as u64).saturating_sub(300_000),\nDiff in /Users/can/Documents/zeabur/ocp-review-commit-integrity/src/store/postgres.rs:4123:\n         let o = connect_options(None, None);\n         assert!(o.contains(\"-c statement_timeout=15000\"), \"{o}\");\n         assert!(o.contains(\"-c lock_timeout=5000\"), \"{o}\");\n\u001b[31m-        assert!(o.contains(\"-c idle_in_transaction_session_timeout=30000\"), \"{o}\");\n\u001b(B\u001b[m\u001b[32m+        assert!(\n\u001b(B\u001b[m\u001b[32m+            o.contains(\"-c idle_in_transaction_session_timeout=30000\"),\n\u001b(B\u001b[m\u001b[32m+            \"{o}\"\n\u001b(B\u001b[m\u001b[32m+        );\n\u001b(B\u001b[m         assert!(!o.contains(\"search_path\"), \"{o}\");\n \n         // search_path is appended; timeouts survive.\nDiff in /Users/can/Documents/zeabur/ocp-review-commit-integrity/tests/second_consumer.rs:416:\n     let deadline = tokio::time::Instant::now() + Duration::from_secs(6);\n     loop {\n         let session = get_session(base, session_id).await;\n\u001b[31m-        if session[\"messages\"]\n\u001b(B\u001b[m\u001b[31m-            .as_array()\n\u001b(B\u001b[m\u001b[31m-            .is_some_and(|messages| {\n\u001b(B\u001b[m\u001b[31m-                messages\n\u001b(B\u001b[m\u001b[31m-                    .iter()\n\u001b(B\u001b[m\u001b[31m-                    .any(|m| m[\"content\"].as_str() == Some(content))\n\u001b(B\u001b[m\u001b[31m-            })\n\u001b(B\u001b[m\u001b[31m-        {\n\u001b(B\u001b[m\u001b[32m+        if session[\"messages\"].as_array().is_some_and(|messages| {\n\u001b(B\u001b[m\u001b[32m+            messages\n\u001b(B\u001b[m\u001b[32m+                .iter()\n\u001b(B\u001b[m\u001b[32m+                .any(|m| m[\"content\"].as_str() == Some(content))\n\u001b(B\u001b[m\u001b[32m+        }) {\n\u001b(B\u001b[m             return session;\n         }\n         assert!(\n"
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--package",
+      "github-pr-controller",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 0.15,
+    "summaries": [],
+    "postgres_configured": true,
+    "postgres_skip_observed": false,
+    "output_tail": ""
+  },
+  {
+    "command": [
+      "cargo",
+      "build"
+    ],
+    "exit_code": 0,
+    "seconds": 0.36,
+    "summaries": [],
+    "postgres_configured": true,
+    "postgres_skip_observed": false,
+    "output_tail": "    Finished `dev` profile [unoptimized] target(s) in 0.33s\n"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "github-pr-controller",
+      "--lib",
+      "reviewed_sha",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "seconds": 5.76,
+    "summaries": [
+      "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 159 filtered out; finished in 0.00s"
+    ],
+    "postgres_configured": true,
+    "postgres_skip_observed": false,
+    "output_tail": "   Compiling github-pr-controller v0.1.0 (/Users/can/Documents/zeabur/ocp-review-commit-integrity/crates/github-pr-controller)\n    Finished `test` profile [unoptimized] target(s) in 5.31s\n     Running unittests src/lib.rs (/tmp/ocp-integrity-target/debug/deps/github_pr_controller-f3930830f6373fab)\n\nrunning 8 tests\ntest closing::tests::missing_reviewed_sha_cannot_approve ... ok\ntest closing::tests::malformed_reviewed_sha_cannot_request_changes ... ok\ntest closing::tests::mismatched_reviewed_sha_cannot_request_changes ... ok\ntest closing::tests::malformed_reviewed_sha_cannot_approve ... ok\ntest closing::tests::missing_reviewed_sha_cannot_request_changes ... ok\ntest closing::tests::mismatched_reviewed_sha_cannot_approve ... ok\ntest closing::tests::empty_reviewed_sha_cannot_authorize_either_verdict ... ok\ntest closing::tests::matching_full_reviewed_sha_remains_authoritative ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 159 filtered out; finished in 0.00s\n\n"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "github-pr-controller"
+    ],
+    "exit_code": 101,
+    "seconds": 4.63,
+    "summaries": [
+      "test result: FAILED. 166 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.95s",
+      "error: test failed, to rerun pass `-p github-pr-controller --lib`"
+    ],
+    "postgres_configured": true,
+    "postgres_skip_observed": false,
+    "output_tail": "nt ... ok\ntest tests::a_waive_unblocks_and_rewrites_all_three_artifacts ... ok\ntest tests::audit_signature_is_bound_to_the_exact_query_target ... ok\ntest tests::approve_is_impossible_below_the_recorded_reviewer_minimum ... ok\ntest tests::delivery_and_event_headers_are_bounded ... ok\ntest tests::audit_failure_release_reopens_delivery_for_retry ... ok\ntest tests::external_canary_outage_retries_same_action_id_without_embedded_fallback ... ok\ntest tests::external_canary_acts_once_per_delivery_and_supersedes_by_fingerprint ... ok\ntest tests::canary_readiness_needs_the_write_switch_alongside_credentials ... ok\ntest tests::external_canary_rejects_an_unowned_repository_before_action_dispatch ... ok\ntest tests::external_mode_actually_wires_up_and_reaches_ready ... ok\ntest tests::findings_read_is_signed_filtered_and_shaped_like_the_kernel_route ... ok\ntest store::postgres::tests::retryable_delivery_is_immediately_readmitted_with_the_same_body ... ok\ntest tests::in_progress_duplicate_returns_retryable_status ... ok\ntest tests::provider_audit_context_normalizes_actor_and_pull_request_target ... ok\ntest tests::readiness_does_not_disclose_product_store_errors ... ok\ntest tests::plan_only_readiness_rejects_github_write_credentials ... ok\ntest tests::open_dispatch_appends_active_waivers_to_the_chair_alone ... ok\ntest tests::readiness_reports_disabled_external_clients ... ok\ntest tests::rejects_invalid_hmac_before_touching_store ... ok\ntest tests::legacy_authority_writes_are_parked_before_provider_send ... ok\ntest tests::signed_fixture_produces_a_plan_and_dedupes_delivery ... ok\ntest tests::reopening_a_waived_finding_revokes_its_waiver ... ok\ntest tests::signed_runtime_events_are_deduped_and_visible_as_aggregates_only ... ok\ntest tests::the_waiver_report_serves_the_two_clocked_judgements ... ok\ntest store::postgres::tests::rounds_number_per_pull_request_and_redelivery_is_a_no_op ... ok\ntest tests::signed_shadow_comparison_records_exact_fixture_parity ... ok\ntest tests::terminal_events_we_do_not_own_or_cannot_act_on_are_left_alone ... ok\ntest verdict::tests::a_block_split_across_two_messages_still_parses ... ok\ntest verdict::tests::arrow_inside_title_does_not_truncate_block ... ok\ntest verdict::tests::counts_decide_the_verdict ... ok\ntest verdict::tests::empty_findings_list_is_valid ... ok\ntest verdict::tests::halves_fail_independently ... ok\ntest verdict::tests::last_block_wins ... ok\ntest verdict::tests::malformed_rejects_whole_block ... ok\ntest verdict::tests::parses_full_block ... ok\ntest verdict::tests::the_trailer_comes_from_the_closing_message_only ... ok\ntest verdict::tests::unfenced_lines_drops_fenced_segments_fail_closed ... ok\ntest verdict::tests::verdict_trailer_parsing ... ok\ntest tests::stranded_outbox_writes_drain_through_the_sweep_entry_point ... ok\ntest tests::waived_findings_reach_the_plan_and_bump_repo_scoped_counters ... ok\ntest tests::waiver_crud_requires_the_v2_write_signature ... ok\ntest store::postgres::tests::runtime_event_receipts_dedupe_and_expose_canary_state ... ok\ntest tests::with_writes_enabled_the_outbox_drains_to_real_requests ... ok\ntest store::postgres::tests::session_targets_are_immutable_and_round_proof_is_explicit ... ok\ntest store::postgres::tests::shadow_summary_counts_and_dedupes ... ok\ntest store::postgres::tests::the_comment_anchor_carries_to_the_next_round ... ok\ntest store::postgres::tests::migrations_are_idempotent_across_reopens ... ok\n\nfailures:\n\n---- tests::a_replayed_write_reconciles_instead_of_posting_twice stdout ----\n\nthread 'tests::a_replayed_write_reconciles_instead_of_posting_twice' (124438404) panicked at crates/github-pr-controller/src/lib.rs:6062:9:\nassertion `left == right` failed: no round row in this test; anchor write is a no-op\n  left: Some(1001)\n right: None\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    tests::a_replayed_write_reconciles_instead_of_posting_twice\n\ntest result: FAILED. 166 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.95s\n\nerror: test failed, to rerun pass `-p github-pr-controller --lib`\n"
+  }
+]

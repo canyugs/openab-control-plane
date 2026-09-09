@@ -8,7 +8,7 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-09 12:15:24 Asia/Taipei.
+- **Last update:** 2026-09-09 12:57:19 Asia/Taipei.
 
 - **Evidence commit:** 8b35b4c581ac3d2f5f6669511eaa7b318310fc40.
 
@@ -40,11 +40,11 @@
 
 - **Current item:** T-2.
 
-- **Last proven result:** Host baseline reproduction: six SHA anomaly assertions fail and full matching-SHA control passes.
+- **Last proven result:** Candidate d6e96c3 passes host package/root tests, build, package fmt and clippy; baseline fmt differences documented.
 
-- **Active blocker or running process:** Implementation worker PID 20980, exec session 57621.
+- **Active blocker or running process:** Security review exec session 82336; implementation and host checks completed.
 
-- **Next safe action:** Execute Stage 1 red-first implementation for approved design 8b35b4c.
+- **Next safe action:** Finish host verification then fresh security and acceptance reviews.
 
 - **Expected changed files:** crates/github-pr-controller/src/{closing.rs,github.rs,lib.rs,deciding.rs,store.rs,store/sqlite.rs,store/postgres.rs}; stream notebook and artifacts.
 

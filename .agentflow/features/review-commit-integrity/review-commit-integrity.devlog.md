@@ -114,3 +114,107 @@ Dispatch implementation via external-runner-v1, codex-default/basic gpt-5.6-luna
 * _2026-09-09 12:15:24 (GPT-6/default)_
 
 Host independently applied only 102 added test lines to unchanged baseline 1e98b73. cargo test -p github-pr-controller --lib reviewed_sha: compiled successfully; six anomaly tests fail on old approval/request_changes behavior; matching full-SHA control passes. Canonical git diff captured after worker red patch transport failed parsing; no semantic edits to tests. Evidence: host-red-verification.json and red-regression.patch. Implementation worker remains active.
+
+## [RUN-012] Event (during round A-001)
+
+* _2026-09-09 12:17:30 (GPT-6/default)_
+
+Scope checkpoint: delivery worktree has only stream record/artifact changes plus local ag.json. Parent red reproduction complete (6 expected assertion failures, 1 control pass). Implementation worker exec 57621/PID 20980 remains active; no failure evidence justifies interruption. Source/test changes remain in disposable clone.
+
+## [WIP-002] Checkpoint (during round A-001)
+
+* _2026-09-09 12:17:30 (GPT-6/default)_
+
+- **Finished:** Exact Design Go recorded; local Postgres prepared; parent independently reproduced six SHA failures and one matching-SHA pass on the old code.
+- **Running now:** Isolated Stage 1 implementation under approved seven-file scope.
+- **Still to do:** Import verified patch, rerun focused/full Rust and live local Postgres tests, independent security and acceptance review; no code fix or production rollout claimed.
+- **Next work action:** Inspect implementation result when available and verify exact changed paths before import.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-013] Event (during round A-001)
+
+* _2026-09-09 12:27:17 (GPT-6/default)_
+
+Twenty-minute checkpoint: worker changes remain within the seven approved controller files; delivery checkout has no product changes. Candidate includes store proof, immutable target, projection and sender/reconciliation changes; acceptance is not yet claimed. Parent red proof remains valid. Tracker validated.
+
+## [WIP-003] Checkpoint (during round A-001)
+
+* _2026-09-09 12:27:17 (GPT-6/default)_
+
+- **Finished:** Design Go and baseline reproduction are recorded; dedicated local Postgres remains available.
+- **Running now:** Worker integrates seven-file candidate and compatibility fixtures before full verification.
+- **Still to do:** Inspect/import final candidate; independently run Rust/Postgres checks; security and acceptance review; no fix or rollout declared complete.
+- **Next work action:** Collect worker result and compare exact source changes against approved design.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-014] Event (during round A-001)
+
+* _2026-09-09 12:38:05 (GPT-6/default)_
+
+Scope checkpoint: candidate still limited to seven approved controller files; active edits include fixture/compatibility tests. No final implementation report yet. Delivery checkout contains records only. Host verification runner prepared; Postgres remains local and dedicated. No worker termination warranted by elapsed time alone.
+
+## [WIP-004] Checkpoint (during round A-001)
+
+* _2026-09-09 12:38:05 (GPT-6/default)_
+
+- **Finished:** Baseline semantic reproduction and local verification setup.
+- **Running now:** Implementation worker completes compatibility tests and candidate validation in its clone.
+- **Still to do:** Candidate collection/import, host verification, independent security and acceptance review, and result gate; no source fix claimed complete.
+- **Next work action:** Read the completed report and exact diff, then run delivery checks.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-015] Event (during round A-001)
+
+* _2026-09-09 12:47:23 (GPT-6/default)_
+
+Candidate remains within seven-file scope; GitHub response/reconciliation tests are present. Implementation worker continues and no final validation report exists. Parent checkout source is unchanged. Tracker and scope check passed; original baseline red evidence remains the only completed runtime result claimed.
+
+## [WIP-005] Checkpoint (during round A-001)
+
+* _2026-09-09 12:47:23 (GPT-6/default)_
+
+- **Finished:** Approved design, independent baseline failure proof, isolated database and host verification runner.
+- **Running now:** Worker finishes candidate tests and validation; process 20980/session 57621 remains owned and active.
+- **Still to do:** Verify/import candidate, host checks, independent security/acceptance, result gate. Production is untouched and the fix is not yet complete.
+- **Next work action:** Collect completed implementation and inspect remaining invariants before import.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-016] Event (during round A-001)
+
+* _2026-09-09 12:57:19 (GPT-6/default)_
+
+Candidate tests now include both store backends, provider response/reconcile identity, and unproven outbox intent rejection. Source remains in the worker clone; no completed worker report yet. Host source read resolves canonical-SHA concern: valid projection stores the canonical value. Scope and tracker validated.
+
+## [WIP-006] Checkpoint (during round A-001)
+
+* _2026-09-09 12:57:19 (GPT-6/default)_
+
+- **Finished:** Baseline failure evidence and independent review of core candidate boundaries; canonical SHA propagation checked in source.
+- **Running now:** Worker executes/finalizes candidate checks with new migration/outbox tests.
+- **Still to do:** Collect/import exact candidate, rerun host validation, fresh security and acceptance, result gate; no deployment or complete-fix claim.
+- **Next work action:** Read worker results, check seven-file scope and verification evidence, then run host checks.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-017] Event (during round A-001)
+
+* _2026-09-09 13:06:29 (GPT-6/default)_
+
+Implementation worker completed exit 0; seven authorized source files imported after git apply --check and exact path inspection. Worker report records sandbox-denied runtime tests and unrelated baseline fmt failures; neither is called green. Host validation session 18479 independently executes all checks with local PostgreSQL. Timestamp-only report header correction recorded with hashes. Canonical host red-regression.patch retained. Tracker validated and scope unchanged.
+
+## [RUN-018] Event (during round A-001)
+
+* _2026-09-09 13:07:02 (GPT-6/default)_
+
+Route full_pipeline; allow-ag on; owner approved handoff. Dispatch fixture, codex-default, basic, gpt-5.6-luna/max, external-runner-v1. Executable and ChatGPT login verified. Clone-only report authority; no production access. Root configuration remains local bootstrap; main checkout untouched.
+
+## [RUN-019] Event (during round A-001)
+
+* _2026-09-09 13:09:29 (GPT-6/default)_
+
+Route full_pipeline; allow-ag on; owner approved handoff. Dispatch security, codex-default, best, gpt-5.6-sol/low, external-runner-v1. Executable and ChatGPT login verified. Clone-only report authority; no production access. Root configuration remains local bootstrap; main checkout untouched.
+
+## [RUN-020] Event (during round A-001)
+
+* _2026-09-09 13:10:22 (GPT-6/default)_
+
+Candidate d6e96c3: scoped fixture correction imported after diff inspection. Host gates: package 167 unit + 3 contract tests PASS; reviewed_sha 8 PASS; cargo build, cargo test, package fmt and clippy -D warnings PASS with TEST_POSTGRES_URL. Workspace fmt reports same three untouched root-file changes as baseline, recorded separately; not a patch regression. Actual Postgres schemas/proof columns independently read back. Security read-only worker session 82336 reviews current candidate without prior rationale/results. Full cross-check selected from frozen seven-file trust-boundary facts.
