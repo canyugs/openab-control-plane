@@ -8,7 +8,7 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-10 00:18:52 Asia/Taipei.
+- **Last update:** 2026-09-10 00:33:59 Asia/Taipei.
 
 - **Evidence commit:** 1107f73567710159c298ff6a60df393e8e6b9775.
 
@@ -40,9 +40,9 @@
 
 - **Current item:** T-3.
 
-- **Last proven result:** Core, OCI, snapshot and latency integrated at563ae17; 51/52 host tests pass, one known weekly verifier exception seam. Actual weekly PTY exit0, timeout-noop latency now unknown.
+- **Last proven result:** Current5ea1848 passes56 host Python tests; actual OCI controls and corrected weekly/failure-integration PTY verified. Real model responses authenticated but StructuredOutput parsing needs correction.
 
-- **Active blocker or running process:** live-schema80805, verifier-seam79518 and oauth-user80429 active; PTY53083 idle after actual failed evaluation, awaiting corrections.
+- **Active blocker or running process:** live-schema80805 and structured-transport2638 active; PTY53083 idle awaiting real full journey.
 
 - **Next safe action:** Integrate disjoint correction results, run all tests and full real model/OCI PTY journey, then independent security/acceptance.
 

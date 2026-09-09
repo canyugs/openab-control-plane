@@ -1,0 +1,138 @@
+{
+  "session": 53083,
+  "terminal": "/dev/ttys042",
+  "events": [
+    {
+      "action": "start",
+      "result": {
+        "chunk_id": "42f612",
+        "wall_time_seconds": 1.003854583,
+        "session_id": 53083,
+        "original_token_count": 49,
+        "output": "\r\nThe default interactive shell is now zsh.\r\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\r\nFor more details, please visit https://support.apple.com/kb/HT208050.\r\nbash-3.2$ "
+      }
+    },
+    {
+      "action": "python3 -c 'import os,json; print(json.dumps({\"stdin_tty\":os.isatty(0),\"stdout_tty\":os.isatty(1),\"tty\":os.ttyname(0)}))'\n",
+      "result": {
+        "chunk_id": "c1a9e8",
+        "wall_time_seconds": 1.001080125,
+        "session_id": 53083,
+        "original_token_count": 126,
+        "output": "python3 -c 'import os,json; print(json.dumps({\"stdin_tty\":os.isatty\r<t os,json; print(json.dumps({\"stdin_tty\":os.isatty(                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b0),\"stdout_tty\":os.isatty\r\r<s({\"stdin_tty\":os.isatty(0),\"stdout_tty\":os.isatty(                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b1),\"tty\":os.ttyname(0)}))\r\r<),\"stdout_tty\":os.isatty(1),\"tty\":os.ttyname(0)}))'                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\n{\"stdin_tty\": true, \"stdout_tty\": true, \"tty\": \"/dev/ttys042\"}\r\nbash-3.2$ "
+      }
+    },
+    {
+      "action": "stty cols 240 rows 40",
+      "result": {
+        "chunk_id": "e860f8",
+        "wall_time_seconds": 1.00399575,
+        "session_id": 53083,
+        "original_token_count": 9,
+        "output": "stty cols 240 rows 40\r\nbash-3.2$ "
+      }
+    },
+    {
+      "action": "python3 scripts/review_round_weekly_report.py --bundle /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly/bundle --week 2026-W37 --as-of 2026-09-09T08:10:00+08:00 --output /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly-without-models\n",
+      "result": {
+        "chunk_id": "5a74d8",
+        "wall_time_seconds": 1.000814041,
+        "session_id": 53083,
+        "original_token_count": 450,
+        "output": "python3 scripts/review_round_weekly_report.py --bundle /var/folders\r<eview_round_weekly_report.py --bundle /var/folders/                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\bsd/lyvwlbld52j4b4bptd8yfr\r\r<py --bundle /var/folders/sd/lyvwlbld52j4b4bptd8yfr9                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\bw0000gn/T/ocp-evaluation-\r\r<d/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-l                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\bive-i4bgehnf/weekly/bundl\r\r<0000gn/T/ocp-evaluation-live-i4bgehnf/weekly/bundle                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b --week 2026-W37 --as-of \r\r<ve-i4bgehnf/weekly/bundle --week 2026-W37 --as-of 2                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b026-09-09T08:10:00+08:00 \r\r<--week 2026-W37 --as-of 2026-09-09T08:10:00+08:00 -                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b-output /var/folders/sd/l\r\r<26-09-09T08:10:00+08:00 --output /var/folders/sd/ly                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\bvwlbld52j4b4bptd8yfr9w000\r\r<output /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\bgn/T/ocp-evaluation-live-\r\r<wlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b4bgehnf/weekly-without-mo\r\r<n/T/ocp-evaluation-live-i4bgehnf/weekly-without-mod                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\bels\r\n{\"json\": \"/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly-without-models/review-round-weekly-2026-W37-snapshot-20260909T001000Z-46eb88fd3aff.json\", \"markdown\": \"/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly-without-models/review-round-weekly-2026-W37-snapshot-20260909T001000Z-46eb88fd3aff.md\", \"report_id\": \"46eb88fd3aff71e1ae679f771d35cd1ee14749d4365224fbd98814796b5c7296\"}\r\nbash-3.2$ "
+      }
+    },
+    {
+      "action": "printf 'WEEKLY_EXIT=%s\\n' \"$?\"\nset +o emacs\n",
+      "result": {
+        "chunk_id": "d03174",
+        "wall_time_seconds": 1.001748042,
+        "session_id": 53083,
+        "original_token_count": 21,
+        "output": "printf 'WEEKLY_EXIT=%s\\n' \"$?\"\r\nWEEKLY_EXIT=0\r\nbash-3.2$ set +o emacs\r\nbash-3.2$ "
+      }
+    },
+    {
+      "action": "python3 scripts/review_round_weekly_report.py --bundle /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly/bundle --week 2026-W37 --as-of 2026-09-09T08:10:00+08:00 --output /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly-latency-fixed\n",
+      "result": {
+        "chunk_id": "63bca2",
+        "wall_time_seconds": 1.003343875,
+        "session_id": 53083,
+        "original_token_count": 192,
+        "output": "python3 scripts/review_round_weekly_report.py --bundle /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly/bundle --week 2026-W37 --as-of 2026-09-09T08:10:00+08:00 --output /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly-latency-fixed\r\n{\"json\": \"/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly-latency-fixed/review-round-weekly-2026-W37-snapshot-20260909T001000Z-46eb88fd3aff.json\", \"markdown\": \"/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly-latency-fixed/review-round-weekly-2026-W37-snapshot-20260909T001000Z-46eb88fd3aff.md\", \"report_id\": \"46eb88fd3aff71e1ae679f771d35cd1ee14749d4365224fbd98814796b5c7296\"}\r\nbash-3.2$ "
+      }
+    },
+    {
+      "action": "weekly fixed exit",
+      "result": {
+        "chunk_id": "db7ab7",
+        "wall_time_seconds": 1.001105416,
+        "session_id": 53083,
+        "original_token_count": 22,
+        "output": "printf 'WEEKLY_LATENCY_FIXED_EXIT=%s\\n' \"$?\"\r\nWEEKLY_LATENCY_FIXED_EXIT=0\r\nbash-3.2$ "
+      }
+    },
+    {
+      "action": "python3 scripts/review_model_evaluation.py run --repo /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/repo --revision 52e3039afd1aa96baddcaf934967b974315d3c34 --base 4ed638bb12f3e1fa11be2524a48e18973ad4591f --findings /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/vulnerable/findings.json --evidence /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/vulnerable/evidence --models /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/models.json --environment /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/environment.json --output /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/evaluation-pre-schema\n",
+      "result": {
+        "chunk_id": "267c45",
+        "wall_time_seconds": 1.0029665,
+        "session_id": 53083,
+        "original_token_count": 206,
+        "output": "python3 scripts/review_model_evaluation.py run --repo /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/repo --revision 52e3039afd1aa96baddcaf934967b974315d3c34 --base 4ed638bb12f3e1fa11be2524a48e18973ad4591f --findings /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/vulnerable/findings.json --evidence /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/vulnerable/evidence --models /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/models.json --environment /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/environment.json --output /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/evaluation-pre-schema\r\nevaluation failed: EvaluationError\r\nbash-3.2$ "
+      }
+    },
+    {
+      "action": "pre-schema exit",
+      "result": {
+        "chunk_id": "4d97c5",
+        "wall_time_seconds": 1.002083167,
+        "session_id": 53083,
+        "original_token_count": 22,
+        "output": "printf 'EVALUATION_PRE_SCHEMA_EXIT=%s\\n' \"$?\"\r\nEVALUATION_PRE_SCHEMA_EXIT=2\r\nbash-3.2$ "
+      }
+    },
+    {
+      "action": "python3 scripts/review_model_evaluation.py run --repo /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/repo --revision 52e3039afd1aa96baddcaf934967b974315d3c34 --base 4ed638bb12f3e1fa11be2524a48e18973ad4591f --findings /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/vulnerable/findings.json --evidence /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/vulnerable/evidence --models /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/models.json --environment /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/environment.json --output /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/evaluation-pre-schema\n",
+      "result": {
+        "chunk_id": "ea60f1",
+        "wall_time_seconds": 1.001781708,
+        "session_id": 53083,
+        "original_token_count": 195,
+        "output": "python3 scripts/review_model_evaluation.py run --repo /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/repo --revision 52e3039afd1aa96baddcaf934967b974315d3c34 --base 4ed638bb12f3e1fa11be2524a48e18973ad4591f --findings /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/vulnerable/findings.json --evidence /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/vulnerable/evidence --models /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/models.json --environment /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/environment.json --output /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/evaluation-pre-schema\r\n"
+      },
+      "note": "corrected host fixture schema identifier"
+    },
+    {
+      "action": "actual pre-schema exit",
+      "result": {
+        "chunk_id": "72b355",
+        "wall_time_seconds": 1.002540375,
+        "session_id": 53083,
+        "original_token_count": 22,
+        "output": "printf 'EVALUATION_PRE_SCHEMA_EXIT=%s\\n' \"$?\"\r\nEVALUATION_PRE_SCHEMA_EXIT=1\r\nbash-3.2$ "
+      }
+    },
+    {
+      "action": "python3 scripts/review_round_weekly_report.py --bundle /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly/bundle --week 2026-W37 --as-of 2026-09-09T08:10:00+08:00 --evaluation-root /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/evaluation-pre-schema --output /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly-failed-models\n",
+      "result": {
+        "chunk_id": "82983c",
+        "wall_time_seconds": 1.002136584,
+        "session_id": 53083,
+        "original_token_count": 222,
+        "output": "python3 scripts/review_round_weekly_report.py --bundle /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly/bundle --week 2026-W37 --as-of 2026-09-09T08:10:00+08:00 --evaluation-root /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/evaluation-pre-schema --output /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly-failed-models\r\n{\"json\": \"/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly-failed-models/review-round-weekly-2026-W37-snapshot-20260909T001000Z-d3cdd9bfc48c.json\", \"markdown\": \"/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/weekly-failed-models/review-round-weekly-2026-W37-snapshot-20260909T001000Z-d3cdd9bfc48c.md\", \"report_id\": \"d3cdd9bfc48c034b2039c619254e44282a672a9a70e595cf90f5278dfe92fec2\"}\r\nbash-3.2$ "
+      }
+    },
+    {
+      "action": "weekly failure integration exit",
+      "result": {
+        "chunk_id": "001acf",
+        "wall_time_seconds": 1.001562166,
+        "session_id": 53083,
+        "original_token_count": 22,
+        "output": "printf 'WEEKLY_FAILED_MODELS_EXIT=%s\\n' \"$?\"\r\nWEEKLY_FAILED_MODELS_EXIT=0\r\nbash-3.2$ "
+      }
+    }
+  ]
+}
+

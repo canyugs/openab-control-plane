@@ -2,12 +2,12 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: 563ae17 — integrated Stage 2 candidate unaccepted; Stage 1 d6e96c3 retains Result Go.
-Tests/scenarios: 51/52 integrated Python tests passed; one known verifier seam error. Actual OCI and corrected weekly PTY passed; real evaluation identified USER OAuth environment defect.
+Current commit: 5ea1848 — Stage2 integration unaccepted; Stage1 d6e96c3 retains Result Go.
+Tests/scenarios: 56 host Python tests PASS; actual OCI and weekly PTY PASS; real model response parsing correction pending.
 Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex; root ag.json remains untracked bootstrap.
 Proven: approved design, baseline red failure, delivered SHA tests and real PostgreSQL; security pass resolved with explicit immutable-target recovery limit.
 Open: model/OCI/weekly runtime corrections; full live journey, independent reviews and Result Go still pending.
-Next: integrate live-schema80805/verifier-seam79518/oauth-user80429, rerun real model/OCI CLI then independent reviews.
+Next: integrate live-schema80805 and structured-transport2638, run actual successful model/OCI CLI then independent reviews.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
 Archived eras: none.
 Streams: fix/review-commit-integrity in isolated worktree.
@@ -626,4 +626,26 @@ Dispatch structured-transport, implementation, codex-default/basic, gpt-5.6-luna
 * _2026-09-10 00:32:00 (GPT-6/default)_
 
 Verifier seam result digest ea592288f644d801bab95776f7de4f09d75e7ba1c3e14684c317a8cdc1281496 verified; exact weekly source/test diff imported. Host complete Python suite56 PASS. Actual weekly CLI with real failed evaluation root exited0 and emitted distinct report identity d3cdd9bfc48c034b2039c619254e44282a672a9a70e595cf90f5278dfe92fec2; machine assessment remains failed/unscoreable. live-schema80805 and structured-transport2638 still active; full successful model/OCI journey remains pending.
+
+## [RUN-069] Event (during round A-001)
+
+* _2026-09-10 00:33:59 (GPT-6/default)_
+
+Checkpoint scope: only stream records differ in delivery from5ea1848. live-schema clone modifies approved core/test/doc/red patch only; structured-transport has adapter/auth-test/new fixture-only authority. Current56 complete host Python tests and actual failed-evaluation weekly integration passed. Last actual model probe authenticated both configured IDs, StructuredOutput-only tools, list-price basis; parser still rejects legitimate structured-delivery blocks, so no full model success claimed. Tracker validated and main user changes preserved.
+
+## [WIP-018] Checkpoint (during round A-001)
+
+* _2026-09-10 00:33:59 (GPT-6/default)_
+
+- **Finished:** USER OAuth and weekly verifier seam imported;56 host tests PASS; actual failed-evaluation weekly output is unscoreable.
+- **Running now:** live-schema80805 and structured-transport2638 in separate clones.
+- **Still to do:** Successful real original/omission and safe-refutation OCI journeys, immutable replay and integrated weekly evidence, security/acceptance/learn and Result Go.
+- **Next work action:** Import remaining bounded corrections and rerun complete actual product CLI.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-070] Event (during round A-001)
+
+* _2026-09-10 00:39:52 (GPT-6/default)_
+
+Live-schema worker terminal exit0, report digest0ad3e361bdb326bf005fdfcf6f09150367cbf90d38f02d2022e7da3280aca7c5 verified; exact core/test/doc diff imported. Complete delivered Python suite59 PASS. Schema now specifies real citation/candidate/generated-run objects while controller still checks dynamic paths/ranges/IDs; normal direct source import signal added with red regression, not treated as semantic proof. Structured transport2638 remains only active worker; full actual CLI success pending that import.
 

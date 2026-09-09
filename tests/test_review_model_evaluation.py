@@ -333,6 +333,181 @@ class ModelEvaluationBehaviorTests(unittest.TestCase):
         with self.assertRaises(Exception):
             module.validate_judge_result(result, finding, evidence, {"src/app.py": 1})
 
+    def test_model_output_schemas_are_strictly_nested(self):
+        module = load_module("review_model_evaluation_schema_contract", "scripts/review_model_evaluation.py")
+
+        def assert_object_schema(schema, required):
+            self.assertEqual(schema["type"], "object")
+            self.assertFalse(schema["additionalProperties"])
+            self.assertEqual(set(schema["required"]), set(required))
+            self.assertEqual(set(schema["properties"]), set(required))
+
+        citation_required = {"path", "start", "end", "evidence_id"}
+        for schema in (module.JUDGE_SCHEMA, module.SYNTHESIS_SCHEMA):
+            citations = schema["properties"]["citations"]
+            self.assertEqual(citations["type"], "array")
+            self.assertEqual(citations["maxItems"], module.MAX_CITATIONS)
+            citation = citations["items"]
+            assert_object_schema(citation, citation_required)
+            self.assertEqual(citation["properties"]["path"]["type"], "string")
+            self.assertEqual(citation["properties"]["start"]["type"], "integer")
+            self.assertEqual(citation["properties"]["end"]["type"], "integer")
+            self.assertEqual(citation["properties"]["evidence_id"]["type"], "string")
+        self.assertIn("validation_verdict", module.JUDGE_SCHEMA["required"])
+        self.assertEqual(module.JUDGE_SCHEMA["properties"]["validation_verdict"]["enum"], ["valid", "invalid", "unproven"])
+
+        candidates = module.DISCOVERY_SCHEMA["properties"]["candidates"]
+        self.assertEqual(candidates["type"], "array")
+        self.assertEqual(candidates["maxItems"], 128)
+        candidate = candidates["items"]
+        assert_object_schema(candidate, {"claim", "path", "start", "end", "evidence_ids"})
+        self.assertEqual(candidate["properties"]["evidence_ids"]["type"], "array")
+
+        validation = module.VALIDATION_SCHEMA
+        files = validation["properties"]["files"]
+        self.assertEqual(files["type"], "array")
+        self.assertEqual(files["maxItems"], 128)
+        generated_file = files["items"]
+        assert_object_schema(generated_file, {"path", "utf8"})
+        self.assertEqual(generated_file["properties"]["path"]["type"], "string")
+        self.assertEqual(generated_file["properties"]["utf8"]["type"], "string")
+
+        runs = validation["properties"]["runs"]
+        self.assertEqual(runs["type"], "array")
+        self.assertEqual(runs["minItems"], 2)
+        self.assertEqual(runs["maxItems"], 2)
+        run = runs["items"]
+        assert_object_schema(run, {"name", "argv", "cwd", "expect", "evidence_ids"})
+        self.assertEqual(run["properties"]["name"]["enum"], ["baseline", "counterexample"])
+        self.assertEqual(run["properties"]["cwd"]["const"], "/work")
+        self.assertEqual(run["properties"]["argv"]["type"], "array")
+        self.assertEqual(run["properties"]["evidence_ids"]["type"], "array")
+
+        expectation = run["properties"]["expect"]
+        assert_object_schema(expectation, {"exit", "observation"})
+        self.assertEqual(expectation["properties"]["exit"]["const"], 0)
+        observation = expectation["properties"]["observation"]
+        assert_object_schema(observation, {"claim_present"})
+        self.assertEqual(observation["properties"]["claim_present"]["type"], "boolean")
+
+    def test_complete_model_examples_are_accepted_by_controller_validators(self):
+        module = load_module("review_model_evaluation_schema_examples", "scripts/review_model_evaluation.py")
+        finding = {
+            "finding_id": "F-1",
+            "title": "access control",
+            "severity": "high",
+            "claim": "the changed access check accepts an unrelated requester",
+            "location": {"path": "src/app.py", "start_line": 1, "end_line": 2},
+            "evidence_ids": ["E-1"],
+        }
+        evidence = {
+            "E-1": {
+                "utf8": "def can_read(requester, owner):\n    return bool(requester)\n",
+                "sha256": hashlib.sha256(b"def can_read(requester, owner):\n    return bool(requester)\n").hexdigest(),
+                "allowed_ranges": [{"path": "src/app.py", "start": 1, "end": 2}],
+            }
+        }
+        source_lines = {"src/app.py": 2}
+        citation = {"path": "src/app.py", "start": 1, "end": 2, "evidence_id": "E-1"}
+        judge = {
+            "finding_id": "F-1",
+            "verdict": "support",
+            "severity": "high",
+            "usefulness": "useful",
+            "citations": [citation],
+            "counterexample": "A correct implementation would reject an unrelated requester.",
+            "validation_verdict": "valid",
+        }
+        self.assertEqual(module.validate_judge_result(judge, finding, evidence, source_lines)["citations"], [citation])
+
+        candidate = {
+            "claim": "the access check ignores the owner argument",
+            "path": "src/app.py",
+            "start": 1,
+            "end": 2,
+            "evidence_ids": ["E-1"],
+        }
+        self.assertEqual(module._validate_discovery_result({"candidates": [candidate]}, evidence, source_lines), [candidate])
+
+        synthesis = {
+            "item_id": "F-1",
+            "verdict": "supported",
+            "citations": [citation],
+            "disagreement": "",
+            "reason": "Both fresh judges cited the same source range.",
+        }
+        self.assertEqual(
+            module._validate_synthesis_result(synthesis, "F-1", finding, evidence, source_lines)["verdict"],
+            "supported",
+        )
+
+        generated = """import json\nimport sys\nsys.path.insert(0, '/source')\nfrom src.app import can_read\n\nrequester = 'mallory' if sys.argv[1] == 'yes' else ''\nprint(json.dumps({'claim_present': bool(can_read(requester, 'alice'))}))\n"""
+        plan = {
+            "item_id": "F-1",
+            "files": [{"path": "generated/check.py", "utf8": generated}],
+            "runs": [
+                {
+                    "name": "baseline",
+                    "argv": ["python3", "/work/generated/check.py", "yes"],
+                    "cwd": "/work",
+                    "expect": {"exit": 0, "observation": {"claim_present": True}},
+                    "evidence_ids": ["E-1"],
+                },
+                {
+                    "name": "counterexample",
+                    "argv": ["python3", "/work/generated/check.py", "no"],
+                    "cwd": "/work",
+                    "expect": {"exit": 0, "observation": {"claim_present": False}},
+                    "evidence_ids": ["E-1"],
+                },
+            ],
+            "claim_observed": "The generated controls read the frozen source and distinguish the claim from its negation.",
+        }
+        normalized_plan = module.oci.validate_generated_plan(plan, {"E-1"})
+        self.assertEqual(normalized_plan["runs"][0]["cwd"], "/work")
+        self.assertTrue(module._plan_source_binding_signal(normalized_plan, finding))
+
+    def test_imported_source_execution_is_recognized_as_source_bound(self):
+        module = load_module("review_model_evaluation_import_binding", "scripts/review_model_evaluation.py")
+        finding = {
+            "finding_id": "F-1",
+            "location": {"path": "app.py", "start_line": 1, "end_line": 1},
+        }
+        plan = {
+            "item_id": "F-1",
+            "files": [
+                {
+                    "path": "generated/check.py",
+                    "utf8": (
+                        "import json\n"
+                        "import sys\n"
+                        "sys.path.insert(0, '/source')\n"
+                        "from app import can_read\n"
+                        "print(json.dumps({'claim_present': can_read(sys.argv[1], 'owner')}))\n"
+                    ),
+                }
+            ],
+            "runs": [
+                {
+                    "name": "baseline",
+                    "argv": ["python3", "/work/generated/check.py", "requester"],
+                    "cwd": "/work",
+                    "expect": {"exit": 0, "observation": {"claim_present": True}},
+                    "evidence_ids": ["E-1"],
+                },
+                {
+                    "name": "counterexample",
+                    "argv": ["python3", "/work/generated/check.py", "no"],
+                    "cwd": "/work",
+                    "expect": {"exit": 0, "observation": {"claim_present": False}},
+                    "evidence_ids": ["E-1"],
+                },
+            ],
+            "claim_observed": "The imported source function distinguishes an authenticated requester from an empty one.",
+        }
+        normalized = module.oci.validate_generated_plan(plan, {"E-1"})
+        self.assertTrue(module._plan_source_binding_signal(normalized, finding))
+
     def test_discovery_packet_has_no_original_findings(self):
         module = load_module("review_model_evaluation", "scripts/review_model_evaluation.py")
         self.assertIsNotNone(module, "the evaluation controller must exist")

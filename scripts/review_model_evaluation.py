@@ -578,10 +578,13 @@ def build_discovery_packet(
         "evidence_catalog": {key: evidence_catalog[key] for key in sorted(evidence_catalog)},
         "allowed_references": "source packet paths and evidence manifest only",
         "author_model_identity": "withheld",
+        "schema": DISCOVERY_SCHEMA,
         "rules": [
             "find new, concrete, source-cited issues",
-            "do not infer recall or confirm any original finding",
-            "return no finding identifier",
+            "each candidate is exactly {claim,path,start,end,evidence_ids}; use a supplied relative POSIX source path and inclusive positive range",
+            "each evidence_id must be supplied and cover the candidate range",
+            "do not infer recall or confirm any original finding, and return no finding identifier",
+            "return JSON only; no citation strings, generated-file references, or /source paths",
         ],
     }
     # A null marker is safe and makes the blindness auditable without leaking
@@ -607,7 +610,14 @@ def build_judge_packet(
         "finding": finding,
         "evidence": refs,
         "schema": JUDGE_SCHEMA,
-        "rules": ["cite only allowed source ranges and evidence ranges", "do not execute commands", "return JSON only"],
+        "rules": [
+            "return exactly the schema fields; finding_id must match the supplied finding",
+            "each citation is exactly {path,start,end,evidence_id} and cites only a supplied frozen-source range covered by that evidence_id",
+            "never cite generated files or /source paths, and never emit citation strings or quote/note fields",
+            "assess whether executed baseline and counterexample controls meaningfully distinguish the claim from its negation",
+            "do not execute commands, use tools, or rely on a manual test prerequisite",
+            "return JSON only",
+        ],
     }
     if validation_evidence is not None:
         packet["validation"] = validation_evidence
@@ -636,7 +646,12 @@ def build_synthesis_packet(
         "executed_evidence": executed_evidence,
         "judgments": anonymous,
         "schema": SYNTHESIS_SCHEMA,
-        "rules": ["preserve disagreement", "unknown is allowed", "do not invent evidence or promote failed controls"],
+        "rules": [
+            "return exactly the schema fields and preserve the supplied item_id",
+            "preserve disagreement; unknown is allowed; do not invent evidence or promote failed controls",
+            "each citation is exactly {path,start,end,evidence_id} and cites only a supplied frozen-source range covered by that evidence_id",
+            "never cite generated files or /source paths, and return no citation strings",
+        ],
     }
 
 
@@ -649,7 +664,16 @@ def build_validation_packet(invocation_id: str, finding: Mapping[str, Any], evid
         "evidence": {key: evidence[key] for key in finding["evidence_ids"]},
         "source_references": {"revision": source_packet.get("revision"), "paths": [finding["location"]["path"]]},
         "schema": VALIDATION_SCHEMA,
-        "rules": ["return generated files only under generated/", "use two distinct literal controls", "reach the read-only /source mount", "no shell or host paths", "return JSON only"],
+        "rules": [
+            "return exactly {item_id,files,runs,claim_observed}; item_id must match the supplied finding",
+            "generated files require exactly path and utf8, with paths below generated/; they materialize below /work/generated",
+            "use exactly one baseline and one counterexample with distinct literal argv arrays and cwd /work",
+            "invoke python3 directly; the Python3 OCI image exposes read-only source at /source",
+            "each generated control must read or import the supplied source and print actual JSON stdout with boolean claim_present",
+            "expect exactly exit 0 and opposing claim_present values; cite only supplied evidence IDs",
+            "no shell, -c, host paths, crash/assertion-false harnesses, or manual test prerequisite",
+            "return JSON only",
+        ],
     }
 
 
@@ -699,7 +723,16 @@ def _python_source_binding_signal(content: str, source_path: str) -> bool:
     except SyntaxError:
         return False
 
-    cited_source_literals = {source_path, str(PurePosixPath("/source") / PurePosixPath(source_path))}
+    source_relative = PurePosixPath(source_path)
+    cited_source_literals = {source_path, str(PurePosixPath("/source") / source_relative)}
+    source_mount_literals = {"/source", str(PurePosixPath("/source") / source_relative)}
+    module_parts = list(source_relative.parts)
+    if module_parts and module_parts[-1].endswith(".py"):
+        module_parts[-1] = module_parts[-1][:-3]
+    source_module = ".".join(module_parts)
+    source_modules = {source_module}
+    if source_modules and source_modules != {"__init__"} and source_module.endswith(".__init__"):
+        source_modules.add(source_module[: -len(".__init__")])
 
     def literal_contains_source(node: ast.AST) -> bool:
         return any(
@@ -708,6 +741,36 @@ def _python_source_binding_signal(content: str, source_path: str) -> bool:
             and child.value in cited_source_literals
             for child in ast.walk(node)
         )
+
+    def literal_contains_source_mount(node: ast.AST) -> bool:
+        return any(
+            isinstance(child, ast.Constant)
+            and isinstance(child.value, str)
+            and child.value in source_mount_literals
+            for child in ast.walk(node)
+        )
+
+    source_path_setup = any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"insert", "append", "extend"}
+        and isinstance(node.func.value, ast.Attribute)
+        and isinstance(node.func.value.value, ast.Name)
+        and node.func.value.value.id == "sys"
+        and node.func.value.attr == "path"
+        and literal_contains_source_mount(node)
+        for node in ast.walk(tree)
+    )
+    source_imported = any(
+        isinstance(node, ast.Import)
+        and any(alias.name in source_modules for alias in node.names)
+        or isinstance(node, ast.ImportFrom)
+        and node.level == 0
+        and node.module in source_modules
+        for node in ast.walk(tree)
+    )
+    if source_path_setup and source_imported:
+        return True
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -741,47 +804,242 @@ def _plan_mentions_frozen_source(plan: Mapping[str, Any], finding: Mapping[str, 
     return _plan_source_binding_signal(plan, finding)
 
 
+_SOURCE_PATH_PATTERN = r"^(?!/)(?!.*\\)(?!.*//)(?!.*(?:^|/)(?:\.|\.\.)(?:/|$))(?!.*\/$).+$"
+
+
 JUDGE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "required": ["finding_id", "verdict", "severity", "usefulness", "citations", "counterexample", "validation_verdict"],
     "properties": {
-        "finding_id": {"type": "string"},
-        "verdict": {"enum": ["support", "refute", "insufficient_evidence"]},
-        "severity": {"type": "string"},
-        "usefulness": {"enum": ["useful", "not_useful", "unknown"]},
-        "citations": {"type": "array"},
-        "counterexample": {"type": "string"},
-        "validation_verdict": {"enum": ["valid", "invalid", "unproven"]},
+        "finding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Return the supplied finding_id exactly; do not invent or rename it.",
+        },
+        "verdict": {"type": "string", "enum": ["support", "refute", "insufficient_evidence"]},
+        "severity": {"type": "string", "minLength": 1, "maxLength": 128},
+        "usefulness": {"type": "string", "enum": ["useful", "not_useful", "unknown"]},
+        "citations": {
+            "type": "array",
+            "maxItems": MAX_CITATIONS,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "start", "end", "evidence_id"],
+                "properties": {
+                    "path": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": _SOURCE_PATH_PATTERN},
+                    "start": {"type": "integer", "minimum": 1},
+                    "end": {"type": "integer", "minimum": 1},
+                    "evidence_id": {"type": "string", "minLength": 1, "maxLength": 512},
+                },
+            },
+            "description": "Each citation must use an exact supplied source path/range and supplied evidence_id; never cite generated files or /source paths.",
+        },
+        "counterexample": {"type": "string", "maxLength": 16 * 1024},
+        "validation_verdict": {"type": "string", "enum": ["valid", "invalid", "unproven"]},
     },
+    "oneOf": [
+        {
+            "required": ["verdict", "citations"],
+            "properties": {
+                "verdict": {"enum": ["insufficient_evidence"]},
+                "citations": {"maxItems": MAX_CITATIONS},
+            },
+        },
+        {
+            "required": ["verdict", "citations"],
+            "properties": {
+                "verdict": {"enum": ["support", "refute"]},
+                "citations": {"minItems": 1, "maxItems": MAX_CITATIONS},
+            },
+        },
+    ],
 }
 DISCOVERY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "required": ["candidates"],
-    "properties": {"candidates": {"type": "array", "maxItems": 128}},
+    "properties": {
+        "candidates": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["claim", "path", "start", "end", "evidence_ids"],
+                "properties": {
+                    "claim": {"type": "string", "minLength": 1, "maxLength": 16 * 1024},
+                    "path": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": _SOURCE_PATH_PATTERN},
+                    "start": {"type": "integer", "minimum": 1},
+                    "end": {"type": "integer", "minimum": 1},
+                    "evidence_ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string", "minLength": 1, "maxLength": 512},
+                    },
+                },
+            },
+            "description": "Return only new source-cited candidates. Each candidate path/range must be in the frozen source and each evidence_id must be supplied.",
+        }
+    },
 }
 SYNTHESIS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "required": ["item_id", "verdict", "citations", "disagreement", "reason"],
-    "properties": {"item_id": {"type": "string"}, "verdict": {"enum": ["supported", "refuted", "unknown"]}, "citations": {"type": "array"}, "disagreement": {"type": "string"}, "reason": {"type": "string"}},
+    "properties": {
+        "item_id": {"type": "string", "minLength": 1, "maxLength": 512},
+        "verdict": {"type": "string", "enum": ["supported", "refuted", "unknown"]},
+        "citations": {
+            "type": "array",
+            "maxItems": MAX_CITATIONS,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "start", "end", "evidence_id"],
+                "properties": {
+                    "path": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": _SOURCE_PATH_PATTERN},
+                    "start": {"type": "integer", "minimum": 1},
+                    "end": {"type": "integer", "minimum": 1},
+                    "evidence_id": {"type": "string", "minLength": 1, "maxLength": 512},
+                },
+            },
+            "description": "Cite only exact supplied source paths/ranges and supplied evidence_id values; generated files are not citation sources.",
+        },
+        "disagreement": {"type": "string", "maxLength": 16 * 1024},
+        "reason": {"type": "string", "maxLength": 16 * 1024},
+    },
+    "oneOf": [
+        {
+            "required": ["verdict", "citations"],
+            "properties": {
+                "verdict": {"enum": ["unknown"]},
+                "citations": {"maxItems": MAX_CITATIONS},
+            },
+        },
+        {
+            "required": ["verdict", "citations"],
+            "properties": {
+                "verdict": {"enum": ["supported", "refuted"]},
+                "citations": {"minItems": 1, "maxItems": MAX_CITATIONS},
+            },
+        },
+    ],
 }
 VALIDATION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "required": ["item_id", "files", "runs", "claim_observed"],
-    "properties": {"item_id": {"type": "string"}, "files": {"type": "array"}, "runs": {"type": "array", "minItems": 2, "maxItems": 2}, "claim_observed": {"type": "string"}},
+    "properties": {
+        "item_id": {"type": "string", "minLength": 1, "maxLength": 512},
+        "files": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "utf8"],
+                "properties": {
+                    "path": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": r"^generated/(?!.*\\)(?!.*//)(?!.*\/$)(?!.*(?:^|/)(?:\.|\.\.)(?:/|$)).+$"},
+                    "utf8": {"type": "string", "maxLength": 512 * 1024},
+                },
+            },
+            "description": "Files are UTF-8 generated test files; paths are relative and materialized below /work/generated in OCI.",
+        },
+        "runs": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["name", "argv", "cwd", "expect", "evidence_ids"],
+                "properties": {
+                    "name": {"type": "string", "enum": ["baseline", "counterexample"]},
+                    "argv": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 64,
+                        "items": {"type": "string", "minLength": 1, "maxLength": 2048},
+                        "description": "Literal argv only; invoke Python3 directly, never a shell or -c command string.",
+                    },
+                    "cwd": {"type": "string", "const": "/work"},
+                    "expect": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["exit", "observation"],
+                        "properties": {
+                            "exit": {"type": "integer", "const": 0},
+                            "observation": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["claim_present"],
+                                "properties": {"claim_present": {"type": "boolean"}},
+                            },
+                        },
+                    },
+                    "evidence_ids": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1, "maxLength": 512},
+                        "description": "Only supplied evidence IDs; the controller checks membership.",
+                    },
+                },
+            },
+            "description": "Provide exactly one baseline and one counterexample with distinct literal argv and opposite claim_present expectations.",
+        },
+        "claim_observed": {"type": "string", "maxLength": 16 * 1024},
+    },
 }
 
 
 ROLE_NAMES = ("judge_a", "judge_b", "synthesis", "discovery", "validation")
 ROLE_PROMPTS = {
-    "judge_a": "You are judge A. Assess only the supplied finding against the supplied frozen packet. Do not use tools. Return the requested JSON.",
-    "judge_b": "You are judge B. Independently assess only the supplied finding against the supplied frozen packet. Do not use tools or infer judge A. Return the requested JSON.",
-    "synthesis": "You are a fresh synthesis judge. Compare the two anonymized assessments and executed evidence. Preserve disagreement and return unknown when proof is incomplete. Do not use tools.",
-    "discovery": "You are a blind discovery judge. Find additional concrete issues in the frozen packet. No original findings or assessments are available. Do not use tools.",
-    "validation": "You are a validation-plan author. Return only a bounded generated reproduction plan. The controller executes it in OCI; you cannot execute commands or claim that prose is proof.",
+    "judge_a": (
+        "You are fresh judge A. Assess only the supplied finding, supplied source packet, supplied evidence, "
+        "and executed validation observations. Judge whether the executed baseline and counterexample meaningfully "
+        "distinguish the claim from its negation; a print-only, comment-only, hard-coded, argv-echo, crashing, or "
+        "otherwise non-source-bound harness is invalid or unproven. Judge B's output is not available to you. "
+        "Return exactly the requested JSON. Each citation must be exactly {path,start,end,evidence_id}, using a "
+        "supplied frozen-source path/range and supplied evidence_id; never cite generated files or /source paths. "
+        "Set validation_verdict to valid only for a meaningful executed distinction, invalid when the controls do "
+        "not test the source or do not distinguish the claim, and unproven when execution evidence is absent."
+    ),
+    "judge_b": (
+        "You are fresh judge B. Independently assess only the supplied finding, supplied source packet, supplied "
+        "evidence, and executed validation observations. Judge whether the executed baseline and counterexample "
+        "meaningfully distinguish the claim from its negation; a print-only, comment-only, hard-coded, argv-echo, "
+        "crashing, or otherwise non-source-bound harness is invalid or unproven. Judge A's output is not available "
+        "to you. Return exactly the requested JSON. Each citation must be exactly {path,start,end,evidence_id}, "
+        "using a supplied frozen-source path/range and supplied evidence_id; never cite generated files or /source "
+        "paths. Set validation_verdict to valid only for a meaningful executed distinction, invalid when the controls "
+        "do not test the source or do not distinguish the claim, and unproven when execution evidence is absent."
+    ),
+    "synthesis": (
+        "You are a fresh synthesis judge. Compare only the two anonymized assessments, supplied source/evidence, "
+        "and executed observations. Preserve disagreement and return unknown when proof is incomplete; do not "
+        "invent evidence or promote failed controls. Return the exact item_id supplied. Every citation must be "
+        "exactly {path,start,end,evidence_id} and must cite a supplied frozen-source range covered by that evidence; "
+        "generated files and /source paths are not citation sources. Do not use peer identity or hidden context."
+    ),
+    "discovery": (
+        "You are a blind discovery judge. Find additional concrete issues in the supplied frozen source/evidence "
+        "only; no original findings, peer assessments, or author identity are available. Return candidates with "
+        "exactly {claim,path,start,end,evidence_ids}: path is a supplied relative POSIX source path, start/end are "
+        "inclusive positive line numbers, and every evidence_id must be supplied and cover that range. Return no "
+        "finding_id, citation strings, generated-file references, or /source paths. Do not use tools."
+    ),
+    "validation": (
+        "You are a validation-plan author. Return exactly one bounded plan for the supplied item_id and claim. "
+        "The controller executes it in a digest-pinned Python3 OCI image: source is read-only at /source, generated "
+        "files are materialized only below /work/generated, and every run uses literal argv with cwd exactly /work. "
+        "Use two distinct runs named baseline and counterexample, invoke python3 directly on the generated file, "
+        "and make the generated program read/import the supplied source rather than print a path, comment, constant, "
+        "or argv-derived answer. Each program must print actual JSON stdout containing boolean claim_present matching "
+        "its expectation; do not use a shell, -c, host paths, assertion-false/crash harnesses, or manual test/operator "
+        "prerequisites. Use only supplied evidence IDs. Return JSON only; prose cannot establish execution."
+    ),
 }
 
 
