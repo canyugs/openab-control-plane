@@ -278,3 +278,31 @@ Route full_pipeline; allow-ag on; owner approved handoff. Dispatch codewalk, cod
 * _2026-09-09 13:48:21 (GPT-6/default)_
 
 Route full_pipeline; allow-ag on; owner approved handoff. Dispatch spec, codex-default, better, gpt-5.6-terra/high, external-runner-v1. Executable and ChatGPT login verified. Clone-only report authority; no production access. Root configuration remains local bootstrap; main checkout untouched.
+
+## [RUN-030] Event (during round A-001)
+
+* _2026-09-09 13:52:08 (GPT-6/default)_
+
+Route full_pipeline; allow-ag on; owner approved handoff. Dispatch spec-final, codex-default, better, gpt-5.6-terra/high, external-runner-v1. Executable and ChatGPT login verified. Clone-only report authority; no production access. Root configuration remains local bootstrap; main checkout untouched.
+
+## [RUN-031] Event (during round A-001)
+
+* _2026-09-09 13:52:40 (GPT-6/default)_
+
+Stage 2 draft retained, not accepted. Host source inspection found invented terminal-branch/export fields, missing enqueue payload source, overlapping reliability categories, and unnecessary local identifier masking. Same spec stage correction attempt 2 (artifact spec-final) receives exact cited source and frozen corrections; no source change or new feature. Scope is three future report-tool/test/doc files; present changes records only, exact Stage 1 code unchanged. Tracker validated.
+
+## [WIP-008] Checkpoint (during round A-001)
+
+* _2026-09-09 13:52:40 (GPT-6/default)_
+
+- **Finished:** Stage 1 Result Go recorded; Stage 2 source discovery and explicit metric gaps verified.
+- **Running now:** Corrected Stage 2 specification, external session 76454.
+- **Still to do:** Accept source-grounded minimal design, commit/push and exact Stage 2 Design Go. No Stage 2 source or production work started.
+- **Next work action:** Inspect corrected schema/join/classification contract; no repeat of Stage 1 implementation checks.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-032] Event (during round A-001)
+
+* _2026-09-09 13:57:13 (GPT-6/default)_
+
+Corrected Stage 2 spec accepted with mandatory spec-resolution.md source/requirement clarifications. Canonical design.md copied from final worker report; exact digest and report-only clone verified. Three future Python tool/test/doc paths only; no runtime code modified. Scope R-13..R-18 and INV-7, actual/unknown data and exclusive reliability. Exact Stage 2 Design Go is next; no active worker. Stage 1 approval remains recorded and source unchanged.

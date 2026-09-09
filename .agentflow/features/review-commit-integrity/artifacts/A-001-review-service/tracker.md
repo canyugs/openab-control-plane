@@ -8,7 +8,7 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-09 13:50:11 Asia/Taipei.
+- **Last update:** 2026-09-09 13:52:40 Asia/Taipei.
 
 - **Evidence commit:** d6e96c32abfd766588c549e8922e3077d6abcb00.
 
@@ -42,7 +42,7 @@
 
 - **Last proven result:** Host gate PASS and fresh full acceptance PASS for d6e96c3; no active workers; local Postgres stopped.
 
-- **Active blocker or running process:** Stage 2 specification external worker session 1599.
+- **Active blocker or running process:** Stage 2 spec correction external worker session 76454; same spec stage attempt 2.
 
 - **Next safe action:** Inspect Stage 2 metric sources and freeze its minimal design before source work.
 
