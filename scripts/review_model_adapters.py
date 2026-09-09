@@ -26,6 +26,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 MAX_PACKET_BYTES = 8 * 1024 * 1024
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
+MAX_STRUCTURED_OUTPUT_ATTEMPTS = 8
 DEFAULT_TIMEOUT_SECONDS = 900
 SAFE_ENVIRONMENT_KEYS = frozenset(
     {
@@ -414,8 +415,8 @@ class BaseAdapter:
         return value
 
     @staticmethod
-    def _reject_unexpected_tools(events: Sequence[Mapping[str, Any]]) -> None:
-        """Accept only one ID-bound, non-executable StructuredOutput exchange."""
+    def _reject_unexpected_tools(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        """Accept bounded, ordered, non-executable StructuredOutput attempts."""
 
         forbidden_event_types = {
             "tool",
@@ -435,17 +436,30 @@ class BaseAdapter:
             "file_read",
         }
         structured_output_declared = False
-        structured_tool_use_ids: list[str] = []
-        structured_tool_result_ids: list[str] = []
-        structured_tool_use_positions: list[int] = []
-        structured_tool_result_positions: list[int] = []
-        result_positions = [index for index, event in enumerate(events) if event.get("type") == "result"]
+        invalid_init_tool_declaration = False
+        call_ids: set[str] = set()
+        result_ids: set[str] = set()
+        attempts: list[dict[str, Any]] = []
+        pending_call: Optional[dict[str, Any]] = None
+        result_seen = False
+        successful_attempt_id: Optional[str] = None
         for index, event in enumerate(events):
+            if not isinstance(event, Mapping):
+                raise AdapterError("CLI JSON event envelope contains a non-object event")
             event_type = event.get("type")
             if event_type in forbidden_event_types:
                 raise AdapterError("CLI emitted an unexpected executable or MCP tool event")
+            if event_type == "result":
+                if result_seen:
+                    raise AdapterError("CLI emitted multiple result envelopes")
+                if pending_call is not None:
+                    raise AdapterError("CLI result envelope precedes a StructuredOutput result")
+                result_seen = True
             if event_type == "system" and event.get("subtype") == "init":
-                structured_output_declared = event.get("tools") == ["StructuredOutput"]
+                if event.get("tools") == ["StructuredOutput"]:
+                    structured_output_declared = True
+                elif "tools" in event:
+                    invalid_init_tool_declaration = True
             for key in ("plugins", "skills", "mcp_servers", "mcpServers"):
                 if key in event and event[key] not in (None, [], {}):
                     raise AdapterError(f"CLI emitted unexpected {key} metadata")
@@ -458,6 +472,8 @@ class BaseAdapter:
                 ):
                     raise AdapterError("CLI emitted an unexpected model tool")
             message = event.get("message")
+            event_result_status: Optional[str] = None
+            event_result_seen = False
             if isinstance(message, Mapping):
                 content = message.get("content")
                 if isinstance(content, list):
@@ -467,43 +483,103 @@ class BaseAdapter:
                         block_type = block.get("type")
                         if block_type == "tool_use":
                             if (
-                                event_type != "assistant"
+                                result_seen
+                                or pending_call is not None
+                                or successful_attempt_id is not None
+                                or event_type != "assistant"
                                 or message.get("role") not in (None, "assistant")
                                 or block.get("name") != "StructuredOutput"
                             ):
-                                raise AdapterError("CLI emitted an unexpected executable or MCP tool block")
+                                raise AdapterError("CLI emitted an unexpected or out-of-order StructuredOutput call")
+                            if not structured_output_declared:
+                                raise AdapterError("CLI StructuredOutput call was not declared by init")
                             tool_use_id = _bounded_text(block.get("id"), "StructuredOutput tool_use id", 512)
                             if not isinstance(block.get("input"), Mapping):
                                 raise AdapterError("StructuredOutput tool_use input must be an object")
-                            if structured_tool_use_ids:
-                                raise AdapterError("CLI emitted duplicate StructuredOutput tool_use blocks")
-                            structured_tool_use_ids.append(tool_use_id)
-                            structured_tool_use_positions.append(index)
+                            if tool_use_id in call_ids or tool_use_id in result_ids:
+                                raise AdapterError("CLI emitted a duplicate StructuredOutput ID")
+                            if len(attempts) >= MAX_STRUCTURED_OUTPUT_ATTEMPTS:
+                                raise AdapterError("CLI exceeded the StructuredOutput attempt bound")
+                            call_ids.add(tool_use_id)
+                            pending_call = {
+                                "id": tool_use_id,
+                                "event_index": index,
+                                "block": dict(block),
+                            }
                         elif block_type == "tool_result":
                             if event_type != "user" or message.get("role") not in (None, "user"):
                                 raise AdapterError("CLI emitted an unexpected executable or MCP tool block")
+                            if result_seen:
+                                raise AdapterError("CLI emitted a StructuredOutput result after the final envelope")
                             tool_use_id = _bounded_text(block.get("tool_use_id"), "StructuredOutput tool_result id", 512)
-                            if block.get("content") != "Structured output provided successfully":
+                            if pending_call is None:
+                                raise AdapterError("CLI emitted a StructuredOutput result before its call")
+                            if tool_use_id in result_ids:
+                                raise AdapterError("CLI emitted a duplicate StructuredOutput result ID")
+                            if tool_use_id != pending_call["id"]:
+                                raise AdapterError("CLI StructuredOutput result ID does not match its call")
+                            if "name" in block and block.get("name") not in (None, "StructuredOutput"):
+                                raise AdapterError("CLI emitted an unexpected StructuredOutput result name")
+                            error_flags = []
+                            for error_key in ("is_error", "isError"):
+                                if error_key not in block:
+                                    continue
+                                if not isinstance(block[error_key], bool):
+                                    raise AdapterError("CLI StructuredOutput result error flag is invalid")
+                                error_flags.append(block[error_key])
+                            if len(error_flags) == 2 and error_flags[0] != error_flags[1]:
+                                raise AdapterError("CLI StructuredOutput result error flags conflict")
+                            is_error = any(error_flags)
+                            if is_error:
+                                error_content = _bounded_text(block.get("content"), "StructuredOutput error content")
+                                if error_content == "Structured output provided successfully":
+                                    raise AdapterError("CLI emitted conflicting StructuredOutput result content")
+                                event_result_status = "error"
+                            elif block.get("content") == "Structured output provided successfully":
+                                if successful_attempt_id is not None:
+                                    raise AdapterError("CLI emitted multiple successful StructuredOutput attempts")
+                                event_result_status = "success"
+                                successful_attempt_id = tool_use_id
+                            else:
                                 raise AdapterError("CLI emitted an unexpected StructuredOutput completion")
-                            if block.get("is_error") is True or block.get("isError") is True:
-                                raise AdapterError("CLI emitted a failed StructuredOutput completion")
-                            if structured_tool_result_ids:
-                                raise AdapterError("CLI emitted duplicate StructuredOutput tool_result blocks")
-                            structured_tool_result_ids.append(tool_use_id)
-                            structured_tool_result_positions.append(index)
+                            event_result_seen = True
+                            result_ids.add(tool_use_id)
+                            attempt = {
+                                "id": tool_use_id,
+                                "status": event_result_status,
+                                "call_event_index": pending_call["event_index"],
+                                "result_event_index": index,
+                                "call": pending_call["block"],
+                                "result": dict(block),
+                            }
+                            if "tool_use_result" in event:
+                                attempt["tool_use_result"] = event["tool_use_result"]
+                            attempts.append(attempt)
+                            pending_call = None
                         elif block_type in forbidden_event_types:
                             raise AdapterError("CLI emitted an unexpected executable or MCP tool block")
-            if event.get("tool_use_result") not in (None, "Structured output provided successfully"):
-                raise AdapterError("CLI emitted an unexpected StructuredOutput completion")
-        if structured_tool_use_ids or structured_tool_result_ids:
-            if not structured_output_declared:
+            if "tool_use_result" in event and event["tool_use_result"] is not None:
+                if not event_result_seen:
+                    raise AdapterError("CLI emitted a StructuredOutput result without a bound tool_result")
+                tool_use_result = _bounded_text(event["tool_use_result"], "StructuredOutput tool_use_result")
+                if event_result_status == "success" and tool_use_result != "Structured output provided successfully":
+                    raise AdapterError("CLI emitted an unexpected StructuredOutput completion")
+                if event_result_status == "error" and tool_use_result == "Structured output provided successfully":
+                    raise AdapterError("CLI emitted conflicting StructuredOutput completion metadata")
+        if attempts:
+            if not structured_output_declared or invalid_init_tool_declaration:
                 raise AdapterError("CLI StructuredOutput call was not declared by init")
-            if structured_tool_use_ids != structured_tool_result_ids:
-                raise AdapterError("CLI StructuredOutput completion ID does not match its call")
-            if structured_tool_use_positions[0] >= structured_tool_result_positions[0]:
-                raise AdapterError("CLI StructuredOutput completion precedes its call")
-            if result_positions and structured_tool_result_positions[0] >= result_positions[-1]:
-                raise AdapterError("CLI StructuredOutput completion follows the result envelope")
+            if pending_call is not None:
+                raise AdapterError("CLI emitted a StructuredOutput call without a result")
+            if not result_seen:
+                raise AdapterError("CLI JSON event array lacks a final result envelope")
+            if successful_attempt_id is None:
+                raise AdapterError("CLI emitted no successful StructuredOutput completion")
+            if attempts[-1]["status"] != "success":
+                raise AdapterError("CLI final StructuredOutput attempt is not successful")
+        elif pending_call is not None:
+            raise AdapterError("CLI emitted a StructuredOutput call without a result")
+        return attempts
 
     @classmethod
     def _parse_envelope(
@@ -514,14 +590,14 @@ class BaseAdapter:
             if not value or any(not isinstance(event, Mapping) for event in value):
                 raise AdapterError("CLI JSON event envelope is invalid")
             events = list(value)
-            cls._reject_unexpected_tools(events)
+            structured_output_attempts = cls._reject_unexpected_tools(events)
             result_events = [event for event in events if event.get("type") == "result"]
             if not result_events:
                 raise AdapterError("CLI JSON event array lacks a result envelope")
             envelope = result_events[-1]
         elif isinstance(value, Mapping):
             events = [value]
-            cls._reject_unexpected_tools(events)
+            structured_output_attempts = cls._reject_unexpected_tools(events)
             envelope = value
         else:
             raise AdapterError("CLI JSON envelope must be an object or event array")
@@ -531,6 +607,10 @@ class BaseAdapter:
             raise AdapterError("CLI result envelope reports a failure")
         if "structured_output" not in envelope:
             raise AdapterError("CLI JSON envelope lacks structured_output")
+        if structured_output_attempts:
+            final_attempt = structured_output_attempts[-1]
+            if final_attempt["status"] != "success" or final_attempt["call"]["input"] != envelope["structured_output"]:
+                raise AdapterError("CLI final structured output does not match its successful call")
 
         observed_models = []
         for event in events:
@@ -557,6 +637,7 @@ class BaseAdapter:
             "model",
             "modelUsage",
             "model_usage",
+            "num_turns",
         }
         metadata = {key: envelope[key] for key in metadata_keys if key in envelope}
         if unique_models:
@@ -597,6 +678,9 @@ class BaseAdapter:
                 metadata["estimated_cost_usd"] = float(cost)
                 metadata["cost_basis"] = ["cli_reported_estimate"]
         metadata["actual_cost_usd"] = "unknown"
+        if structured_output_attempts:
+            metadata["structured_output_attempts"] = structured_output_attempts
+            metadata["structured_output_attempt_count"] = len(structured_output_attempts)
         return envelope["structured_output"], metadata, observed_model_id
 
     def _response_from_capture(
@@ -624,6 +708,9 @@ class BaseAdapter:
         # JSON CLI envelope is retained separately, but identity is unknown
         # unless a future trusted transport explicitly supplies it.
         actual_metadata["redacted_environment"] = _redacted_environment(self.environment)
+        attempt_count = actual_metadata.get("structured_output_attempt_count", 1)
+        if not isinstance(attempt_count, int) or isinstance(attempt_count, bool) or attempt_count <= 0:
+            raise AdapterError("CLI StructuredOutput attempt metadata is invalid", capture=capture)
         return AdapterResponse(
             structured_output=structured,
             requested_model_id=requested_model_id,
@@ -633,6 +720,7 @@ class BaseAdapter:
             raw_stderr=capture.stderr,
             argv=capture.argv,
             returncode=int(capture.returncode or 0),
+            attempts=attempt_count,
         )
 
 

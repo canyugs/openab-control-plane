@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STRUCTURED_OUTPUT_FIXTURE = ROOT / "tests/fixtures/model_evaluation/claude-structured-tool-events.json"
+STRUCTURED_OUTPUT_RETRY_FIXTURE = ROOT / "tests/fixtures/model_evaluation/claude-structured-retry-events.json"
 
 
 def load_module():
@@ -56,6 +57,32 @@ class ReviewModelAdaptersAuthTests(unittest.TestCase):
         self.assertAlmostEqual(response.actual_metadata["estimated_cost_usd"], 0.013768)
         self.assertEqual(response.actual_metadata["actual_cost_usd"], "unknown")
 
+    def test_captured_claude_structured_output_retry_envelope_retains_attempts(self):
+        module = load_module()
+        envelope = json.loads(STRUCTURED_OUTPUT_RETRY_FIXTURE.read_text(encoding="utf-8"))
+
+        response = self._invoke_envelope(module, envelope)
+
+        self.assertEqual(response.structured_output, envelope[-1]["structured_output"])
+        self.assertEqual(response.attempts, 2)
+        self.assertEqual(response.actual_metadata["num_turns"], 3)
+        self.assertEqual(response.actual_metadata["structured_output_attempt_count"], 2)
+        attempts = response.actual_metadata["structured_output_attempts"]
+        self.assertEqual(
+            [attempt["id"] for attempt in attempts],
+            [
+                "toolu_01FNtGkTfGABNLzKbjDm2VBq",
+                "toolu_015sizqVidAWXi7ykf4gHkLP",
+            ],
+        )
+        self.assertEqual(attempts[0]["status"], "error")
+        self.assertTrue(attempts[0]["result"]["is_error"])
+        self.assertIn("schema", attempts[0]["result"]["content"])
+        self.assertEqual(attempts[1]["status"], "success")
+        self.assertEqual(attempts[1]["call"]["input"], response.structured_output)
+        self.assertEqual(attempts[1]["result"]["content"], "Structured output provided successfully")
+        self.assertEqual(json.loads(response.raw_stdout), envelope)
+
     def test_structured_output_envelope_rejects_unapproved_tools_and_bad_result_bindings(self):
         module = load_module()
         original = json.loads(STRUCTURED_OUTPUT_FIXTURE.read_text(encoding="utf-8"))
@@ -99,6 +126,103 @@ class ReviewModelAdaptersAuthTests(unittest.TestCase):
         duplicate_call[5]["message"]["content"].append(copy.deepcopy(duplicate_call[5]["message"]["content"][0]))
         with self.assertRaises(module.AdapterError):
             self._invoke_envelope(module, duplicate_call)
+
+    def test_structured_output_retry_envelope_rejects_bad_attempt_order_and_completion(self):
+        module = load_module()
+        original = json.loads(STRUCTURED_OUTPUT_RETRY_FIXTURE.read_text(encoding="utf-8"))
+
+        cases = {}
+
+        unmatched = copy.deepcopy(original)
+        unmatched[12]["message"]["content"][0]["tool_use_id"] = "toolu-unmatched"
+        cases["unmatched result"] = unmatched
+
+        duplicate_result = copy.deepcopy(original)
+        duplicate_result.insert(13, copy.deepcopy(duplicate_result[12]))
+        cases["duplicate result"] = duplicate_result
+
+        duplicate_call = copy.deepcopy(original)
+        duplicate_call.insert(12, copy.deepcopy(duplicate_call[11]))
+        cases["duplicate call"] = duplicate_call
+
+        result_before_call = copy.deepcopy(original)
+        result_before_call.insert(11, copy.deepcopy(result_before_call[12]))
+        cases["result before call"] = result_before_call
+
+        missing_error_result = copy.deepcopy(original)
+        del missing_error_result[12]
+        cases["missing error result"] = missing_error_result
+
+        missing_success_result = copy.deepcopy(original)
+        del missing_success_result[15]
+        cases["missing success result"] = missing_success_result
+
+        success_after_final = copy.deepcopy(original)
+        success_event = success_after_final.pop(15)
+        success_after_final.append(success_event)
+        cases["success after final"] = success_after_final
+
+        mismatched_final_output = copy.deepcopy(original)
+        mismatched_final_output[-1]["structured_output"] = {"not": "the final call"}
+        cases["mismatched final output"] = mismatched_final_output
+
+        final_error = copy.deepcopy(original)
+        final_error[-1]["is_error"] = True
+        cases["final error"] = final_error
+
+        for name, envelope in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaises(module.AdapterError):
+                    self._invoke_envelope(module, envelope)
+
+    def test_structured_output_retry_envelope_rejects_other_tools_and_metadata(self):
+        module = load_module()
+        original = json.loads(STRUCTURED_OUTPUT_RETRY_FIXTURE.read_text(encoding="utf-8"))
+
+        cases = {}
+        for name in ("Bash", "Read", "Write", "mcp__server__action"):
+            envelope = copy.deepcopy(original)
+            envelope[14]["message"]["content"][0]["name"] = name
+            cases[f"nested {name}"] = envelope
+
+        top_level_tool = copy.deepcopy(original)
+        top_level_tool.insert(11, {"type": "tool_use", "id": "toolu-top-level", "name": "StructuredOutput", "input": {}})
+        cases["top-level tool event"] = top_level_tool
+
+        file_event = copy.deepcopy(original)
+        file_event.insert(11, {"type": "file_write", "path": "untrusted.py"})
+        cases["file event"] = file_event
+
+        init_tool = copy.deepcopy(original)
+        init_tool[0]["tools"].append("Bash")
+        cases["init executable tool"] = init_tool
+
+        for key, value in (("plugins", ["untrusted-plugin"]), ("skills", ["untrusted-skill"]), ("mcp_servers", ["untrusted-mcp"])):
+            envelope = copy.deepcopy(original)
+            envelope[0][key] = value
+            cases[f"nonempty {key}"] = envelope
+
+        for name, envelope in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaises(module.AdapterError):
+                    self._invoke_envelope(module, envelope)
+
+    def test_structured_output_retry_envelope_is_bounded(self):
+        module = load_module()
+        original = json.loads(STRUCTURED_OUTPUT_RETRY_FIXTURE.read_text(encoding="utf-8"))
+        envelope = copy.deepcopy(original)
+        insert_at = 13
+        for index in range(module.MAX_STRUCTURED_OUTPUT_ATTEMPTS - 1):
+            call = copy.deepcopy(original[11])
+            result = copy.deepcopy(original[12])
+            tool_use_id = f"toolu-bound-{index}"
+            call["message"]["content"][0]["id"] = tool_use_id
+            result["message"]["content"][0]["tool_use_id"] = tool_use_id
+            envelope[insert_at:insert_at] = [call, result]
+            insert_at += 2
+
+        with self.assertRaises(module.AdapterError):
+            self._invoke_envelope(module, envelope)
 
     def test_safe_environment_and_run_direct_propagate_user_only(self):
         module = load_module()

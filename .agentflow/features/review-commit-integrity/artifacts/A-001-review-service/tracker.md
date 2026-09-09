@@ -8,7 +8,7 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-10 00:47:44 Asia/Taipei.
+- **Last update:** 2026-09-10 01:02:19 Asia/Taipei.
 
 - **Evidence commit:** 1107f73567710159c298ff6a60df393e8e6b9775.
 
@@ -40,9 +40,9 @@
 
 - **Current item:** T-3.
 
-- **Last proven result:** Integrated61 host Python tests PASS; actual discovery/validation models responded. Live failures isolated to top-level schema composition, cross-file evidence association, and non-executable structured retries.
+- **Last proven result:** bb4a22f passed69 host Python tests; actual two-model strict-schema negative semantic probe passed. Cross-file evidence/source bindings integrated.
 
-- **Active blocker or running process:** provider-schema67436, live-evidence86498, structured-retries34309; PTY53083 idle after retained failed generation run.
+- **Active blocker or running process:** structured-retries34309 and submodule-guard45159; PTY53083 idle awaiting complete live journey.
 
 - **Next safe action:** Integrate disjoint correction results, run all tests and full real model/OCI PTY journey, then independent security/acceptance.
 
