@@ -42,7 +42,7 @@
 
 - **Last proven result:** Capability-first requirements and design accepted; Stage 1 source and Result Go remain unchanged.
 
-- **Active blocker or running process:** Preparing external implementation after Design Go.
+- **Active blocker or running process:** Implementation worker active: external clone Oh8luI; owned session 95513.
 
 - **Next safe action:** Implement full automatic model evaluation and weekly report after exact Design Go; include real model and OCI PTY validation.
 
@@ -54,7 +54,7 @@
 
 - **Blocking accepted decision:** none.
 
-- **Operation running:** no.
+- **Operation running:** yes.
 
 - **Next action remaining:** T-3.
 

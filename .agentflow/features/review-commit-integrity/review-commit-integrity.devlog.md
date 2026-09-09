@@ -378,3 +378,31 @@ Installed /Users/can/.agents/skills/agentflow/SKILL.md requires: "Source work st
 * _2026-09-09 22:14:41 (GPT-6/default)_
 
 Owner message verbatim: `go`. Design Go: 1107f73567710159c298ff6a60df393e8e6b9775. Implement complete automatic evaluation and weekly report; required distinct real models and OCI acceptance remain. Route full_pipeline, allow-ag on. Notebook absolute-path write was rejected without mutation and corrected to repository-relative. Docker application started; CLI OAuth available, API key environment absent; bare adapter authentication needs verification.
+
+## [RUN-041] Event (during round A-001)
+
+* _2026-09-09 22:15:33 (GPT-6/default)_
+
+Dispatch implementation via external-runner-v1, codex-default/basic gpt-5.6-luna/max. Approved design 1107f73, exact Python/test/docs paths; parent owns real model/OCI acceptance. No remote/live system authority in disposable clone.
+
+## [RUN-042] Event (during round A-001)
+
+* _2026-09-09 22:18:37 (GPT-6/default)_
+
+Transport preflight proved two real strong Claude IDs and equivalent tools-disabled safe/restricted OAuth mode; actual event-array parsing and list-price-only costs documented in transport-preflight-resolution.md. Docker isolated probe passed; full product acceptance pending. Implementation worker active in external clone Oh8luI, session95513; no source edits yet, no failure evidence.
+
+## [RUN-043] Event (during round A-001)
+
+* _2026-09-09 22:24:17 (GPT-6/default)_
+
+Checkpoint inspection: external worker active; initial three regression test files observed, all inside approved scope. Delivered worktree changed only stream records/brief/preflight artifacts and original untracked ag.json. Tracker validated; two real model text-only transport probes and isolated Docker readiness passed. No source acceptance yet.
+
+## [WIP-010] Checkpoint (during round A-001)
+
+* _2026-09-09 22:24:17 (GPT-6/default)_
+
+- **Finished:** Design Go recorded; two real strong model probes and isolated Docker preflight passed; vulnerable/safe Git fixtures prepared.
+- **Running now:** Full automatic evaluation and weekly report implementation in disposable external clone, owned session 95513; initial regression tests present.
+- **Still to do:** Inspect/import source, add verified OAuth transport clarification, full deterministic and real model/OCI PTY journey, independent security and acceptance, exact Result Go. Later Stage 3 remains separate.
+- **Next work action:** Collect implementation result and verify its exact scope and tests.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
