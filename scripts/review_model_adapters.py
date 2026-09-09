@@ -35,6 +35,7 @@ SAFE_ENVIRONMENT_KEYS = frozenset(
         "LANG",
         "LC_ALL",
         "TERM",
+        "USER",
         "NO_COLOR",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_API_KEY",

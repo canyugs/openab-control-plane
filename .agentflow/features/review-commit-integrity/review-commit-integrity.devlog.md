@@ -2,12 +2,12 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: 1b14cee — OCI/weekly corrections imported; Stage 2 integration unaccepted; Stage 1 d6e96c3 retains Result Go.
-Tests/scenarios: Stage 2 candidate passed 18 host Python tests; real model/OCI readiness passed, but runtime counterexamples require correction. Stage 1 Rust evidence preserved.
+Current commit: 563ae17 — integrated Stage 2 candidate unaccepted; Stage 1 d6e96c3 retains Result Go.
+Tests/scenarios: 51/52 integrated Python tests passed; one known verifier seam error. Actual OCI and corrected weekly PTY passed; real evaluation identified USER OAuth environment defect.
 Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex; root ag.json remains untracked bootstrap.
 Proven: approved design, baseline red failure, delivered SHA tests and real PostgreSQL; security pass resolved with explicit immutable-target recovery limit.
 Open: model/OCI/weekly runtime corrections; full live journey, independent reviews and Result Go still pending.
-Next: collect core77349, snapshot-guard4074 and latency-control17113; integrate and run full actual model CLI plus independent reviews.
+Next: integrate live-schema80805/verifier-seam79518/oauth-user80429, rerun real model/OCI CLI then independent reviews.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
 Archived eras: none.
 Streams: fix/review-commit-integrity in isolated worktree.
@@ -562,4 +562,50 @@ Core correction completed; full report digest 495eed9b19a2c4e5fd5be31aeb7765c9c0
 * _2026-09-10 00:16:35 (GPT-6/default)_
 
 Integrated host suite ran52 tests:51 passed, one weekly dependency-seam error. With real core verifier now present, invalid raw evaluation root raises core EvaluationConflict uncaught by weekly wrapper; old test incorrectly relied on missing helper. Bound this correction to explicit corrupt-input handling and a separately mocked missing-dependency control. Nested JSON schemas still lack items definitions despite actual real-model citation failures; reopen transport/schema contract locally: match existing controller field shapes exactly, retain strict validation, supply explicit OCI generated-file context. No new product concepts, authority or model roles.
+
+## [RUN-060] Event (during round A-001)
+
+* _2026-09-10 00:16:57 (GPT-6/default)_
+
+Dispatch live-schema, implementation, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at 563ae17a969f2619c277e2ab28a01886a4179529. Frozen exact authority in live-schema-brief.md; disposable clone only.
+
+## [RUN-061] Event (during round A-001)
+
+* _2026-09-10 00:17:13 (GPT-6/default)_
+
+Dispatch verifier-seam, implementation, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at 563ae17a969f2619c277e2ab28a01886a4179529. Frozen exact authority in verifier-seam-brief.md; disposable clone only.
+
+## [RUN-062] Event (during round A-001)
+
+* _2026-09-10 00:20:32 (GPT-6/default)_
+
+Dispatch oauth-user, implementation, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at 563ae17a969f2619c277e2ab28a01886a4179529. Frozen exact authority in oauth-user-brief.md; disposable clone only.
+
+## [RUN-063] Event (during round A-001)
+
+* _2026-09-10 00:20:43 (GPT-6/default)_
+
+Actual pre-schema CLI first rejected parent-authored fixture typo model-review-findings/v1; corrected fixture to documented constant review-model-findings/v1 before any successful source snapshot. Retried project CLI exited1/state failed, all four model calls retained not_logged_in response and no score. Read-only auth status controls isolated USER: inherited env and safe+USER loggedIn true, safe-only/safe+LOGNAME false. No token/keychain contents accessed; oauth-user worker addresses exact runtime variable. Known schema/verifier workers independent. Corrected weekly PTY result retained, timeout-noop unknown and five valid visible timings observed.
+
+## [RUN-064] Event (during round A-001)
+
+* _2026-09-10 00:21:27 (GPT-6/default)_
+
+Scope checkpoint: current delivery changes are authorized stream records; implementation frozen563ae17. Three independent corrections run in disposable clones with disjoint source authority (core schema, weekly verifier seam, adapter USER propagation plus separate test). Parent verified main checkout retains same four user changes. Tracker validated; no production/GitHub actions. Actual failed CLI artifacts retained outside source, no scoreable results. Full real functionality and independent reviews remain mandatory.
+
+## [WIP-017] Checkpoint (during round A-001)
+
+* _2026-09-10 00:21:27 (GPT-6/default)_
+
+- **Finished:** Core/OCI/Git/latency corrections integrated; 51/52 host tests pass, corrected weekly real PTY exit0.
+- **Running now:** live-schema80805, verifier-seam79518, oauth-user80429; actual first CLI failure diagnosed with safe read-only auth controls.
+- **Still to do:** Full successful model-generated OCI original/omission and safe-refutation journeys, verified resume/weekly integration, independent reviews and Result Go.
+- **Next work action:** Integrate narrow corrections and rerun actual product CLI.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-065] Event (during round A-001)
+
+* _2026-09-10 00:26:49 (GPT-6/default)_
+
+OAuth worker completed exit0; report SHA c196546653018368588121bae697b4b6c54f4c255b2dabcf5ddf1c2b72b4ffc8 verified. Exact one-line USER allowlist addition plus separate regression file imported; host focused test passed including real child USER propagation with injection variables removed. Actual corrected adapter calls for both configured strong IDs now running13307; no source payload or tools in this transport probe. live-schema80805 and verifier-seam79518 continue within disjoint authority.
 

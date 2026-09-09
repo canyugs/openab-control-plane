@@ -1,0 +1,15 @@
+{
+  "root": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-corrected-adapter-live-zdx95a_n",
+  "results": [
+    {
+      "model": "claude-opus-5",
+      "status": "failed",
+      "error": "CLI emitted an unexpected executable or MCP tool block"
+    },
+    {
+      "model": "claude-opus-4-6",
+      "status": "failed",
+      "error": "CLI emitted an unexpected executable or MCP tool block"
+    }
+  ]
+}

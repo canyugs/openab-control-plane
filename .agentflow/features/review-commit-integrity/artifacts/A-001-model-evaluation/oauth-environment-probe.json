@@ -1,0 +1,25 @@
+{
+  "safe_environment": {
+    "exit": 1,
+    "loggedIn": false
+  },
+  "inherited_environment": {
+    "exit": 0,
+    "loggedIn": true
+  },
+  "controls": [
+    {
+      "added_variable_name": "USER",
+      "exit": 0,
+      "loggedIn": true,
+      "authMethod": "claude.ai"
+    },
+    {
+      "added_variable_name": "LOGNAME",
+      "exit": 1,
+      "loggedIn": false,
+      "authMethod": "none"
+    }
+  ],
+  "secrets_accessed": false
+}

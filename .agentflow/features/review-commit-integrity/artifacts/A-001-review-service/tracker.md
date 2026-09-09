@@ -8,7 +8,7 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-10 00:03:18 Asia/Taipei.
+- **Last update:** 2026-09-10 00:18:52 Asia/Taipei.
 
 - **Evidence commit:** 1107f73567710159c298ff6a60df393e8e6b9775.
 
@@ -40,9 +40,9 @@
 
 - **Current item:** T-3.
 
-- **Last proven result:** Candidate ff9fc04 imported within scope and passed 18 host tests; runtime/source defects require correction before acceptance.
+- **Last proven result:** Core, OCI, snapshot and latency integrated at563ae17; 51/52 host tests pass, one known weekly verifier exception seam. Actual weekly PTY exit0, timeout-noop latency now unknown.
 
-- **Active blocker or running process:** Core77349, snapshot-guard4074 and latency-control17113 active; OCI and weekly base corrections imported.
+- **Active blocker or running process:** live-schema80805, verifier-seam79518 and oauth-user80429 active; PTY53083 idle after actual failed evaluation, awaiting corrections.
 
 - **Next safe action:** Integrate disjoint correction results, run all tests and full real model/OCI PTY journey, then independent security/acceptance.
 
