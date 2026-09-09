@@ -2270,7 +2270,12 @@ class EvaluationController:
         judge_valid = sum(item.get("valid_judge_count", 0) for item in all_items)
         classes = {key: sum(1 for item in all_items if item.get("classification") == key) for key in ("static_evidence", "executed_reproduced", "executed_refuted", "environment_blocked", "unproven")}
         automatic = sum(1 for item in omissions if self.discovery_complete and item.get("scoreable") and isinstance(item.get("synthesis"), Mapping) and item["synthesis"].get("verdict") == "supported" and item.get("relation", {}).get("is_new_candidate"))
-        disagreements = sum(1 for item in all_items if item.get("judge_disagreement") or (isinstance(item.get("synthesis"), Mapping) and item["synthesis"].get("disagreement")))
+        disagreement_denominator = sum(1 for item in all_items if item.get("valid_judge_count") == 2)
+        disagreements = sum(
+            1
+            for item in all_items
+            if item.get("valid_judge_count") == 2 and item.get("judge_disagreement") is True
+        )
         identity: dict[str, Any] = {}
         for role in ROLE_NAMES:
             records = self._role_records.get(role, [])
@@ -2319,6 +2324,7 @@ class EvaluationController:
                 "unresolved": verdicts["unknown"] + sum(1 for item in originals if not item.get("synthesis")) + execution_conflicts,
                 "valid_judgments": judge_valid,
                 "disagreement_items": disagreements,
+                "disagreement_denominator": disagreement_denominator,
                 "usefulness": usefulness,
                 "scoreable_items": sum(1 for item in all_items if self.discovery_complete and item.get("scoreable")),
                 "estimated_cost_usd": sum(

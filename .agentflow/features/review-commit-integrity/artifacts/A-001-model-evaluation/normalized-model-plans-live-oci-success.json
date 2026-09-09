@@ -1,0 +1,866 @@
+[
+  {
+    "plan": ".agentflow/features/review-commit-integrity/artifacts/A-001-model-evaluation/live-F-1-plan.json",
+    "result": {
+      "status": "success",
+      "classification": "unproven",
+      "controls_passed": true,
+      "claim_present": true,
+      "reason": null,
+      "preflight": {
+        "status": "ready",
+        "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+        "daemon_probe": "ok",
+        "server_version": "29.7.2"
+      },
+      "plan": {
+        "item_id": "F-1",
+        "files": [
+          {
+            "path": "generated/probe_actual.py",
+            "utf8": "import importlib.util\nimport inspect\nimport json\n\nSRC = \"/source/sample.py\"\n\nspec = importlib.util.spec_from_file_location(\"sample_under_test\", SRC)\nmodule = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(module)\n\ncan_read = getattr(module, \"can_read\")\nsource_text = inspect.getsource(can_read)\n\n# README rule: access only for public documents, or an authenticated\n# requester equal to owner. A non-owner authenticated requester asking for\n# a private document must be denied.\nnon_owner_private = can_read(\"alice\", \"bob\", public=False)\nowner_private = can_read(\"bob\", \"bob\", public=False)\nanonymous_public = can_read(\"\", \"bob\", public=True)\n\nclaim_present = bool(non_owner_private)\n\nprint(json.dumps({\n    \"probe\": \"actual_source\",\n    \"source_path\": SRC,\n    \"can_read_source\": source_text,\n    \"non_owner_private_document\": bool(non_owner_private),\n    \"owner_private_document\": bool(owner_private),\n    \"anonymous_public_document\": bool(anonymous_public),\n    \"expected_by_readme_for_non_owner_private\": False,\n    \"claim_present\": claim_present,\n}, indent=2, sort_keys=True))\n",
+            "sha256": "66d1e3196e9918c474dc68da19112b83bec7c5b7ad29439756327ebf069509ed",
+            "bytes": 1095
+          },
+          {
+            "path": "generated/probe_fixed.py",
+            "utf8": "import importlib.util\nimport inspect\nimport json\n\nSRC = \"/source/sample.py\"\n\nspec = importlib.util.spec_from_file_location(\"sample_under_test\", SRC)\nmodule = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(module)\n\noriginal = getattr(module, \"can_read\")\noriginal_signature = str(inspect.signature(original))\noriginal_source = inspect.getsource(original)\n\n\ndef fixed_can_read(requester, owner, public=False):\n    \"\"\"README-conformant control: public documents, or authenticated owner.\"\"\"\n    if public:\n        return True\n    return bool(requester) and requester == owner\n\n\n# Same call shape as the real function, exercised against the control that\n# implements the documented rule.\nnon_owner_private = fixed_can_read(\"alice\", \"bob\", public=False)\nowner_private = fixed_can_read(\"bob\", \"bob\", public=False)\nanonymous_public = fixed_can_read(\"\", \"bob\", public=True)\n\nclaim_present = bool(non_owner_private)\n\nprint(json.dumps({\n    \"probe\": \"readme_conformant_control\",\n    \"source_path\": SRC,\n    \"loaded_original_signature\": original_signature,\n    \"loaded_original_source\": original_source,\n    \"non_owner_private_document\": bool(non_owner_private),\n    \"owner_private_document\": bool(owner_private),\n    \"anonymous_public_document\": bool(anonymous_public),\n    \"expected_by_readme_for_non_owner_private\": False,\n    \"claim_present\": claim_present,\n}, indent=2, sort_keys=True))\n",
+            "sha256": "5fd0b14a063094d720534bc335c9a7b5d619a40a6cfbe330d59626c1a93e9870",
+            "bytes": 1394
+          }
+        ],
+        "runs": [
+          {
+            "name": "baseline",
+            "argv": [
+              "python3",
+              "generated/probe_actual.py"
+            ],
+            "cwd": "/work",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": true
+              }
+            },
+            "evidence_ids": [
+              "E_SAMPLE",
+              "E_CONTRACT"
+            ]
+          },
+          {
+            "name": "counterexample",
+            "argv": [
+              "python3",
+              "generated/probe_fixed.py"
+            ],
+            "cwd": "/work",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": false
+              }
+            },
+            "evidence_ids": [
+              "E_SAMPLE",
+              "E_CONTRACT"
+            ]
+          }
+        ],
+        "claim_observed": "Baseline loads /source/sample.py via importlib and calls the real can_read(\"alice\", \"bob\", public=False); it returns True, so an authenticated non-owner can read a private document, contradicting the README rule that access is permitted only for public documents or an authenticated requester equal to owner. The probe prints claim_present true and echoes the loaded function body. The counterexample loads the same source file (recording the real can_read signature and body) and evaluates the identical call shape against a README-conformant control requiring public or requester == owner; that denies the non-owner private case while still allowing owner-private and anonymous-public, printing claim_present false. The opposing results isolate the defect to the `public or bool(requester)` predicate at sample.py lines 1-2 rather than to the harness."
+      },
+      "generated_file_digests": [
+        {
+          "path": "generated/probe_actual.py",
+          "sha256": "66d1e3196e9918c474dc68da19112b83bec7c5b7ad29439756327ebf069509ed",
+          "bytes": 1095
+        },
+        {
+          "path": "generated/probe_fixed.py",
+          "sha256": "5fd0b14a063094d720534bc335c9a7b5d619a40a6cfbe330d59626c1a93e9870",
+          "bytes": 1394
+        }
+      ],
+      "runs": [
+        {
+          "name": "baseline",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "claim_present": true
+            }
+          },
+          "valid": true,
+          "actual": {
+            "duration_ms": 125,
+            "exit": 0,
+            "name": "baseline",
+            "observation": {
+              "anonymous_public_document": true,
+              "can_read_source": "def can_read(requester, owner, public=False):\n    return public or bool(requester)\n",
+              "claim_present": true,
+              "expected_by_readme_for_non_owner_private": false,
+              "non_owner_private_document": true,
+              "owner_private_document": true,
+              "probe": "actual_source",
+              "source_path": "/source/sample.py"
+            },
+            "output_limit": false,
+            "stderr": "",
+            "stderr_b64": "",
+            "stderr_bytes": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderr_truncated": false,
+            "stdout": "{\n  \"anonymous_public_document\": true,\n  \"can_read_source\": \"def can_read(requester, owner, public=False):\\n    return public or bool(requester)\\n\",\n  \"claim_present\": true,\n  \"expected_by_readme_for_non_owner_private\": false,\n  \"non_owner_private_document\": true,\n  \"owner_private_document\": true,\n  \"probe\": \"actual_source\",\n  \"source_path\": \"/source/sample.py\"\n}\n",
+            "stdout_b64": "ewogICJhbm9ueW1vdXNfcHVibGljX2RvY3VtZW50IjogdHJ1ZSwKICAiY2FuX3JlYWRfc291cmNlIjogImRlZiBjYW5fcmVhZChyZXF1ZXN0ZXIsIG93bmVyLCBwdWJsaWM9RmFsc2UpOlxuICAgIHJldHVybiBwdWJsaWMgb3IgYm9vbChyZXF1ZXN0ZXIpXG4iLAogICJjbGFpbV9wcmVzZW50IjogdHJ1ZSwKICAiZXhwZWN0ZWRfYnlfcmVhZG1lX2Zvcl9ub25fb3duZXJfcHJpdmF0ZSI6IGZhbHNlLAogICJub25fb3duZXJfcHJpdmF0ZV9kb2N1bWVudCI6IHRydWUsCiAgIm93bmVyX3ByaXZhdGVfZG9jdW1lbnQiOiB0cnVlLAogICJwcm9iZSI6ICJhY3R1YWxfc291cmNlIiwKICAic291cmNlX3BhdGgiOiAiL3NvdXJjZS9zYW1wbGUucHkiCn0K",
+            "stdout_bytes": 366,
+            "stdout_sha256": "790efedf585af3ded3b2af482b812fa5cbf2cbf425a157a532fe687b50a1bc3d",
+            "stdout_truncated": false,
+            "timeout": false
+          },
+          "stdout": "{\"runs\":[{\"duration_ms\":125,\"exit\":0,\"name\":\"baseline\",\"observation\":{\"anonymous_public_document\":true,\"can_read_source\":\"def can_read(requester, owner, public=False):\\n    return public or bool(requester)\\n\",\"claim_present\":true,\"expected_by_readme_for_non_owner_private\":false,\"non_owner_private_document\":true,\"owner_private_document\":true,\"probe\":\"actual_source\",\"source_path\":\"/source/sample.py\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\n  \\\"anonymous_public_document\\\": true,\\n  \\\"can_read_source\\\": \\\"def can_read(requester, owner, public=False):\\\\n    return public or bool(requester)\\\\n\\\",\\n  \\\"claim_present\\\": true,\\n  \\\"expected_by_readme_for_non_owner_private\\\": false,\\n  \\\"non_owner_private_document\\\": true,\\n  \\\"owner_private_document\\\": true,\\n  \\\"probe\\\": \\\"actual_source\\\",\\n  \\\"source_path\\\": \\\"/source/sample.py\\\"\\n}\\n\",\"stdout_b64\":\"ewogICJhbm9ueW1vdXNfcHVibGljX2RvY3VtZW50IjogdHJ1ZSwKICAiY2FuX3JlYWRfc291cmNlIjogImRlZiBjYW5fcmVhZChyZXF1ZXN0ZXIsIG93bmVyLCBwdWJsaWM9RmFsc2UpOlxuICAgIHJldHVybiBwdWJsaWMgb3IgYm9vbChyZXF1ZXN0ZXIpXG4iLAogICJjbGFpbV9wcmVzZW50IjogdHJ1ZSwKICAiZXhwZWN0ZWRfYnlfcmVhZG1lX2Zvcl9ub25fb3duZXJfcHJpdmF0ZSI6IGZhbHNlLAogICJub25fb3duZXJfcHJpdmF0ZV9kb2N1bWVudCI6IHRydWUsCiAgIm93bmVyX3ByaXZhdGVfZG9jdW1lbnQiOiB0cnVlLAogICJwcm9iZSI6ICJhY3R1YWxfc291cmNlIiwKICAic291cmNlX3BhdGgiOiAiL3NvdXJjZS9zYW1wbGUucHkiCn0K\",\"stdout_bytes\":366,\"stdout_sha256\":\"790efedf585af3ded3b2af482b812fa5cbf2cbf425a157a532fe687b50a1bc3d\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+          "stderr": "",
+          "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6MTI1LCJleGl0IjowLCJuYW1lIjoiYmFzZWxpbmUiLCJvYnNlcnZhdGlvbiI6eyJhbm9ueW1vdXNfcHVibGljX2RvY3VtZW50Ijp0cnVlLCJjYW5fcmVhZF9zb3VyY2UiOiJkZWYgY2FuX3JlYWQocmVxdWVzdGVyLCBvd25lciwgcHVibGljPUZhbHNlKTpcbiAgICByZXR1cm4gcHVibGljIG9yIGJvb2wocmVxdWVzdGVyKVxuIiwiY2xhaW1fcHJlc2VudCI6dHJ1ZSwiZXhwZWN0ZWRfYnlfcmVhZG1lX2Zvcl9ub25fb3duZXJfcHJpdmF0ZSI6ZmFsc2UsIm5vbl9vd25lcl9wcml2YXRlX2RvY3VtZW50Ijp0cnVlLCJvd25lcl9wcml2YXRlX2RvY3VtZW50Ijp0cnVlLCJwcm9iZSI6ImFjdHVhbF9zb3VyY2UiLCJzb3VyY2VfcGF0aCI6Ii9zb3VyY2Uvc2FtcGxlLnB5In0sIm91dHB1dF9saW1pdCI6ZmFsc2UsInN0ZGVyciI6IiIsInN0ZGVycl9iNjQiOiIiLCJzdGRlcnJfYnl0ZXMiOjAsInN0ZGVycl9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1Iiwic3RkZXJyX3RydW5jYXRlZCI6ZmFsc2UsInN0ZG91dCI6IntcbiAgXCJhbm9ueW1vdXNfcHVibGljX2RvY3VtZW50XCI6IHRydWUsXG4gIFwiY2FuX3JlYWRfc291cmNlXCI6IFwiZGVmIGNhbl9yZWFkKHJlcXVlc3Rlciwgb3duZXIsIHB1YmxpYz1GYWxzZSk6XFxuICAgIHJldHVybiBwdWJsaWMgb3IgYm9vbChyZXF1ZXN0ZXIpXFxuXCIsXG4gIFwiY2xhaW1fcHJlc2VudFwiOiB0cnVlLFxuICBcImV4cGVjdGVkX2J5X3JlYWRtZV9mb3Jfbm9uX293bmVyX3ByaXZhdGVcIjogZmFsc2UsXG4gIFwibm9uX293bmVyX3ByaXZhdGVfZG9jdW1lbnRcIjogdHJ1ZSxcbiAgXCJvd25lcl9wcml2YXRlX2RvY3VtZW50XCI6IHRydWUsXG4gIFwicHJvYmVcIjogXCJhY3R1YWxfc291cmNlXCIsXG4gIFwic291cmNlX3BhdGhcIjogXCIvc291cmNlL3NhbXBsZS5weVwiXG59XG4iLCJzdGRvdXRfYjY0IjoiZXdvZ0lDSmhibTl1ZVcxdmRYTmZjSFZpYkdsalgyUnZZM1Z0Wlc1MElqb2dkSEoxWlN3S0lDQWlZMkZ1WDNKbFlXUmZjMjkxY21ObElqb2dJbVJsWmlCallXNWZjbVZoWkNoeVpYRjFaWE4wWlhJc0lHOTNibVZ5TENCd2RXSnNhV005Um1Gc2MyVXBPbHh1SUNBZ0lISmxkSFZ5YmlCd2RXSnNhV01nYjNJZ1ltOXZiQ2h5WlhGMVpYTjBaWElwWEc0aUxBb2dJQ0pqYkdGcGJWOXdjbVZ6Wlc1MElqb2dkSEoxWlN3S0lDQWlaWGh3WldOMFpXUmZZbmxmY21WaFpHMWxYMlp2Y2w5dWIyNWZiM2R1WlhKZmNISnBkbUYwWlNJNklHWmhiSE5sTEFvZ0lDSnViMjVmYjNkdVpYSmZjSEpwZG1GMFpWOWtiMk4xYldWdWRDSTZJSFJ5ZFdVc0NpQWdJbTkzYm1WeVgzQnlhWFpoZEdWZlpHOWpkVzFsYm5RaU9pQjBjblZsTEFvZ0lDSndjbTlpWlNJNklDSmhZM1IxWVd4ZmMyOTFjbU5sSWl3S0lDQWljMjkxY21ObFgzQmhkR2dpT2lBaUwzTnZkWEpqWlM5ellXMXdiR1V1Y0hraUNuMEsiLCJzdGRvdXRfYnl0ZXMiOjM2Niwic3Rkb3V0X3NoYTI1NiI6Ijc5MGVmZWRmNTg1YWYzZGVkM2IyYWY0ODJiODEyZmE1Y2JmMmNiZjQyNWExNTdhNTMyZmU2ODdiNTBhMWJjM2QiLCJzdGRvdXRfdHJ1bmNhdGVkIjpmYWxzZSwidGltZW91dCI6ZmFsc2V9XX0K",
+          "stderr_b64": "",
+          "stdout_sha256": "099bb8ce3bc755a498af52d6758f1f9e3e38728b9f85b1ea5a98ab29261ed5fe",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 1638,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "timeout": false,
+          "output_limit": false,
+          "container_name": "openab-eval-c1c53f1e4fb546348d77",
+          "argv": [
+            "docker",
+            "run",
+            "--rm",
+            "--init",
+            "--pull=never",
+            "-i",
+            "--name",
+            "openab-eval-c1c53f1e4fb546348d77",
+            "--network",
+            "none",
+            "--read-only",
+            "--tmpfs",
+            "/work:rw,nosuid,nodev,size=64m,mode=1777",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+            "--mount",
+            "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/corrected-oci-source,dst=/source,readonly",
+            "--mount",
+            "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-k4rfd8ed/fixed-runner.py,dst=/runner.py,readonly",
+            "--user",
+            "65532:65532",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "128",
+            "--memory",
+            "512m",
+            "--cpus",
+            "1.0",
+            "--env",
+            "HOME=/tmp/home",
+            "--env",
+            "PATH=/usr/local/bin:/usr/bin:/bin",
+            "--env",
+            "LANG=C.UTF-8",
+            "--env",
+            "LC_ALL=C.UTF-8",
+            "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+            "python3",
+            "/runner.py"
+          ]
+        },
+        {
+          "name": "counterexample",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "claim_present": false
+            }
+          },
+          "valid": true,
+          "actual": {
+            "duration_ms": 95,
+            "exit": 0,
+            "name": "counterexample",
+            "observation": {
+              "anonymous_public_document": true,
+              "claim_present": false,
+              "expected_by_readme_for_non_owner_private": false,
+              "loaded_original_signature": "(requester, owner, public=False)",
+              "loaded_original_source": "def can_read(requester, owner, public=False):\n    return public or bool(requester)\n",
+              "non_owner_private_document": false,
+              "owner_private_document": true,
+              "probe": "readme_conformant_control",
+              "source_path": "/source/sample.py"
+            },
+            "output_limit": false,
+            "stderr": "",
+            "stderr_b64": "",
+            "stderr_bytes": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderr_truncated": false,
+            "stdout": "{\n  \"anonymous_public_document\": true,\n  \"claim_present\": false,\n  \"expected_by_readme_for_non_owner_private\": false,\n  \"loaded_original_signature\": \"(requester, owner, public=False)\",\n  \"loaded_original_source\": \"def can_read(requester, owner, public=False):\\n    return public or bool(requester)\\n\",\n  \"non_owner_private_document\": false,\n  \"owner_private_document\": true,\n  \"probe\": \"readme_conformant_control\",\n  \"source_path\": \"/source/sample.py\"\n}\n",
+            "stdout_b64": "ewogICJhbm9ueW1vdXNfcHVibGljX2RvY3VtZW50IjogdHJ1ZSwKICAiY2xhaW1fcHJlc2VudCI6IGZhbHNlLAogICJleHBlY3RlZF9ieV9yZWFkbWVfZm9yX25vbl9vd25lcl9wcml2YXRlIjogZmFsc2UsCiAgImxvYWRlZF9vcmlnaW5hbF9zaWduYXR1cmUiOiAiKHJlcXVlc3Rlciwgb3duZXIsIHB1YmxpYz1GYWxzZSkiLAogICJsb2FkZWRfb3JpZ2luYWxfc291cmNlIjogImRlZiBjYW5fcmVhZChyZXF1ZXN0ZXIsIG93bmVyLCBwdWJsaWM9RmFsc2UpOlxuICAgIHJldHVybiBwdWJsaWMgb3IgYm9vbChyZXF1ZXN0ZXIpXG4iLAogICJub25fb3duZXJfcHJpdmF0ZV9kb2N1bWVudCI6IGZhbHNlLAogICJvd25lcl9wcml2YXRlX2RvY3VtZW50IjogdHJ1ZSwKICAicHJvYmUiOiAicmVhZG1lX2NvbmZvcm1hbnRfY29udHJvbCIsCiAgInNvdXJjZV9wYXRoIjogIi9zb3VyY2Uvc2FtcGxlLnB5Igp9Cg==",
+            "stdout_bytes": 454,
+            "stdout_sha256": "7129a1ad422a8d32d3d54b8548c0d30db627d67da78e9915b124246dc10ba4f8",
+            "stdout_truncated": false,
+            "timeout": false
+          },
+          "stdout": "{\"runs\":[{\"duration_ms\":95,\"exit\":0,\"name\":\"counterexample\",\"observation\":{\"anonymous_public_document\":true,\"claim_present\":false,\"expected_by_readme_for_non_owner_private\":false,\"loaded_original_signature\":\"(requester, owner, public=False)\",\"loaded_original_source\":\"def can_read(requester, owner, public=False):\\n    return public or bool(requester)\\n\",\"non_owner_private_document\":false,\"owner_private_document\":true,\"probe\":\"readme_conformant_control\",\"source_path\":\"/source/sample.py\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\n  \\\"anonymous_public_document\\\": true,\\n  \\\"claim_present\\\": false,\\n  \\\"expected_by_readme_for_non_owner_private\\\": false,\\n  \\\"loaded_original_signature\\\": \\\"(requester, owner, public=False)\\\",\\n  \\\"loaded_original_source\\\": \\\"def can_read(requester, owner, public=False):\\\\n    return public or bool(requester)\\\\n\\\",\\n  \\\"non_owner_private_document\\\": false,\\n  \\\"owner_private_document\\\": true,\\n  \\\"probe\\\": \\\"readme_conformant_control\\\",\\n  \\\"source_path\\\": \\\"/source/sample.py\\\"\\n}\\n\",\"stdout_b64\":\"ewogICJhbm9ueW1vdXNfcHVibGljX2RvY3VtZW50IjogdHJ1ZSwKICAiY2xhaW1fcHJlc2VudCI6IGZhbHNlLAogICJleHBlY3RlZF9ieV9yZWFkbWVfZm9yX25vbl9vd25lcl9wcml2YXRlIjogZmFsc2UsCiAgImxvYWRlZF9vcmlnaW5hbF9zaWduYXR1cmUiOiAiKHJlcXVlc3Rlciwgb3duZXIsIHB1YmxpYz1GYWxzZSkiLAogICJsb2FkZWRfb3JpZ2luYWxfc291cmNlIjogImRlZiBjYW5fcmVhZChyZXF1ZXN0ZXIsIG93bmVyLCBwdWJsaWM9RmFsc2UpOlxuICAgIHJldHVybiBwdWJsaWMgb3IgYm9vbChyZXF1ZXN0ZXIpXG4iLAogICJub25fb3duZXJfcHJpdmF0ZV9kb2N1bWVudCI6IGZhbHNlLAogICJvd25lcl9wcml2YXRlX2RvY3VtZW50IjogdHJ1ZSwKICAicHJvYmUiOiAicmVhZG1lX2NvbmZvcm1hbnRfY29udHJvbCIsCiAgInNvdXJjZV9wYXRoIjogIi9zb3VyY2Uvc2FtcGxlLnB5Igp9Cg==\",\"stdout_bytes\":454,\"stdout_sha256\":\"7129a1ad422a8d32d3d54b8548c0d30db627d67da78e9915b124246dc10ba4f8\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+          "stderr": "",
+          "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6OTUsImV4aXQiOjAsIm5hbWUiOiJjb3VudGVyZXhhbXBsZSIsIm9ic2VydmF0aW9uIjp7ImFub255bW91c19wdWJsaWNfZG9jdW1lbnQiOnRydWUsImNsYWltX3ByZXNlbnQiOmZhbHNlLCJleHBlY3RlZF9ieV9yZWFkbWVfZm9yX25vbl9vd25lcl9wcml2YXRlIjpmYWxzZSwibG9hZGVkX29yaWdpbmFsX3NpZ25hdHVyZSI6IihyZXF1ZXN0ZXIsIG93bmVyLCBwdWJsaWM9RmFsc2UpIiwibG9hZGVkX29yaWdpbmFsX3NvdXJjZSI6ImRlZiBjYW5fcmVhZChyZXF1ZXN0ZXIsIG93bmVyLCBwdWJsaWM9RmFsc2UpOlxuICAgIHJldHVybiBwdWJsaWMgb3IgYm9vbChyZXF1ZXN0ZXIpXG4iLCJub25fb3duZXJfcHJpdmF0ZV9kb2N1bWVudCI6ZmFsc2UsIm93bmVyX3ByaXZhdGVfZG9jdW1lbnQiOnRydWUsInByb2JlIjoicmVhZG1lX2NvbmZvcm1hbnRfY29udHJvbCIsInNvdXJjZV9wYXRoIjoiL3NvdXJjZS9zYW1wbGUucHkifSwib3V0cHV0X2xpbWl0IjpmYWxzZSwic3RkZXJyIjoiIiwic3RkZXJyX2I2NCI6IiIsInN0ZGVycl9ieXRlcyI6MCwic3RkZXJyX3NoYTI1NiI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJzdGRlcnJfdHJ1bmNhdGVkIjpmYWxzZSwic3Rkb3V0Ijoie1xuICBcImFub255bW91c19wdWJsaWNfZG9jdW1lbnRcIjogdHJ1ZSxcbiAgXCJjbGFpbV9wcmVzZW50XCI6IGZhbHNlLFxuICBcImV4cGVjdGVkX2J5X3JlYWRtZV9mb3Jfbm9uX293bmVyX3ByaXZhdGVcIjogZmFsc2UsXG4gIFwibG9hZGVkX29yaWdpbmFsX3NpZ25hdHVyZVwiOiBcIihyZXF1ZXN0ZXIsIG93bmVyLCBwdWJsaWM9RmFsc2UpXCIsXG4gIFwibG9hZGVkX29yaWdpbmFsX3NvdXJjZVwiOiBcImRlZiBjYW5fcmVhZChyZXF1ZXN0ZXIsIG93bmVyLCBwdWJsaWM9RmFsc2UpOlxcbiAgICByZXR1cm4gcHVibGljIG9yIGJvb2wocmVxdWVzdGVyKVxcblwiLFxuICBcIm5vbl9vd25lcl9wcml2YXRlX2RvY3VtZW50XCI6IGZhbHNlLFxuICBcIm93bmVyX3ByaXZhdGVfZG9jdW1lbnRcIjogdHJ1ZSxcbiAgXCJwcm9iZVwiOiBcInJlYWRtZV9jb25mb3JtYW50X2NvbnRyb2xcIixcbiAgXCJzb3VyY2VfcGF0aFwiOiBcIi9zb3VyY2Uvc2FtcGxlLnB5XCJcbn1cbiIsInN0ZG91dF9iNjQiOiJld29nSUNKaGJtOXVlVzF2ZFhOZmNIVmliR2xqWDJSdlkzVnRaVzUwSWpvZ2RISjFaU3dLSUNBaVkyeGhhVzFmY0hKbGMyVnVkQ0k2SUdaaGJITmxMQW9nSUNKbGVIQmxZM1JsWkY5aWVWOXlaV0ZrYldWZlptOXlYMjV2Ymw5dmQyNWxjbDl3Y21sMllYUmxJam9nWm1Gc2MyVXNDaUFnSW14dllXUmxaRjl2Y21sbmFXNWhiRjl6YVdkdVlYUjFjbVVpT2lBaUtISmxjWFZsYzNSbGNpd2diM2R1WlhJc0lIQjFZbXhwWXoxR1lXeHpaU2tpTEFvZ0lDSnNiMkZrWldSZmIzSnBaMmx1WVd4ZmMyOTFjbU5sSWpvZ0ltUmxaaUJqWVc1ZmNtVmhaQ2h5WlhGMVpYTjBaWElzSUc5M2JtVnlMQ0J3ZFdKc2FXTTlSbUZzYzJVcE9seHVJQ0FnSUhKbGRIVnliaUJ3ZFdKc2FXTWdiM0lnWW05dmJDaHlaWEYxWlhOMFpYSXBYRzRpTEFvZ0lDSnViMjVmYjNkdVpYSmZjSEpwZG1GMFpWOWtiMk4xYldWdWRDSTZJR1poYkhObExBb2dJQ0p2ZDI1bGNsOXdjbWwyWVhSbFgyUnZZM1Z0Wlc1MElqb2dkSEoxWlN3S0lDQWljSEp2WW1VaU9pQWljbVZoWkcxbFgyTnZibVp2Y20xaGJuUmZZMjl1ZEhKdmJDSXNDaUFnSW5OdmRYSmpaVjl3WVhSb0lqb2dJaTl6YjNWeVkyVXZjMkZ0Y0d4bExuQjVJZ3A5Q2c9PSIsInN0ZG91dF9ieXRlcyI6NDU0LCJzdGRvdXRfc2hhMjU2IjoiNzEyOWExYWQ0MjJhOGQzMmQzZDU0Yjg1NDhjMGQzMGRiNjI3ZDY3ZGE3OGU5OTE1YjEyNDI0NmRjMTBiYTRmOCIsInN0ZG91dF90cnVuY2F0ZWQiOmZhbHNlLCJ0aW1lb3V0IjpmYWxzZX1dfQo=",
+          "stderr_b64": "",
+          "stdout_sha256": "dcc6c28451441506261f07c747467e8a8b791dc4687a3e71610b68a98264b471",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 1940,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "timeout": false,
+          "output_limit": false,
+          "container_name": "openab-eval-cce2ee2c6ed948989a22",
+          "argv": [
+            "docker",
+            "run",
+            "--rm",
+            "--init",
+            "--pull=never",
+            "-i",
+            "--name",
+            "openab-eval-cce2ee2c6ed948989a22",
+            "--network",
+            "none",
+            "--read-only",
+            "--tmpfs",
+            "/work:rw,nosuid,nodev,size=64m,mode=1777",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+            "--mount",
+            "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/corrected-oci-source,dst=/source,readonly",
+            "--mount",
+            "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-k4rfd8ed/fixed-runner.py,dst=/runner.py,readonly",
+            "--user",
+            "65532:65532",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "128",
+            "--memory",
+            "512m",
+            "--cpus",
+            "1.0",
+            "--env",
+            "HOME=/tmp/home",
+            "--env",
+            "PATH=/usr/local/bin:/usr/bin:/bin",
+            "--env",
+            "LANG=C.UTF-8",
+            "--env",
+            "LC_ALL=C.UTF-8",
+            "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+            "python3",
+            "/runner.py"
+          ]
+        }
+      ],
+      "operator_checks": "not_run"
+    }
+  },
+  {
+    "plan": ".agentflow/features/review-commit-integrity/artifacts/A-001-model-evaluation/live-omission-1-e456c6d814336027-plan.json",
+    "result": {
+      "status": "success",
+      "classification": "unproven",
+      "controls_passed": true,
+      "claim_present": true,
+      "reason": null,
+      "preflight": {
+        "status": "ready",
+        "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+        "daemon_probe": "ok",
+        "server_version": "29.7.2"
+      },
+      "plan": {
+        "item_id": "omission-1-e456c6d814336027",
+        "files": [
+          {
+            "path": "generated/oracle.py",
+            "utf8": "\"\"\"Shared behavioural oracle for the can_read owner-check claim.\n\nContract (README.md of the supplied source packet): can_read permits access\nonly for public documents or an authenticated requester equal to owner.\n\nThe claim under validation is that can_read ignores `owner` entirely, so an\nauthenticated non-owner requester is granted read access to a non-public\ndocument.\n\"\"\"\n\nimport hashlib\nimport importlib.util\n\nSOURCE_PATH = \"/source/sample.py\"\n\n\ndef read_source_text(path=SOURCE_PATH):\n    with open(path, \"r\", encoding=\"utf-8\") as handle:\n        return handle.read()\n\n\ndef source_sha256(path=SOURCE_PATH):\n    return hashlib.sha256(read_source_text(path).encode(\"utf-8\")).hexdigest()\n\n\ndef load_module(path, name):\n    spec = importlib.util.spec_from_file_location(name, path)\n    module = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    return module\n\n\ndef probe(can_read):\n    \"\"\"Exercise can_read and report whether `owner` influences the decision.\"\"\"\n    authenticated_non_owner = bool(can_read(\"alice\", \"bob\"))\n    authenticated_owner = bool(can_read(\"bob\", \"bob\"))\n    anonymous_public = bool(can_read(None, \"bob\", True))\n    anonymous_private = bool(can_read(None, \"bob\"))\n    owner_ignored = authenticated_non_owner and authenticated_owner\n    return {\n        \"can_read_alice_bob\": authenticated_non_owner,\n        \"can_read_bob_bob\": authenticated_owner,\n        \"can_read_none_bob_public\": anonymous_public,\n        \"can_read_none_bob_private\": anonymous_private,\n        \"contract_violated_owner_ignored\": owner_ignored,\n    }\n",
+            "sha256": "9e94fb617c2bfe8514ed2d4088d7f8c9b7e42db4e57900dc8992cfae29cbe259",
+            "bytes": 1578
+          },
+          {
+            "path": "generated/fixed_sample.py",
+            "utf8": "\"\"\"Contract-conforming reference implementation used by the counterexample.\n\nIdentical in shape to /source/sample.py except that can_read compares the\nrequester against the owner, as the README contract requires.\n\"\"\"\n\n\ndef can_read(requester, owner, public=False):\n    return public or (bool(requester) and requester == owner)\n\n\ndef checkout_total(price, quantity):\n    if quantity < 0:\n        raise ValueError(\"quantity must not be negative\")\n    return price * quantity\n",
+            "sha256": "6707264b9c49eff8f8b7bbf43ea4ccce9eed4095da561b9f680d45b640364312",
+            "bytes": 473
+          },
+          {
+            "path": "generated/check_source.py",
+            "utf8": "\"\"\"Baseline: apply the oracle to the supplied read-only source /source/sample.py.\"\"\"\n\nimport json\nimport os\nimport sys\n\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n\nimport oracle\n\n\ndef main():\n    source_text = oracle.read_source_text()\n    module = oracle.load_module(oracle.SOURCE_PATH, \"supplied_sample\")\n    result = oracle.probe(module.can_read)\n    claim_present = bool(result[\"contract_violated_owner_ignored\"])\n    report = {\n        \"subject\": \"supplied source\",\n        \"subject_path\": oracle.SOURCE_PATH,\n        \"source_sha256\": oracle.source_sha256(),\n        \"can_read_body\": source_text.splitlines()[1].strip(),\n        \"mentions_owner_comparison\": \"requester == owner\" in source_text\n        or \"owner ==\" in source_text,\n        \"probe\": result,\n        \"claim_present\": claim_present,\n    }\n    print(json.dumps(report, indent=2, sort_keys=True))\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n",
+            "sha256": "262ac2501488c64b03da9b5ed7c6a5b60be858c698b416ff455bd3ac71be1b76",
+            "bytes": 947
+          },
+          {
+            "path": "generated/check_fixed.py",
+            "utf8": "\"\"\"Counterexample: the same oracle applied to a contract-conforming can_read.\n\nThis run still reads and imports the supplied source at /source/sample.py so\nthat the two implementations are compared directly; the reported claim_present\nis computed from the conforming implementation, showing the oracle is\ndiscriminating rather than always-true.\n\"\"\"\n\nimport json\nimport os\nimport sys\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\n\nimport oracle\n\n\ndef main():\n    source_text = oracle.read_source_text()\n    supplied = oracle.load_module(oracle.SOURCE_PATH, \"supplied_sample\")\n    fixed = oracle.load_module(os.path.join(HERE, \"fixed_sample.py\"), \"fixed_sample\")\n\n    supplied_result = oracle.probe(supplied.can_read)\n    fixed_result = oracle.probe(fixed.can_read)\n    claim_present = bool(fixed_result[\"contract_violated_owner_ignored\"])\n\n    report = {\n        \"subject\": \"contract-conforming reference implementation\",\n        \"subject_path\": os.path.join(HERE, \"fixed_sample.py\"),\n        \"supplied_source_path\": oracle.SOURCE_PATH,\n        \"supplied_source_sha256\": oracle.source_sha256(),\n        \"supplied_can_read_body\": source_text.splitlines()[1].strip(),\n        \"supplied_probe\": supplied_result,\n        \"probe\": fixed_result,\n        \"implementations_differ\": supplied_result != fixed_result,\n        \"claim_present\": claim_present,\n    }\n    print(json.dumps(report, indent=2, sort_keys=True))\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n",
+            "sha256": "0e2dd9ee50492337998d4e84c1c1e6cd88ebbe8c043e2b72abd1e7b64c1336b9",
+            "bytes": 1501
+          }
+        ],
+        "runs": [
+          {
+            "name": "baseline",
+            "argv": [
+              "python3",
+              "generated/check_source.py"
+            ],
+            "cwd": "/work",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": true
+              }
+            },
+            "evidence_ids": [
+              "E_SAMPLE",
+              "E_CONTRACT"
+            ]
+          },
+          {
+            "name": "counterexample",
+            "argv": [
+              "python3",
+              "generated/check_fixed.py"
+            ],
+            "cwd": "/work",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": false
+              }
+            },
+            "evidence_ids": [
+              "E_SAMPLE",
+              "E_CONTRACT"
+            ]
+          }
+        ],
+        "claim_observed": "Baseline imports the supplied /source/sample.py and probes can_read: can_read(\"alice\", \"bob\") returns True and can_read(\"bob\", \"bob\") returns True, so an authenticated non-owner is granted read access to a non-public document; the source text contains no requester/owner comparison. That matches the claim that can_read ignores the `owner` parameter, violating the README contract (access only for public documents or an authenticated requester equal to owner), so claim_present is true. The counterexample runs the identical oracle (while still reading and importing the supplied source for comparison) against a contract-conforming implementation `return public or (bool(requester) and requester == owner)`, where can_read(\"alice\", \"bob\") is False while can_read(\"bob\", \"bob\") and the public case remain True; claim_present is false there, showing the oracle discriminates on the owner check rather than always reporting the defect."
+      },
+      "generated_file_digests": [
+        {
+          "path": "generated/oracle.py",
+          "sha256": "9e94fb617c2bfe8514ed2d4088d7f8c9b7e42db4e57900dc8992cfae29cbe259",
+          "bytes": 1578
+        },
+        {
+          "path": "generated/fixed_sample.py",
+          "sha256": "6707264b9c49eff8f8b7bbf43ea4ccce9eed4095da561b9f680d45b640364312",
+          "bytes": 473
+        },
+        {
+          "path": "generated/check_source.py",
+          "sha256": "262ac2501488c64b03da9b5ed7c6a5b60be858c698b416ff455bd3ac71be1b76",
+          "bytes": 947
+        },
+        {
+          "path": "generated/check_fixed.py",
+          "sha256": "0e2dd9ee50492337998d4e84c1c1e6cd88ebbe8c043e2b72abd1e7b64c1336b9",
+          "bytes": 1501
+        }
+      ],
+      "runs": [
+        {
+          "name": "baseline",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "claim_present": true
+            }
+          },
+          "valid": true,
+          "actual": {
+            "duration_ms": 65,
+            "exit": 0,
+            "name": "baseline",
+            "observation": {
+              "can_read_body": "return public or bool(requester)",
+              "claim_present": true,
+              "mentions_owner_comparison": false,
+              "probe": {
+                "can_read_alice_bob": true,
+                "can_read_bob_bob": true,
+                "can_read_none_bob_private": false,
+                "can_read_none_bob_public": true,
+                "contract_violated_owner_ignored": true
+              },
+              "source_sha256": "2342f9789ab39e3c357137e2d2a11fb0747cdb0526c1d05086940da66dd2f09e",
+              "subject": "supplied source",
+              "subject_path": "/source/sample.py"
+            },
+            "output_limit": false,
+            "stderr": "",
+            "stderr_b64": "",
+            "stderr_bytes": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderr_truncated": false,
+            "stdout": "{\n  \"can_read_body\": \"return public or bool(requester)\",\n  \"claim_present\": true,\n  \"mentions_owner_comparison\": false,\n  \"probe\": {\n    \"can_read_alice_bob\": true,\n    \"can_read_bob_bob\": true,\n    \"can_read_none_bob_private\": false,\n    \"can_read_none_bob_public\": true,\n    \"contract_violated_owner_ignored\": true\n  },\n  \"source_sha256\": \"2342f9789ab39e3c357137e2d2a11fb0747cdb0526c1d05086940da66dd2f09e\",\n  \"subject\": \"supplied source\",\n  \"subject_path\": \"/source/sample.py\"\n}\n",
+            "stdout_b64": "ewogICJjYW5fcmVhZF9ib2R5IjogInJldHVybiBwdWJsaWMgb3IgYm9vbChyZXF1ZXN0ZXIpIiwKICAiY2xhaW1fcHJlc2VudCI6IHRydWUsCiAgIm1lbnRpb25zX293bmVyX2NvbXBhcmlzb24iOiBmYWxzZSwKICAicHJvYmUiOiB7CiAgICAiY2FuX3JlYWRfYWxpY2VfYm9iIjogdHJ1ZSwKICAgICJjYW5fcmVhZF9ib2JfYm9iIjogdHJ1ZSwKICAgICJjYW5fcmVhZF9ub25lX2JvYl9wcml2YXRlIjogZmFsc2UsCiAgICAiY2FuX3JlYWRfbm9uZV9ib2JfcHVibGljIjogdHJ1ZSwKICAgICJjb250cmFjdF92aW9sYXRlZF9vd25lcl9pZ25vcmVkIjogdHJ1ZQogIH0sCiAgInNvdXJjZV9zaGEyNTYiOiAiMjM0MmY5Nzg5YWIzOWUzYzM1NzEzN2UyZDJhMTFmYjA3NDdjZGIwNTI2YzFkMDUwODY5NDBkYTY2ZGQyZjA5ZSIsCiAgInN1YmplY3QiOiAic3VwcGxpZWQgc291cmNlIiwKICAic3ViamVjdF9wYXRoIjogIi9zb3VyY2Uvc2FtcGxlLnB5Igp9Cg==",
+            "stdout_bytes": 481,
+            "stdout_sha256": "20dcd42c8920622e8eecd06d73a02dcd221375be365c6008a41d6ceac2181f43",
+            "stdout_truncated": false,
+            "timeout": false
+          },
+          "stdout": "{\"runs\":[{\"duration_ms\":65,\"exit\":0,\"name\":\"baseline\",\"observation\":{\"can_read_body\":\"return public or bool(requester)\",\"claim_present\":true,\"mentions_owner_comparison\":false,\"probe\":{\"can_read_alice_bob\":true,\"can_read_bob_bob\":true,\"can_read_none_bob_private\":false,\"can_read_none_bob_public\":true,\"contract_violated_owner_ignored\":true},\"source_sha256\":\"2342f9789ab39e3c357137e2d2a11fb0747cdb0526c1d05086940da66dd2f09e\",\"subject\":\"supplied source\",\"subject_path\":\"/source/sample.py\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\n  \\\"can_read_body\\\": \\\"return public or bool(requester)\\\",\\n  \\\"claim_present\\\": true,\\n  \\\"mentions_owner_comparison\\\": false,\\n  \\\"probe\\\": {\\n    \\\"can_read_alice_bob\\\": true,\\n    \\\"can_read_bob_bob\\\": true,\\n    \\\"can_read_none_bob_private\\\": false,\\n    \\\"can_read_none_bob_public\\\": true,\\n    \\\"contract_violated_owner_ignored\\\": true\\n  },\\n  \\\"source_sha256\\\": \\\"2342f9789ab39e3c357137e2d2a11fb0747cdb0526c1d05086940da66dd2f09e\\\",\\n  \\\"subject\\\": \\\"supplied source\\\",\\n  \\\"subject_path\\\": \\\"/source/sample.py\\\"\\n}\\n\",\"stdout_b64\":\"ewogICJjYW5fcmVhZF9ib2R5IjogInJldHVybiBwdWJsaWMgb3IgYm9vbChyZXF1ZXN0ZXIpIiwKICAiY2xhaW1fcHJlc2VudCI6IHRydWUsCiAgIm1lbnRpb25zX293bmVyX2NvbXBhcmlzb24iOiBmYWxzZSwKICAicHJvYmUiOiB7CiAgICAiY2FuX3JlYWRfYWxpY2VfYm9iIjogdHJ1ZSwKICAgICJjYW5fcmVhZF9ib2JfYm9iIjogdHJ1ZSwKICAgICJjYW5fcmVhZF9ub25lX2JvYl9wcml2YXRlIjogZmFsc2UsCiAgICAiY2FuX3JlYWRfbm9uZV9ib2JfcHVibGljIjogdHJ1ZSwKICAgICJjb250cmFjdF92aW9sYXRlZF9vd25lcl9pZ25vcmVkIjogdHJ1ZQogIH0sCiAgInNvdXJjZV9zaGEyNTYiOiAiMjM0MmY5Nzg5YWIzOWUzYzM1NzEzN2UyZDJhMTFmYjA3NDdjZGIwNTI2YzFkMDUwODY5NDBkYTY2ZGQyZjA5ZSIsCiAgInN1YmplY3QiOiAic3VwcGxpZWQgc291cmNlIiwKICAic3ViamVjdF9wYXRoIjogIi9zb3VyY2Uvc2FtcGxlLnB5Igp9Cg==\",\"stdout_bytes\":481,\"stdout_sha256\":\"20dcd42c8920622e8eecd06d73a02dcd221375be365c6008a41d6ceac2181f43\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+          "stderr": "",
+          "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6NjUsImV4aXQiOjAsIm5hbWUiOiJiYXNlbGluZSIsIm9ic2VydmF0aW9uIjp7ImNhbl9yZWFkX2JvZHkiOiJyZXR1cm4gcHVibGljIG9yIGJvb2wocmVxdWVzdGVyKSIsImNsYWltX3ByZXNlbnQiOnRydWUsIm1lbnRpb25zX293bmVyX2NvbXBhcmlzb24iOmZhbHNlLCJwcm9iZSI6eyJjYW5fcmVhZF9hbGljZV9ib2IiOnRydWUsImNhbl9yZWFkX2JvYl9ib2IiOnRydWUsImNhbl9yZWFkX25vbmVfYm9iX3ByaXZhdGUiOmZhbHNlLCJjYW5fcmVhZF9ub25lX2JvYl9wdWJsaWMiOnRydWUsImNvbnRyYWN0X3Zpb2xhdGVkX293bmVyX2lnbm9yZWQiOnRydWV9LCJzb3VyY2Vfc2hhMjU2IjoiMjM0MmY5Nzg5YWIzOWUzYzM1NzEzN2UyZDJhMTFmYjA3NDdjZGIwNTI2YzFkMDUwODY5NDBkYTY2ZGQyZjA5ZSIsInN1YmplY3QiOiJzdXBwbGllZCBzb3VyY2UiLCJzdWJqZWN0X3BhdGgiOiIvc291cmNlL3NhbXBsZS5weSJ9LCJvdXRwdXRfbGltaXQiOmZhbHNlLCJzdGRlcnIiOiIiLCJzdGRlcnJfYjY0IjoiIiwic3RkZXJyX2J5dGVzIjowLCJzdGRlcnJfc2hhMjU2IjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsInN0ZGVycl90cnVuY2F0ZWQiOmZhbHNlLCJzdGRvdXQiOiJ7XG4gIFwiY2FuX3JlYWRfYm9keVwiOiBcInJldHVybiBwdWJsaWMgb3IgYm9vbChyZXF1ZXN0ZXIpXCIsXG4gIFwiY2xhaW1fcHJlc2VudFwiOiB0cnVlLFxuICBcIm1lbnRpb25zX293bmVyX2NvbXBhcmlzb25cIjogZmFsc2UsXG4gIFwicHJvYmVcIjoge1xuICAgIFwiY2FuX3JlYWRfYWxpY2VfYm9iXCI6IHRydWUsXG4gICAgXCJjYW5fcmVhZF9ib2JfYm9iXCI6IHRydWUsXG4gICAgXCJjYW5fcmVhZF9ub25lX2JvYl9wcml2YXRlXCI6IGZhbHNlLFxuICAgIFwiY2FuX3JlYWRfbm9uZV9ib2JfcHVibGljXCI6IHRydWUsXG4gICAgXCJjb250cmFjdF92aW9sYXRlZF9vd25lcl9pZ25vcmVkXCI6IHRydWVcbiAgfSxcbiAgXCJzb3VyY2Vfc2hhMjU2XCI6IFwiMjM0MmY5Nzg5YWIzOWUzYzM1NzEzN2UyZDJhMTFmYjA3NDdjZGIwNTI2YzFkMDUwODY5NDBkYTY2ZGQyZjA5ZVwiLFxuICBcInN1YmplY3RcIjogXCJzdXBwbGllZCBzb3VyY2VcIixcbiAgXCJzdWJqZWN0X3BhdGhcIjogXCIvc291cmNlL3NhbXBsZS5weVwiXG59XG4iLCJzdGRvdXRfYjY0IjoiZXdvZ0lDSmpZVzVmY21WaFpGOWliMlI1SWpvZ0luSmxkSFZ5YmlCd2RXSnNhV01nYjNJZ1ltOXZiQ2h5WlhGMVpYTjBaWElwSWl3S0lDQWlZMnhoYVcxZmNISmxjMlZ1ZENJNklIUnlkV1VzQ2lBZ0ltMWxiblJwYjI1elgyOTNibVZ5WDJOdmJYQmhjbWx6YjI0aU9pQm1ZV3h6WlN3S0lDQWljSEp2WW1VaU9pQjdDaUFnSUNBaVkyRnVYM0psWVdSZllXeHBZMlZmWW05aUlqb2dkSEoxWlN3S0lDQWdJQ0pqWVc1ZmNtVmhaRjlpYjJKZlltOWlJam9nZEhKMVpTd0tJQ0FnSUNKallXNWZjbVZoWkY5dWIyNWxYMkp2WWw5d2NtbDJZWFJsSWpvZ1ptRnNjMlVzQ2lBZ0lDQWlZMkZ1WDNKbFlXUmZibTl1WlY5aWIySmZjSFZpYkdsaklqb2dkSEoxWlN3S0lDQWdJQ0pqYjI1MGNtRmpkRjkyYVc5c1lYUmxaRjl2ZDI1bGNsOXBaMjV2Y21Wa0lqb2dkSEoxWlFvZ0lIMHNDaUFnSW5OdmRYSmpaVjl6YUdFeU5UWWlPaUFpTWpNME1tWTVOemc1WVdJek9XVXpZek0xTnpFek4yVXlaREpoTVRGbVlqQTNORGRqWkdJd05USTJZekZrTURVd09EWTVOREJrWVRZMlpHUXlaakE1WlNJc0NpQWdJbk4xWW1wbFkzUWlPaUFpYzNWd2NHeHBaV1FnYzI5MWNtTmxJaXdLSUNBaWMzVmlhbVZqZEY5d1lYUm9Jam9nSWk5emIzVnlZMlV2YzJGdGNHeGxMbkI1SWdwOUNnPT0iLCJzdGRvdXRfYnl0ZXMiOjQ4MSwic3Rkb3V0X3NoYTI1NiI6IjIwZGNkNDJjODkyMDYyMmU4ZWVjZDA2ZDczYTAyZGNkMjIxMzc1YmUzNjVjNjAwOGE0MWQ2Y2VhYzIxODFmNDMiLCJzdGRvdXRfdHJ1bmNhdGVkIjpmYWxzZSwidGltZW91dCI6ZmFsc2V9XX0K",
+          "stderr_b64": "",
+          "stdout_sha256": "9626ee7c6f254e9aa9e486c18d87e1db83ccca81b4195f9ffc06de1524e691ea",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 2007,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "timeout": false,
+          "output_limit": false,
+          "container_name": "openab-eval-8d2326f7b42643efb2d2",
+          "argv": [
+            "docker",
+            "run",
+            "--rm",
+            "--init",
+            "--pull=never",
+            "-i",
+            "--name",
+            "openab-eval-8d2326f7b42643efb2d2",
+            "--network",
+            "none",
+            "--read-only",
+            "--tmpfs",
+            "/work:rw,nosuid,nodev,size=64m,mode=1777",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+            "--mount",
+            "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/corrected-oci-source,dst=/source,readonly",
+            "--mount",
+            "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-g4bgirhd/fixed-runner.py,dst=/runner.py,readonly",
+            "--user",
+            "65532:65532",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "128",
+            "--memory",
+            "512m",
+            "--cpus",
+            "1.0",
+            "--env",
+            "HOME=/tmp/home",
+            "--env",
+            "PATH=/usr/local/bin:/usr/bin:/bin",
+            "--env",
+            "LANG=C.UTF-8",
+            "--env",
+            "LC_ALL=C.UTF-8",
+            "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+            "python3",
+            "/runner.py"
+          ]
+        },
+        {
+          "name": "counterexample",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "claim_present": false
+            }
+          },
+          "valid": true,
+          "actual": {
+            "duration_ms": 60,
+            "exit": 0,
+            "name": "counterexample",
+            "observation": {
+              "claim_present": false,
+              "implementations_differ": true,
+              "probe": {
+                "can_read_alice_bob": false,
+                "can_read_bob_bob": true,
+                "can_read_none_bob_private": false,
+                "can_read_none_bob_public": true,
+                "contract_violated_owner_ignored": false
+              },
+              "subject": "contract-conforming reference implementation",
+              "subject_path": "/work/generated/fixed_sample.py",
+              "supplied_can_read_body": "return public or bool(requester)",
+              "supplied_probe": {
+                "can_read_alice_bob": true,
+                "can_read_bob_bob": true,
+                "can_read_none_bob_private": false,
+                "can_read_none_bob_public": true,
+                "contract_violated_owner_ignored": true
+              },
+              "supplied_source_path": "/source/sample.py",
+              "supplied_source_sha256": "2342f9789ab39e3c357137e2d2a11fb0747cdb0526c1d05086940da66dd2f09e"
+            },
+            "output_limit": false,
+            "stderr": "",
+            "stderr_b64": "",
+            "stderr_bytes": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderr_truncated": false,
+            "stdout": "{\n  \"claim_present\": false,\n  \"implementations_differ\": true,\n  \"probe\": {\n    \"can_read_alice_bob\": false,\n    \"can_read_bob_bob\": true,\n    \"can_read_none_bob_private\": false,\n    \"can_read_none_bob_public\": true,\n    \"contract_violated_owner_ignored\": false\n  },\n  \"subject\": \"contract-conforming reference implementation\",\n  \"subject_path\": \"/work/generated/fixed_sample.py\",\n  \"supplied_can_read_body\": \"return public or bool(requester)\",\n  \"supplied_probe\": {\n    \"can_read_alice_bob\": true,\n    \"can_read_bob_bob\": true,\n    \"can_read_none_bob_private\": false,\n    \"can_read_none_bob_public\": true,\n    \"contract_violated_owner_ignored\": true\n  },\n  \"supplied_source_path\": \"/source/sample.py\",\n  \"supplied_source_sha256\": \"2342f9789ab39e3c357137e2d2a11fb0747cdb0526c1d05086940da66dd2f09e\"\n}\n",
+            "stdout_b64": "ewogICJjbGFpbV9wcmVzZW50IjogZmFsc2UsCiAgImltcGxlbWVudGF0aW9uc19kaWZmZXIiOiB0cnVlLAogICJwcm9iZSI6IHsKICAgICJjYW5fcmVhZF9hbGljZV9ib2IiOiBmYWxzZSwKICAgICJjYW5fcmVhZF9ib2JfYm9iIjogdHJ1ZSwKICAgICJjYW5fcmVhZF9ub25lX2JvYl9wcml2YXRlIjogZmFsc2UsCiAgICAiY2FuX3JlYWRfbm9uZV9ib2JfcHVibGljIjogdHJ1ZSwKICAgICJjb250cmFjdF92aW9sYXRlZF9vd25lcl9pZ25vcmVkIjogZmFsc2UKICB9LAogICJzdWJqZWN0IjogImNvbnRyYWN0LWNvbmZvcm1pbmcgcmVmZXJlbmNlIGltcGxlbWVudGF0aW9uIiwKICAic3ViamVjdF9wYXRoIjogIi93b3JrL2dlbmVyYXRlZC9maXhlZF9zYW1wbGUucHkiLAogICJzdXBwbGllZF9jYW5fcmVhZF9ib2R5IjogInJldHVybiBwdWJsaWMgb3IgYm9vbChyZXF1ZXN0ZXIpIiwKICAic3VwcGxpZWRfcHJvYmUiOiB7CiAgICAiY2FuX3JlYWRfYWxpY2VfYm9iIjogdHJ1ZSwKICAgICJjYW5fcmVhZF9ib2JfYm9iIjogdHJ1ZSwKICAgICJjYW5fcmVhZF9ub25lX2JvYl9wcml2YXRlIjogZmFsc2UsCiAgICAiY2FuX3JlYWRfbm9uZV9ib2JfcHVibGljIjogdHJ1ZSwKICAgICJjb250cmFjdF92aW9sYXRlZF9vd25lcl9pZ25vcmVkIjogdHJ1ZQogIH0sCiAgInN1cHBsaWVkX3NvdXJjZV9wYXRoIjogIi9zb3VyY2Uvc2FtcGxlLnB5IiwKICAic3VwcGxpZWRfc291cmNlX3NoYTI1NiI6ICIyMzQyZjk3ODlhYjM5ZTNjMzU3MTM3ZTJkMmExMWZiMDc0N2NkYjA1MjZjMWQwNTA4Njk0MGRhNjZkZDJmMDllIgp9Cg==",
+            "stdout_bytes": 799,
+            "stdout_sha256": "a0a81ba0f1c9eb097f60a096ed1ce771a971004a49dd03107878f717202d1fd2",
+            "stdout_truncated": false,
+            "timeout": false
+          },
+          "stdout": "{\"runs\":[{\"duration_ms\":60,\"exit\":0,\"name\":\"counterexample\",\"observation\":{\"claim_present\":false,\"implementations_differ\":true,\"probe\":{\"can_read_alice_bob\":false,\"can_read_bob_bob\":true,\"can_read_none_bob_private\":false,\"can_read_none_bob_public\":true,\"contract_violated_owner_ignored\":false},\"subject\":\"contract-conforming reference implementation\",\"subject_path\":\"/work/generated/fixed_sample.py\",\"supplied_can_read_body\":\"return public or bool(requester)\",\"supplied_probe\":{\"can_read_alice_bob\":true,\"can_read_bob_bob\":true,\"can_read_none_bob_private\":false,\"can_read_none_bob_public\":true,\"contract_violated_owner_ignored\":true},\"supplied_source_path\":\"/source/sample.py\",\"supplied_source_sha256\":\"2342f9789ab39e3c357137e2d2a11fb0747cdb0526c1d05086940da66dd2f09e\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\n  \\\"claim_present\\\": false,\\n  \\\"implementations_differ\\\": true,\\n  \\\"probe\\\": {\\n    \\\"can_read_alice_bob\\\": false,\\n    \\\"can_read_bob_bob\\\": true,\\n    \\\"can_read_none_bob_private\\\": false,\\n    \\\"can_read_none_bob_public\\\": true,\\n    \\\"contract_violated_owner_ignored\\\": false\\n  },\\n  \\\"subject\\\": \\\"contract-conforming reference implementation\\\",\\n  \\\"subject_path\\\": \\\"/work/generated/fixed_sample.py\\\",\\n  \\\"supplied_can_read_body\\\": \\\"return public or bool(requester)\\\",\\n  \\\"supplied_probe\\\": {\\n    \\\"can_read_alice_bob\\\": true,\\n    \\\"can_read_bob_bob\\\": true,\\n    \\\"can_read_none_bob_private\\\": false,\\n    \\\"can_read_none_bob_public\\\": true,\\n    \\\"contract_violated_owner_ignored\\\": true\\n  },\\n  \\\"supplied_source_path\\\": \\\"/source/sample.py\\\",\\n  \\\"supplied_source_sha256\\\": \\\"2342f9789ab39e3c357137e2d2a11fb0747cdb0526c1d05086940da66dd2f09e\\\"\\n}\\n\",\"stdout_b64\":\"ewogICJjbGFpbV9wcmVzZW50IjogZmFsc2UsCiAgImltcGxlbWVudGF0aW9uc19kaWZmZXIiOiB0cnVlLAogICJwcm9iZSI6IHsKICAgICJjYW5fcmVhZF9hbGljZV9ib2IiOiBmYWxzZSwKICAgICJjYW5fcmVhZF9ib2JfYm9iIjogdHJ1ZSwKICAgICJjYW5fcmVhZF9ub25lX2JvYl9wcml2YXRlIjogZmFsc2UsCiAgICAiY2FuX3JlYWRfbm9uZV9ib2JfcHVibGljIjogdHJ1ZSwKICAgICJjb250cmFjdF92aW9sYXRlZF9vd25lcl9pZ25vcmVkIjogZmFsc2UKICB9LAogICJzdWJqZWN0IjogImNvbnRyYWN0LWNvbmZvcm1pbmcgcmVmZXJlbmNlIGltcGxlbWVudGF0aW9uIiwKICAic3ViamVjdF9wYXRoIjogIi93b3JrL2dlbmVyYXRlZC9maXhlZF9zYW1wbGUucHkiLAogICJzdXBwbGllZF9jYW5fcmVhZF9ib2R5IjogInJldHVybiBwdWJsaWMgb3IgYm9vbChyZXF1ZXN0ZXIpIiwKICAic3VwcGxpZWRfcHJvYmUiOiB7CiAgICAiY2FuX3JlYWRfYWxpY2VfYm9iIjogdHJ1ZSwKICAgICJjYW5fcmVhZF9ib2JfYm9iIjogdHJ1ZSwKICAgICJjYW5fcmVhZF9ub25lX2JvYl9wcml2YXRlIjogZmFsc2UsCiAgICAiY2FuX3JlYWRfbm9uZV9ib2JfcHVibGljIjogdHJ1ZSwKICAgICJjb250cmFjdF92aW9sYXRlZF9vd25lcl9pZ25vcmVkIjogdHJ1ZQogIH0sCiAgInN1cHBsaWVkX3NvdXJjZV9wYXRoIjogIi9zb3VyY2Uvc2FtcGxlLnB5IiwKICAic3VwcGxpZWRfc291cmNlX3NoYTI1NiI6ICIyMzQyZjk3ODlhYjM5ZTNjMzU3MTM3ZTJkMmExMWZiMDc0N2NkYjA1MjZjMWQwNTA4Njk0MGRhNjZkZDJmMDllIgp9Cg==\",\"stdout_bytes\":799,\"stdout_sha256\":\"a0a81ba0f1c9eb097f60a096ed1ce771a971004a49dd03107878f717202d1fd2\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+          "stderr": "",
+          "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6NjAsImV4aXQiOjAsIm5hbWUiOiJjb3VudGVyZXhhbXBsZSIsIm9ic2VydmF0aW9uIjp7ImNsYWltX3ByZXNlbnQiOmZhbHNlLCJpbXBsZW1lbnRhdGlvbnNfZGlmZmVyIjp0cnVlLCJwcm9iZSI6eyJjYW5fcmVhZF9hbGljZV9ib2IiOmZhbHNlLCJjYW5fcmVhZF9ib2JfYm9iIjp0cnVlLCJjYW5fcmVhZF9ub25lX2JvYl9wcml2YXRlIjpmYWxzZSwiY2FuX3JlYWRfbm9uZV9ib2JfcHVibGljIjp0cnVlLCJjb250cmFjdF92aW9sYXRlZF9vd25lcl9pZ25vcmVkIjpmYWxzZX0sInN1YmplY3QiOiJjb250cmFjdC1jb25mb3JtaW5nIHJlZmVyZW5jZSBpbXBsZW1lbnRhdGlvbiIsInN1YmplY3RfcGF0aCI6Ii93b3JrL2dlbmVyYXRlZC9maXhlZF9zYW1wbGUucHkiLCJzdXBwbGllZF9jYW5fcmVhZF9ib2R5IjoicmV0dXJuIHB1YmxpYyBvciBib29sKHJlcXVlc3RlcikiLCJzdXBwbGllZF9wcm9iZSI6eyJjYW5fcmVhZF9hbGljZV9ib2IiOnRydWUsImNhbl9yZWFkX2JvYl9ib2IiOnRydWUsImNhbl9yZWFkX25vbmVfYm9iX3ByaXZhdGUiOmZhbHNlLCJjYW5fcmVhZF9ub25lX2JvYl9wdWJsaWMiOnRydWUsImNvbnRyYWN0X3Zpb2xhdGVkX293bmVyX2lnbm9yZWQiOnRydWV9LCJzdXBwbGllZF9zb3VyY2VfcGF0aCI6Ii9zb3VyY2Uvc2FtcGxlLnB5Iiwic3VwcGxpZWRfc291cmNlX3NoYTI1NiI6IjIzNDJmOTc4OWFiMzllM2MzNTcxMzdlMmQyYTExZmIwNzQ3Y2RiMDUyNmMxZDA1MDg2OTQwZGE2NmRkMmYwOWUifSwib3V0cHV0X2xpbWl0IjpmYWxzZSwic3RkZXJyIjoiIiwic3RkZXJyX2I2NCI6IiIsInN0ZGVycl9ieXRlcyI6MCwic3RkZXJyX3NoYTI1NiI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJzdGRlcnJfdHJ1bmNhdGVkIjpmYWxzZSwic3Rkb3V0Ijoie1xuICBcImNsYWltX3ByZXNlbnRcIjogZmFsc2UsXG4gIFwiaW1wbGVtZW50YXRpb25zX2RpZmZlclwiOiB0cnVlLFxuICBcInByb2JlXCI6IHtcbiAgICBcImNhbl9yZWFkX2FsaWNlX2JvYlwiOiBmYWxzZSxcbiAgICBcImNhbl9yZWFkX2JvYl9ib2JcIjogdHJ1ZSxcbiAgICBcImNhbl9yZWFkX25vbmVfYm9iX3ByaXZhdGVcIjogZmFsc2UsXG4gICAgXCJjYW5fcmVhZF9ub25lX2JvYl9wdWJsaWNcIjogdHJ1ZSxcbiAgICBcImNvbnRyYWN0X3Zpb2xhdGVkX293bmVyX2lnbm9yZWRcIjogZmFsc2VcbiAgfSxcbiAgXCJzdWJqZWN0XCI6IFwiY29udHJhY3QtY29uZm9ybWluZyByZWZlcmVuY2UgaW1wbGVtZW50YXRpb25cIixcbiAgXCJzdWJqZWN0X3BhdGhcIjogXCIvd29yay9nZW5lcmF0ZWQvZml4ZWRfc2FtcGxlLnB5XCIsXG4gIFwic3VwcGxpZWRfY2FuX3JlYWRfYm9keVwiOiBcInJldHVybiBwdWJsaWMgb3IgYm9vbChyZXF1ZXN0ZXIpXCIsXG4gIFwic3VwcGxpZWRfcHJvYmVcIjoge1xuICAgIFwiY2FuX3JlYWRfYWxpY2VfYm9iXCI6IHRydWUsXG4gICAgXCJjYW5fcmVhZF9ib2JfYm9iXCI6IHRydWUsXG4gICAgXCJjYW5fcmVhZF9ub25lX2JvYl9wcml2YXRlXCI6IGZhbHNlLFxuICAgIFwiY2FuX3JlYWRfbm9uZV9ib2JfcHVibGljXCI6IHRydWUsXG4gICAgXCJjb250cmFjdF92aW9sYXRlZF9vd25lcl9pZ25vcmVkXCI6IHRydWVcbiAgfSxcbiAgXCJzdXBwbGllZF9zb3VyY2VfcGF0aFwiOiBcIi9zb3VyY2Uvc2FtcGxlLnB5XCIsXG4gIFwic3VwcGxpZWRfc291cmNlX3NoYTI1NlwiOiBcIjIzNDJmOTc4OWFiMzllM2MzNTcxMzdlMmQyYTExZmIwNzQ3Y2RiMDUyNmMxZDA1MDg2OTQwZGE2NmRkMmYwOWVcIlxufVxuIiwic3Rkb3V0X2I2NCI6ImV3b2dJQ0pqYkdGcGJWOXdjbVZ6Wlc1MElqb2dabUZzYzJVc0NpQWdJbWx0Y0d4bGJXVnVkR0YwYVc5dWMxOWthV1ptWlhJaU9pQjBjblZsTEFvZ0lDSndjbTlpWlNJNklIc0tJQ0FnSUNKallXNWZjbVZoWkY5aGJHbGpaVjlpYjJJaU9pQm1ZV3h6WlN3S0lDQWdJQ0pqWVc1ZmNtVmhaRjlpYjJKZlltOWlJam9nZEhKMVpTd0tJQ0FnSUNKallXNWZjbVZoWkY5dWIyNWxYMkp2WWw5d2NtbDJZWFJsSWpvZ1ptRnNjMlVzQ2lBZ0lDQWlZMkZ1WDNKbFlXUmZibTl1WlY5aWIySmZjSFZpYkdsaklqb2dkSEoxWlN3S0lDQWdJQ0pqYjI1MGNtRmpkRjkyYVc5c1lYUmxaRjl2ZDI1bGNsOXBaMjV2Y21Wa0lqb2dabUZzYzJVS0lDQjlMQW9nSUNKemRXSnFaV04wSWpvZ0ltTnZiblJ5WVdOMExXTnZibVp2Y20xcGJtY2djbVZtWlhKbGJtTmxJR2x0Y0d4bGJXVnVkR0YwYVc5dUlpd0tJQ0FpYzNWaWFtVmpkRjl3WVhSb0lqb2dJaTkzYjNKckwyZGxibVZ5WVhSbFpDOW1hWGhsWkY5ellXMXdiR1V1Y0hraUxBb2dJQ0p6ZFhCd2JHbGxaRjlqWVc1ZmNtVmhaRjlpYjJSNUlqb2dJbkpsZEhWeWJpQndkV0pzYVdNZ2IzSWdZbTl2YkNoeVpYRjFaWE4wWlhJcElpd0tJQ0FpYzNWd2NHeHBaV1JmY0hKdlltVWlPaUI3Q2lBZ0lDQWlZMkZ1WDNKbFlXUmZZV3hwWTJWZlltOWlJam9nZEhKMVpTd0tJQ0FnSUNKallXNWZjbVZoWkY5aWIySmZZbTlpSWpvZ2RISjFaU3dLSUNBZ0lDSmpZVzVmY21WaFpGOXViMjVsWDJKdllsOXdjbWwyWVhSbElqb2dabUZzYzJVc0NpQWdJQ0FpWTJGdVgzSmxZV1JmYm05dVpWOWliMkpmY0hWaWJHbGpJam9nZEhKMVpTd0tJQ0FnSUNKamIyNTBjbUZqZEY5MmFXOXNZWFJsWkY5dmQyNWxjbDlwWjI1dmNtVmtJam9nZEhKMVpRb2dJSDBzQ2lBZ0luTjFjSEJzYVdWa1gzTnZkWEpqWlY5d1lYUm9Jam9nSWk5emIzVnlZMlV2YzJGdGNHeGxMbkI1SWl3S0lDQWljM1Z3Y0d4cFpXUmZjMjkxY21ObFgzTm9ZVEkxTmlJNklDSXlNelF5WmprM09EbGhZak01WlROak16VTNNVE0zWlRKa01tRXhNV1ppTURjME4yTmtZakExTWpaak1XUXdOVEE0TmprME1HUmhOalprWkRKbU1EbGxJZ3A5Q2c9PSIsInN0ZG91dF9ieXRlcyI6Nzk5LCJzdGRvdXRfc2hhMjU2IjoiYTBhODFiYTBmMWM5ZWIwOTdmNjBhMDk2ZWQxY2U3NzFhOTcxMDA0YTQ5ZGQwMzEwNzg3OGY3MTcyMDJkMWZkMiIsInN0ZG91dF90cnVuY2F0ZWQiOmZhbHNlLCJ0aW1lb3V0IjpmYWxzZX1dfQo=",
+          "stderr_b64": "",
+          "stdout_sha256": "38b44feb67f8fcc910bd9889341632ca5f22d54b02b984dd2c743b06a0c676a4",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 3056,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "timeout": false,
+          "output_limit": false,
+          "container_name": "openab-eval-10b74256a0c044cc9ba2",
+          "argv": [
+            "docker",
+            "run",
+            "--rm",
+            "--init",
+            "--pull=never",
+            "-i",
+            "--name",
+            "openab-eval-10b74256a0c044cc9ba2",
+            "--network",
+            "none",
+            "--read-only",
+            "--tmpfs",
+            "/work:rw,nosuid,nodev,size=64m,mode=1777",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+            "--mount",
+            "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/corrected-oci-source,dst=/source,readonly",
+            "--mount",
+            "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-g4bgirhd/fixed-runner.py,dst=/runner.py,readonly",
+            "--user",
+            "65532:65532",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "128",
+            "--memory",
+            "512m",
+            "--cpus",
+            "1.0",
+            "--env",
+            "HOME=/tmp/home",
+            "--env",
+            "PATH=/usr/local/bin:/usr/bin:/bin",
+            "--env",
+            "LANG=C.UTF-8",
+            "--env",
+            "LC_ALL=C.UTF-8",
+            "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+            "python3",
+            "/runner.py"
+          ]
+        }
+      ],
+      "operator_checks": "not_run"
+    }
+  },
+  {
+    "plan": ".agentflow/features/review-commit-integrity/artifacts/A-001-model-evaluation/live-omission-2-a351ce82491f2fdc-plan.json",
+    "result": {
+      "status": "success",
+      "classification": "unproven",
+      "controls_passed": true,
+      "claim_present": true,
+      "reason": null,
+      "preflight": {
+        "status": "ready",
+        "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+        "daemon_probe": "ok",
+        "server_version": "29.7.2"
+      },
+      "plan": {
+        "item_id": "omission-2-a351ce82491f2fdc",
+        "files": [
+          {
+            "path": "generated/probe_source.py",
+            "utf8": "import importlib.util\nimport json\n\nSRC = \"/source/sample.py\"\n\nspec = importlib.util.spec_from_file_location(\"sample_under_test\", SRC)\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\n\nraised_value_error = False\nreturned = None\nerror_type = None\ntry:\n    returned = mod.checkout_total(500, -2)\nexcept ValueError:\n    raised_value_error = True\n    error_type = \"ValueError\"\nexcept Exception as exc:\n    error_type = type(exc).__name__\n\n# Claim: checkout_total does not validate quantity and never raises ValueError,\n# instead returning a negative product for a negative quantity.\nclaim_present = (not raised_value_error) and returned == -1000\n\nprint(json.dumps({\n    \"claim_present\": bool(claim_present),\n    \"target\": SRC,\n    \"call\": \"checkout_total(500, -2)\",\n    \"raised_value_error\": raised_value_error,\n    \"error_type\": error_type,\n    \"returned\": returned,\n}))\n",
+            "sha256": "6159b3fbbc64001dbc2ac21834fa0ac49cf56883bf2fc9f1bdd0132fc7deb855",
+            "bytes": 891
+          },
+          {
+            "path": "generated/probe_guarded.py",
+            "utf8": "import json\n\nSRC = \"/source/sample.py\"\n\nwith open(SRC, \"r\", encoding=\"utf-8\") as fh:\n    text = fh.read()\n\nORIGINAL = \"def checkout_total(price, quantity):\\n    return price * quantity\"\nGUARDED = (\n    \"def checkout_total(price, quantity):\\n\"\n    \"    if quantity < 0:\\n\"\n    \"        raise ValueError('quantity must not be negative')\\n\"\n    \"    return price * quantity\"\n)\n\npatched = text.replace(ORIGINAL, GUARDED)\npatch_applied = patched != text\n\nnamespace = {\"__name__\": \"sample_guarded\"}\nexec(compile(patched, SRC + \" (guarded)\", \"exec\"), namespace)\n\nraised_value_error = False\nreturned = None\nerror_type = None\ntry:\n    returned = namespace[\"checkout_total\"](500, -2)\nexcept ValueError:\n    raised_value_error = True\n    error_type = \"ValueError\"\nexcept Exception as exc:\n    error_type = type(exc).__name__\n\n# Same detector as the baseline: the claim holds only when no ValueError is\n# raised and the negative product -1000 is returned.\nclaim_present = (not raised_value_error) and returned == -1000\n\nprint(json.dumps({\n    \"claim_present\": bool(claim_present),\n    \"target\": SRC,\n    \"variant\": \"guarded\",\n    \"patch_applied\": patch_applied,\n    \"call\": \"checkout_total(500, -2)\",\n    \"raised_value_error\": raised_value_error,\n    \"error_type\": error_type,\n    \"returned\": returned,\n}))\n",
+            "sha256": "9003c1641b127adba3eec764a930cc9bf3a9da03e8431e4ca54457a38aff7cff",
+            "bytes": 1295
+          }
+        ],
+        "runs": [
+          {
+            "name": "baseline",
+            "argv": [
+              "python3",
+              "generated/probe_source.py"
+            ],
+            "cwd": "/work",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": true
+              }
+            },
+            "evidence_ids": [
+              "E_SAMPLE",
+              "E_CONTRACT"
+            ]
+          },
+          {
+            "name": "counterexample",
+            "argv": [
+              "python3",
+              "generated/probe_guarded.py"
+            ],
+            "cwd": "/work",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": false
+              }
+            },
+            "evidence_ids": [
+              "E_SAMPLE",
+              "E_CONTRACT"
+            ]
+          }
+        ],
+        "claim_observed": "Baseline loads /source/sample.py unmodified and calls checkout_total(500, -2): no ValueError is raised and the call returns -1000, so the detector emits claim_present true, confirming the missing negative-quantity guard required by README.md (E_CONTRACT) in sample.py lines 4-5 (E_SAMPLE). The counterexample reads the same source text and inserts the missing `if quantity < 0: raise ValueError(...)` guard before the multiplication; the identical detector then observes a ValueError and emits claim_present false, showing the probe tracks the presence/absence of the validation rather than any constant."
+      },
+      "generated_file_digests": [
+        {
+          "path": "generated/probe_source.py",
+          "sha256": "6159b3fbbc64001dbc2ac21834fa0ac49cf56883bf2fc9f1bdd0132fc7deb855",
+          "bytes": 891
+        },
+        {
+          "path": "generated/probe_guarded.py",
+          "sha256": "9003c1641b127adba3eec764a930cc9bf3a9da03e8431e4ca54457a38aff7cff",
+          "bytes": 1295
+        }
+      ],
+      "runs": [
+        {
+          "name": "baseline",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "claim_present": true
+            }
+          },
+          "valid": true,
+          "actual": {
+            "duration_ms": 53,
+            "exit": 0,
+            "name": "baseline",
+            "observation": {
+              "call": "checkout_total(500, -2)",
+              "claim_present": true,
+              "error_type": null,
+              "raised_value_error": false,
+              "returned": -1000,
+              "target": "/source/sample.py"
+            },
+            "output_limit": false,
+            "stderr": "",
+            "stderr_b64": "",
+            "stderr_bytes": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderr_truncated": false,
+            "stdout": "{\"claim_present\": true, \"target\": \"/source/sample.py\", \"call\": \"checkout_total(500, -2)\", \"raised_value_error\": false, \"error_type\": null, \"returned\": -1000}\n",
+            "stdout_b64": "eyJjbGFpbV9wcmVzZW50IjogdHJ1ZSwgInRhcmdldCI6ICIvc291cmNlL3NhbXBsZS5weSIsICJjYWxsIjogImNoZWNrb3V0X3RvdGFsKDUwMCwgLTIpIiwgInJhaXNlZF92YWx1ZV9lcnJvciI6IGZhbHNlLCAiZXJyb3JfdHlwZSI6IG51bGwsICJyZXR1cm5lZCI6IC0xMDAwfQo=",
+            "stdout_bytes": 158,
+            "stdout_sha256": "2a6239422fa5154e5ec29095abdd379d77fc982888073dc09d84525a1bcd47c2",
+            "stdout_truncated": false,
+            "timeout": false
+          },
+          "stdout": "{\"runs\":[{\"duration_ms\":53,\"exit\":0,\"name\":\"baseline\",\"observation\":{\"call\":\"checkout_total(500, -2)\",\"claim_present\":true,\"error_type\":null,\"raised_value_error\":false,\"returned\":-1000,\"target\":\"/source/sample.py\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\\"claim_present\\\": true, \\\"target\\\": \\\"/source/sample.py\\\", \\\"call\\\": \\\"checkout_total(500, -2)\\\", \\\"raised_value_error\\\": false, \\\"error_type\\\": null, \\\"returned\\\": -1000}\\n\",\"stdout_b64\":\"eyJjbGFpbV9wcmVzZW50IjogdHJ1ZSwgInRhcmdldCI6ICIvc291cmNlL3NhbXBsZS5weSIsICJjYWxsIjogImNoZWNrb3V0X3RvdGFsKDUwMCwgLTIpIiwgInJhaXNlZF92YWx1ZV9lcnJvciI6IGZhbHNlLCAiZXJyb3JfdHlwZSI6IG51bGwsICJyZXR1cm5lZCI6IC0xMDAwfQo=\",\"stdout_bytes\":158,\"stdout_sha256\":\"2a6239422fa5154e5ec29095abdd379d77fc982888073dc09d84525a1bcd47c2\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+          "stderr": "",
+          "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6NTMsImV4aXQiOjAsIm5hbWUiOiJiYXNlbGluZSIsIm9ic2VydmF0aW9uIjp7ImNhbGwiOiJjaGVja291dF90b3RhbCg1MDAsIC0yKSIsImNsYWltX3ByZXNlbnQiOnRydWUsImVycm9yX3R5cGUiOm51bGwsInJhaXNlZF92YWx1ZV9lcnJvciI6ZmFsc2UsInJldHVybmVkIjotMTAwMCwidGFyZ2V0IjoiL3NvdXJjZS9zYW1wbGUucHkifSwib3V0cHV0X2xpbWl0IjpmYWxzZSwic3RkZXJyIjoiIiwic3RkZXJyX2I2NCI6IiIsInN0ZGVycl9ieXRlcyI6MCwic3RkZXJyX3NoYTI1NiI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJzdGRlcnJfdHJ1bmNhdGVkIjpmYWxzZSwic3Rkb3V0Ijoie1wiY2xhaW1fcHJlc2VudFwiOiB0cnVlLCBcInRhcmdldFwiOiBcIi9zb3VyY2Uvc2FtcGxlLnB5XCIsIFwiY2FsbFwiOiBcImNoZWNrb3V0X3RvdGFsKDUwMCwgLTIpXCIsIFwicmFpc2VkX3ZhbHVlX2Vycm9yXCI6IGZhbHNlLCBcImVycm9yX3R5cGVcIjogbnVsbCwgXCJyZXR1cm5lZFwiOiAtMTAwMH1cbiIsInN0ZG91dF9iNjQiOiJleUpqYkdGcGJWOXdjbVZ6Wlc1MElqb2dkSEoxWlN3Z0luUmhjbWRsZENJNklDSXZjMjkxY21ObEwzTmhiWEJzWlM1d2VTSXNJQ0pqWVd4c0lqb2dJbU5vWldOcmIzVjBYM1J2ZEdGc0tEVXdNQ3dnTFRJcElpd2dJbkpoYVhObFpGOTJZV3gxWlY5bGNuSnZjaUk2SUdaaGJITmxMQ0FpWlhKeWIzSmZkSGx3WlNJNklHNTFiR3dzSUNKeVpYUjFjbTVsWkNJNklDMHhNREF3ZlFvPSIsInN0ZG91dF9ieXRlcyI6MTU4LCJzdGRvdXRfc2hhMjU2IjoiMmE2MjM5NDIyZmE1MTU0ZTVlYzI5MDk1YWJkZDM3OWQ3N2ZjOTgyODg4MDczZGMwOWQ4NDUyNWExYmNkNDdjMiIsInN0ZG91dF90cnVuY2F0ZWQiOmZhbHNlLCJ0aW1lb3V0IjpmYWxzZX1dfQo=",
+          "stderr_b64": "",
+          "stdout_sha256": "a84d8734f81c285845d4e487c63f0e8e1eda606fe669cbe70c66eaf3e550509b",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 950,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "timeout": false,
+          "output_limit": false,
+          "container_name": "openab-eval-2f61315e11354a24be4d",
+          "argv": [
+            "docker",
+            "run",
+            "--rm",
+            "--init",
+            "--pull=never",
+            "-i",
+            "--name",
+            "openab-eval-2f61315e11354a24be4d",
+            "--network",
+            "none",
+            "--read-only",
+            "--tmpfs",
+            "/work:rw,nosuid,nodev,size=64m,mode=1777",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+            "--mount",
+            "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/corrected-oci-source,dst=/source,readonly",
+            "--mount",
+            "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-1bne5gyy/fixed-runner.py,dst=/runner.py,readonly",
+            "--user",
+            "65532:65532",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "128",
+            "--memory",
+            "512m",
+            "--cpus",
+            "1.0",
+            "--env",
+            "HOME=/tmp/home",
+            "--env",
+            "PATH=/usr/local/bin:/usr/bin:/bin",
+            "--env",
+            "LANG=C.UTF-8",
+            "--env",
+            "LC_ALL=C.UTF-8",
+            "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+            "python3",
+            "/runner.py"
+          ]
+        },
+        {
+          "name": "counterexample",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "claim_present": false
+            }
+          },
+          "valid": true,
+          "actual": {
+            "duration_ms": 86,
+            "exit": 0,
+            "name": "counterexample",
+            "observation": {
+              "call": "checkout_total(500, -2)",
+              "claim_present": false,
+              "error_type": "ValueError",
+              "patch_applied": true,
+              "raised_value_error": true,
+              "returned": null,
+              "target": "/source/sample.py",
+              "variant": "guarded"
+            },
+            "output_limit": false,
+            "stderr": "",
+            "stderr_b64": "",
+            "stderr_bytes": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderr_truncated": false,
+            "stdout": "{\"claim_present\": false, \"target\": \"/source/sample.py\", \"variant\": \"guarded\", \"patch_applied\": true, \"call\": \"checkout_total(500, -2)\", \"raised_value_error\": true, \"error_type\": \"ValueError\", \"returned\": null}\n",
+            "stdout_b64": "eyJjbGFpbV9wcmVzZW50IjogZmFsc2UsICJ0YXJnZXQiOiAiL3NvdXJjZS9zYW1wbGUucHkiLCAidmFyaWFudCI6ICJndWFyZGVkIiwgInBhdGNoX2FwcGxpZWQiOiB0cnVlLCAiY2FsbCI6ICJjaGVja291dF90b3RhbCg1MDAsIC0yKSIsICJyYWlzZWRfdmFsdWVfZXJyb3IiOiB0cnVlLCAiZXJyb3JfdHlwZSI6ICJWYWx1ZUVycm9yIiwgInJldHVybmVkIjogbnVsbH0K",
+            "stdout_bytes": 210,
+            "stdout_sha256": "02084c9113e20c46f64511af2022831844cb3a38f9b7338222e529a108fbe4c6",
+            "stdout_truncated": false,
+            "timeout": false
+          },
+          "stdout": "{\"runs\":[{\"duration_ms\":86,\"exit\":0,\"name\":\"counterexample\",\"observation\":{\"call\":\"checkout_total(500, -2)\",\"claim_present\":false,\"error_type\":\"ValueError\",\"patch_applied\":true,\"raised_value_error\":true,\"returned\":null,\"target\":\"/source/sample.py\",\"variant\":\"guarded\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\\"claim_present\\\": false, \\\"target\\\": \\\"/source/sample.py\\\", \\\"variant\\\": \\\"guarded\\\", \\\"patch_applied\\\": true, \\\"call\\\": \\\"checkout_total(500, -2)\\\", \\\"raised_value_error\\\": true, \\\"error_type\\\": \\\"ValueError\\\", \\\"returned\\\": null}\\n\",\"stdout_b64\":\"eyJjbGFpbV9wcmVzZW50IjogZmFsc2UsICJ0YXJnZXQiOiAiL3NvdXJjZS9zYW1wbGUucHkiLCAidmFyaWFudCI6ICJndWFyZGVkIiwgInBhdGNoX2FwcGxpZWQiOiB0cnVlLCAiY2FsbCI6ICJjaGVja291dF90b3RhbCg1MDAsIC0yKSIsICJyYWlzZWRfdmFsdWVfZXJyb3IiOiB0cnVlLCAiZXJyb3JfdHlwZSI6ICJWYWx1ZUVycm9yIiwgInJldHVybmVkIjogbnVsbH0K\",\"stdout_bytes\":210,\"stdout_sha256\":\"02084c9113e20c46f64511af2022831844cb3a38f9b7338222e529a108fbe4c6\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+          "stderr": "",
+          "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6ODYsImV4aXQiOjAsIm5hbWUiOiJjb3VudGVyZXhhbXBsZSIsIm9ic2VydmF0aW9uIjp7ImNhbGwiOiJjaGVja291dF90b3RhbCg1MDAsIC0yKSIsImNsYWltX3ByZXNlbnQiOmZhbHNlLCJlcnJvcl90eXBlIjoiVmFsdWVFcnJvciIsInBhdGNoX2FwcGxpZWQiOnRydWUsInJhaXNlZF92YWx1ZV9lcnJvciI6dHJ1ZSwicmV0dXJuZWQiOm51bGwsInRhcmdldCI6Ii9zb3VyY2Uvc2FtcGxlLnB5IiwidmFyaWFudCI6Imd1YXJkZWQifSwib3V0cHV0X2xpbWl0IjpmYWxzZSwic3RkZXJyIjoiIiwic3RkZXJyX2I2NCI6IiIsInN0ZGVycl9ieXRlcyI6MCwic3RkZXJyX3NoYTI1NiI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJzdGRlcnJfdHJ1bmNhdGVkIjpmYWxzZSwic3Rkb3V0Ijoie1wiY2xhaW1fcHJlc2VudFwiOiBmYWxzZSwgXCJ0YXJnZXRcIjogXCIvc291cmNlL3NhbXBsZS5weVwiLCBcInZhcmlhbnRcIjogXCJndWFyZGVkXCIsIFwicGF0Y2hfYXBwbGllZFwiOiB0cnVlLCBcImNhbGxcIjogXCJjaGVja291dF90b3RhbCg1MDAsIC0yKVwiLCBcInJhaXNlZF92YWx1ZV9lcnJvclwiOiB0cnVlLCBcImVycm9yX3R5cGVcIjogXCJWYWx1ZUVycm9yXCIsIFwicmV0dXJuZWRcIjogbnVsbH1cbiIsInN0ZG91dF9iNjQiOiJleUpqYkdGcGJWOXdjbVZ6Wlc1MElqb2dabUZzYzJVc0lDSjBZWEpuWlhRaU9pQWlMM052ZFhKalpTOXpZVzF3YkdVdWNIa2lMQ0FpZG1GeWFXRnVkQ0k2SUNKbmRXRnlaR1ZrSWl3Z0luQmhkR05vWDJGd2NHeHBaV1FpT2lCMGNuVmxMQ0FpWTJGc2JDSTZJQ0pqYUdWamEyOTFkRjkwYjNSaGJDZzFNREFzSUMweUtTSXNJQ0p5WVdselpXUmZkbUZzZFdWZlpYSnliM0lpT2lCMGNuVmxMQ0FpWlhKeWIzSmZkSGx3WlNJNklDSldZV3gxWlVWeWNtOXlJaXdnSW5KbGRIVnlibVZrSWpvZ2JuVnNiSDBLIiwic3Rkb3V0X2J5dGVzIjoyMTAsInN0ZG91dF9zaGEyNTYiOiIwMjA4NGM5MTEzZTIwYzQ2ZjY0NTExYWYyMDIyODMxODQ0Y2IzYTM4ZjliNzMzODIyMmU1MjlhMTA4ZmJlNGM2Iiwic3Rkb3V0X3RydW5jYXRlZCI6ZmFsc2UsInRpbWVvdXQiOmZhbHNlfV19Cg==",
+          "stderr_b64": "",
+          "stdout_sha256": "f8b9647ad1ad86d156cfc8f10730228f4114db487e79d57d136a86c0bd11c7e0",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 1132,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "timeout": false,
+          "output_limit": false,
+          "container_name": "openab-eval-c311bee9b28b4562882d",
+          "argv": [
+            "docker",
+            "run",
+            "--rm",
+            "--init",
+            "--pull=never",
+            "-i",
+            "--name",
+            "openab-eval-c311bee9b28b4562882d",
+            "--network",
+            "none",
+            "--read-only",
+            "--tmpfs",
+            "/work:rw,nosuid,nodev,size=64m,mode=1777",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+            "--mount",
+            "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/corrected-oci-source,dst=/source,readonly",
+            "--mount",
+            "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-1bne5gyy/fixed-runner.py,dst=/runner.py,readonly",
+            "--user",
+            "65532:65532",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "128",
+            "--memory",
+            "512m",
+            "--cpus",
+            "1.0",
+            "--env",
+            "HOME=/tmp/home",
+            "--env",
+            "PATH=/usr/local/bin:/usr/bin:/bin",
+            "--env",
+            "LANG=C.UTF-8",
+            "--env",
+            "LC_ALL=C.UTF-8",
+            "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+            "python3",
+            "/runner.py"
+          ]
+        }
+      ],
+      "operator_checks": "not_run"
+    }
+  }
+]

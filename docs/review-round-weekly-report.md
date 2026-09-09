@@ -179,6 +179,7 @@ are included in `report_id`. Partial or failed evaluations are shown for
 coverage but do not produce a quality score. Usefulness, disagreement,
 validation classes, omission candidates, and human-confirmed escapes retain
 separate explicit denominators from delivery reliability and human review.
+The disagreement numerator counts items whose two valid typed judge verdicts differ, and its denominator counts only items with exactly two valid assessments; synthesis prose is qualitative, and a missing legacy denominator remains unknown.
 
 ## Output and checks
 

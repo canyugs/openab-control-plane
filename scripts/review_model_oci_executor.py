@@ -216,8 +216,11 @@ def validate_generated_plan(plan: Mapping[str, Any], evidence_ids: set[str]) -> 
     seen_paths: set[str] = set()
     total = 0
     for file in files:
-        if not isinstance(file, Mapping) or set(file) != {"path", "utf8"}:
-            raise OCIError("generated files require only path and utf8")
+        if not isinstance(file, Mapping):
+            raise OCIError("generated file entry is invalid")
+        file_fields = set(file)
+        if file_fields not in ({"path", "utf8"}, {"path", "utf8", "bytes", "sha256"}):
+            raise OCIError("generated files require raw or canonical normalized fields")
         path = _safe_generated_path(file["path"])
         if path in seen_paths:
             raise OCIError("duplicate generated file path")
@@ -230,6 +233,13 @@ def validate_generated_plan(plan: Mapping[str, Any], evidence_ids: set[str]) -> 
         total += len(data)
         if total > MAX_GENERATED_TOTAL_BYTES:
             raise OCIError("generated files exceed the total size bound")
+        if file_fields == {"path", "utf8", "bytes", "sha256"}:
+            if isinstance(file["bytes"], bool) or not isinstance(file["bytes"], int) or file["bytes"] != len(data):
+                raise OCIError("generated file byte count mismatch")
+            if not isinstance(file["sha256"], str) or not _SHA256.fullmatch(file["sha256"]):
+                raise OCIError("generated file digest is invalid")
+            if file["sha256"] != sha256_bytes(data):
+                raise OCIError("generated file digest mismatch")
         normalized_files.append(
             {"path": path, "utf8": file["utf8"], "sha256": sha256_bytes(data), "bytes": len(data)}
         )

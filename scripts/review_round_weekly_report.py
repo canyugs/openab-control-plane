@@ -1254,6 +1254,8 @@ def _evaluation_metrics(root: Optional[Path]) -> dict[str, Any]:
     supported = refuted = unresolved = 0
     usefulness = Counter({"useful": 0, "not_useful": 0, "unknown": 0})
     disagreement = 0
+    disagreement_denominator = 0
+    disagreement_denominator_known = True
     quality_denominator = 0
     validation = Counter({key: 0 for key in VALIDATION_CLASSES})
     validation_denominator = 0
@@ -1274,6 +1276,15 @@ def _evaluation_metrics(root: Optional[Path]) -> dict[str, Any]:
             for key in usefulness:
                 usefulness[key] += int(raw_usefulness.get(key, 0) or 0)
             disagreement += int(model.get("disagreement_items", 0) or 0)
+            raw_disagreement_denominator = model.get("disagreement_denominator")
+            if (
+                isinstance(raw_disagreement_denominator, int)
+                and not isinstance(raw_disagreement_denominator, bool)
+                and raw_disagreement_denominator >= 0
+            ):
+                disagreement_denominator += raw_disagreement_denominator
+            else:
+                disagreement_denominator_known = False
         for key in VALIDATION_CLASSES:
             validation[key] += int(classes.get(key, 0) or 0)
         validation_denominator += sum(int(classes.get(key, 0) or 0) for key in VALIDATION_CLASSES)
@@ -1296,7 +1307,7 @@ def _evaluation_metrics(root: Optional[Path]) -> dict[str, Any]:
         "usefulness": dict(sorted(usefulness.items())),
         "usefulness_denominator": sum(usefulness.values()),
         "disagreement_items": disagreement,
-        "disagreement_denominator": len(ordered),
+        "disagreement_denominator": disagreement_denominator if disagreement_denominator_known else None,
         "validation": dict(sorted(validation.items())),
         "validation_denominator": validation_denominator,
         "omissions": {"candidate_count": candidate_count, "automatically_supported_omission": automatic, "unknown": omission_unknown},

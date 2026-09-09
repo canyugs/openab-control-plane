@@ -1,0 +1,386 @@
+[
+  {
+    "plan": ".agentflow/features/review-commit-integrity/artifacts/A-001-model-evaluation/live-F-1-plan.json",
+    "result": {
+      "status": "environment_blocked",
+      "classification": "environment_blocked",
+      "controls_passed": false,
+      "claim_present": null,
+      "reason": "docker_daemon_unavailable",
+      "preflight": {
+        "status": "environment_blocked",
+        "reason": "docker_daemon_unavailable",
+        "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+        "stderr_sha256": "3ac0f9284a218a205044495f361321c241db605b72efb97d40d5512b8add11c6",
+        "stderr": "failed to connect to the docker API at unix:///Users/can/.docker/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /Users/can/.docker/run/docker.sock: connect: no such file or directory\n"
+      },
+      "plan": {
+        "item_id": "F-1",
+        "files": [
+          {
+            "path": "generated/probe_actual.py",
+            "utf8": "import importlib.util\nimport inspect\nimport json\n\nSRC = \"/source/sample.py\"\n\nspec = importlib.util.spec_from_file_location(\"sample_under_test\", SRC)\nmodule = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(module)\n\ncan_read = getattr(module, \"can_read\")\nsource_text = inspect.getsource(can_read)\n\n# README rule: access only for public documents, or an authenticated\n# requester equal to owner. A non-owner authenticated requester asking for\n# a private document must be denied.\nnon_owner_private = can_read(\"alice\", \"bob\", public=False)\nowner_private = can_read(\"bob\", \"bob\", public=False)\nanonymous_public = can_read(\"\", \"bob\", public=True)\n\nclaim_present = bool(non_owner_private)\n\nprint(json.dumps({\n    \"probe\": \"actual_source\",\n    \"source_path\": SRC,\n    \"can_read_source\": source_text,\n    \"non_owner_private_document\": bool(non_owner_private),\n    \"owner_private_document\": bool(owner_private),\n    \"anonymous_public_document\": bool(anonymous_public),\n    \"expected_by_readme_for_non_owner_private\": False,\n    \"claim_present\": claim_present,\n}, indent=2, sort_keys=True))\n",
+            "sha256": "66d1e3196e9918c474dc68da19112b83bec7c5b7ad29439756327ebf069509ed",
+            "bytes": 1095
+          },
+          {
+            "path": "generated/probe_fixed.py",
+            "utf8": "import importlib.util\nimport inspect\nimport json\n\nSRC = \"/source/sample.py\"\n\nspec = importlib.util.spec_from_file_location(\"sample_under_test\", SRC)\nmodule = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(module)\n\noriginal = getattr(module, \"can_read\")\noriginal_signature = str(inspect.signature(original))\noriginal_source = inspect.getsource(original)\n\n\ndef fixed_can_read(requester, owner, public=False):\n    \"\"\"README-conformant control: public documents, or authenticated owner.\"\"\"\n    if public:\n        return True\n    return bool(requester) and requester == owner\n\n\n# Same call shape as the real function, exercised against the control that\n# implements the documented rule.\nnon_owner_private = fixed_can_read(\"alice\", \"bob\", public=False)\nowner_private = fixed_can_read(\"bob\", \"bob\", public=False)\nanonymous_public = fixed_can_read(\"\", \"bob\", public=True)\n\nclaim_present = bool(non_owner_private)\n\nprint(json.dumps({\n    \"probe\": \"readme_conformant_control\",\n    \"source_path\": SRC,\n    \"loaded_original_signature\": original_signature,\n    \"loaded_original_source\": original_source,\n    \"non_owner_private_document\": bool(non_owner_private),\n    \"owner_private_document\": bool(owner_private),\n    \"anonymous_public_document\": bool(anonymous_public),\n    \"expected_by_readme_for_non_owner_private\": False,\n    \"claim_present\": claim_present,\n}, indent=2, sort_keys=True))\n",
+            "sha256": "5fd0b14a063094d720534bc335c9a7b5d619a40a6cfbe330d59626c1a93e9870",
+            "bytes": 1394
+          }
+        ],
+        "runs": [
+          {
+            "name": "baseline",
+            "argv": [
+              "python3",
+              "generated/probe_actual.py"
+            ],
+            "cwd": "/work",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": true
+              }
+            },
+            "evidence_ids": [
+              "E_SAMPLE",
+              "E_CONTRACT"
+            ]
+          },
+          {
+            "name": "counterexample",
+            "argv": [
+              "python3",
+              "generated/probe_fixed.py"
+            ],
+            "cwd": "/work",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": false
+              }
+            },
+            "evidence_ids": [
+              "E_SAMPLE",
+              "E_CONTRACT"
+            ]
+          }
+        ],
+        "claim_observed": "Baseline loads /source/sample.py via importlib and calls the real can_read(\"alice\", \"bob\", public=False); it returns True, so an authenticated non-owner can read a private document, contradicting the README rule that access is permitted only for public documents or an authenticated requester equal to owner. The probe prints claim_present true and echoes the loaded function body. The counterexample loads the same source file (recording the real can_read signature and body) and evaluates the identical call shape against a README-conformant control requiring public or requester == owner; that denies the non-owner private case while still allowing owner-private and anonymous-public, printing claim_present false. The opposing results isolate the defect to the `public or bool(requester)` predicate at sample.py lines 1-2 rather than to the harness."
+      },
+      "runs": [
+        {
+          "name": "baseline",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "claim_present": true
+            }
+          },
+          "valid": false,
+          "actual": null,
+          "stdout": "",
+          "stderr": "",
+          "stdout_b64": "",
+          "stderr_b64": "",
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 0,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "timeout": false,
+          "output_limit": false,
+          "reason": "docker_daemon_unavailable"
+        },
+        {
+          "name": "counterexample",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "claim_present": false
+            }
+          },
+          "valid": false,
+          "actual": null,
+          "stdout": "",
+          "stderr": "",
+          "stdout_b64": "",
+          "stderr_b64": "",
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 0,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "timeout": false,
+          "output_limit": false,
+          "reason": "docker_daemon_unavailable"
+        }
+      ],
+      "operator_checks": "not_run"
+    }
+  },
+  {
+    "plan": ".agentflow/features/review-commit-integrity/artifacts/A-001-model-evaluation/live-omission-1-e456c6d814336027-plan.json",
+    "result": {
+      "status": "environment_blocked",
+      "classification": "environment_blocked",
+      "controls_passed": false,
+      "claim_present": null,
+      "reason": "docker_daemon_unavailable",
+      "preflight": {
+        "status": "environment_blocked",
+        "reason": "docker_daemon_unavailable",
+        "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+        "stderr_sha256": "3ac0f9284a218a205044495f361321c241db605b72efb97d40d5512b8add11c6",
+        "stderr": "failed to connect to the docker API at unix:///Users/can/.docker/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /Users/can/.docker/run/docker.sock: connect: no such file or directory\n"
+      },
+      "plan": {
+        "item_id": "omission-1-e456c6d814336027",
+        "files": [
+          {
+            "path": "generated/oracle.py",
+            "utf8": "\"\"\"Shared behavioural oracle for the can_read owner-check claim.\n\nContract (README.md of the supplied source packet): can_read permits access\nonly for public documents or an authenticated requester equal to owner.\n\nThe claim under validation is that can_read ignores `owner` entirely, so an\nauthenticated non-owner requester is granted read access to a non-public\ndocument.\n\"\"\"\n\nimport hashlib\nimport importlib.util\n\nSOURCE_PATH = \"/source/sample.py\"\n\n\ndef read_source_text(path=SOURCE_PATH):\n    with open(path, \"r\", encoding=\"utf-8\") as handle:\n        return handle.read()\n\n\ndef source_sha256(path=SOURCE_PATH):\n    return hashlib.sha256(read_source_text(path).encode(\"utf-8\")).hexdigest()\n\n\ndef load_module(path, name):\n    spec = importlib.util.spec_from_file_location(name, path)\n    module = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    return module\n\n\ndef probe(can_read):\n    \"\"\"Exercise can_read and report whether `owner` influences the decision.\"\"\"\n    authenticated_non_owner = bool(can_read(\"alice\", \"bob\"))\n    authenticated_owner = bool(can_read(\"bob\", \"bob\"))\n    anonymous_public = bool(can_read(None, \"bob\", True))\n    anonymous_private = bool(can_read(None, \"bob\"))\n    owner_ignored = authenticated_non_owner and authenticated_owner\n    return {\n        \"can_read_alice_bob\": authenticated_non_owner,\n        \"can_read_bob_bob\": authenticated_owner,\n        \"can_read_none_bob_public\": anonymous_public,\n        \"can_read_none_bob_private\": anonymous_private,\n        \"contract_violated_owner_ignored\": owner_ignored,\n    }\n",
+            "sha256": "9e94fb617c2bfe8514ed2d4088d7f8c9b7e42db4e57900dc8992cfae29cbe259",
+            "bytes": 1578
+          },
+          {
+            "path": "generated/fixed_sample.py",
+            "utf8": "\"\"\"Contract-conforming reference implementation used by the counterexample.\n\nIdentical in shape to /source/sample.py except that can_read compares the\nrequester against the owner, as the README contract requires.\n\"\"\"\n\n\ndef can_read(requester, owner, public=False):\n    return public or (bool(requester) and requester == owner)\n\n\ndef checkout_total(price, quantity):\n    if quantity < 0:\n        raise ValueError(\"quantity must not be negative\")\n    return price * quantity\n",
+            "sha256": "6707264b9c49eff8f8b7bbf43ea4ccce9eed4095da561b9f680d45b640364312",
+            "bytes": 473
+          },
+          {
+            "path": "generated/check_source.py",
+            "utf8": "\"\"\"Baseline: apply the oracle to the supplied read-only source /source/sample.py.\"\"\"\n\nimport json\nimport os\nimport sys\n\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n\nimport oracle\n\n\ndef main():\n    source_text = oracle.read_source_text()\n    module = oracle.load_module(oracle.SOURCE_PATH, \"supplied_sample\")\n    result = oracle.probe(module.can_read)\n    claim_present = bool(result[\"contract_violated_owner_ignored\"])\n    report = {\n        \"subject\": \"supplied source\",\n        \"subject_path\": oracle.SOURCE_PATH,\n        \"source_sha256\": oracle.source_sha256(),\n        \"can_read_body\": source_text.splitlines()[1].strip(),\n        \"mentions_owner_comparison\": \"requester == owner\" in source_text\n        or \"owner ==\" in source_text,\n        \"probe\": result,\n        \"claim_present\": claim_present,\n    }\n    print(json.dumps(report, indent=2, sort_keys=True))\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n",
+            "sha256": "262ac2501488c64b03da9b5ed7c6a5b60be858c698b416ff455bd3ac71be1b76",
+            "bytes": 947
+          },
+          {
+            "path": "generated/check_fixed.py",
+            "utf8": "\"\"\"Counterexample: the same oracle applied to a contract-conforming can_read.\n\nThis run still reads and imports the supplied source at /source/sample.py so\nthat the two implementations are compared directly; the reported claim_present\nis computed from the conforming implementation, showing the oracle is\ndiscriminating rather than always-true.\n\"\"\"\n\nimport json\nimport os\nimport sys\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\n\nimport oracle\n\n\ndef main():\n    source_text = oracle.read_source_text()\n    supplied = oracle.load_module(oracle.SOURCE_PATH, \"supplied_sample\")\n    fixed = oracle.load_module(os.path.join(HERE, \"fixed_sample.py\"), \"fixed_sample\")\n\n    supplied_result = oracle.probe(supplied.can_read)\n    fixed_result = oracle.probe(fixed.can_read)\n    claim_present = bool(fixed_result[\"contract_violated_owner_ignored\"])\n\n    report = {\n        \"subject\": \"contract-conforming reference implementation\",\n        \"subject_path\": os.path.join(HERE, \"fixed_sample.py\"),\n        \"supplied_source_path\": oracle.SOURCE_PATH,\n        \"supplied_source_sha256\": oracle.source_sha256(),\n        \"supplied_can_read_body\": source_text.splitlines()[1].strip(),\n        \"supplied_probe\": supplied_result,\n        \"probe\": fixed_result,\n        \"implementations_differ\": supplied_result != fixed_result,\n        \"claim_present\": claim_present,\n    }\n    print(json.dumps(report, indent=2, sort_keys=True))\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n",
+            "sha256": "0e2dd9ee50492337998d4e84c1c1e6cd88ebbe8c043e2b72abd1e7b64c1336b9",
+            "bytes": 1501
+          }
+        ],
+        "runs": [
+          {
+            "name": "baseline",
+            "argv": [
+              "python3",
+              "generated/check_source.py"
+            ],
+            "cwd": "/work",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": true
+              }
+            },
+            "evidence_ids": [
+              "E_SAMPLE",
+              "E_CONTRACT"
+            ]
+          },
+          {
+            "name": "counterexample",
+            "argv": [
+              "python3",
+              "generated/check_fixed.py"
+            ],
+            "cwd": "/work",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": false
+              }
+            },
+            "evidence_ids": [
+              "E_SAMPLE",
+              "E_CONTRACT"
+            ]
+          }
+        ],
+        "claim_observed": "Baseline imports the supplied /source/sample.py and probes can_read: can_read(\"alice\", \"bob\") returns True and can_read(\"bob\", \"bob\") returns True, so an authenticated non-owner is granted read access to a non-public document; the source text contains no requester/owner comparison. That matches the claim that can_read ignores the `owner` parameter, violating the README contract (access only for public documents or an authenticated requester equal to owner), so claim_present is true. The counterexample runs the identical oracle (while still reading and importing the supplied source for comparison) against a contract-conforming implementation `return public or (bool(requester) and requester == owner)`, where can_read(\"alice\", \"bob\") is False while can_read(\"bob\", \"bob\") and the public case remain True; claim_present is false there, showing the oracle discriminates on the owner check rather than always reporting the defect."
+      },
+      "runs": [
+        {
+          "name": "baseline",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "claim_present": true
+            }
+          },
+          "valid": false,
+          "actual": null,
+          "stdout": "",
+          "stderr": "",
+          "stdout_b64": "",
+          "stderr_b64": "",
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 0,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "timeout": false,
+          "output_limit": false,
+          "reason": "docker_daemon_unavailable"
+        },
+        {
+          "name": "counterexample",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "claim_present": false
+            }
+          },
+          "valid": false,
+          "actual": null,
+          "stdout": "",
+          "stderr": "",
+          "stdout_b64": "",
+          "stderr_b64": "",
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 0,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "timeout": false,
+          "output_limit": false,
+          "reason": "docker_daemon_unavailable"
+        }
+      ],
+      "operator_checks": "not_run"
+    }
+  },
+  {
+    "plan": ".agentflow/features/review-commit-integrity/artifacts/A-001-model-evaluation/live-omission-2-a351ce82491f2fdc-plan.json",
+    "result": {
+      "status": "environment_blocked",
+      "classification": "environment_blocked",
+      "controls_passed": false,
+      "claim_present": null,
+      "reason": "docker_daemon_unavailable",
+      "preflight": {
+        "status": "environment_blocked",
+        "reason": "docker_daemon_unavailable",
+        "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+        "stderr_sha256": "3ac0f9284a218a205044495f361321c241db605b72efb97d40d5512b8add11c6",
+        "stderr": "failed to connect to the docker API at unix:///Users/can/.docker/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /Users/can/.docker/run/docker.sock: connect: no such file or directory\n"
+      },
+      "plan": {
+        "item_id": "omission-2-a351ce82491f2fdc",
+        "files": [
+          {
+            "path": "generated/probe_source.py",
+            "utf8": "import importlib.util\nimport json\n\nSRC = \"/source/sample.py\"\n\nspec = importlib.util.spec_from_file_location(\"sample_under_test\", SRC)\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\n\nraised_value_error = False\nreturned = None\nerror_type = None\ntry:\n    returned = mod.checkout_total(500, -2)\nexcept ValueError:\n    raised_value_error = True\n    error_type = \"ValueError\"\nexcept Exception as exc:\n    error_type = type(exc).__name__\n\n# Claim: checkout_total does not validate quantity and never raises ValueError,\n# instead returning a negative product for a negative quantity.\nclaim_present = (not raised_value_error) and returned == -1000\n\nprint(json.dumps({\n    \"claim_present\": bool(claim_present),\n    \"target\": SRC,\n    \"call\": \"checkout_total(500, -2)\",\n    \"raised_value_error\": raised_value_error,\n    \"error_type\": error_type,\n    \"returned\": returned,\n}))\n",
+            "sha256": "6159b3fbbc64001dbc2ac21834fa0ac49cf56883bf2fc9f1bdd0132fc7deb855",
+            "bytes": 891
+          },
+          {
+            "path": "generated/probe_guarded.py",
+            "utf8": "import json\n\nSRC = \"/source/sample.py\"\n\nwith open(SRC, \"r\", encoding=\"utf-8\") as fh:\n    text = fh.read()\n\nORIGINAL = \"def checkout_total(price, quantity):\\n    return price * quantity\"\nGUARDED = (\n    \"def checkout_total(price, quantity):\\n\"\n    \"    if quantity < 0:\\n\"\n    \"        raise ValueError('quantity must not be negative')\\n\"\n    \"    return price * quantity\"\n)\n\npatched = text.replace(ORIGINAL, GUARDED)\npatch_applied = patched != text\n\nnamespace = {\"__name__\": \"sample_guarded\"}\nexec(compile(patched, SRC + \" (guarded)\", \"exec\"), namespace)\n\nraised_value_error = False\nreturned = None\nerror_type = None\ntry:\n    returned = namespace[\"checkout_total\"](500, -2)\nexcept ValueError:\n    raised_value_error = True\n    error_type = \"ValueError\"\nexcept Exception as exc:\n    error_type = type(exc).__name__\n\n# Same detector as the baseline: the claim holds only when no ValueError is\n# raised and the negative product -1000 is returned.\nclaim_present = (not raised_value_error) and returned == -1000\n\nprint(json.dumps({\n    \"claim_present\": bool(claim_present),\n    \"target\": SRC,\n    \"variant\": \"guarded\",\n    \"patch_applied\": patch_applied,\n    \"call\": \"checkout_total(500, -2)\",\n    \"raised_value_error\": raised_value_error,\n    \"error_type\": error_type,\n    \"returned\": returned,\n}))\n",
+            "sha256": "9003c1641b127adba3eec764a930cc9bf3a9da03e8431e4ca54457a38aff7cff",
+            "bytes": 1295
+          }
+        ],
+        "runs": [
+          {
+            "name": "baseline",
+            "argv": [
+              "python3",
+              "generated/probe_source.py"
+            ],
+            "cwd": "/work",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": true
+              }
+            },
+            "evidence_ids": [
+              "E_SAMPLE",
+              "E_CONTRACT"
+            ]
+          },
+          {
+            "name": "counterexample",
+            "argv": [
+              "python3",
+              "generated/probe_guarded.py"
+            ],
+            "cwd": "/work",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": false
+              }
+            },
+            "evidence_ids": [
+              "E_SAMPLE",
+              "E_CONTRACT"
+            ]
+          }
+        ],
+        "claim_observed": "Baseline loads /source/sample.py unmodified and calls checkout_total(500, -2): no ValueError is raised and the call returns -1000, so the detector emits claim_present true, confirming the missing negative-quantity guard required by README.md (E_CONTRACT) in sample.py lines 4-5 (E_SAMPLE). The counterexample reads the same source text and inserts the missing `if quantity < 0: raise ValueError(...)` guard before the multiplication; the identical detector then observes a ValueError and emits claim_present false, showing the probe tracks the presence/absence of the validation rather than any constant."
+      },
+      "runs": [
+        {
+          "name": "baseline",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "claim_present": true
+            }
+          },
+          "valid": false,
+          "actual": null,
+          "stdout": "",
+          "stderr": "",
+          "stdout_b64": "",
+          "stderr_b64": "",
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 0,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "timeout": false,
+          "output_limit": false,
+          "reason": "docker_daemon_unavailable"
+        },
+        {
+          "name": "counterexample",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "claim_present": false
+            }
+          },
+          "valid": false,
+          "actual": null,
+          "stdout": "",
+          "stderr": "",
+          "stdout_b64": "",
+          "stderr_b64": "",
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 0,
+          "stderr_bytes": 0,
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "timeout": false,
+          "output_limit": false,
+          "reason": "docker_daemon_unavailable"
+        }
+      ],
+      "operator_checks": "not_run"
+    }
+  }
+]

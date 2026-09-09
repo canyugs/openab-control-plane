@@ -1,0 +1,76 @@
+diff --git a/docs/review-round-weekly-report.md b/docs/review-round-weekly-report.md
+index d877596..21b3be2 100644
+--- a/docs/review-round-weekly-report.md
++++ b/docs/review-round-weekly-report.md
+@@ -179,6 +179,7 @@ are included in `report_id`. Partial or failed evaluations are shown for
+ coverage but do not produce a quality score. Usefulness, disagreement,
+ validation classes, omission candidates, and human-confirmed escapes retain
+ separate explicit denominators from delivery reliability and human review.
++The disagreement numerator counts items whose two valid typed judge verdicts differ, and its denominator counts only items with exactly two valid assessments; synthesis prose is qualitative, and a missing legacy denominator remains unknown.
+ 
+ ## Output and checks
+ 
+diff --git a/scripts/review_model_evaluation.py b/scripts/review_model_evaluation.py
+index 205e21c..45b7d29 100644
+--- a/scripts/review_model_evaluation.py
++++ b/scripts/review_model_evaluation.py
+@@ -2270,7 +2270,12 @@ class EvaluationController:
+         judge_valid = sum(item.get("valid_judge_count", 0) for item in all_items)
+         classes = {key: sum(1 for item in all_items if item.get("classification") == key) for key in ("static_evidence", "executed_reproduced", "executed_refuted", "environment_blocked", "unproven")}
+         automatic = sum(1 for item in omissions if self.discovery_complete and item.get("scoreable") and isinstance(item.get("synthesis"), Mapping) and item["synthesis"].get("verdict") == "supported" and item.get("relation", {}).get("is_new_candidate"))
+-        disagreements = sum(1 for item in all_items if item.get("judge_disagreement") or (isinstance(item.get("synthesis"), Mapping) and item["synthesis"].get("disagreement")))
++        disagreement_denominator = sum(1 for item in all_items if item.get("valid_judge_count") == 2)
++        disagreements = sum(
++            1
++            for item in all_items
++            if item.get("valid_judge_count") == 2 and item.get("judge_disagreement") is True
++        )
+         identity: dict[str, Any] = {}
+         for role in ROLE_NAMES:
+             records = self._role_records.get(role, [])
+@@ -2319,6 +2324,7 @@ class EvaluationController:
+                 "unresolved": verdicts["unknown"] + sum(1 for item in originals if not item.get("synthesis")) + execution_conflicts,
+                 "valid_judgments": judge_valid,
+                 "disagreement_items": disagreements,
++                "disagreement_denominator": disagreement_denominator,
+                 "usefulness": usefulness,
+                 "scoreable_items": sum(1 for item in all_items if self.discovery_complete and item.get("scoreable")),
+                 "estimated_cost_usd": sum(
+diff --git a/scripts/review_round_weekly_report.py b/scripts/review_round_weekly_report.py
+index 7e525a0..13aae45 100644
+--- a/scripts/review_round_weekly_report.py
++++ b/scripts/review_round_weekly_report.py
+@@ -1254,6 +1254,8 @@ def _evaluation_metrics(root: Optional[Path]) -> dict[str, Any]:
+     supported = refuted = unresolved = 0
+     usefulness = Counter({"useful": 0, "not_useful": 0, "unknown": 0})
+     disagreement = 0
++    disagreement_denominator = 0
++    disagreement_denominator_known = True
+     quality_denominator = 0
+     validation = Counter({key: 0 for key in VALIDATION_CLASSES})
+     validation_denominator = 0
+@@ -1274,6 +1276,15 @@ def _evaluation_metrics(root: Optional[Path]) -> dict[str, Any]:
+             for key in usefulness:
+                 usefulness[key] += int(raw_usefulness.get(key, 0) or 0)
+             disagreement += int(model.get("disagreement_items", 0) or 0)
++            raw_disagreement_denominator = model.get("disagreement_denominator")
++            if (
++                isinstance(raw_disagreement_denominator, int)
++                and not isinstance(raw_disagreement_denominator, bool)
++                and raw_disagreement_denominator >= 0
++            ):
++                disagreement_denominator += raw_disagreement_denominator
++            else:
++                disagreement_denominator_known = False
+         for key in VALIDATION_CLASSES:
+             validation[key] += int(classes.get(key, 0) or 0)
+         validation_denominator += sum(int(classes.get(key, 0) or 0) for key in VALIDATION_CLASSES)
+@@ -1296,7 +1307,7 @@ def _evaluation_metrics(root: Optional[Path]) -> dict[str, Any]:
+         "usefulness": dict(sorted(usefulness.items())),
+         "usefulness_denominator": sum(usefulness.values()),
+         "disagreement_items": disagreement,
+-        "disagreement_denominator": len(ordered),
++        "disagreement_denominator": disagreement_denominator if disagreement_denominator_known else None,
+         "validation": dict(sorted(validation.items())),
+         "validation_denominator": validation_denominator,
+         "omissions": {"candidate_count": candidate_count, "automatically_supported_omission": automatic, "unknown": omission_unknown},

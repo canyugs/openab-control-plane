@@ -155,6 +155,29 @@ class OciExecutorBehaviorTests(unittest.TestCase):
             with self.assertRaises(module.OCIError):
                 module.validate_generated_plan(invalid, {"E1"})
 
+    def test_normalized_plan_can_be_validated_idempotently(self):
+        module = load_module()
+        raw = plan_with_claims(module)
+        normalized = module.validate_generated_plan(raw, {"E1"})
+
+        self.assertEqual(module.validate_generated_plan(normalized, {"E1"}), normalized)
+
+    def test_normalized_file_metadata_must_be_complete_and_derived(self):
+        module = load_module()
+        normalized = module.validate_generated_plan(plan_with_claims(module), {"E1"})
+        file = normalized["files"][0]
+        invalid_files = [
+            {**file, "bytes": file["bytes"] + 1},
+            {**file, "sha256": "0" * 64},
+            {key: value for key, value in file.items() if key != "bytes"},
+            {key: value for key, value in file.items() if key != "sha256"},
+            {**file, "unexpected": True},
+        ]
+
+        for invalid_file in invalid_files:
+            with self.assertRaises(module.OCIError):
+                module.validate_generated_plan({**normalized, "files": [invalid_file]}, {"E1"})
+
     def test_plan_rejects_paths_shells_assertion_harnesses_and_undeclared_evidence(self):
         module = load_module()
         base = plan_with_claims(module)
@@ -193,6 +216,23 @@ class OciExecutorBehaviorTests(unittest.TestCase):
         self.assertEqual(result["runs"][0]["actual"]["stderr"], "err-baseline")
         self.assertEqual(len(fake.calls), 2)
         self.assertTrue(all("-i" in call["argv"] for call in fake.calls))
+
+    def test_executor_accepts_a_normalized_plan_and_reaches_both_controls(self):
+        module = load_module()
+        fake = FakeDocker(module)
+        executor = module.OCIExecutor(IMAGE, process_runner=fake, probe_daemon=False)
+        normalized = module.validate_generated_plan(plan_with_claims(module), {"E1"})
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "source"
+            source.mkdir()
+            result = executor.execute(normalized, source, evidence_ids={"E1"})
+
+        self.assertTrue(result["controls_passed"])
+        self.assertEqual(result["plan"], normalized)
+        self.assertEqual(len(fake.calls), 2)
+        payloads = [json.loads(call["payload"].decode("utf-8")) for call in fake.calls]
+        self.assertEqual([payload["runs"][0]["name"] for payload in payloads], ["baseline", "counterexample"])
+        self.assertEqual(payloads[0]["files"], normalized["files"])
 
     def test_metadata_or_constant_difference_does_not_pass_controls(self):
         module = load_module()
