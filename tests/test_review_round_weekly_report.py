@@ -1,6 +1,9 @@
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -493,10 +496,81 @@ class WeeklyReportBehaviorTests(unittest.TestCase):
             evaluation = Path(temp) / "evaluation"
             evaluation.mkdir()
             (evaluation / "summary.json").write_text(json.dumps({"state": "complete", "model_assessment": {"supported": 99}}))
-            report = module.build_report(bundle, WEEK, AS_OF, evaluation)
-            self.assertIn(report["evaluation"]["availability"], {"dependency_unavailable", "available"})
-            if report["evaluation"]["availability"] == "dependency_unavailable":
-                self.assertEqual(report["evaluation"]["supported"], 0)
+            with mock.patch.dict(sys.modules, {"review_model_evaluation": None}):
+                report = module.build_report(bundle, WEEK, AS_OF, evaluation)
+            self.assertEqual(report["evaluation"]["availability"], "dependency_unavailable")
+            self.assertEqual(report["evaluation"]["supported"], 0)
+
+    def test_integrated_invalid_core_artifact_is_report_error_without_class_leak(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fixture = EvidenceFixture(root)
+            fixture.reliable("s")
+            bundle = fixture.finish()
+            evaluation = root / "evaluation"
+            evaluation.mkdir()
+            (evaluation / "snapshot.json").mkdir()
+            (evaluation / "summary.json").write_text(
+                json.dumps({"state": "complete", "model_assessment": {"supported": 99}}),
+                encoding="utf-8",
+            )
+            cli_args = [
+                "--bundle", str(bundle),
+                "--week", WEEK,
+                "--as-of", AS_OF,
+                "--output", str(root / "output"),
+                "--evaluation-root", str(evaluation),
+            ]
+            with mock.patch.dict(sys.modules):
+                sys.modules.pop("review_model_evaluation", None)
+                with mock.patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+                    with self.assertRaises(module.ReportError) as raised:
+                        module.build_report(bundle, WEEK, AS_OF, evaluation)
+                    message = str(raised.exception)
+                    self.assertIn("evaluation artifact verification failed", message)
+                    self.assertIn("snapshot.json", message)
+                    self.assertNotIn("EvaluationConflict", message)
+
+                    stderr = io.StringIO()
+                    with contextlib.redirect_stderr(stderr):
+                        status = module.main(cli_args)
+                    self.assertEqual(status, 2)
+                    cli_error = stderr.getvalue()
+                    self.assertIn("weekly report failed: evaluation artifact verification failed", cli_error)
+                    self.assertIn("snapshot.json", cli_error)
+                    self.assertNotIn("EvaluationConflict", cli_error)
+                    self.assertNotIn("EvaluationError", cli_error)
+                    self.assertNotIn("Traceback", cli_error)
+
+    def test_integrated_validated_core_result_is_returned_unchanged(self):
+        module = load_module()
+        expected = {"state": "complete", "evaluation_identity": "verified"}
+        with tempfile.TemporaryDirectory() as temp:
+            evaluation = Path(temp) / "evaluation"
+            evaluation.mkdir()
+            with mock.patch.dict(sys.modules):
+                sys.modules.pop("review_model_evaluation", None)
+                with mock.patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+                    import review_model_evaluation
+
+                    with mock.patch.object(review_model_evaluation, "verify_evaluation_artifacts", return_value=expected):
+                        result = module.verify_evaluation_artifacts(evaluation)
+                    self.assertIs(result, expected)
+
+    def test_integrated_unexpected_core_fault_is_not_suppressed(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as temp:
+            evaluation = Path(temp) / "evaluation"
+            evaluation.mkdir()
+            with mock.patch.dict(sys.modules):
+                sys.modules.pop("review_model_evaluation", None)
+                with mock.patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+                    import review_model_evaluation
+
+                    with mock.patch.object(review_model_evaluation, "verify_evaluation_artifacts", side_effect=ValueError("programming fault")):
+                        with self.assertRaisesRegex(ValueError, "programming fault"):
+                            module.verify_evaluation_artifacts(evaluation)
 
     def test_deterministic_output_and_parent_overlap_refuse_overwrite(self):
         module = load_module()

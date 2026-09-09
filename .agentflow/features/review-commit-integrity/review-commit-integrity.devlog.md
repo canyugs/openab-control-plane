@@ -615,3 +615,15 @@ OAuth worker completed exit0; report SHA c196546653018368588121bae697b4b6c54f4c2
 
 Corrected adapter real calls authenticated successfully but parser rejected both actual StructuredOutput tool_use/tool_result blocks despite allowing StructuredOutput in init. Retained failure evidence corrected-adapter-live.json; copied actual Opus5 event envelope with empty thinking blocks removed into structured-output-tool-envelope.json (no authored model results). Reopen exact transport envelope contract: permit only non-executable StructuredOutput calls and ID-bound result events, retain rejection of all executable/file/MCP tools. This implements the already approved no-tools equivalent CLI transport; requires no added capability or model change. Prior minimal fixture lacked these real event blocks, so mock success was insufficient.
 
+## [RUN-067] Event (during round A-001)
+
+* _2026-09-10 00:27:47 (GPT-6/default)_
+
+Dispatch structured-transport, implementation, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at 1a75b2d8b864fd9e1b464f0b3078a77a7f86bc4b. Frozen exact authority in structured-transport-brief.md; disposable clone only.
+
+## [RUN-068] Event (during round A-001)
+
+* _2026-09-10 00:32:00 (GPT-6/default)_
+
+Verifier seam result digest ea592288f644d801bab95776f7de4f09d75e7ba1c3e14684c317a8cdc1281496 verified; exact weekly source/test diff imported. Host complete Python suite56 PASS. Actual weekly CLI with real failed evaluation root exited0 and emitted distinct report identity d3cdd9bfc48c034b2039c619254e44282a672a9a70e595cf90f5278dfe92fec2; machine assessment remains failed/unscoreable. live-schema80805 and structured-transport2638 still active; full successful model/OCI journey remains pending.
+

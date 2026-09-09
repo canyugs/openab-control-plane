@@ -1171,7 +1171,10 @@ def verify_evaluation_artifacts(root: Path) -> Mapping[str, Any]:
     verifier = getattr(review_model_evaluation, "verify_evaluation_artifacts", None)
     if not callable(verifier):
         raise EvaluationDependencyError("evaluation verifier dependency unavailable")
-    result = verifier(Path(root))
+    try:
+        result = verifier(Path(root))
+    except (review_model_evaluation.EvaluationConflict, review_model_evaluation.EvaluationError) as exc:
+        raise ReportError(f"evaluation artifact verification failed: {exc}") from exc
     if not isinstance(result, Mapping):
         raise ReportError("evaluation verifier returned a non-object summary")
     return result
