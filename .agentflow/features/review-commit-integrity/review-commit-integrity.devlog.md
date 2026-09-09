@@ -655,3 +655,15 @@ Live-schema worker terminal exit0, report digest0ad3e361bdb326bf005fdfcf6f091503
 
 Structured transport completed exit0/report SHA cd3a4fc1b202916de1ef959efaf1c887fbdc779c46c98e4ee9d839243e8c012a verified; exact adapter/auth-test plus captured fixture imported. Actual strict-schema negative controls exposed provider400: input_schema does not support oneOf, allOf, anyOf at top level, for both configured models. This reopens only provider-schema subset compatibility: retain typed closed objects, enforce verdict-dependent citation cardinality in existing controller validators, remove unsupported top-level composition from transport schema. No trust boundary/tool/model changes. Full CLI generation/OCI now runs independently to expose remaining execution facts; no success claimed.
 
+## [RUN-072] Event (during round A-001)
+
+* _2026-09-10 00:41:44 (GPT-6/default)_
+
+Dispatch provider-schema, implementation, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at 3d14e7fc7badbb3c4b28c58866113f53ae371bd2. Frozen exact authority in provider-schema-brief.md; disposable clone only.
+
+## [RUN-073] Event (during round A-001)
+
+* _2026-09-10 00:45:56 (GPT-6/default)_
+
+Actual generation CLI exited1. Discovery authenticated/parsed but entire result rejected because _validate_discovery_result requires every reference to cover the main source location: real valid code+README evidence cannot satisfy this. Reopen evidence association to require all IDs valid and at least one reference cover candidate location; each subsequent citation still checks its own range. Discovery also emitted speculative unstated-input/style claims, so constrain instructions to concrete defects under supplied contract/call paths, preserving unknown and independent validation. Real generation envelope performed one non-executable schema-error StructuredOutput attempt then a successful one; single-exchange transport guard rejected valid recovery. Reopen exact bounded ID-bound multi-exchange transport with retained error attempts, no executable/tool additions. Actual generated plan uses SRC constant for source read, another standard AST binding false-negative; only structural signal recognition may broaden, never substitute for both semantic judges. Do not unescape/rewrite generated code or treat malformed code as success.
+

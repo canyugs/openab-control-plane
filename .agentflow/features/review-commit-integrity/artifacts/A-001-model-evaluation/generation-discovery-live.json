@@ -1,0 +1,72 @@
+{
+  "candidates": [
+    {
+      "claim": "can_read accepts an `owner` parameter but never uses it: the return expression `public or bool(requester)` compares nothing against `owner`. Any authenticated (truthy) requester is therefore granted read access to every non-public document, including documents owned by other users. This is a horizontal privilege-escalation / broken-object-level-authorization defect. The fix is to require identity equality, e.g. `return public or (requester is not None and requester == owner)`.",
+      "end": 2,
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "claim": "can_read uses `bool(requester)` as the authentication test, which conflates \"authenticated\" with \"truthy\". Falsy-but-valid principal identifiers (user id `0`, an empty-string username, or an object whose `__bool__`/`__len__` returns false) are denied, while any non-empty sentinel value such as the string \"anonymous\" or a placeholder object is accepted as authenticated. Authentication should be an explicit identity check (e.g. `requester is not None`) rather than truthiness coercion.",
+      "end": 2,
+      "evidence_ids": [
+        "E_SAMPLE"
+      ],
+      "path": "sample.py",
+      "start": 2
+    },
+    {
+      "claim": "can_read short-circuits on `public` before performing any requester validation, so `public=True` returns True unconditionally. Because `public` is a caller-supplied keyword argument defaulting to False rather than a property read from the document record, any caller that forwards untrusted or mis-defaulted input into this flag bypasses the entire authorization check. The public/private classification should be derived from the document being accessed, not passed in as an overridable argument.",
+      "end": 2,
+      "evidence_ids": [
+        "E_SAMPLE"
+      ],
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "claim": "checkout_total performs no validation of `quantity` and returns `price * quantity` directly, so a negative quantity silently produces a negative total instead of raising ValueError. A negative line total can offset other charges to zero or produce a refund-like credit at checkout. The function must validate `quantity` (raising ValueError for negative values) before computing the product.",
+      "end": 5,
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "path": "sample.py",
+      "start": 4
+    },
+    {
+      "claim": "checkout_total does not validate the types of `price` or `quantity`, so the integer-minor-units invariant is unenforceable. A float `price` yields a float total that reintroduces binary rounding error into money arithmetic, and a `str` price with an int quantity silently performs Python sequence repetition (e.g. \"5\" * 3 == \"555\") returning a string instead of a numeric total, with no exception raised to signal the error.",
+      "end": 5,
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "path": "sample.py",
+      "start": 4
+    },
+    {
+      "claim": "checkout_total does not validate `price`, so a negative price is accepted and multiplied through, producing a negative total even when quantity is valid. If only `quantity` is guarded, a negative price becomes an equivalent bypass for producing negative checkout amounts; both operands need range validation.",
+      "end": 5,
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "path": "sample.py",
+      "start": 4
+    },
+    {
+      "claim": "Neither public function has a docstring, type annotations, or any inline documentation of the security and monetary contracts they are required to enforce. Because the authorization semantics (public-or-owner) and the money invariants (integer minor units, non-negative quantity) exist only in the repository README and not at the call site, callers and future maintainers have nothing in the module to check the implementation against, which is how the mismatches at lines 2 and 5 go undetected.",
+      "end": 5,
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "path": "sample.py",
+      "start": 1
+    }
+  ]
+}
