@@ -8,7 +8,7 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-09 21:14:10 Asia/Taipei.
+- **Last update:** 2026-09-09 22:59:58 Asia/Taipei.
 
 - **Evidence commit:** 1107f73567710159c298ff6a60df393e8e6b9775.
 
@@ -40,7 +40,7 @@
 
 - **Current item:** T-3.
 
-- **Last proven result:** Capability-first requirements and design accepted; Stage 1 source and Result Go remain unchanged.
+- **Last proven result:** Real model/OCI preflight passed; early actual OCI probe exposed missing stdin and constant-output false reproduction, recorded for correction; worker implementation remains active.
 
 - **Active blocker or running process:** Implementation worker active: external clone Oh8luI; owned session 95513.
 

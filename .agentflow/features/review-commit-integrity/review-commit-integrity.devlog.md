@@ -406,3 +406,51 @@ Checkpoint inspection: external worker active; initial three regression test fil
 - **Still to do:** Inspect/import source, add verified OAuth transport clarification, full deterministic and real model/OCI PTY journey, independent security and acceptance, exact Result Go. Later Stage 3 remains separate.
 - **Next work action:** Collect implementation result and verify its exact scope and tests.
 - **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-044] Event (during round A-001)
+
+* _2026-09-09 22:35:46 (GPT-6/default)_
+
+Early real OCI execution found missing docker stdin and constant-only test misclassified executed_reproduced; exact evidence in early-executor-inspection.md. Same approved E-6 boundary requires correction; no new scope. Worker active with adapter, executor, controller and tests inside approved paths. Tracker validated; delivered changes remain only stream artifacts and bootstrap ag.json.
+
+## [WIP-011] Checkpoint (during round A-001)
+
+* _2026-09-09 22:35:46 (GPT-6/default)_
+
+- **Finished:** Environment/model readiness; direct early OCI probes identified two concrete implementation defects before acceptance.
+- **Running now:** External implementation of full automatic evaluation and weekly report in clone Oh8luI, session 95513.
+- **Still to do:** Collect/import final candidate; correct real transport/executor issues; full tests, real model/OCI PTY, independent reviews and Result Go; Stage 3 remains separate.
+- **Next work action:** Inspect delivered candidate and return confirmed failures with reproductions for correction.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-045] Event (during round A-001)
+
+* _2026-09-09 22:48:45 (GPT-6/default)_
+
+Source-backed weekly positive control: actual review receipt state=APPROVED and commit_id with correct comment/status currently classifies pending_or_unknown, expected reliable. Probe saved beside early OCI results in private live fixture root; source lib.rs:2790-2816 confirms receipt shape. Worker remains active, four Python modules plus tests/fixtures inside approved scope. Delivered paths remain stream records only. Tracker validated; review required after final candidate/corrections.
+
+## [WIP-012] Checkpoint (during round A-001)
+
+* _2026-09-09 22:48:45 (GPT-6/default)_
+
+- **Finished:** Four implementation modules observed; early host OCI and raw weekly positive controls produced concrete correction evidence.
+- **Running now:** Worker finishing tests/fixtures/docs in clone Oh8luI, session 95513.
+- **Still to do:** Collect/import candidate, correct real auth/stdin/evidence/receipt issues, full tests and real model/OCI PTY journey, independent reviews and exact Result Go.
+- **Next work action:** Return confirmed failures with exact source and runtime evidence to implementation.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-046] Event (during round A-001)
+
+* _2026-09-09 22:59:58 (GPT-6/default)_
+
+Preserved actual early OCI and weekly controls in early-runtime-controls.json for later disposable-clone correction/review. Worker still active in owned session 95513; four source files, three test modules and approved fixture directory only observed. No final report yet. Tracker validated; delivered changes only declared stream records, main checkout preserved.
+
+## [WIP-013] Checkpoint (during round A-001)
+
+* _2026-09-09 22:59:58 (GPT-6/default)_
+
+- **Finished:** Environment/transport preflight and concrete OCI/receipt counterexamples retained in tracked-scope artifacts.
+- **Running now:** External worker finishing first implementation/tests/docs, session 95513.
+- **Still to do:** Correct observed runtime and raw receipt defects, run complete host tests and real model/OCI PTY, independent security/acceptance and Result Go.
+- **Next work action:** Collect final candidate and hand exact failures to correction worker.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
