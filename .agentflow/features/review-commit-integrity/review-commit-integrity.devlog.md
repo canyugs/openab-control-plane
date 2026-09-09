@@ -2,12 +2,12 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: d6e96c32abfd766588c549e8922e3077d6abcb00 — Stage 1 implementation; later commits are evidence only.
-Tests/scenarios: host package 170 tests and root suite 327 tests passed; build, package fmt and clippy passed; workspace fmt has three unchanged baseline differences.
+Current commit: ff9fc04 — Stage 2 candidate, not accepted; Stage 1 d6e96c3 retains Result Go.
+Tests/scenarios: Stage 2 candidate passed 18 host Python tests; real model/OCI readiness passed, but runtime counterexamples require correction. Stage 1 Rust evidence preserved.
 Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex; root ag.json remains untracked bootstrap.
 Proven: approved design, baseline red failure, delivered SHA tests and real PostgreSQL; security pass resolved with explicit immutable-target recovery limit.
-Open: implementation and real model/OCI verification for approved design 1107f73.
-Next: implement full automatic evaluation; Design Go received; costs authorized.
+Open: model/OCI/weekly runtime corrections; full live journey, independent reviews and Result Go still pending.
+Next: collect core/OCI/weekly disjoint correction workers (77349/3790/94396), integrate and verify.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
 Archived eras: none.
 Streams: fix/review-commit-integrity in isolated worktree.
@@ -460,3 +460,43 @@ Preserved actual early OCI and weekly controls in early-runtime-controls.json fo
 * _2026-09-09 23:10:21 (GPT-6/default)_
 
 Implementation worker completed exit0, process group not alive, model/effort dispatcher verified. Full report digest e633c4d3177e22fe4878ae945387f5413ced02bb077c7365da0e71115ae3a20b matched transport; all source/test/docs paths in authority and no tracked clone edits. Imported candidate only; not accepted due known runtime defects. Mechanical report repair: prepend missing literal * and space to first timestamp line, original hash as above, repaired hash 2b2282b01136d2af4a93fd2ed2b87a0175e2762124063fd61c85635e48c31456, all original bytes retained unchanged. Worker claims 18 tests/compileall; host reruns delivered candidate next.
+
+## [RUN-048] Event (during round A-001)
+
+* _2026-09-09 23:14:21 (GPT-6/default)_
+
+Dispatch correction-core, implementation, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at 27497d41aef6c7c736733d4333a75defef386255. Frozen exact authority in correction-core-brief.md; disposable clone only.
+
+## [RUN-049] Event (during round A-001)
+
+* _2026-09-09 23:14:22 (GPT-6/default)_
+
+Dispatch correction-oci, implementation, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at 27497d41aef6c7c736733d4333a75defef386255. Frozen exact authority in correction-oci-brief.md; disposable clone only.
+
+## [RUN-050] Event (during round A-001)
+
+* _2026-09-09 23:14:23 (GPT-6/default)_
+
+Dispatch correction-weekly, implementation, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at 27497d41aef6c7c736733d4333a75defef386255. Frozen exact authority in correction-weekly-brief.md; disposable clone only.
+
+## [RUN-051] Event (during round A-001)
+
+* _2026-09-09 23:27:05 (GPT-6/default)_
+
+Three disjoint external corrections active, core 77349 (AtXVhO), OCI 3790 (jWGTAi), weekly 94396 (ryHYCj). Each now has regression test changes only in assigned paths; core red-correction.patch observed. Real reusable PTY53083 verified /dev/ttys042 stdin/stdout tty true. Parent runs actual Docker constant-only control and independent real two-model semantic probes (31758) while waiting; not full product acceptance. Tracker validated, delivered scope remains records/briefs.
+
+## [WIP-014] Checkpoint (during round A-001)
+
+* _2026-09-09 23:27:05 (GPT-6/default)_
+
+- **Finished:** Candidate ff9fc04 passed 18 delivered tests; real CLI inputs and PTY prepared; fixed correction interfaces committed 27497d4.
+- **Running now:** Three external disjoint corrections plus parent real semantic negative-control probe.
+- **Still to do:** Integrate corrected core/OCI/weekly, full tests and live vulnerable/safe CLI journeys, independent security/acceptance and Result Go.
+- **Next work action:** Read semantic model output and collect correction results as they finish.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-052] Event (during round A-001)
+
+* _2026-09-09 23:43:00 (GPT-6/default)_
+
+OCI correction completed exit0 and digest verified, exact two source/test changes imported. Task brief ambiguity report/red-correction.patch produced that clone-only artifact; relocated into work-root, not source. It is a final full patch rather than tests-only red proof; host independently ran new tests against ff9fc04 (9 assertion failures/5 errors) and corrected delivered module (16 PASS). Actual Docker controls invoked frozen vulnerable source in two different fresh containers, stdout/err retained, controls_passed true and baseline claim_present true; classification correctly remains unproven pending model semantics. Live result SHA256 02bd690db9d0aa58e88ff57fd68ec2a78b56bea352df8a3130758a897b446c77. Core77349 and weekly94396 still active. Full pipeline not accepted.

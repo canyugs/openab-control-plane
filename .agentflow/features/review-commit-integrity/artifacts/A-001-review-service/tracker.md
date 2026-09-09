@@ -8,7 +8,7 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-09 22:59:58 Asia/Taipei.
+- **Last update:** 2026-09-09 23:27:05 Asia/Taipei.
 
 - **Evidence commit:** 1107f73567710159c298ff6a60df393e8e6b9775.
 
@@ -40,11 +40,11 @@
 
 - **Current item:** T-3.
 
-- **Last proven result:** Real model/OCI preflight passed; early actual OCI probe exposed missing stdin and constant-output false reproduction, recorded for correction; worker implementation remains active.
+- **Last proven result:** Candidate ff9fc04 imported within scope and passed 18 host tests; runtime/source defects require correction before acceptance.
 
-- **Active blocker or running process:** Implementation worker active: external clone Oh8luI; owned session 95513.
+- **Active blocker or running process:** Core 77349 and weekly 94396 active; OCI correction imported, 16 host tests and real isolated controls passed.
 
-- **Next safe action:** Implement full automatic model evaluation and weekly report after exact Design Go; include real model and OCI PTY validation.
+- **Next safe action:** Integrate disjoint correction results, run all tests and full real model/OCI PTY journey, then independent security/acceptance.
 
 - **Expected changed files:** scripts/review_model_{evaluation,adapters,oci_executor}.py; scripts/review_round_weekly_report.py; tests/test_review_model_{evaluation,oci_executor}.py; tests/test_review_round_weekly_report.py; tests/fixtures/model_evaluation/; docs/model-evaluation.md; docs/review-round-weekly-report.md; stream records.
 
