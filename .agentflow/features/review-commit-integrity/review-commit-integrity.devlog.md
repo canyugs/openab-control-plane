@@ -609,3 +609,9 @@ Scope checkpoint: current delivery changes are authorized stream records; implem
 
 OAuth worker completed exit0; report SHA c196546653018368588121bae697b4b6c54f4c255b2dabcf5ddf1c2b72b4ffc8 verified. Exact one-line USER allowlist addition plus separate regression file imported; host focused test passed including real child USER propagation with injection variables removed. Actual corrected adapter calls for both configured strong IDs now running13307; no source payload or tools in this transport probe. live-schema80805 and verifier-seam79518 continue within disjoint authority.
 
+## [RUN-066] Event (during round A-001)
+
+* _2026-09-10 00:27:47 (GPT-6/default)_
+
+Corrected adapter real calls authenticated successfully but parser rejected both actual StructuredOutput tool_use/tool_result blocks despite allowing StructuredOutput in init. Retained failure evidence corrected-adapter-live.json; copied actual Opus5 event envelope with empty thinking blocks removed into structured-output-tool-envelope.json (no authored model results). Reopen exact transport envelope contract: permit only non-executable StructuredOutput calls and ID-bound result events, retain rejection of all executable/file/MCP tools. This implements the already approved no-tools equivalent CLI transport; requires no added capability or model change. Prior minimal fixture lacked these real event blocks, so mock success was insufficient.
+
