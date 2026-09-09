@@ -8,15 +8,15 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-09 21:11:07 Asia/Taipei.
+- **Last update:** 2026-09-09 21:14:10 Asia/Taipei.
 
-- **Evidence commit:** 5f18484f24359e2e13278dc216e4462b8b1080df.
+- **Evidence commit:** 1107f73567710159c298ff6a60df393e8e6b9775.
 
 ## Overall state
 
-- **State:** active.
+- **State:** blocked.
 
-- **Reason:** Owner expanded Stage 2 to functional multi-model automatic evaluation before cost optimization.
+- **Reason:** Revised complete model-evaluation design frozen; exact Design Go precedes source work.
 
 - **Total:** 3.
 
@@ -40,11 +40,11 @@
 
 - **Current item:** T-3.
 
-- **Last proven result:** Stage 1 Result Go d6e96c3; Stage 2 design and source-backed resolution frozen in 5f18484.
+- **Last proven result:** Capability-first requirements and design accepted; Stage 1 source and Result Go remain unchanged.
 
-- **Active blocker or running process:** Revised model-evaluation design worker exec session 34553 (attempt 2).
+- **Active blocker or running process:** No running worker; new Design Go for 1107f73567710159c298ff6a60df393e8e6b9775 pending.
 
-- **Next safe action:** Freeze an end-to-end model evaluation design under the amended owner scope.
+- **Next safe action:** Implement full automatic model evaluation and weekly report after exact Design Go; include real model and OCI PTY validation.
 
 - **Expected changed files:** crates/github-pr-controller/src/{closing.rs,github.rs,lib.rs,deciding.rs,store.rs,store/sqlite.rs,store/postgres.rs}; stream notebook and artifacts.
 
@@ -52,15 +52,15 @@
 
 - **All accepted tasks checked:** no.
 
-- **Blocking accepted decision:** none.
+- **Blocking accepted decision:** Design Go for 1107f73567710159c298ff6a60df393e8e6b9775.
 
-- **Operation running:** yes.
+- **Operation running:** no.
 
 - **Next action remaining:** T-3.
 
 - **Evidence status:** current.
 
-- **Judgment:** active.
+- **Judgment:** blocked.
 
 ## Update meaning
 
