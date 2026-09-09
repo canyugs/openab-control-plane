@@ -2,12 +2,12 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: ff9fc04 — Stage 2 candidate, not accepted; Stage 1 d6e96c3 retains Result Go.
+Current commit: b74b861 — corrected OCI candidate; Stage 2 integration unaccepted; Stage 1 d6e96c3 retains Result Go.
 Tests/scenarios: Stage 2 candidate passed 18 host Python tests; real model/OCI readiness passed, but runtime counterexamples require correction. Stage 1 Rust evidence preserved.
 Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex; root ag.json remains untracked bootstrap.
 Proven: approved design, baseline red failure, delivered SHA tests and real PostgreSQL; security pass resolved with explicit immutable-target recovery limit.
 Open: model/OCI/weekly runtime corrections; full live journey, independent reviews and Result Go still pending.
-Next: collect core/OCI/weekly disjoint correction workers (77349/3790/94396), integrate and verify.
+Next: collect core77349 and weekly94396, integrate, correct live schema/Git boundary findings, then full live journey and reviews.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
 Archived eras: none.
 Streams: fix/review-commit-integrity in isolated worktree.
@@ -500,3 +500,31 @@ Three disjoint external corrections active, core 77349 (AtXVhO), OCI 3790 (jWGTA
 * _2026-09-09 23:43:00 (GPT-6/default)_
 
 OCI correction completed exit0 and digest verified, exact two source/test changes imported. Task brief ambiguity report/red-correction.patch produced that clone-only artifact; relocated into work-root, not source. It is a final full patch rather than tests-only red proof; host independently ran new tests against ff9fc04 (9 assertion failures/5 errors) and corrected delivered module (16 PASS). Actual Docker controls invoked frozen vulnerable source in two different fresh containers, stdout/err retained, controls_passed true and baseline claim_present true; classification correctly remains unproven pending model semantics. Live result SHA256 02bd690db9d0aa58e88ff57fd68ec2a78b56bea352df8a3130758a897b446c77. Core77349 and weekly94396 still active. Full pipeline not accepted.
+
+## [RUN-053] Event (during round A-001)
+
+* _2026-09-09 23:48:06 (GPT-6/default)_
+
+Checkpoint scope check: core AtXVhO modifies only adapters/controller/test; weekly ryHYCj modifies only weekly script/test. Both active in sessions77349/94396. Corrected OCI committed b74b861 after16 host tests and actual source controls in separate containers; no leftover openab-eval containers. Delivered tracked source changes all authorized. Real semantic probes found invalid citation shapes; Git fsmonitor marker probe exposed host execution, with export-ignore completeness control passing. Both findings documented for remaining correction. Tracker validated.
+
+## [WIP-015] Checkpoint (during round A-001)
+
+* _2026-09-09 23:48:06 (GPT-6/default)_
+
+- **Finished:** OCI correction imported, 16 host tests and real isolated source/control execution passed; semantic negative-control and Git boundary evidence retained.
+- **Running now:** Core and weekly correction workers, sessions77349/94396; PTY53083 ready for full CLI.
+- **Still to do:** Integrate results; fix remaining live schema/Git boundary issues; full tests, actual model/OCI vulnerable/safe PTY journeys, independent reviews and Result Go.
+- **Next work action:** Collect corrections and run integrated suite, then real product CLI.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-054] Event (during round A-001)
+
+* _2026-09-09 23:51:12 (GPT-6/default)_
+
+Dispatch snapshot-guard, implementation, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at b74b861f291a6e94d239d7a10858dc3b09aa3a0c. Frozen exact authority in snapshot-guard-brief.md; disposable clone only.
+
+## [RUN-055] Event (during round A-001)
+
+* _2026-09-09 23:57:06 (GPT-6/default)_
+
+Weekly correction completed exit0/report digest verified; exact weekly script/test/doc diff imported and 13 host tests passed. Extra report/red-correction.patch arose from ambiguous brief shorthand and was relocated only into work-root. Real PTY command exited0 and emitted Markdown/JSON: seven sessions classified reliable2, visible_failure2, superseded1, pending_or_unknown2. Readback found timeout-noop has no visible artifact but observed latency290ms; E-7 requires unknown for an incomplete projection. Record weekly-pty-initial-result.json is a counterexample, not full acceptance. Core77349 and snapshot-guard4074 active; current CLI lacks model integration until core arrives.

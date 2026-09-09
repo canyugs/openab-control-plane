@@ -1,9 +1,9 @@
 # Offline review-round weekly report
 
-`review_round_weekly_report.py` reads one immutable operator capture and
-writes a deterministic Markdown/JSON snapshot. It makes no database, network,
-GitHub, scheduler, controller, price-table, or model call. Its output cannot
-change verdicts, retries, writes, routing, or roster selection.
+`scripts/review_round_weekly_report.py` reads one operator-captured evidence
+bundle and writes a deterministic Markdown/JSON snapshot. It is a reporting
+observer only: it makes no database, network, GitHub, model, OCI, scheduler,
+credential, verdict, retry, routing, or provider call.
 
 ## Command
 
@@ -12,200 +12,196 @@ python3 scripts/review_round_weekly_report.py \
   --bundle /path/to/review-round-weekly-evidence \
   --week 2026-W37 \
   --as-of 2026-09-09T08:10:00+08:00 \
-  --evaluation-root /path/to/evaluation-output \
-  --output /path/to/new-report-output
+  --output /path/to/new-output \
+  [--evaluation-root /path/to/verified-evaluation]
 ```
 
-`--evaluation-root` is optional and is read only. The output directory must be
-new or empty; existing report files are never overwritten. `--as-of` must be
-offset-bearing, equal to the manifest timestamp, and its Taipei ISO week must
-equal `--week`.
+`--week` is the Taipei ISO week of the offset-bearing `--as-of`. The manifest
+`snapshot_at` must be the same instant. The output directory must be empty or
+new and must not contain, be contained by, or resolve through a symlink to the
+bundle or evaluation root. Existing report files are never overwritten.
 
-## Bundle contract
+## Bundle
 
 ```text
 bundle/
   evidence-manifest.json
   audit.ndjson
   product.json
-  human.ndjson       # optional
-  cost.ndjson        # optional
+  human.ndjson       # optional; coverage must be unknown when absent
+  cost.ndjson        # optional; coverage must be unknown when absent
 ```
 
-The manifest has this exact top-level shape:
+The manifest is `review-round-weekly-evidence/v1` and contains a bundle ID,
+`snapshot_at`, `timezone: "Asia/Taipei"`, file SHA-256s, audit cursor metadata,
+metric coverage, and capture spans. Every source span has `start`, `end`, and
+`coverage` (`complete`, `partial`, or `unknown`). The product table coverage is
+declared separately for all five tables:
 
 ```json
 {
-  "schema_version": "review-round-weekly-evidence/v1",
-  "bundle_id": "opaque-bundle-id",
-  "snapshot_at": "2026-09-09T08:10:00+08:00",
-  "timezone": "Asia/Taipei",
-  "coverage": {"audit": "complete", "product": "complete", "human": "unknown", "cost": "unknown"},
-  "audit_cursor": {"first_cursor": "0", "last_cursor": null, "page_count": 1, "final_null_cursor": true},
-  "files": {
-    "audit.ndjson": {"sha256": "<64 lowercase hex>", "record_count": 1},
-    "product.json": {"sha256": "<64 lowercase hex>"}
+  "coverage": {
+    "audit": "complete",
+    "product": "complete",
+    "product_tables": {
+      "session_targets": "complete",
+      "review_rounds": "complete",
+      "review_findings": "complete",
+      "github_writes": "complete",
+      "runtime_event_receipts": "complete"
+    },
+    "human": "unknown",
+    "cost": "unknown"
+  },
+  "sources": {
+    "audit": {"coverage": "complete", "start": "…+08:00", "end": "…+08:00"}
+  },
+  "audit_cursor": {
+    "first_cursor": "…",
+    "last_cursor": null,
+    "page_count": 1,
+    "final_null_cursor": true
   }
 }
 ```
 
-Each source declares `complete`, `partial`, or `unknown` coverage. Hashes bind
-captured bytes, not the truth or historical completeness of mutable rows.
-Optional files, when present, also require a manifest SHA-256 and record count.
+`sources` has the same span shape for `audit`, each product table, `human`, and
+`cost`. A complete audit requires a positive page count and a final null
+cursor. Hashes prove byte identity, not completeness or truth. The report
+discloses that the cross-source capture is non-atomic. It does not use
+`created_at` to reconstruct mutable product history.
 
-`audit.ndjson` is flattened cursor output: one record per line with the exact
-envelope fields below. The cursor itself is represented by the manifest’s
-capture metadata when available; no field is reconstructed by this tool.
+`audit.ndjson` preserves one flattened raw `AuditEventRecord` per line:
+`seq`, `version`, `event_id`, `event_key`, `occurred_at`, `recorded_at`,
+`service`, `kind`, `outcome`, `correlation`, `detail`, and optional envelope
+fields. Audit timestamps are integer milliseconds. `recorded_at` is the audit
+cutoff clock; records after `snapshot_at` are excluded.
 
-```json
-{
-  "seq": 1,
-  "version": 1,
-  "event_id": "bounded-source-id",
-  "event_key": "bounded-source-key",
-  "occurred_at": 1788912000000,
-  "recorded_at": 1788912000000,
-  "service": "controller",
-  "kind": "action.accepted",
-  "outcome": "accepted",
-  "caused_by": null,
-  "correlation": {"session_id": "session-1"},
-  "actor": null,
-  "target": null,
-  "detail": {},
-  "error": null
-}
-```
+`product.json` maps the five source tables to arrays with their stored source
+columns. Controller product timestamps (`created_at`, `claimed_at`, `done_at`)
+are integer seconds. `runtime_event_receipts.occurred_at` remains envelope
+time and is not converted; its integer `received_at` seconds timestamp is the
+snapshot admission cutoff.
 
-Audit `occurred_at` and `recorded_at` are integer milliseconds. Records with
-`recorded_at` after the cutoff are excluded and counted. Source IDs are
-bounded opaque strings; they are escaped before drilldown rendering.
+## Cohort
 
-`product.json` is an object mapping these five persisted source tables to raw
-row arrays (the audit event stream is the separate sixth source):
+The cohort uses only `kind: "action.accepted"` and `outcome: "accepted"`.
+Each accepted record must join to exactly one successful
+`kind: "action.completed"`, `outcome: "succeeded"`, through the exact
+`correlation.delivery_id`, `correlation.action_id`, and
+`correlation.trigger_ref` values. Missing or ambiguous joins remain in the
+accepted unknown denominator. `ingress.accepted` is plan-only and excluded.
 
-```json
-{
-  "session_targets": [],
-  "review_rounds": [],
-  "review_findings": [],
-  "github_writes": [],
-  "runtime_event_receipts": []
-}
-```
+Resolved sessions are deduplicated across the whole captured span before week
+assignment; the earliest accepted event determines the week, so a later-week
+redelivery cannot create a duplicate. Exact duplicate natural identities are
+deduplicated. Conflicting identities remain unknown. `reason: "ask"` is
+excluded only when it is explicitly present in the joined session target;
+missing target data cannot prove an ask.
 
-The required row columns are exactly the source columns captured by the
-controller: `session_targets` has `session_id, repo, pr_number, head_sha,
-created_at, reason, required_valid_reviewers`; `review_rounds` has `id, repo,
-pr_number, round, session_id, head_sha, comment_id, decision, red, yellow,
-green, created_at, verified_commit_id, integrity_disposition`;
-`review_findings` has `id, session_id, repo, pr_number, stable_id, severity,
-status, head_sha, created_at, raised_by, angle`; `github_writes` has `id,
-session_id, kind, payload_json, state, attempts, created_at, claimed_at,
-done_at`; and `runtime_event_receipts` has `event_id, body_sha256, event_type,
-session_id, occurred_at, received_at`. Product controller timestamps are
-seconds except runtime `occurred_at`, which is copied envelope milliseconds;
-the report never converts it or uses it as an admission clock.
+## Source-bound reliability
 
-`github_writes.payload_json` is preserved as its exact stored string. Receipt
-audit `detail.request_sha256` must equal SHA-256 of those exact UTF-8 bytes.
-An enqueue event alone is not a delivery receipt.
+Only exact terminal write kinds are considered: `comment`, `status`, and
+`review` for a normal/diagnostic round, and `comment_abandon` for an
+abandonment. `comment_open` and `decision_status:*`, `decision_review:*`, and
+`decision_comment:*` are deliberately excluded from the terminal required set.
 
-Optional `human.ndjson` annotations require `annotator_id, version, session_id,
-finding_id, repo, pr_number, head_sha, verdict, evidence_reference`, and an
-`observed_at`/`annotated_at` timestamp. `verdict` is
-`valid_useful|valid_not_useful|invalid|unknown`. A complete finding scope is
-required; conflicts remain unknown. Escape records require
-`type:"escape", confirming_human_id, confirmed_at, version,
-reviewed_window_id, evidence_reference`, and `status` of
-`confirmed_escape|not_escape|unknown`.
+Every delivery receipt is bound by all of:
 
-Optional `cost.ndjson` rows require `session_id, currency, amount_minor`, a
-minor-unit definition/reference (`source_minor_unit`,
-`minor_unit_definition`, or `source_reference`), a reconciliation timestamp
-(`reconciliation_time` or `reconciled_at`), `reconciliation_reference`,
-`completeness` (`complete|partial|unknown`), and `attempt_coverage`
-(`all_attempts_and_retries|partial|unknown`). Only provider-reconciled
-per-session values count. Partial known amounts are shown as partial known
-minor units with an unknown total; no price table, estimate, allocation, or
-cross-currency arithmetic is performed.
+- `event.correlation.session_id` and the exact `event.correlation.write_id`;
+- the exact `github_writes.payload_json` UTF-8 SHA-256;
+- the exact `detail.operation`; and
+- the persisted session/write row.
 
-## Cohort and source-bound classification
+Enqueue audit detail is not a receipt. A valid source receipt is exactly a
+`github.write.succeeded`/`succeeded` or `github.write.reconciled`/`reconciled`
+event with `detail.request_sha256` and `detail.provider_receipt`.
 
-The cohort is formed from unique `kind: action.accepted` and
-`outcome: accepted` events in the Taipei ISO week after session deduplication.
-`ingress.accepted` is counted as plan-only and excluded. The earliest
-accepted event for a session determines its week. An action without a
-resolvable session, target, or one correlated `action.completed` remains in an
-explicit unknown/pending bucket; missing target data cannot prove that it was
-an `ask`. `session_targets.reason:"ask"` is excluded only when explicitly
-known.
+Normal verified approval or change-request reliability requires an immutable
+full target SHA equal to `verified_commit_id`, and bound successful/reconciled
+comment, status, and review writes. Status payload/provider SHA and
+`commit_id` must agree with that target. The formal review payload carries
+`event: "APPROVE"` or `"REQUEST_CHANGES"`; the actual provider receipt carries
+`review_id`, `state: "APPROVED"` or `"CHANGES_REQUESTED"`, `commit_id`, and
+`reconciled`. A provider `event` field is not accepted as review evidence.
 
-For each eligible session the terminal rules are mutually exclusive:
+Only these controller-supported diagnostic dispositions establish a diagnostic
+write set: `unparseable`, `insufficient_valid_reviewers`, `missing_target`,
+`invalid_target`, `missing_reviewed_sha`, `invalid_reviewed_sha`, and
+`reviewed_sha_mismatch`. A diagnostic always requires a bound visible comment,
+plus a bound `error` status exactly when the target is a valid full SHA.
+`legacy_unverified` alone is not diagnostic, and unsupported dispositions stay
+unknown.
 
-1. An admitted `runtime_event_receipts.event_type: session.superseded` is
-   `superseded`; visible tombstone status is reported separately.
-2. A complete verified approve/request-changes round is `reliable` only when
-   its bound successful/reconciled comment, expected status, and formal review
-   receipts are all present and source-bound.
-3. A supported unparseable/integrity/reviewer diagnostic is `visible_failure`
-   only when comment is visible and the expected error status exists for a
-   valid full-40 target SHA. A timeout is visible failure only with a bound
-   non-null `comment_abandon` provider comment ID.
-4. Everything else is `pending_or_unknown`. A null comment-abandon ID is a
-   successful no-op, not a public tombstone. `legacy_unverified` alone does
-   not prove that a diagnostic was planned. Opening-comment and author-decision
-   writes are not terminal-round requirements.
+An explicit `session.superseded` has precedence over every other category.
+Timeout and supersession tombstone visibility requires a real persisted
+`comment_abandon` row, its exact payload digest/write binding, and a non-null
+provider `comment_id`. A successful null `comment_id` is a no-op, not a public
+tombstone. The mutually exclusive categories are `superseded`, `reliable`,
+`visible_failure`, and `pending_or_unknown`.
 
-Missing/extra/conflicting write rows, wrong payload digest, wrong provider
-state/event/commit, and incomplete receipt sets do not become a failure
-claim. Failed or retried writes are delivery evidence only.
+Latency starts at the accepted audit `occurred_at`. For each required terminal
+write, the earliest valid proof is selected; repeated success/reconciliation
+observations of the same write are deduplicated, while conflicting provider
+evidence remains unknown. The latest selected required terminal proof ends the
+measurement. Opening, decision, earlier, and unrelated late receipts do not
+participate. Original receipts produce exact observed latency; a
+reconciliation-only proof is labelled `reconciliation_upper_bound`. Negative
+or impossible ordered times are `clock_invalid`.
 
-Trigger-to-terminal-projection latency starts at the accepted audit
-`occurred_at` and ends at the latest bound projection receipt. Original
-receipts are exact observed latency. Reconciliation-only evidence is labelled
-`reconciliation_upper_bound`; missing or negative/ordered clocks are unknown
-or clock-invalid. Runtime receipt `received_at` is the cutoff admission clock.
+## Human and cost metrics
 
-## Evaluation join
+Human annotations require explicit annotator, version, timestamp, complete
+session/finding/repository/PR/head-SHA scope, verdict, and evidence reference.
+Escapes additionally require confirming human, reviewed-window ID, status,
+timestamp, complete scope, version, and evidence reference. Rows after the
+cutoff are excluded. Exact duplicates dedupe; conflicting natural identities
+become unknown. Confirmed escapes and reviewed-window coverage are reported
+separately; no recall or submitted-record escape rate is inferred.
 
-When `--evaluation-root` is provided, the report reads `summary.json` at that
-root or one level below and exposes model-supported/refuted/unresolved counts,
-validation categories, and automatic omission candidates under a separate
-`evaluation` object. It makes no model call and never combines those counts
-with controller reliability, human annotations, confirmed escapes, or cost.
-No recall or human-correctness claim is inferred from model agreement.
+Costs are integer source minor units only. Each eligible session must have
+provider-reconciled rows with currency, compatible minor-unit definition,
+reconciliation time/reference, completeness, and all-attempt/retry coverage.
+Missing sessions, incompatible currencies/units, and incomplete attempt
+coverage preserve `totalunknown`. A partial known subtotal remains separate
+from the unknown total. Currency-specific sums are never combined, estimated,
+priced, allocated, or converted to floating actual dollars.
 
-## Output
+## Model evaluation
 
-The report has no `generated_at`. Its ID is:
+With `--evaluation-root`, the report calls the named
+`verify_evaluation_artifacts(root)` seam from the concurrent core worker. It
+does not read `summary.json` directly. A missing helper is reported as an
+explicit `dependency_unavailable` evaluation status; it is not permission to
+trust raw summaries. Injected verifier results are identity-deduplicated;
+conflicting duplicate identities fail. Evaluation artifact identity hashes
+are included in `report_id`. Partial or failed evaluations are shown for
+coverage but do not produce a quality score. Usefulness, disagreement,
+validation classes, omission candidates, and human-confirmed escapes retain
+separate explicit denominators from delivery reliability and human review.
 
-```text
-sha256(definition_version || week || snapshot_at || manifest_sha256)
-```
+## Output and checks
 
-Files are named exactly:
+The report has no generated timestamp. Its ID is the SHA-256 of the frozen
+definition version, week, exact `--as-of`, manifest bytes hash, and evaluation
+identity digest. Files are named:
 
 ```text
 review-round-weekly-{week}-snapshot-{UTC-snapshot_at}-{report_id[:12]}.md
 review-round-weekly-{week}-snapshot-{UTC-snapshot_at}-{report_id[:12]}.json
 ```
 
-The JSON includes source hashes, capture coverage, accepted/excluded/unknown
-denominators, all zero-valued operational categories, safe sorted session
-references, latency qualifications, human/cost metric-specific unknowns, and
-separate evaluation metrics. Markdown is a deterministic rendering of the
-same validated snapshot.
-
-## Checks
+Run the fixture suite and compile the changed module:
 
 ```text
 python3 -m unittest tests.test_review_round_weekly_report
 python3 -m compileall -q scripts/review_round_weekly_report.py
 ```
 
-The fixture suite covers accepted/ask/plan-only cohort rules, Taipei cutoff
-and clock units, payload-digest receipt binding, reliable and diagnostic
-projections, supersession, timeout tombstone/no-op, missing rounds, human and
-cost unknowns, separate evaluation denominators, deterministic naming, and
-overwrite refusal.
+The suite exercises real source-shaped approve and request-changes receipts,
+diagnostics, legacy/unsupported dispositions, exact binding corruption,
+opening/decision exclusions, timeout and supersession tombstones, action joins
+and cross-week deduplication, cutoff/clocks, human/cost unknowns, injected
+evaluation verification, identity conflicts, deterministic output, and
+input/output overlap refusal. A real integrated evaluation-helper journey is
+pending until the concurrent core helper is available.

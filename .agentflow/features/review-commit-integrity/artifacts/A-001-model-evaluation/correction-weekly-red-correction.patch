@@ -1,0 +1,6 @@
+diff --git a/tests/test_review_round_weekly_report.py b/tests/test_review_round_weekly_report.py
+--- a/tests/test_review_round_weekly_report.py
++++ b/tests/test_review_round_weekly_report.py
+@@
+-    add_write("s1", "formal_review", '{"event":"APPROVE","sha":"' + "a" * 40 + '"}', {"event": "APPROVE", "sha": "a" * 40}, 320)
++    add_write("s1", "review", '{"event":"APPROVE","commit_id":"' + "a" * 40 + '"}', {"review_id": 13, "state": "APPROVED", "commit_id": "a" * 40, "reconciled": False}, 320)
