@@ -1,0 +1,219 @@
+import importlib.util
+import json
+import sys
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_module(name):
+    path = ROOT / "scripts/review_model_evaluation.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("the evaluation controller must exist")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class LiveEvidenceRegressionTests(unittest.TestCase):
+    def test_discovery_accepts_cross_file_contract_evidence_when_source_is_covered(self):
+        module = load_module("review_model_live_discovery_cross_file")
+        evidence = {
+            "E_SAMPLE": {
+                "utf8": "def can_read(requester, owner):\n    return bool(requester)\n",
+                "allowed_ranges": [{"path": "sample.py", "start": 1, "end": 2}],
+            },
+            "E_CONTRACT": {
+                "utf8": "Private documents require the owner.\n",
+                "allowed_ranges": [{"path": "README.md", "start": 1, "end": 1}],
+            },
+        }
+        source_lines = {"sample.py": 2, "README.md": 1}
+        candidate = {
+            "claim": "can_read grants private access to a non-owner",
+            "path": "sample.py",
+            "start": 1,
+            "end": 2,
+            "evidence_ids": ["E_SAMPLE", "E_CONTRACT"],
+        }
+
+        self.assertEqual(
+            module._validate_discovery_result({"candidates": [candidate]}, evidence, source_lines),
+            [candidate],
+        )
+
+    def test_discovery_rejects_unknown_and_no_cover_evidence_without_losing_the_boundary(self):
+        module = load_module("review_model_live_discovery_negatives")
+        evidence = {
+            "E_SAMPLE": {
+                "utf8": "def can_read(requester, owner):\n    return bool(requester)\n",
+                "allowed_ranges": [{"path": "sample.py", "start": 1, "end": 2}],
+            },
+            "E_CONTRACT": {
+                "utf8": "Private documents require the owner.\n",
+                "allowed_ranges": [{"path": "README.md", "start": 1, "end": 1}],
+            },
+        }
+        source_lines = {"sample.py": 2, "README.md": 1}
+
+        for evidence_ids in (["E_UNKNOWN"], ["E_CONTRACT"]):
+            candidate = {
+                "claim": "unsupported or unlocated claim",
+                "path": "sample.py",
+                "start": 1,
+                "end": 2,
+                "evidence_ids": evidence_ids,
+            }
+            with self.subTest(evidence_ids=evidence_ids):
+                with self.assertRaises(module.EvaluationError):
+                    module._validate_discovery_result({"candidates": [candidate]}, evidence, source_lines)
+
+    def test_each_citation_must_match_its_own_declared_evidence_range(self):
+        module = load_module("review_model_live_citation_boundary")
+        finding = {"finding_id": "F-1", "evidence_ids": ["E_SAMPLE", "E_CONTRACT"]}
+        evidence = {
+            "E_SAMPLE": {"allowed_ranges": [{"path": "sample.py", "start": 1, "end": 2}]},
+            "E_CONTRACT": {"allowed_ranges": [{"path": "README.md", "start": 1, "end": 1}]},
+        }
+        source_lines = {"sample.py": 2, "README.md": 1}
+
+        def judge(citations):
+            return {
+                "finding_id": "F-1",
+                "verdict": "support",
+                "severity": "high",
+                "usefulness": "useful",
+                "citations": citations,
+                "counterexample": "the owner check should reject a non-owner",
+                "validation_verdict": "valid",
+            }
+
+        valid = judge(
+            [
+                {"path": "sample.py", "start": 1, "end": 2, "evidence_id": "E_SAMPLE"},
+                {"path": "README.md", "start": 1, "end": 1, "evidence_id": "E_CONTRACT"},
+            ]
+        )
+        self.assertEqual(module.validate_judge_result(valid, finding, evidence, source_lines)["citations"], valid["citations"])
+
+        invalid_citations = [
+            [{"path": "sample.py", "start": 1, "end": 2, "evidence_id": "E_CONTRACT"}],
+            [{"path": "sample.py", "start": 1, "end": 2, "evidence_id": "E_UNKNOWN"}],
+            [{"path": "sample.py", "start": 3, "end": 3, "evidence_id": "E_SAMPLE"}],
+            [{"path": "sample.py", "start": 1, "end": 3, "evidence_id": "E_SAMPLE"}],
+        ]
+        for citations in invalid_citations:
+            with self.subTest(citations=citations):
+                with self.assertRaises(module.EvaluationError):
+                    module.validate_judge_result(judge(citations), finding, evidence, source_lines)
+
+    def test_discovery_packet_is_blind_and_requires_actionable_contract_bound_defects(self):
+        module = load_module("review_model_live_discovery_prompt")
+        packet = module.build_discovery_packet(
+            invocation_id="discovery-1",
+            source_packet={"packet_sha256": "source", "files": []},
+            evidence_catalog={"E-1": {"utf8": "contract"}},
+            original_findings=[{"finding_id": "F-1", "claim": "known finding"}],
+        )
+        encoded = json.dumps(packet, sort_keys=True).lower()
+        prompt = module.ROLE_PROMPTS["discovery"].lower()
+        instructions = " ".join(packet["rules"]).lower()
+
+        self.assertNotIn("known finding", encoded)
+        self.assertNotIn("f-1", encoded)
+        for text in (prompt, instructions):
+            self.assertIn("actionable", text)
+            self.assertIn("contract", text)
+            self.assertIn("call path", text)
+            self.assertIn("style", text)
+            self.assertIn("documentation", text)
+            self.assertIn("type", text)
+            self.assertIn("missing callers", text)
+            self.assertIn("empty", text)
+
+    def test_validation_instructions_preserve_decoded_utf8_and_malformed_unknown_state(self):
+        module = load_module("review_model_live_validation_prompt")
+        finding = {
+            "finding_id": "F-1",
+            "claim": "the source has a concrete defect",
+            "location": {"path": "sample.py", "start_line": 1, "end_line": 2},
+            "evidence_ids": ["E_SAMPLE"],
+        }
+        packet = module.build_validation_packet(
+            "validation-F-1",
+            finding,
+            {"E_SAMPLE": {"utf8": "source"}},
+            {"revision": "revision", "files": []},
+        )
+        prompt = module.ROLE_PROMPTS["validation"].lower()
+        instructions = " ".join(packet["rules"]).lower()
+
+        for text in (prompt, instructions):
+            self.assertIn("decoded utf8", text)
+            self.assertIn("raw source text", text)
+            self.assertIn("actual newline", text)
+            self.assertIn("json", text)
+            self.assertIn("once", text)
+            self.assertIn("unescape", text)
+            self.assertIn("rewrite", text)
+            self.assertIn("malformed", text)
+            self.assertIn("unproven", text)
+
+    def test_bound_open_and_importlib_source_execution_are_structural_signals(self):
+        module = load_module("review_model_live_source_binding_positive")
+        finding = {"location": {"path": "sample.py"}}
+        open_plan = {
+            "files": [
+                {
+                    "path": "generated/check.py",
+                    "utf8": (
+                        "SRC = '/source/sample.py'\n"
+                        "with open(SRC, 'r', encoding='utf-8') as handle:\n"
+                        "    source_text = handle.read()\n"
+                        "print(len(source_text))\n"
+                    ),
+                }
+            ]
+        }
+        importlib_plan = {
+            "files": [
+                {
+                    "path": "generated/check.py",
+                    "utf8": (
+                        "import importlib.util\n"
+                        "spec = importlib.util.spec_from_file_location('sample', '/source/sample.py')\n"
+                        "sample = importlib.util.module_from_spec(spec)\n"
+                        "spec.loader.exec_module(sample)\n"
+                        "print(sample)\n"
+                    ),
+                }
+            ]
+        }
+
+        self.assertTrue(module._plan_source_binding_signal(open_plan, finding))
+        self.assertTrue(module._plan_source_binding_signal(importlib_plan, finding))
+
+    def test_print_path_comment_argv_echo_and_malformed_source_remain_unbound(self):
+        module = load_module("review_model_live_source_binding_negative")
+        finding = {"location": {"path": "sample.py"}}
+        controls = {
+            "print": "print('/source/sample.py')\n",
+            "path": "source_path = '/source/sample.py'\nprint(source_path)\n",
+            "comment": "# /source/sample.py\nprint('claim')\n",
+            "argv": "import sys\nprint(sys.argv[1] == '/source/sample.py')\n",
+            "malformed": "SRC = '/source/sample.py'\nopen(SRC\n",
+            "doubly_escaped": r"SRC = '/source/sample.py'\nopen(SRC)\n",
+        }
+
+        for name, content in controls.items():
+            with self.subTest(control=name):
+                plan = {"files": [{"path": "generated/check.py", "utf8": content}]}
+                self.assertFalse(module._plan_source_binding_signal(plan, finding))
+
+
+if __name__ == "__main__":
+    unittest.main()
