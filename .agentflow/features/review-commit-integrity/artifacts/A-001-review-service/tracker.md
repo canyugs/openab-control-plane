@@ -8,15 +8,15 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-09 13:14:20 Asia/Taipei.
+- **Last update:** 2026-09-09 13:20:16 Asia/Taipei.
 
-- **Evidence commit:** 8b35b4c581ac3d2f5f6669511eaa7b318310fc40.
+- **Evidence commit:** d6e96c32abfd766588c549e8922e3077d6abcb00.
 
 ## Overall state
 
-- **State:** active.
+- **State:** blocked.
 
-- **Reason:** Work remains.
+- **Reason:** Exact implementation Result Go remains owner-only; all technical Stage 1 checks passed.
 
 - **Total:** 3.
 
@@ -40,11 +40,11 @@
 
 - **Current item:** T-2.
 
-- **Last proven result:** Candidate d6e96c3 passes host package/root tests, build, package fmt and clippy; baseline fmt differences documented.
+- **Last proven result:** Host gate PASS and fresh full acceptance PASS for d6e96c3; no active workers; local Postgres stopped.
 
-- **Active blocker or running process:** Acceptance review exec session 16637; security resolution recorded.
+- **Active blocker or running process:** Awaiting owner Result Go for d6e96c32abfd766588c549e8922e3077d6abcb00; no process running.
 
-- **Next safe action:** Collect exact-commit acceptance, scoped learn record, and present Result Go gate.
+- **Next safe action:** Record exact Result Go, then finish Stage 1 round and prepare separately gated Stage 2 design.
 
 - **Expected changed files:** crates/github-pr-controller/src/{closing.rs,github.rs,lib.rs,deciding.rs,store.rs,store/sqlite.rs,store/postgres.rs}; stream notebook and artifacts.
 
@@ -52,15 +52,15 @@
 
 - **All accepted tasks checked:** no.
 
-- **Blocking accepted decision:** none.
+- **Blocking accepted decision:** Result Go for d6e96c32abfd766588c549e8922e3077d6abcb00.
 
-- **Operation running:** yes.
+- **Operation running:** no.
 
 - **Next action remaining:** T-2.
 
 - **Evidence status:** current.
 
-- **Judgment:** active.
+- **Judgment:** blocked.
 
 ## Update meaning
 

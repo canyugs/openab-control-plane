@@ -6,8 +6,8 @@ Current commit: d6e96c32abfd766588c549e8922e3077d6abcb00 — Stage 1 implementat
 Tests/scenarios: host package 170 tests and root suite 327 tests passed; build, package fmt and clippy passed; workspace fmt has three unchanged baseline differences.
 Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex; root ag.json remains untracked bootstrap.
 Proven: approved design, baseline red failure, delivered SHA tests and real PostgreSQL; security pass resolved with explicit immutable-target recovery limit.
-Open: acceptance cross-check; exact Result Go; Stage 2/3 designs and implementation remain.
-Next: collect acceptance evidence, record Host gate, publish result for review; no production deployment.
+Open: exact Result Go for d6e96c3; Stage 2/3 designs and implementation remain.
+Next: owner reviews Result Go for d6e96c3; all technical checks and Host gate passed; no active worker or local test database.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
 Archived eras: none.
 Streams: fix/review-commit-integrity in isolated worktree.
@@ -242,3 +242,19 @@ Checkpoint scope: exact seven-file implementation remains byte-identical to d6e9
 * _2026-09-09 13:17:35 (GPT-6/default)_
 
 Acceptance full cross-check completed; exact d6e96c3 Outcome/Minimality/Conformance/Overall PASS. Host inspected full report, verified report digest and clone-only result, and confirmed identical source blobs. Host gate: PASS. Human result review ready, exact Result Go still pending. Remaining work now records/learn/push only; no repeated implementation validation.
+
+## [RUN-025] Event (during round A-001)
+
+* _2026-09-09 13:17:36 (GPT-6/default)_
+
+Route full_pipeline; allow-ag on; owner approved handoff. Dispatch learn, codex-default, basic, gpt-5.6-luna/max, external-runner-v1. Executable and ChatGPT login verified. Clone-only report authority; no production access. Root configuration remains local bootstrap; main checkout untouched.
+
+## [RUN-026] Event (during round A-001)
+
+* _2026-09-09 13:20:16 (GPT-6/default)_
+
+Learn artifact accepted after report digest and clone-write boundary checks; no implementation or review changes. Local PostgreSQL test instance stopped successfully. All external workers finished. Original checkout still has only its pre-existing README/docs/PLAN changes. Source remains exact d6e96c3; tracker accurately waits at Result Go with later Stage 2/3 unfinished.
+
+Human result review ready: approve Result Go for d6e96c32abfd766588c549e8922e3077d6abcb00 to accept Stage 1? Suggested default: approve this verified implementation; production and later-stage design approvals remain separate. The installed /Users/can/.agents/skills/agentflow/SKILL.md says: "Consequential work then needs current Result Go for the exact implementation commit." Design Go 8b35b4c does not supply this later gate. This Ask remains open at the explicit gate; no complete-programme Reply or terminal completion is claimed.
+
+Git pre-push check: origin fetched, HEAD..origin/fix/review-commit-integrity empty. Push follows as normal fast-forward; no merge or deployment.
