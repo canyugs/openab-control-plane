@@ -281,21 +281,41 @@ def _resolve_revision(repo: Path, requested: str) -> str:
     return resolved.lower()
 
 
+def _gitlink_paths(repo: Path, args: Sequence[str]) -> list[str]:
+    raw = _git(repo, args, max_output=4 * 1024 * 1024)
+    paths: list[str] = []
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        try:
+            meta, path_bytes = record.split(b"\t", 1)
+            mode = meta.split(b" ", 1)[0].decode("ascii")
+            path = path_bytes.decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise EvaluationError("tracked tree contains an unreadable path") from exc
+        if mode == "160000":
+            paths.append(safe_relative_path(path, "submodule path"))
+    return paths
+
+
 def _validate_clean_repo(repo: Path) -> None:
     if not repo.is_dir():
         raise EvaluationError("repository path is not a directory")
+    submodules = _gitlink_paths(repo, ["ls-files", "--stage", "-z"])
+    if submodules:
+        raise EvaluationError("repository contains submodule gitlinks")
     status = _git(repo, ["status", "--porcelain=v1", "--untracked-files=all"], max_output=4 * 1024 * 1024)
     if status:
         raise EvaluationError("repository must have a clean tracked and untracked tree")
 
 
 def _archive_files(repo: Path, revision: str, limits: Mapping[str, int]) -> tuple[dict[str, Any], list[str], bytes, bytes]:
-    archive_bytes = _git(repo, ["archive", "--format=tar", revision], max_output=MAX_INPUT_BYTES)
     # The base diff is supplied by the caller because a revision/base pair is
     # part of the frozen identity.  Keeping archive parsing here makes the
     # regular-file completeness check independent of the host checkout.
     expected_raw = _git(repo, ["ls-tree", "-r", "-z", "--full-tree", revision], max_output=MAX_INPUT_BYTES)
     expected: list[str] = []
+    submodules: list[str] = []
     for record in expected_raw.split(b"\0"):
         if not record:
             continue
@@ -307,6 +327,11 @@ def _archive_files(repo: Path, revision: str, limits: Mapping[str, int]) -> tupl
             raise EvaluationError("tracked tree contains an unreadable path") from exc
         if mode in {"100644", "100755"}:
             expected.append(safe_relative_path(path, "tracked path"))
+        elif mode == "160000":
+            submodules.append(safe_relative_path(path, "submodule path"))
+    if submodules:
+        raise EvaluationError("repository revision contains submodule gitlinks")
+    archive_bytes = _git(repo, ["archive", "--format=tar", revision], max_output=MAX_INPUT_BYTES)
     expected.sort()
     max_files = int(limits.get("max_files", 10000))
     max_file = int(limits.get("max_file_bytes", 2 * 1024 * 1024))

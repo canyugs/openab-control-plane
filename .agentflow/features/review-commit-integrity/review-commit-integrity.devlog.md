@@ -753,3 +753,21 @@ Structured retries worker completed exit0/report SHAfb4e268733aefb2b3624acdad922
 
 Actual full model run generated syntax-valid source-reading baseline/counterexample programs, but integrated OCI execution fails before container creation: core passes validate_generated_plan output (file path/utf8 plus derived bytes/sha256), and OCIExecutor.execute revalidates it with a validator accepting only raw path/utf8. Captured live-oci-normalization-failure.json plus actual plans prove the seam failure. Fix normalization idempotence with derived metadata integrity checks, not by rewriting code. A separate real plan uses shared helper/default arguments: source reading is evident in generated code yet static AST binding is false. After repeated false negatives, reopen the source-binding design with independent better-tier spec review; do not append another ad hoc syntax heuristic before resolving which evidence is authoritative. Accepted E6 requires real controlled execution plus independent semantic assessment, and all outputs remain model_assessment, never human truth.
 
+## [RUN-085] Event (during round A-001)
+
+* _2026-09-10 01:09:33 (GPT-6/default)_
+
+Dispatch normalization-seam, implementation, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at d80e2e2ba1c37627679e618a81570d42e4cda86c. Frozen exact authority in normalization-seam-brief.md; disposable clone only.
+
+## [RUN-086] Event (during round A-001)
+
+* _2026-09-10 01:10:06 (GPT-6/default)_
+
+Dispatch binding-contract, spec, codex-default/better, gpt-5.6-terra/high, external-runner-v1 at d80e2e2ba1c37627679e618a81570d42e4cda86c. Frozen exact authority in binding-contract-brief.md; disposable clone only.
+
+## [RUN-087] Event (during round A-001)
+
+* _2026-09-10 01:13:05 (GPT-6/default)_
+
+Submodule guard report digest2f0324a19c3b5d5f5ef29d71a311bb1dd36e55c8d1be62883169a2ac22372f70 verified; exact snapshot/doc/new-test paths imported. Host complete suite76 PASS. Independent original marker fixture now refuses submodule gitlinks before helper execution, marker absent and nested config unchanged. Full model journey returned partial/CLI exit0, six valid judgments and three synthesis results but zero scoreable items due OCI seam; list estimate1.0408535 USD, actual bill unknown. Readback found disagreement_items3 even though all three typed judge_disagreement flags false: nonempty synthesis explanations including agreement are wrongly counted as boolean disagreement. Bound E10 correction to deterministic valid judge comparisons and eligible denominator, retaining explanatory text; no new model-output or authority feature.
+

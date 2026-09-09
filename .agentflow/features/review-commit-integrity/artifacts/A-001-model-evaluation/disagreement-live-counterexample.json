@@ -1,0 +1,34 @@
+{
+  "summary_disagreement_items": 3,
+  "weekly_disagreement_items": 0,
+  "weekly_disagreement_denominator": 1,
+  "items": [
+    {
+      "item_id": "F-1",
+      "judge_disagreement": false,
+      "judge_verdicts": [
+        "support",
+        "support"
+      ],
+      "synthesis_disagreement": "No substantive disagreement between the two assessments: both reach \"support\" with severity high, both mark the validation as unproven, and both cite the same two frozen-source ranges. The only difference is depth of articulation \u2014 one assessment explicitly records that the supplied execution produced zero runs (status failed, reason OCIError, controls_passed false) and therefore no executed baseline/counterexample distinction exists, while the other states only the static counterexample without addressing the failed execution. I adopt the more conservative framing: the finding is established by frozen-source reading alone, not by any executed control."
+    },
+    {
+      "item_id": "omission-1-e456c6d814336027",
+      "judge_disagreement": false,
+      "judge_verdicts": [
+        "support",
+        "support"
+      ],
+      "synthesis_disagreement": "The two assessments do not disagree: both return support, high severity, useful, and both record the validation verdict as unproven. The only material tension is internal to the record rather than between assessments \u2014 the executed validation produced zero runs (status failed, reason OCIError, controls_passed false, classification unproven), so no runtime baseline/counterexample pair exists. One assessment states this limitation explicitly; the other asserts the counterexample's return value without flagging the missing execution. I preserve that limitation here: the failed controls are not promoted and contribute nothing to the verdict, which rests solely on the frozen source text. If a reviewer requires executed confirmation as a precondition for any supported verdict, this item would instead be unknown."
+    },
+    {
+      "item_id": "omission-2-a351ce82491f2fdc",
+      "judge_disagreement": false,
+      "judge_verdicts": [
+        "support",
+        "support"
+      ],
+      "synthesis_disagreement": "Both assessments reach the same finding verdict (support) and the same validation status (unproven), so there is no substantive conflict on the claim itself. They differ on severity: one assigns medium, the other high; that severity disagreement is preserved and unresolved here, since neither the frozen source nor any executed run establishes exploitability or blast radius. A second, weaker tension: one assessment reasons explicitly from the empty run set and the OCIError execution failure to withhold dynamic confirmation, while the other records the unproven validation status without stating that basis. This synthesis adopts the more conservative framing \u2014 the omission is established statically from the complete frozen source, but nothing was executed, so the dynamic/validation status remains unproven and no failed control is promoted."
+    }
+  ]
+}

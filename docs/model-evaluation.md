@@ -33,6 +33,11 @@ short SHA, changed input identity, conflicting artifact, or output overlap is
 a visible error. The controller writes `snapshot.json` before its first model
 CLI call. It uses direct `git` argv calls only; it never runs project hooks.
 
+Repositories with tracked submodule gitlinks are rejected before working-tree
+status or source archive/diff operations. The snapshot never enters nested
+submodule configuration or content, and omitted submodule contents cannot be
+claimed as a complete source packet.
+
 ## Exact input schemas
 
 ### `findings.json`
