@@ -272,3 +272,9 @@ Result Go: d6e96c32abfd766588c549e8922e3077d6abcb00. This answers the immediatel
 * _2026-09-09 13:43:46 (GPT-6/default)_
 
 Route full_pipeline; allow-ag on; owner approved handoff. Dispatch codewalk, codex-default, better, gpt-5.6-terra/high, external-runner-v1. Executable and ChatGPT login verified. Clone-only report authority; no production access. Root configuration remains local bootstrap; main checkout untouched.
+
+## [RUN-029] Event (during round A-001)
+
+* _2026-09-09 13:48:21 (GPT-6/default)_
+
+Route full_pipeline; allow-ag on; owner approved handoff. Dispatch spec, codex-default, better, gpt-5.6-terra/high, external-runner-v1. Executable and ChatGPT login verified. Clone-only report authority; no production access. Root configuration remains local bootstrap; main checkout untouched.
