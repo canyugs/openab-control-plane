@@ -771,3 +771,15 @@ Dispatch binding-contract, spec, codex-default/better, gpt-5.6-terra/high, exter
 
 Submodule guard report digest2f0324a19c3b5d5f5ef29d71a311bb1dd36e55c8d1be62883169a2ac22372f70 verified; exact snapshot/doc/new-test paths imported. Host complete suite76 PASS. Independent original marker fixture now refuses submodule gitlinks before helper execution, marker absent and nested config unchanged. Full model journey returned partial/CLI exit0, six valid judgments and three synthesis results but zero scoreable items due OCI seam; list estimate1.0408535 USD, actual bill unknown. Readback found disagreement_items3 even though all three typed judge_disagreement flags false: nonempty synthesis explanations including agreement are wrongly counted as boolean disagreement. Bound E10 correction to deterministic valid judge comparisons and eligible denominator, retaining explanatory text; no new model-output or authority feature.
 
+## [RUN-088] Event (during round A-001)
+
+* _2026-09-10 01:13:05 (GPT-6/default)_
+
+Dispatch disagreement-metric, implementation, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at 9feaae8ba848eb3d4d38c80ab081d1aff706de48. Frozen exact authority in disagreement-metric-brief.md; disposable clone only.
+
+## [RUN-089] Event (during round A-001)
+
+* _2026-09-10 01:15:57 (GPT-6/default)_
+
+Binding-contract independent better-tier spec review completed PASS, exact report digest b6fe0f1473609d6dc20d9a1e6d5c4a0b0d2132ff7140ab0f86eb94972ef86966 verified and only report clone change. Host accepts diagnostic-only AST within existing Design Go; semantic source validity remains the two independent judges plus actual controlled execution and synthesis, not an extra syntax catalogue. Completion must preserve invalid/missing semantic qualification as partial/unscoreable. No new tracer/capability or owner decision required. Correct parent disagreement wording: actual summary3 vs weekly partial0/denominator1; captured JSON/source supersede mistaken count3 sentence, correction scope unchanged.
+
