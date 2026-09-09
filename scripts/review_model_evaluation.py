@@ -613,6 +613,7 @@ def build_judge_packet(
         "rules": [
             "return exactly the schema fields; finding_id must match the supplied finding",
             "each citation is exactly {path,start,end,evidence_id} and cites only a supplied frozen-source range covered by that evidence_id",
+            "support/refute assessments require at least one citation; insufficient_evidence may return an empty citations array",
             "never cite generated files or /source paths, and never emit citation strings or quote/note fields",
             "assess whether executed baseline and counterexample controls meaningfully distinguish the claim from its negation",
             "do not execute commands, use tools, or rely on a manual test prerequisite",
@@ -650,6 +651,7 @@ def build_synthesis_packet(
             "return exactly the schema fields and preserve the supplied item_id",
             "preserve disagreement; unknown is allowed; do not invent evidence or promote failed controls",
             "each citation is exactly {path,start,end,evidence_id} and cites only a supplied frozen-source range covered by that evidence_id",
+            "supported/refuted results require at least one citation; unknown may return an empty citations array",
             "never cite generated files or /source paths, and return no citation strings",
         ],
     }
@@ -835,27 +837,11 @@ JUDGE_SCHEMA: dict[str, Any] = {
                     "evidence_id": {"type": "string", "minLength": 1, "maxLength": 512},
                 },
             },
-            "description": "Each citation must use an exact supplied source path/range and supplied evidence_id; never cite generated files or /source paths.",
+            "description": "Each citation must use an exact supplied source path/range and supplied evidence_id; never cite generated files or /source paths. The transport may return an empty array for insufficient_evidence; the controller requires at least one citation for support or refute.",
         },
         "counterexample": {"type": "string", "maxLength": 16 * 1024},
         "validation_verdict": {"type": "string", "enum": ["valid", "invalid", "unproven"]},
     },
-    "oneOf": [
-        {
-            "required": ["verdict", "citations"],
-            "properties": {
-                "verdict": {"enum": ["insufficient_evidence"]},
-                "citations": {"maxItems": MAX_CITATIONS},
-            },
-        },
-        {
-            "required": ["verdict", "citations"],
-            "properties": {
-                "verdict": {"enum": ["support", "refute"]},
-                "citations": {"minItems": 1, "maxItems": MAX_CITATIONS},
-            },
-        },
-    ],
 }
 DISCOVERY_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -906,27 +892,11 @@ SYNTHESIS_SCHEMA: dict[str, Any] = {
                     "evidence_id": {"type": "string", "minLength": 1, "maxLength": 512},
                 },
             },
-            "description": "Cite only exact supplied source paths/ranges and supplied evidence_id values; generated files are not citation sources.",
+            "description": "Cite only exact supplied source paths/ranges and supplied evidence_id values; generated files are not citation sources. The transport may return an empty array for unknown; the controller requires at least one citation for supported or refuted.",
         },
         "disagreement": {"type": "string", "maxLength": 16 * 1024},
         "reason": {"type": "string", "maxLength": 16 * 1024},
     },
-    "oneOf": [
-        {
-            "required": ["verdict", "citations"],
-            "properties": {
-                "verdict": {"enum": ["unknown"]},
-                "citations": {"maxItems": MAX_CITATIONS},
-            },
-        },
-        {
-            "required": ["verdict", "citations"],
-            "properties": {
-                "verdict": {"enum": ["supported", "refuted"]},
-                "citations": {"minItems": 1, "maxItems": MAX_CITATIONS},
-            },
-        },
-    ],
 }
 VALIDATION_SCHEMA: dict[str, Any] = {
     "type": "object",

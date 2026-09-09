@@ -667,3 +667,37 @@ Dispatch provider-schema, implementation, codex-default/basic, gpt-5.6-luna/max,
 
 Actual generation CLI exited1. Discovery authenticated/parsed but entire result rejected because _validate_discovery_result requires every reference to cover the main source location: real valid code+README evidence cannot satisfy this. Reopen evidence association to require all IDs valid and at least one reference cover candidate location; each subsequent citation still checks its own range. Discovery also emitted speculative unstated-input/style claims, so constrain instructions to concrete defects under supplied contract/call paths, preserving unknown and independent validation. Real generation envelope performed one non-executable schema-error StructuredOutput attempt then a successful one; single-exchange transport guard rejected valid recovery. Reopen exact bounded ID-bound multi-exchange transport with retained error attempts, no executable/tool additions. Actual generated plan uses SRC constant for source read, another standard AST binding false-negative; only structural signal recognition may broaden, never substitute for both semantic judges. Do not unescape/rewrite generated code or treat malformed code as success.
 
+## [RUN-074] Event (during round A-001)
+
+* _2026-09-10 00:45:56 (GPT-6/default)_
+
+Dispatch live-evidence, implementation, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at ea94f2c72fadad02dfae2705369b81acc94bb9cc. Frozen exact authority in live-evidence-brief.md; disposable clone only.
+
+## [RUN-075] Event (during round A-001)
+
+* _2026-09-10 00:46:18 (GPT-6/default)_
+
+Dispatch structured-retries, implementation, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at ea94f2c72fadad02dfae2705369b81acc94bb9cc. Frozen exact authority in structured-retries-brief.md; disposable clone only.
+
+## [RUN-076] Event (during round A-001)
+
+* _2026-09-10 00:47:44 (GPT-6/default)_
+
+Checkpoint scope: delivered implementation3d14e7 passed61 host tests; ea94f2c only adds actual failure evidence/records. Remaining workers have disjoint function/file authority: provider top-level schemas, live evidence/source-signal/prompt functions plus separate tests, adapter retry events/auth tests. Actual CLI generation exit1 preserved; no manual model-code repair or host execution. Tracker validated; prior OCI/weekly evidence stands, no successful full model assessment claim. Correct remaining actual blockers then run fresh full journey, not additional speculative features.
+
+## [WIP-019] Checkpoint (during round A-001)
+
+* _2026-09-10 00:47:44 (GPT-6/default)_
+
+- **Finished:** Strict typed schemas and StructuredOutput transport integrated;61 host tests PASS; real discovery and generation responses retained.
+- **Running now:** provider-schema67436, live-evidence86498 and structured-retries34309 address exact captured interoperability failures.
+- **Still to do:** Real successful generated OCI original/omission and safe-refutation runs, replay and weekly integration, independent reviews/learn and Result Go.
+- **Next work action:** Import bounded corrections and run fresh actual full model CLI.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-077] Event (during round A-001)
+
+* _2026-09-10 00:50:46 (GPT-6/default)_
+
+Provider-schema worker completed exit0/report digest7843d8ec3cb28650a5c33efd5a9d1d1857189d34b6a11421f9b88d1ea78bdde2 verified; exact core/test diff imported. Host complete Python suite62 PASS. Unsupported top-level composition removed while controller citation cardinality remains strict. Actual adapter+schema negative semantic probe started with both exact strong IDs, no parser bypass. live-evidence86498 and structured-retries34309 still active.
+

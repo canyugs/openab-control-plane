@@ -333,6 +333,43 @@ class ModelEvaluationBehaviorTests(unittest.TestCase):
         with self.assertRaises(Exception):
             module.validate_judge_result(result, finding, evidence, {"src/app.py": 1})
 
+    def test_controller_enforces_verdict_dependent_citation_cardinality(self):
+        module = load_module("review_model_evaluation_cardinality", "scripts/review_model_evaluation.py")
+        finding = {"finding_id": "F-1", "evidence_ids": ["E-1"]}
+        evidence = {"E-1": {"allowed_ranges": [{"path": "src/app.py", "start": 1, "end": 1}]}}
+        source_lines = {"src/app.py": 1}
+
+        judge = {
+            "finding_id": "F-1",
+            "verdict": "insufficient_evidence",
+            "severity": "unknown",
+            "usefulness": "unknown",
+            "citations": [],
+            "counterexample": "not enough evidence",
+            "validation_verdict": "unproven",
+        }
+        self.assertEqual(module.validate_judge_result(judge, finding, evidence, source_lines)["citations"], [])
+        for verdict in ("support", "refute"):
+            judge["verdict"] = verdict
+            with self.assertRaises(Exception):
+                module.validate_judge_result(judge, finding, evidence, source_lines)
+
+        synthesis = {
+            "item_id": "F-1",
+            "verdict": "unknown",
+            "citations": [],
+            "disagreement": "",
+            "reason": "not enough evidence",
+        }
+        self.assertEqual(
+            module._validate_synthesis_result(synthesis, "F-1", finding, evidence, source_lines)["citations"],
+            [],
+        )
+        for verdict in ("supported", "refuted"):
+            synthesis["verdict"] = verdict
+            with self.assertRaises(Exception):
+                module._validate_synthesis_result(synthesis, "F-1", finding, evidence, source_lines)
+
     def test_model_output_schemas_are_strictly_nested(self):
         module = load_module("review_model_evaluation_schema_contract", "scripts/review_model_evaluation.py")
 
@@ -341,6 +378,15 @@ class ModelEvaluationBehaviorTests(unittest.TestCase):
             self.assertFalse(schema["additionalProperties"])
             self.assertEqual(set(schema["required"]), set(required))
             self.assertEqual(set(schema["properties"]), set(required))
+
+        for schema in (
+            module.JUDGE_SCHEMA,
+            module.SYNTHESIS_SCHEMA,
+            module.DISCOVERY_SCHEMA,
+            module.VALIDATION_SCHEMA,
+        ):
+            for composition in ("oneOf", "allOf", "anyOf"):
+                self.assertNotIn(composition, schema)
 
         citation_required = {"path", "start", "end", "evidence_id"}
         for schema in (module.JUDGE_SCHEMA, module.SYNTHESIS_SCHEMA):
