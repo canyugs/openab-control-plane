@@ -56,3 +56,31 @@ Route full_pipeline; allow-ag on; owner approved handoff. Dispatch codewalk, cod
 * _2026-09-09 11:57:19 (GPT-6/default)_
 
 Codewalk accepted after source readback. Shared discovery coverage complete. Legacy outbox and finding-decision evidence included. Official GitHub commit_id contract verified. Explore/spike skipped with reasons in codewalk-resolution.md; security review required after implementation. Scope unchanged.
+
+## [RUN-005] Event (during round A-001)
+
+* _2026-09-09 11:57:19 (GPT-6/default)_
+
+Route full_pipeline; allow-ag on; owner approved handoff. Dispatch spec, codex-default, better, gpt-5.6-terra/high, external-runner-v1. Executable and ChatGPT login verified. Clone-only report authority; no production access. Root configuration remains local bootstrap; main checkout untouched.
+
+## [RUN-006] Event (during round A-001)
+
+* _2026-09-09 11:59:15 (GPT-6/default)_
+
+Checkpoint scope verified: changed paths only stream records/artifacts and local bootstrap ag.json. Requirements and codewalk complete; specification worker active. Tracker validated. No source edits, product tests, deployment, or GitHub review writes. Next inspect design and reach exact Design Go gate.
+
+## [WIP-001] Checkpoint (during round A-001)
+
+* _2026-09-09 11:59:15 (GPT-6/default)_
+
+- **Finished:** Agentflow initialized in the existing isolated worktree; requirements and independent source-boundary discovery accepted.
+- **Running now:** External specification worker prepares the smallest SHA-integrity patch design and scoped later stages.
+- **Still to do:** Design acceptance and exact Design Go; implementation, tests/review, measurement and comparison follow later gates. No production work completed.
+- **Next work action:** Read the specification and commit the concrete design.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-007] Event (during round A-001)
+
+* _2026-09-09 12:01:57 (GPT-6/default)_
+
+Specification accepted with spec-resolution.md implementation clarification; canonical design.md copied byte-identically from worker report. T-1 complete. No workers remain. Source edits wait for exact Design Go; code tests and final security/acceptance remain unrun. Scope comparison confirms records/artifacts only.

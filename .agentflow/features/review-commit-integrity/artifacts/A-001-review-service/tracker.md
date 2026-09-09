@@ -8,7 +8,7 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-09 11:49:39 Asia/Taipei.
+- **Last update:** 2026-09-09 12:01:57 Asia/Taipei.
 
 - **Evidence commit:** uncommitted.
 
@@ -20,13 +20,13 @@
 
 - **Total:** 3.
 
-- **Completed:** 0.
+- **Completed:** 1.
 
-- **Remaining:** 3.
+- **Remaining:** 2.
 
 ## Accepted task checklist
 
-- [ ] **T-1:** Create a source-grounded design for SHA integrity, round measurement, and offline comparison; no runtime changes; prove requirements and invariant coverage. Source: A-001.
+- [x] **T-1:** Create a source-grounded design for SHA integrity, round measurement, and offline comparison; no runtime changes; prove requirements and invariant coverage. Source: A-001.
 
 - [ ] **T-2:** Implement SHA integrity only after the exact design gate; preserve ask/dismiss and retry workflows; prove malformed and mismatched SHA rejection, valid controls, and required Rust checks. Source: A-001.
 
@@ -38,13 +38,13 @@
 
 ## Current recovery
 
-- **Current item:** T-1.
+- **Current item:** T-2.
 
-- **Last proven result:** None.
+- **Last proven result:** Requirements, boundary discovery, and Stage 1 specification accepted; design.md and verification contract recorded.
 
-- **Active blocker or running process:** None.
+- **Active blocker or running process:** Exact Design Go required by the active Agentflow skill; no worker running.
 
-- **Next safe action:** Run external requirements and boundary discovery.
+- **Next safe action:** Obtain Design Go for the committed design, then start red-first Stage 1 implementation.
 
 - **Expected changed files:** .agentflow/features/review-commit-integrity/artifacts/A-001-review-service/*; stream notebook; stream ag.json; .gitignore.
 
@@ -56,7 +56,7 @@
 
 - **Operation running:** no.
 
-- **Next action remaining:** T-1.
+- **Next action remaining:** T-2.
 
 - **Evidence status:** current.
 
