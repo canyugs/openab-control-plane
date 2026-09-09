@@ -6,7 +6,7 @@ Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.de
 
 Current commit: 8b35b4c581ac3d2f5f6669511eaa7b318310fc40 — accepted design; no source changes.
 
-Tests/scenarios: design coverage inspected; tracker and whitespace checks pending final readback; no runtime tests run.
+Tests/scenarios: design coverage inspected; tracker and whitespace checks passed; source diff empty; remote branch readback matched 2d5a68f; no runtime tests run.
 
 Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex. Root ag.json is untracked local bootstrap.
 
