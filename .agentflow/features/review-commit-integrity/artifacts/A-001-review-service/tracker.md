@@ -8,15 +8,15 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-09 13:57:57 Asia/Taipei.
+- **Last update:** 2026-09-09 21:01:32 Asia/Taipei.
 
 - **Evidence commit:** 5f18484f24359e2e13278dc216e4462b8b1080df.
 
 ## Overall state
 
-- **State:** blocked.
+- **State:** active.
 
-- **Reason:** Stage 1 accepted; exact Stage 2 Design Go is required before new source work.
+- **Reason:** Owner expanded Stage 2 to functional multi-model automatic evaluation before cost optimization.
 
 - **Total:** 3.
 
@@ -34,7 +34,7 @@
 
 ## Accepted scope changes
 
-- None.
+- Add independent multi-model finding assessment, synthesis, escape discovery/validation and measured costs. Source: A-001 owner additions. Effect: Reopen Stage 2 design; human annotation becomes optional and cost reduction cannot remove required functionality.
 
 ## Current recovery
 
@@ -42,9 +42,9 @@
 
 - **Last proven result:** Stage 1 Result Go d6e96c3; Stage 2 design and source-backed resolution frozen in 5f18484.
 
-- **Active blocker or running process:** No running process; awaiting Stage 2 Design Go for 5f18484f24359e2e13278dc216e4462b8b1080df.
+- **Active blocker or running process:** Preparing revised requirements and design for model evaluation.
 
-- **Next safe action:** After exact Stage 2 Design Go, implement the three-file offline weekly report and its fixture/PTY checks.
+- **Next safe action:** Freeze an end-to-end model evaluation design under the amended owner scope.
 
 - **Expected changed files:** crates/github-pr-controller/src/{closing.rs,github.rs,lib.rs,deciding.rs,store.rs,store/sqlite.rs,store/postgres.rs}; stream notebook and artifacts.
 
@@ -52,7 +52,7 @@
 
 - **All accepted tasks checked:** no.
 
-- **Blocking accepted decision:** Stage 2 Design Go for 5f18484f24359e2e13278dc216e4462b8b1080df.
+- **Blocking accepted decision:** none.
 
 - **Operation running:** no.
 
@@ -60,7 +60,7 @@
 
 - **Evidence status:** current.
 
-- **Judgment:** blocked.
+- **Judgment:** active.
 
 ## Update meaning
 

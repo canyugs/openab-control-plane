@@ -314,3 +314,19 @@ Corrected Stage 2 spec accepted with mandatory spec-resolution.md source/require
 Stage 2 design commit: 5f18484f24359e2e13278dc216e4462b8b1080df. Design authority includes A-001-round-measurement/design.md AND spec-resolution.md. Human question: approve this exact design to implement the offline weekly report? Suggested default: approve the three-file local report; no runtime/production authority implied. Installed Agentflow SKILL.md requires: "Source work starts only after a later `Design Go: <commit>`." Prior owner go was Result Go for Stage 1 d6e96c3, now complete; this is a new scoped design gate.
 
 No active worker or Stage 2 source change; git diff --check passed. Stage 1 source is unchanged and its tests are not rerun for record-only edits. Tracker 2/3 tasks complete, final task remains gated. Origin was fetched and HEAD..origin/fix/review-commit-integrity inspected empty before this turn's push. Current Ask stays open at the explicit gate, not declared whole-programme complete.
+
+## [RUN-034] Event (during round A-001)
+
+* _2026-09-09 21:01:32 (GPT-6/default)_
+
+New owner messages verbatim:
+> 設計了什麼內容？
+> 那人工怎麼標注這些 finding ?
+> 現在如果都沒有人, 那怎麼處理?
+> 那不能讓其他模型來綜合評估嗎?
+> 增加這些沒有問題的
+> 你要先考慮有東西, 再來考慮怎麼節省
+
+Scope amendment: deliver a functional automatic quality-evaluation path, not a report awaiting humans. Two distinct models independently assess findings against frozen same-SHA evidence; a synthesis model combines evidence/disagreements. Independent escape discovery and subsequent candidate validation are included, with automated labels distinct from human judgments. Owner accepts added model calls/cost and explicitly prioritizes capability before cost savings. Costs are measured, not used to omit core stages. Existing Stage 2 three-file/no-model-call restriction and design gate 5f18484 are superseded; reopen design. Stage 1 Result Go remains valid. No automatic merge/review authority or production rollout was requested.
+
+Route remains full_pipeline; authorizing requirement source is the exact owner sentences above. Refresh requirements and source map/spec for this actual scope change, not an extra review of unchanged Stage 1. New work root A-001-model-evaluation; previous Stage 2 design remains historical until replacement accepted.
