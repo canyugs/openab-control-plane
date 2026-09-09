@@ -6061,8 +6061,8 @@ mod tests {
         // And the adopted comment id is now the round's anchor.
         assert_eq!(
             store.last_comment_id("example/repo", 7).unwrap(),
-            None,
-            "no round row in this test; anchor write is a no-op"
+            Some(1001),
+            "the verified round stores OUR adopted comment as its anchor"
         );
     }
 
