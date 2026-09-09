@@ -42,7 +42,7 @@
 
 - **Last proven result:** Host gate PASS and fresh full acceptance PASS for d6e96c3; no active workers; local Postgres stopped.
 
-- **Active blocker or running process:** Stage 2 discovery preparing.
+- **Active blocker or running process:** Stage 2 codewalk external worker session 18508.
 
 - **Next safe action:** Inspect Stage 2 metric sources and freeze its minimal design before source work.
 
@@ -54,7 +54,7 @@
 
 - **Blocking accepted decision:** none.
 
-- **Operation running:** no.
+- **Operation running:** yes.
 
 - **Next action remaining:** T-3.
 

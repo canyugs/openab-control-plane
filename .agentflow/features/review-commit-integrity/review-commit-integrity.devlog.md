@@ -6,8 +6,8 @@ Current commit: d6e96c32abfd766588c549e8922e3077d6abcb00 — Stage 1 implementat
 Tests/scenarios: host package 170 tests and root suite 327 tests passed; build, package fmt and clippy passed; workspace fmt has three unchanged baseline differences.
 Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex; root ag.json remains untracked bootstrap.
 Proven: approved design, baseline red failure, delivered SHA tests and real PostgreSQL; security pass resolved with explicit immutable-target recovery limit.
-Open: exact Result Go for d6e96c3; Stage 2/3 designs and implementation remain.
-Next: owner reviews Result Go for d6e96c3; all technical checks and Host gate passed; no active worker or local test database.
+Open: Stage 2 discovery/design; Stage 1 Result Go recorded in RUN-027; Stage 2/3 implementation remains.
+Next: inspect four metric sources and freeze Stage 2 design before source changes; codewalk worker active; no production action.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
 Archived eras: none.
 Streams: fix/review-commit-integrity in isolated worktree.
@@ -266,3 +266,9 @@ Git pre-push check: origin fetched, HEAD..origin/fix/review-commit-integrity emp
 Owner message verbatim: go
 
 Result Go: d6e96c32abfd766588c549e8922e3077d6abcb00. This answers the immediately preceding exact implementation-result question. Stage 1 accepted; no merge, deployment, or Stage 2 source authority inferred. Continue already approved Stage 2 discovery/design, keeping R-13 host correction (human quality, not integrity gates). Prior verification remains current; no record-only retest.
+
+## [RUN-028] Event (during round A-001)
+
+* _2026-09-09 13:43:46 (GPT-6/default)_
+
+Route full_pipeline; allow-ag on; owner approved handoff. Dispatch codewalk, codex-default, better, gpt-5.6-terra/high, external-runner-v1. Executable and ChatGPT login verified. Clone-only report authority; no production access. Root configuration remains local bootstrap; main checkout untouched.
