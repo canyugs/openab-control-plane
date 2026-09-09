@@ -87,6 +87,9 @@ pub struct DecisionOutcome {
     pub decision: &'static str,
     /// True when this decision is what cleared the last blocker.
     pub unblocked: bool,
+    /// True only when the source round has explicit verified commit proof and
+    /// the controller's live head is that same commit.
+    pub approval_authorized: bool,
     /// `(outbox kind, payload)`. Kinds are owned Strings because a decision's
     /// writes are keyed by the comment that requested them.
     pub writes: Vec<(String, Value)>,
@@ -127,6 +130,7 @@ pub fn plan_decision(
     head_sha: &str,
     findings: &[ReviewFindingRow],
     was_blocking: bool,
+    approval_authorized: bool,
     verdict_comment: Option<(i64, String)>,
     // The session whose round raised the finding — the writes are keyed to it
     // in the outbox, and the APPROVE review's own marker embeds it.
@@ -163,12 +167,13 @@ pub fn plan_decision(
     // and the formal review. This path can unblock; it must never be able to
     // turn an approve into a blocker (ADR 038 point 4), and a decision that
     // leaves other findings open changes nothing a merge depends on.
-    if unblocked {
+    if unblocked && approval_authorized {
         writes.push((
             decision_kind(KIND_DECISION_STATUS, deciding_comment_id),
             json!({
                 "repo": repo,
                 "sha": head_sha,
+                "commit_id": head_sha,
                 "state": "success",
                 "context": STATUS_CONTEXT,
                 "description": format!("Council {decision} - red {red} yellow {yellow}"),
@@ -185,6 +190,7 @@ pub fn plan_decision(
                 "repo": repo,
                 "pr_number": pr_number,
                 "event": "APPROVE",
+                "commit_id": head_sha,
                 "body": format!(
                     "Recomputed after the author's judgement on this round's findings: \
                      no blocking findings remain on `{head_sha}`.\n\n{marker}"
@@ -197,6 +203,7 @@ pub fn plan_decision(
         yellow,
         decision,
         unblocked,
+        approval_authorized,
         writes,
     }
 }
@@ -291,12 +298,18 @@ pub fn reply_body(
         outcome.red,
         outcome.yellow
     ));
-    if outcome.unblocked {
+    if outcome.unblocked && outcome.approval_authorized {
         body.push_str(
             "\nVerdict recomputed: `request_changes` → **`approve`**. Updated the verdict \
              comment, the commit status, and submitted a new APPROVE review that supersedes \
              the earlier REQUEST_CHANGES.\n",
         );
+    } else if outcome.unblocked {
+        body.push_str(&format!(
+            "\nVerdict recomputed to `approve`, but approval was withheld because this round \
+             has no verified commit proof for the current head. No commit status or APPROVE \
+             review was submitted; re-run `@{bot_handle} review` for this revision.\n"
+        ));
     } else if outcome.red > 0 || outcome.yellow > 0 {
         body.push_str(&format!(
             "\nStill blocked: 🔴{} 🟡{} remain open, so the verdict stays `request_changes`.\n",
@@ -468,6 +481,9 @@ fn bound(raw: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
+    const HEAD_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+    const OTHER_HEAD_SHA: &str = "fedcba9876543210fedcba9876543210fedcba98";
+
     fn row(stable_id: &str, severity: &str, status: &str) -> ReviewFindingRow {
         ReviewFindingRow {
             id: 1,
@@ -482,7 +498,7 @@ mod tests {
             line: Some(389),
             raised_by: Some("rev-codex".into()),
             angle: Some("security".into()),
-            head_sha: Some("f9caff5d".into()),
+            head_sha: Some(HEAD_SHA.into()),
             created_at: 0,
             decided_by: None,
             decided_reason: None,
@@ -520,8 +536,9 @@ mod tests {
         let outcome = plan_decision(
             "zeabur/backend",
             2382,
-            "f9caff5d",
+            HEAD_SHA,
             &findings,
+            true,
             true,
             Some((42, "verdict body".to_string())),
             "ses_1",
@@ -555,13 +572,55 @@ mod tests {
     }
 
     #[test]
+    fn an_unverified_round_keeps_the_ledger_reply_but_withholds_approval() {
+        let finding = row("F1", "red", "dismissed");
+        let outcome = plan_decision(
+            "zeabur/backend",
+            2382,
+            HEAD_SHA,
+            std::slice::from_ref(&finding),
+            true,
+            false,
+            Some((42, "verdict body".to_string())),
+            "ses_legacy",
+            777,
+        );
+        assert!(outcome.unblocked);
+        assert!(!outcome.approval_authorized);
+        assert_eq!(
+            outcome
+                .writes
+                .iter()
+                .map(|(kind, _)| kind.as_str())
+                .collect::<Vec<_>>(),
+            ["decision_comment:777"]
+        );
+        let reply = reply_body(
+            "dismiss",
+            &finding,
+            (1, 0),
+            &outcome,
+            "author",
+            "council",
+            None,
+        );
+        assert!(reply.contains("approval was withheld"), "{reply}");
+        assert!(
+            reply.contains("No commit status or APPROVE review was submitted"),
+            "{reply}"
+        );
+        assert!(reply.contains("@council review"), "{reply}");
+    }
+
+    #[test]
     fn a_remaining_blocker_edits_the_comment_and_nothing_else() {
         let findings = vec![row("F1", "red", "dismissed"), row("F2", "yellow", "open")];
         let outcome = plan_decision(
             "zeabur/backend",
             2382,
-            "f9caff5d",
+            HEAD_SHA,
             &findings,
+            true,
             true,
             Some((42, "verdict body".to_string())),
             "ses_1",
@@ -586,13 +645,14 @@ mod tests {
         // The compare-and-swap keeps decisions on the reviewed head; the count
         // must agree, or an old round's open finding would keep a new head red.
         let mut stale = row("F9", "red", "open");
-        stale.head_sha = Some("older".into());
+        stale.head_sha = Some(OTHER_HEAD_SHA.into());
         let findings = vec![row("F1", "red", "dismissed"), stale];
         let outcome = plan_decision(
             "zeabur/backend",
             2382,
-            "f9caff5d",
+            HEAD_SHA,
             &findings,
+            true,
             true,
             None,
             "ses_1",
@@ -610,8 +670,9 @@ mod tests {
         let outcome = plan_decision(
             "zeabur/backend",
             2382,
-            "f9caff5d",
+            HEAD_SHA,
             &findings,
+            true,
             true,
             None,
             "ses_1",
@@ -628,9 +689,10 @@ mod tests {
         let outcome = plan_decision(
             "zeabur/backend",
             2382,
-            "f9caff5d",
+            HEAD_SHA,
             &findings,
             false,
+            true,
             Some((1, "b".to_string())),
             "ses_1",
             777,
@@ -650,8 +712,9 @@ mod tests {
         let outcome = plan_decision(
             "zeabur/backend",
             2382,
-            "f9caff5d",
+            HEAD_SHA,
             &[decided.clone()],
+            true,
             true,
             None,
             "ses_1",
@@ -679,8 +742,9 @@ mod tests {
         let blocked = plan_decision(
             "zeabur/backend",
             2382,
-            "f9caff5d",
+            HEAD_SHA,
             &[decided.clone(), row("F2", "yellow", "open")],
+            true,
             true,
             None,
             "ses_1",
@@ -711,8 +775,9 @@ mod tests {
         let outcome = plan_decision(
             "zeabur/backend",
             2382,
-            "f9caff5d",
+            HEAD_SHA,
             &[decided.clone()],
+            true,
             true,
             None,
             "ses_1",
@@ -758,8 +823,9 @@ mod tests {
             &plan_decision(
                 "zeabur/backend",
                 2382,
-                "f9caff5d",
+                HEAD_SHA,
                 &[yellow.clone()],
+                true,
                 true,
                 None,
                 "ses_1",
@@ -783,7 +849,9 @@ mod tests {
         // A severity the ledger cannot vouch for gets the short horizon: when
         // we do not know how serious the defect is, look again sooner.
         assert_eq!(waive_expiry_secs(""), WAIVE_RED_EXPIRY_SECS);
-        assert!(WAIVE_RED_EXPIRY_SECS < WAIVE_DEFAULT_EXPIRY_SECS);
+        const {
+            assert!(WAIVE_RED_EXPIRY_SECS < WAIVE_DEFAULT_EXPIRY_SECS);
+        }
     }
 
     #[test]
@@ -793,11 +861,11 @@ mod tests {
         waived.waiver_id = Some("wvr_abc".into());
         // Another head's waived row and an open row must both stay out.
         let mut elsewhere = row("F7", "red", "waived");
-        elsewhere.head_sha = Some("older".into());
+        elsewhere.head_sha = Some(OTHER_HEAD_SHA.into());
         elsewhere.decided_by = Some("x".into());
         let findings = vec![waived, elsewhere, row("F2", "yellow", "open")];
         let expiries = std::collections::BTreeMap::from([("wvr_abc".to_string(), 90 * 86_400)]);
-        let section = waived_section(&findings, "f9caff5d", &expiries, 0).unwrap();
+        let section = waived_section(&findings, HEAD_SHA, &expiries, 0).unwrap();
         assert!(section.contains("**Waived**"));
         assert!(section.contains("F1 🔴 F1 title"));
         assert!(section.contains("waived by @yuaanlin"));
@@ -819,7 +887,7 @@ mod tests {
         assert_eq!(once, twice);
 
         // Nothing waived on this head → no section at all.
-        assert!(waived_section(&[row("F2", "yellow", "open")], "f9caff5d", &expiries, 0).is_none());
+        assert!(waived_section(&[row("F2", "yellow", "open")], HEAD_SHA, &expiries, 0).is_none());
     }
 
     #[test]

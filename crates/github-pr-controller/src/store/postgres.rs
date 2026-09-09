@@ -234,6 +234,10 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_recorded ON audit_events(recorded_at
     "ALTER TABLE session_targets ADD COLUMN IF NOT EXISTS reason TEXT;",
     // 10 — SEI-958: immutable reviewer evidence owned by the GitHub writer.
     "ALTER TABLE session_targets ADD COLUMN IF NOT EXISTS required_valid_reviewers BIGINT;",
+    // 11 — review-commit integrity proof. Existing rounds retain their
+    // historical head_sha but cannot authorize a new provider write.
+    "ALTER TABLE review_rounds ADD COLUMN IF NOT EXISTS verified_commit_id TEXT;
+     ALTER TABLE review_rounds ADD COLUMN IF NOT EXISTS integrity_disposition TEXT NOT NULL DEFAULT 'legacy_unverified';",
 ];
 
 /// Serializes concurrent boots racing the migration list; any constant that
@@ -801,18 +805,18 @@ impl ProductStore for PostgresStore {
         reason: Option<&str>,
         required_valid_reviewers: Option<i64>,
     ) -> StoreResult<()> {
-        let client = self.client().await?;
-        client
+        let mut client = self.client().await?;
+        let transaction = client.transaction().await?;
+        let key = format!("session-target:{session_id}");
+        transaction
+            .query("SELECT pg_advisory_xact_lock(hashtext($1))", &[&key])
+            .await?;
+        transaction
             .execute(
                 "INSERT INTO session_targets
                    (session_id, repo, pr_number, head_sha, reason, required_valid_reviewers, created_at)
                  VALUES ($1, $2, $3, $4, $5, $6, $7)
-                 ON CONFLICT (session_id) DO UPDATE SET
-                   repo = excluded.repo,
-                   pr_number = excluded.pr_number,
-                   head_sha = COALESCE(excluded.head_sha, session_targets.head_sha),
-                   reason = COALESCE(excluded.reason, session_targets.reason),
-                   required_valid_reviewers = COALESCE(excluded.required_valid_reviewers, session_targets.required_valid_reviewers)",
+                 ON CONFLICT (session_id) DO NOTHING",
                 &[
                     &session_id,
                     &repo,
@@ -824,6 +828,24 @@ impl ProductStore for PostgresStore {
                 ],
             )
             .await?;
+        let existing = transaction
+            .query_one(
+                "SELECT repo, pr_number, head_sha, reason, required_valid_reviewers
+                   FROM session_targets WHERE session_id = $1",
+                &[&session_id],
+            )
+            .await?;
+        let same = existing.get::<_, String>(0) == repo
+            && existing.get::<_, i64>(1) == pr_number
+            && existing.get::<_, Option<String>>(2).as_deref() == head_sha
+            && existing.get::<_, Option<String>>(3).as_deref() == reason
+            && existing.get::<_, Option<i64>>(4) == required_valid_reviewers;
+        if !same {
+            return Err(StoreError::Conflict(format!(
+                "session target {session_id} does not match its immutable admission"
+            )));
+        }
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -879,9 +901,10 @@ impl ProductStore for PostgresStore {
                 let id: i64 = transaction
                     .query_one(
                         "INSERT INTO review_rounds
-                           (repo, pr_number, round, session_id, head_sha, decision,
+                           (repo, pr_number, round, session_id, head_sha,
+                            verified_commit_id, integrity_disposition, decision,
                             red, yellow, green, created_at)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                          RETURNING id",
                         &[
                             &round.repo,
@@ -889,6 +912,8 @@ impl ProductStore for PostgresStore {
                             &number,
                             &round.session_id,
                             &round.head_sha,
+                            &round.verified_commit_id,
+                            &round.integrity_disposition,
                             &round.decision,
                             &round.red,
                             &round.yellow,
@@ -907,6 +932,24 @@ impl ProductStore for PostgresStore {
         };
         transaction.commit().await?;
         Ok(recorded)
+    }
+
+    async fn review_round_integrity(
+        &self,
+        session_id: &str,
+    ) -> StoreResult<Option<super::ReviewRoundIntegrity>> {
+        let client = self.client().await?;
+        Ok(client
+            .query_opt(
+                "SELECT verified_commit_id, integrity_disposition
+                   FROM review_rounds WHERE session_id = $1",
+                &[&session_id],
+            )
+            .await?
+            .map(|row| super::ReviewRoundIntegrity {
+                verified_commit_id: row.get(0),
+                integrity_disposition: row.get(1),
+            }))
     }
 
     async fn last_comment_id(&self, repo: &str, pr_number: i64) -> StoreResult<Option<i64>> {
@@ -2012,12 +2055,82 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn session_targets_are_immutable_and_round_proof_is_explicit() {
+        let Some(store) = store("integrity").await else {
+            return;
+        };
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        store
+            .record_session_target("ses_target", "example/repo", 7, Some(sha), None, Some(2))
+            .await
+            .unwrap();
+        store
+            .record_session_target("ses_target", "example/repo", 7, Some(sha), None, Some(2))
+            .await
+            .unwrap();
+
+        for (repo, pr_number, head_sha, reason, required) in [
+            ("other/repo", 7, Some(sha), None, Some(2)),
+            ("example/repo", 8, Some(sha), None, Some(2)),
+            (
+                "example/repo",
+                7,
+                Some("fedcba9876543210fedcba9876543210fedcba98"),
+                None,
+                Some(2),
+            ),
+            ("example/repo", 7, Some(sha), Some("ask"), Some(2)),
+            ("example/repo", 7, Some(sha), None, Some(3)),
+        ] {
+            assert!(matches!(
+                store
+                    .record_session_target(
+                        "ses_target",
+                        repo,
+                        pr_number,
+                        head_sha,
+                        reason,
+                        required,
+                    )
+                    .await,
+                Err(StoreError::Conflict(_))
+            ));
+        }
+
+        store
+            .record_review_round(&round("ses_legacy", "approve"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.review_round_integrity("ses_legacy").await.unwrap(),
+            Some(crate::store::ReviewRoundIntegrity {
+                verified_commit_id: None,
+                integrity_disposition: "legacy_unverified".into(),
+            })
+        );
+
+        let mut verified = round("ses_verified", "approve");
+        verified.verified_commit_id = Some(sha.into());
+        verified.integrity_disposition = "verified".into();
+        store.record_review_round(&verified).await.unwrap();
+        assert_eq!(
+            store.review_round_integrity("ses_verified").await.unwrap(),
+            Some(crate::store::ReviewRoundIntegrity {
+                verified_commit_id: Some(sha.into()),
+                integrity_disposition: "verified".into(),
+            })
+        );
+    }
+
     fn round(session: &str, decision: &str) -> ReviewRound {
         ReviewRound {
             repo: "example/repo".into(),
             pr_number: 7,
             session_id: session.into(),
-            head_sha: Some("deadbeef".into()),
+            head_sha: Some("0123456789abcdef0123456789abcdef01234567".into()),
+            verified_commit_id: None,
+            integrity_disposition: "legacy_unverified".into(),
             decision: decision.into(),
             red: 0,
             yellow: 0,
@@ -2103,7 +2216,7 @@ mod tests {
                     "ses_1",
                     "example/repo",
                     7,
-                    Some("deadbeef"),
+                    Some("0123456789abcdef0123456789abcdef01234567"),
                     std::slice::from_ref(&finding)
                 )
                 .await
@@ -2112,7 +2225,13 @@ mod tests {
         );
         assert_eq!(
             store
-                .record_review_findings("ses_1", "example/repo", 7, Some("deadbeef"), &[finding])
+                .record_review_findings(
+                    "ses_1",
+                    "example/repo",
+                    7,
+                    Some("0123456789abcdef0123456789abcdef01234567"),
+                    &[finding]
+                )
                 .await
                 .unwrap(),
             0,
@@ -2136,7 +2255,13 @@ mod tests {
             angle: Some("security".into()),
         };
         store
-            .record_review_findings("ses_1", "example/repo", 7, Some("deadbeef"), &[finding])
+            .record_review_findings(
+                "ses_1",
+                "example/repo",
+                7,
+                Some("0123456789abcdef0123456789abcdef01234567"),
+                &[finding],
+            )
             .await
             .unwrap();
 
@@ -2168,7 +2293,7 @@ mod tests {
                 "example/repo",
                 7,
                 "F1",
-                "deadbeef",
+                "0123456789abcdef0123456789abcdef01234567",
                 "author",
                 "accepted for eval traffic",
                 far_future(),
@@ -2196,7 +2321,7 @@ mod tests {
                 "example/repo",
                 7,
                 "F1",
-                "deadbeef",
+                "0123456789abcdef0123456789abcdef01234567",
                 "someone-else",
                 "again",
                 far_future(),
@@ -2226,7 +2351,7 @@ mod tests {
                 "example/repo",
                 7,
                 "F1",
-                "deadbeef",
+                "0123456789abcdef0123456789abcdef01234567",
                 "open",
                 "author",
                 Some("undo"),

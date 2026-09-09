@@ -102,6 +102,8 @@ pub enum StoreError {
     Postgres(tokio_postgres::Error),
     /// Pool checkout / configuration failures that are not a query error.
     Pool(String),
+    /// A session target was replayed with a different immutable identity.
+    Conflict(String),
 }
 
 impl std::fmt::Display for StoreError {
@@ -110,6 +112,7 @@ impl std::fmt::Display for StoreError {
             StoreError::Sqlite(error) => write!(f, "sqlite: {error}"),
             StoreError::Postgres(error) => write!(f, "postgres: {error}"),
             StoreError::Pool(error) => write!(f, "postgres pool: {error}"),
+            StoreError::Conflict(error) => write!(f, "store conflict: {error}"),
         }
     }
 }
@@ -196,10 +199,24 @@ pub struct ReviewRound {
     pub pr_number: i64,
     pub session_id: String,
     pub head_sha: Option<String>,
+    /// The only commit identity that may authorize a later GitHub write.
+    /// `head_sha` remains historical claimed provenance and is never proof.
+    pub verified_commit_id: Option<String>,
+    /// `verified`, a controller-derived SHA failure category, or an existing
+    /// non-authority outcome. Migrated rows use `legacy_unverified`.
+    pub integrity_disposition: String,
     pub decision: String,
     pub red: i64,
     pub yellow: i64,
     pub green: i64,
+}
+
+/// Durable proof attached to a review round. The sender deliberately reads
+/// this pair instead of the legacy, ambiguously populated `head_sha` column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewRoundIntegrity {
+    pub verified_commit_id: Option<String>,
+    pub integrity_disposition: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,6 +426,13 @@ pub trait ProductStore: Send + Sync {
     /// redelivered terminal event returns the round already recorded rather
     /// than opening a second one.
     async fn record_review_round(&self, round: &ReviewRound) -> StoreResult<RecordedRound>;
+
+    /// Read the round's explicit integrity proof. `None` means no round exists
+    /// for the session; a migrated round is returned as `legacy_unverified`.
+    async fn review_round_integrity(
+        &self,
+        session_id: &str,
+    ) -> StoreResult<Option<ReviewRoundIntegrity>>;
 
     /// The comment id to PATCH on the next round of the same pull request.
     /// Carried forward from the newest round that has one.
