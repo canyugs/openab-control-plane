@@ -8,7 +8,7 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-09 23:48:06 Asia/Taipei.
+- **Last update:** 2026-09-10 00:03:18 Asia/Taipei.
 
 - **Evidence commit:** 1107f73567710159c298ff6a60df393e8e6b9775.
 
@@ -42,7 +42,7 @@
 
 - **Last proven result:** Candidate ff9fc04 imported within scope and passed 18 host tests; runtime/source defects require correction before acceptance.
 
-- **Active blocker or running process:** Core 77349 and weekly 94396 active; OCI correction imported, 16 host tests and real isolated controls passed.
+- **Active blocker or running process:** Core77349, snapshot-guard4074 and latency-control17113 active; OCI and weekly base corrections imported.
 
 - **Next safe action:** Integrate disjoint correction results, run all tests and full real model/OCI PTY journey, then independent security/acceptance.
 

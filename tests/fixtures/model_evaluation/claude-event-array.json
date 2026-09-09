@@ -1,0 +1,42 @@
+[
+  {
+    "type": "system",
+    "subtype": "init",
+    "tools": ["StructuredOutput"],
+    "plugins": [],
+    "skills": [],
+    "mcp_servers": []
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "model": "fixture-backend-model",
+      "content": [{"type": "text", "text": "fixture transport metadata"}]
+    }
+  },
+  {
+    "type": "result",
+    "subtype": "success",
+    "structured_output": {
+      "item_id": "fixture-F1",
+      "verdict": "supported",
+      "citations": [],
+      "disagreement": "",
+      "reason": "fixture only"
+    },
+    "modelUsage": {
+      "fixture-requested-model": {
+        "inputTokens": 2,
+        "outputTokens": 3,
+        "costUSD": 0.01,
+        "costBasis": "list"
+      },
+      "fixture-auxiliary-model": {
+        "inputTokens": 4,
+        "outputTokens": 5,
+        "costUSD": 0.02,
+        "costBasis": "list"
+      }
+    }
+  }
+]

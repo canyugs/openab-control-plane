@@ -1,0 +1,378 @@
+diff --git a/scripts/review_model_evaluation.py b/scripts/review_model_evaluation.py
+index f4117e5..cc0c1d8 100644
+--- a/scripts/review_model_evaluation.py
++++ b/scripts/review_model_evaluation.py
+@@ -151,16 +151,110 @@ def _validate_output_boundary(output: Path, repo: Path, inputs: Sequence[Path])
+             raise EvaluationError("evaluation output must not overlap an input")
+ 
+ 
++_REPOSITORY_EXECUTION_CONFIG = re.compile(
++    r"^(?:"
++    r"core\.(?:fsmonitor|fsmonitorhookpath|hookspath|pager|sshcommand|gitproxy)|"
++    r"credential\.helper|"
++    r"diff\.external|"
++    r"interactive\.difffilter|"
++    r"(?:diff\..+\.(?:command|textconv)|"
++    r"filter\..+\.(?:clean|smudge|process|required)|"
++    r"include(?:if)?\..+|"
++    r"pager\..+|"
++    r"remote\..+\.(?:uploadpack|receivepack)|"
++    r"submodule\..+\.update|"
++    r"tar\..+\.command)"
++    r")$",
++    re.IGNORECASE,
++)
++
++
++def _repository_config_keys(repo: Path) -> set[str]:
++    env = {
++        "GIT_CONFIG_NOSYSTEM": "1",
++        "GIT_CONFIG_SYSTEM": os.devnull,
++        "GIT_CONFIG_GLOBAL": os.devnull,
++        "GIT_ATTR_NOSYSTEM": "1",
++        "LC_ALL": "C",
++    }
++    keys: set[str] = set()
++    for scope in ("--local", "--worktree"):
++        try:
++            proc = subprocess.run(
++                [
++                    "git",
++                    "--no-pager",
++                    "--no-replace-objects",
++                    "-C",
++                    str(repo),
++                    "config",
++                    scope,
++                    "--no-includes",
++                    "--name-only",
++                    "--null",
++                    "--list",
++                ],
++                stdout=subprocess.PIPE,
++                stderr=subprocess.PIPE,
++                env=env,
++                shell=False,
++                check=False,
++            )
++        except OSError as exc:
++            raise EvaluationError(f"git unavailable: {exc}") from exc
++        if proc.returncode != 0 or len(proc.stdout) > 4 * 1024 * 1024:
++            raise EvaluationError("repository Git configuration could not be inspected")
++        try:
++            keys.update(key.decode("ascii").lower() for key in proc.stdout.split(b"\0") if key)
++        except UnicodeDecodeError as exc:
++            raise EvaluationError("repository Git configuration could not be inspected") from exc
++    return keys
++
++
++def _validate_repository_git_config(repo: Path) -> None:
++    if any(_REPOSITORY_EXECUTION_CONFIG.fullmatch(key) for key in _repository_config_keys(repo)):
++        raise EvaluationError("repository contains executable Git configuration")
++
++
+ def _git(repo: Path, args: Sequence[str], *, max_output: int = MAX_INPUT_BYTES) -> bytes:
++    _validate_repository_git_config(repo)
+     env = {
+         "GIT_CONFIG_NOSYSTEM": "1",
++        "GIT_CONFIG_SYSTEM": os.devnull,
+         "GIT_CONFIG_GLOBAL": os.devnull,
+         "GIT_ATTR_NOSYSTEM": "1",
++        "GIT_OPTIONAL_LOCKS": "0",
++        "GIT_TERMINAL_PROMPT": "0",
+         "LC_ALL": "C",
+     }
++    command = [
++        "git",
++        "--no-pager",
++        "--no-replace-objects",
++        "-c",
++        "core.fsmonitor=false",
++        "-c",
++        f"core.hooksPath={os.devnull}",
++        "-c",
++        "credential.helper=",
++        "-c",
++        "diff.external=",
++        "-c",
++        "submodule.recurse=false",
++        "-c",
++        "protocol.ext.allow=never",
++        "-c",
++        "protocol.file.allow=never",
++        "-C",
++        str(repo),
++    ]
++    command_args = list(args)
++    if command_args and command_args[0] == "diff":
++        command_args[1:1] = ["--no-ext-diff", "--no-textconv"]
++    command.extend(command_args)
+     try:
+         proc = subprocess.run(
+-            ["git", "--no-replace-objects", "-C", str(repo), *args],
++            command,
+             stdout=subprocess.PIPE,
+             stderr=subprocess.PIPE,
+             env=env,
+diff --git a/tests/test_review_model_evaluation.py b/tests/test_review_model_evaluation.py
+index 900253c..9a6195f 100644
+--- a/tests/test_review_model_evaluation.py
++++ b/tests/test_review_model_evaluation.py
+@@ -27,6 +27,257 @@ def load_module(name, relative_path):
+ 
+ 
+ class ModelEvaluationBehaviorTests(unittest.TestCase):
++    def test_git_snapshot_refuses_repo_fsmonitor_before_helper_execution(self):
++        import os
++        import shlex
++        import subprocess
++        import tempfile
++
++        module = load_module("review_model_evaluation_git_boundary_fsmonitor", "scripts/review_model_evaluation.py")
++        self.assertIsNotNone(module, "the evaluation controller must exist")
++        with tempfile.TemporaryDirectory() as temp:
++            from pathlib import Path
++
++            root = Path(temp)
++            repo = root / "repo"
++            repo.mkdir()
++            env = {
++                "GIT_CONFIG_NOSYSTEM": "1",
++                "GIT_CONFIG_GLOBAL": os.devnull,
++                "GIT_ATTR_NOSYSTEM": "1",
++                "LC_ALL": "C",
++            }
++
++            def git(*args):
++                return subprocess.check_output(["git", "-C", str(repo), *args], env=env, text=True).strip()
++
++            git("init", "-q")
++            git("config", "user.email", "tests@example.invalid")
++            git("config", "user.name", "tests")
++            (repo / "app.py").write_text("print(1)\n", encoding="utf-8")
++            git("add", "app.py")
++            git("commit", "-qm", "base")
++            marker = root / "fsmonitor.marker"
++            helper = repo / ".git" / "fsmonitor-helper.sh"
++            helper.write_text(f"#!/bin/sh\nprintf marker > {shlex.quote(str(marker))}\nexit 1\n", encoding="utf-8")
++            helper.chmod(0o700)
++            git("config", "core.fsmonitor", str(helper))
++
++            with self.assertRaises(module.EvaluationError):
++                module._validate_clean_repo(repo)
++            self.assertFalse(marker.exists(), "repository fsmonitor helper must not execute")
++
++    def test_git_snapshot_refuses_worktree_filter_before_helper_execution(self):
++        import os
++        import shlex
++        import subprocess
++        import tempfile
++
++        module = load_module("review_model_evaluation_git_boundary_worktree_filter", "scripts/review_model_evaluation.py")
++        self.assertIsNotNone(module, "the evaluation controller must exist")
++        with tempfile.TemporaryDirectory() as temp:
++            from pathlib import Path
++
++            root = Path(temp)
++            repo = root / "repo"
++            repo.mkdir()
++            env = {
++                "GIT_CONFIG_NOSYSTEM": "1",
++                "GIT_CONFIG_GLOBAL": os.devnull,
++                "GIT_ATTR_NOSYSTEM": "1",
++                "LC_ALL": "C",
++            }
++
++            def git(*args):
++                return subprocess.check_output(["git", "-C", str(repo), *args], env=env, text=True).strip()
++
++            git("init", "-q")
++            git("config", "user.email", "tests@example.invalid")
++            git("config", "user.name", "tests")
++            (repo / "app.py").write_text("print(1)\n", encoding="utf-8")
++            (repo / ".gitattributes").write_text("app.py filter=probe\n", encoding="utf-8")
++            git("add", "app.py", ".gitattributes")
++            git("commit", "-qm", "base")
++            git("config", "extensions.worktreeConfig", "true")
++            marker = root / "worktree-filter.marker"
++            helper = repo / ".git" / "worktree-filter-helper.sh"
++            helper.write_text(f"#!/bin/sh\nprintf marker > {shlex.quote(str(marker))}\nexit 1\n", encoding="utf-8")
++            helper.chmod(0o700)
++            git("config", "--worktree", "filter.probe.process", str(helper))
++
++            with self.assertRaises(module.EvaluationError):
++                module._validate_clean_repo(repo)
++            self.assertFalse(marker.exists(), "worktree-local filter helper must not execute")
++
++    def test_git_snapshot_refuses_repo_filter_commands_before_helper_execution(self):
++        import os
++        import shlex
++        import subprocess
++        import tempfile
++
++        module = load_module("review_model_evaluation_git_boundary_filters", "scripts/review_model_evaluation.py")
++        self.assertIsNotNone(module, "the evaluation controller must exist")
++        with tempfile.TemporaryDirectory() as temp:
++            from pathlib import Path
++
++            root = Path(temp)
++            env = {
++                "GIT_CONFIG_NOSYSTEM": "1",
++                "GIT_CONFIG_GLOBAL": os.devnull,
++                "GIT_ATTR_NOSYSTEM": "1",
++                "LC_ALL": "C",
++            }
++            for filter_command in ("clean", "process"):
++                repo = root / filter_command
++                repo.mkdir()
++
++                def git(*args):
++                    return subprocess.check_output(["git", "-C", str(repo), *args], env=env, text=True).strip()
++
++                git("init", "-q")
++                git("config", "user.email", "tests@example.invalid")
++                git("config", "user.name", "tests")
++                (repo / "app.py").write_text("print(1)\n", encoding="utf-8")
++                (repo / ".gitattributes").write_text("app.py filter=probe\n", encoding="utf-8")
++                git("add", "app.py", ".gitattributes")
++                git("commit", "-qm", "base")
++                marker = root / f"{filter_command}.marker"
++                helper = repo / ".git" / f"{filter_command}-helper.sh"
++                helper.write_text(
++                    f"#!/bin/sh\nprintf marker > {shlex.quote(str(marker))}\n"
++                    + ("cat\n" if filter_command == "clean" else "exit 1\n"),
++                    encoding="utf-8",
++                )
++                helper.chmod(0o700)
++                git("config", f"filter.probe.{filter_command}", str(helper))
++
++                with self.assertRaises(module.EvaluationError):
++                    module._validate_clean_repo(repo)
++                self.assertFalse(marker.exists(), f"repository filter.{filter_command} helper must not execute")
++
++    def test_git_snapshot_refuses_repo_external_diff_before_helper_execution(self):
++        import os
++        import shlex
++        import subprocess
++        import tempfile
++
++        module = load_module("review_model_evaluation_git_boundary_diff", "scripts/review_model_evaluation.py")
++        self.assertIsNotNone(module, "the evaluation controller must exist")
++        with tempfile.TemporaryDirectory() as temp:
++            from pathlib import Path
++
++            root = Path(temp)
++            repo = root / "repo"
++            repo.mkdir()
++            env = {
++                "GIT_CONFIG_NOSYSTEM": "1",
++                "GIT_CONFIG_GLOBAL": os.devnull,
++                "GIT_ATTR_NOSYSTEM": "1",
++                "LC_ALL": "C",
++            }
++
++            def git(*args):
++                return subprocess.check_output(["git", "-C", str(repo), *args], env=env, text=True).strip()
++
++            git("init", "-q")
++            git("config", "user.email", "tests@example.invalid")
++            git("config", "user.name", "tests")
++            (repo / "app.py").write_text("print(1)\n", encoding="utf-8")
++            git("add", "app.py")
++            git("commit", "-qm", "base")
++            base = git("rev-parse", "HEAD")
++            (repo / "app.py").write_text("print(2)\n", encoding="utf-8")
++            git("commit", "-qam", "revision")
++            revision = git("rev-parse", "HEAD")
++            marker = root / "external-diff.marker"
++            helper = repo / ".git" / "external-diff-helper.sh"
++            helper.write_text(f"#!/bin/sh\nprintf marker > {shlex.quote(str(marker))}\nexit 1\n", encoding="utf-8")
++            helper.chmod(0o700)
++            git("config", "diff.external", str(helper))
++
++            with self.assertRaises(module.EvaluationError):
++                module.build_source_packet(repo, revision, base, {})
++            self.assertFalse(marker.exists(), "repository external diff helper must not execute")
++
++    def test_git_snapshot_refuses_repo_archive_command_before_helper_execution(self):
++        import os
++        import shlex
++        import subprocess
++        import tempfile
++
++        module = load_module("review_model_evaluation_git_boundary_archive", "scripts/review_model_evaluation.py")
++        self.assertIsNotNone(module, "the evaluation controller must exist")
++        with tempfile.TemporaryDirectory() as temp:
++            from pathlib import Path
++
++            root = Path(temp)
++            repo = root / "repo"
++            repo.mkdir()
++            env = {
++                "GIT_CONFIG_NOSYSTEM": "1",
++                "GIT_CONFIG_GLOBAL": os.devnull,
++                "GIT_ATTR_NOSYSTEM": "1",
++                "LC_ALL": "C",
++            }
++
++            def git(*args):
++                return subprocess.check_output(["git", "-C", str(repo), *args], env=env, text=True).strip()
++
++            git("init", "-q")
++            git("config", "user.email", "tests@example.invalid")
++            git("config", "user.name", "tests")
++            (repo / "app.py").write_text("print(1)\n", encoding="utf-8")
++            git("add", "app.py")
++            git("commit", "-qm", "base")
++            revision = git("rev-parse", "HEAD")
++            marker = root / "archive-command.marker"
++            helper = repo / ".git" / "archive-command-helper.sh"
++            helper.write_text(f"#!/bin/sh\nprintf marker > {shlex.quote(str(marker))}\nexit 1\n", encoding="utf-8")
++            helper.chmod(0o700)
++            git("config", "tar.tar.command", str(helper))
++
++            with self.assertRaises(module.EvaluationError):
++                module._archive_files(repo, revision, {})
++            self.assertFalse(marker.exists(), "repository archive command must not execute")
++
++    def test_clean_repo_snapshot_still_succeeds_without_repo_execution_config(self):
++        import os
++        import subprocess
++        import tempfile
++
++        module = load_module("review_model_evaluation_git_boundary_clean", "scripts/review_model_evaluation.py")
++        self.assertIsNotNone(module, "the evaluation controller must exist")
++        with tempfile.TemporaryDirectory() as temp:
++            from pathlib import Path
++
++            root = Path(temp)
++            repo = root / "repo"
++            repo.mkdir()
++            env = {
++                "GIT_CONFIG_NOSYSTEM": "1",
++                "GIT_CONFIG_GLOBAL": os.devnull,
++                "GIT_ATTR_NOSYSTEM": "1",
++                "LC_ALL": "C",
++            }
++
++            def git(*args):
++                return subprocess.check_output(["git", "-C", str(repo), *args], env=env, text=True).strip()
++
++            git("init", "-q")
++            git("config", "user.email", "tests@example.invalid")
++            git("config", "user.name", "tests")
++            (repo / "app.py").write_text("print(1)\n", encoding="utf-8")
++            git("add", "app.py")
++            git("commit", "-qm", "base")
++            base = git("rev-parse", "HEAD")
++            (repo / "app.py").write_text("print(2)\n", encoding="utf-8")
++            git("commit", "-qam", "revision")
++            revision = git("rev-parse", "HEAD")
++
++            module._validate_clean_repo(repo)
++            packet = module.build_source_packet(repo, revision, base, {})
++            self.assertTrue(packet["complete"])
++
+     def test_invalid_citation_is_not_a_model_assessment(self):
+         module = load_module("review_model_evaluation", "scripts/review_model_evaluation.py")
+         self.assertIsNotNone(module, "the evaluation controller must exist")

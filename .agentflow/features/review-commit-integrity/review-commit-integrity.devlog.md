@@ -2,12 +2,12 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: b74b861 — corrected OCI candidate; Stage 2 integration unaccepted; Stage 1 d6e96c3 retains Result Go.
+Current commit: 1b14cee — OCI/weekly corrections imported; Stage 2 integration unaccepted; Stage 1 d6e96c3 retains Result Go.
 Tests/scenarios: Stage 2 candidate passed 18 host Python tests; real model/OCI readiness passed, but runtime counterexamples require correction. Stage 1 Rust evidence preserved.
 Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex; root ag.json remains untracked bootstrap.
 Proven: approved design, baseline red failure, delivered SHA tests and real PostgreSQL; security pass resolved with explicit immutable-target recovery limit.
 Open: model/OCI/weekly runtime corrections; full live journey, independent reviews and Result Go still pending.
-Next: collect core77349 and weekly94396, integrate, correct live schema/Git boundary findings, then full live journey and reviews.
+Next: collect core77349, snapshot-guard4074 and latency-control17113; integrate and run full actual model CLI plus independent reviews.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
 Archived eras: none.
 Streams: fix/review-commit-integrity in isolated worktree.
@@ -528,3 +528,38 @@ Dispatch snapshot-guard, implementation, codex-default/basic, gpt-5.6-luna/max, 
 * _2026-09-09 23:57:06 (GPT-6/default)_
 
 Weekly correction completed exit0/report digest verified; exact weekly script/test/doc diff imported and 13 host tests passed. Extra report/red-correction.patch arose from ambiguous brief shorthand and was relocated only into work-root. Real PTY command exited0 and emitted Markdown/JSON: seven sessions classified reliable2, visible_failure2, superseded1, pending_or_unknown2. Readback found timeout-noop has no visible artifact but observed latency290ms; E-7 requires unknown for an incomplete projection. Record weekly-pty-initial-result.json is a counterexample, not full acceptance. Core77349 and snapshot-guard4074 active; current CLI lacks model integration until core arrives.
+
+## [RUN-056] Event (during round A-001)
+
+* _2026-09-09 23:57:07 (GPT-6/default)_
+
+Dispatch latency-control, implementation, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at 1b14ceef976cefb75c1c62e2a615b996f9e73203. Frozen exact authority in latency-control-brief.md; disposable clone only.
+
+## [RUN-057] Event (during round A-001)
+
+* _2026-09-10 00:03:18 (GPT-6/default)_
+
+Checkpoint: core still active and writing only approved core/test/docs/fixture paths. Snapshot guard is patch-only so cannot overwrite core; latency control owns only weekly code/tests after actual PTY counterexample. OCI16 and weekly13 delivered tests passed; real OCI controls and weekly PTY (exit0) read back. Core helper/model integration and exact null-tombstone latency correction remain pending. Tracker validated; delivered changed paths only stream records/briefs beyond committed authorized source.
+
+## [WIP-016] Checkpoint (during round A-001)
+
+* _2026-09-10 00:03:18 (GPT-6/default)_
+
+- **Finished:** OCI and weekly corrections imported with 16/13 host tests; real OCI/source controls and seven-session weekly PTY checked.
+- **Running now:** Core77349, Git snapshot patch4074 and narrow latency17113; reusable PTY53083 remains open.
+- **Still to do:** Integrate these corrections and strict live nested schemas, actual vulnerable/safe model CLI and report readback, independent security/acceptance and Result Go.
+- **Next work action:** Collect completed results and begin integrated real model journey.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-058] Event (during round A-001)
+
+* _2026-09-10 00:16:08 (GPT-6/default)_
+
+Core correction completed; full report digest 495eed9b19a2c4e5fd5be31aeb7765c9c0f912ad4eb82d494dc379d3f4e09326 verified and exact five tracked paths plus declared event-array fixture imported. Snapshot guard patch f6b057f48837d6882ad66058dfb4cffc5e23016e9e66adc8dc56c5637f9d4b8d applies cleanly after core; source-only scope verified. Latency exact two-path fix imported, 14 weekly tests passed; actual reusable PTY rerun exit0. Core/OCI/weekly integrated suite active89034. Known real nested schema defect remains; no functionality acceptance yet. All three external corrections terminal exit0; no active workers.
+
+## [RUN-059] Event (during round A-001)
+
+* _2026-09-10 00:16:35 (GPT-6/default)_
+
+Integrated host suite ran52 tests:51 passed, one weekly dependency-seam error. With real core verifier now present, invalid raw evaluation root raises core EvaluationConflict uncaught by weekly wrapper; old test incorrectly relied on missing helper. Bound this correction to explicit corrupt-input handling and a separately mocked missing-dependency control. Nested JSON schemas still lack items definitions despite actual real-model citation failures; reopen transport/schema contract locally: match existing controller field shapes exactly, retain strict validation, supply explicit OCI generated-file context. No new product concepts, authority or model roles.
+

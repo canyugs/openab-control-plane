@@ -17,6 +17,8 @@ import signal
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
@@ -25,10 +27,28 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 MAX_PACKET_BYTES = 8 * 1024 * 1024
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 900
+SAFE_ENVIRONMENT_KEYS = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "TERM",
+        "NO_COLOR",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+    }
+)
 
 
 class AdapterError(RuntimeError):
     """A transport or structured-output failure."""
+
+    def __init__(self, message: str, *, capture: Optional["ProcessCapture"] = None) -> None:
+        super().__init__(message)
+        self.capture = capture
 
 
 class AdapterUnavailable(AdapterError):
@@ -51,6 +71,26 @@ def _bounded_text(value: Any, field_name: str, limit: int = 4096) -> str:
     return value
 
 
+def safe_environment(source: Optional[Mapping[str, str]] = None) -> dict[str, str]:
+    """Select the small environment required by the supported CLI transport.
+
+    In particular, do not pass through arbitrary variables from a repository,
+    shell, or test harness.  The OAuth/API-key variables are passed through as
+    credentials for the CLI itself; the adapter never reads or copies them.
+    """
+
+    source = os.environ if source is None else source
+    result: dict[str, str] = {}
+    for key in sorted(SAFE_ENVIRONMENT_KEYS):
+        if key not in source:
+            continue
+        value = str(source[key])
+        if "\x00" in value:
+            raise AdapterError(f"environment value contains NUL: {key}")
+        result[key] = value
+    return result
+
+
 def validate_profile(profile: Mapping[str, Any], role: str) -> dict[str, Any]:
     if not isinstance(profile, Mapping):
         raise AdapterError(f"model profile for {role} must be an object")
@@ -67,9 +107,21 @@ def validate_profile(profile: Mapping[str, Any], role: str) -> dict[str, Any]:
         raise AdapterError(f"{role} must use strength=strong")
     executable = profile.get("executable", adapter)
     executable = _bounded_text(executable, f"{role}.executable", 2048)
+    transport = profile.get("transport", "oauth")
+    transport = _bounded_text(transport, f"{role}.transport", 32)
+    if adapter == "claude" and transport not in {"oauth", "bare"}:
+        raise AdapterError(f"unsupported Claude transport {transport!r} for {role}")
+    if adapter == "codex" and transport != "oauth":
+        raise AdapterError(f"unsupported Codex transport {transport!r} for {role}")
     normalized = dict(profile)
     normalized.update(
-        {"adapter": adapter, "model_id": model_id, "family": family, "executable": executable}
+        {
+            "adapter": adapter,
+            "model_id": model_id,
+            "family": family,
+            "executable": executable,
+            "transport": transport,
+        }
     )
     return normalized
 
@@ -82,6 +134,10 @@ class ProcessCapture:
     stderr: bytes
     timed_out: bool = False
     error: Optional[str] = None
+    output_limited: bool = False
+    stdout_complete: bool = True
+    stderr_complete: bool = True
+    output_limit: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -110,14 +166,18 @@ class AdapterResponse:
             "stdout_sha256": sha256_bytes(self.raw_stdout),
             "stderr_sha256": sha256_bytes(self.raw_stderr),
             "usage_status": (
-                "known" if isinstance(self.actual_metadata.get("usage"), Mapping) else "unknown"
-            ),
-            "cost_status": (
                 "known"
-                if self.actual_metadata.get("cost") is not None
-                or self.actual_metadata.get("cost_usd") is not None
+                if isinstance(self.actual_metadata.get("usage"), Mapping)
+                or isinstance(self.actual_metadata.get("model_usage"), Mapping)
                 else "unknown"
             ),
+            "cost_status": (
+                "estimate"
+                if self.actual_metadata.get("estimated_cost_usd") is not None
+                else "unknown"
+            ),
+            "estimated_cost_usd": self.actual_metadata.get("estimated_cost_usd"),
+            "actual_cost_usd": self.actual_metadata.get("actual_cost_usd", "unknown"),
         }
 
 
@@ -152,10 +212,46 @@ def run_direct(
         raise AdapterError("argv must be a non-empty NUL-free string list")
     if len(input_bytes) > MAX_PACKET_BYTES:
         raise AdapterError("model packet exceeds the transport bound")
+    if timeout <= 0 or max_output_bytes <= 0:
+        raise AdapterError("model transport bounds must be positive")
     cwd = Path(cwd)
     if not cwd.is_dir() or any(cwd.iterdir()):
         raise AdapterError("model process cwd must be an existing empty directory")
     process: Optional[subprocess.Popen[bytes]] = None
+    stdout_buffer = bytearray()
+    stderr_buffer = bytearray()
+    output_limited = threading.Event()
+    stdout_limited = threading.Event()
+    stderr_limited = threading.Event()
+    reader_errors: list[str] = []
+
+    def read_stream(stream: Any, buffer: bytearray, label: str) -> None:
+        try:
+            while True:
+                chunk = stream.read(64 * 1024)
+                if not chunk:
+                    return
+                remaining = max_output_bytes - len(buffer)
+                if len(chunk) > remaining:
+                    if remaining > 0:
+                        buffer.extend(chunk[:remaining])
+                    (stdout_limited if label == "stdout" else stderr_limited).set()
+                    output_limited.set()
+                    return
+                buffer.extend(chunk)
+        except (OSError, ValueError) as exc:
+            reader_errors.append(f"{label}:{type(exc).__name__}")
+
+    def kill_process_group(child: subprocess.Popen[bytes]) -> None:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            child.kill()
+        except ProcessLookupError:
+            pass
+
     try:
         process = subprocess.Popen(
             list(argv),
@@ -163,31 +259,74 @@ def run_direct(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=str(cwd),
-            env=dict(env) if env is not None else None,
+            env=safe_environment(env),
             shell=False,
             close_fds=True,
             start_new_session=True,
         )
-        stdout, stderr = process.communicate(input=input_bytes, timeout=timeout)
-        if len(stdout) > max_output_bytes or len(stderr) > max_output_bytes:
+        stdout_thread = threading.Thread(target=read_stream, args=(process.stdout, stdout_buffer, "stdout"), daemon=True)
+        stderr_thread = threading.Thread(target=read_stream, args=(process.stderr, stderr_buffer, "stderr"), daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
+
+        def write_stdin() -> None:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
+                if process is not None and process.stdin is not None:
+                    process.stdin.write(input_bytes)
+                    process.stdin.close()
+            except (BrokenPipeError, OSError, ValueError):
                 pass
-            return ProcessCapture(
-                tuple(argv), process.returncode, stdout[:max_output_bytes], stderr[:max_output_bytes], error="output_limit"
-            )
-        return ProcessCapture(tuple(argv), process.returncode, stdout, stderr)
-    except subprocess.TimeoutExpired as exc:
-        if process is not None:
+
+        stdin_thread = threading.Thread(target=write_stdin, daemon=True)
+        stdin_thread.start()
+        deadline = time.monotonic() + max(0.0, timeout)
+        timed_out = False
+        while process.poll() is None:
+            if output_limited.is_set():
+                kill_process_group(process)
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                kill_process_group(process)
+                break
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
+                process.wait(timeout=min(remaining, 0.05))
+            except subprocess.TimeoutExpired:
+                continue
+        if output_limited.is_set() and process.poll() is None:
+            kill_process_group(process)
+        if process.poll() is None:
+            process.wait()
+        if process.stdin is not None:
+            try:
+                process.stdin.close()
+            except (OSError, ValueError):
                 pass
-            stdout, stderr = process.communicate()
-        else:
-            stdout, stderr = (exc.stdout or b""), (exc.stderr or b"")
-        return ProcessCapture(tuple(argv), process.returncode if process else None, stdout, stderr, True, "timeout")
+        stdout_thread.join(timeout=1.0)
+        stderr_thread.join(timeout=1.0)
+        stdin_thread.join(timeout=1.0)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except (OSError, ValueError):
+                    pass
+        error = "timeout" if timed_out else ("output_limit" if output_limited.is_set() else None)
+        if reader_errors and error is None:
+            error = "capture_failed"
+        return ProcessCapture(
+            tuple(argv),
+            process.returncode,
+            bytes(stdout_buffer),
+            bytes(stderr_buffer),
+            timed_out,
+            error,
+            output_limited.is_set(),
+            not stdout_limited.is_set(),
+            not stderr_limited.is_set(),
+            max_output_bytes,
+        )
     except (OSError, ValueError) as exc:
         return ProcessCapture(tuple(argv), None, b"", str(exc).encode("utf-8", "replace"), error=type(exc).__name__)
 
@@ -195,7 +334,7 @@ def run_direct(
 def _default_runner(
     argv: Sequence[str], input_bytes: bytes, cwd: Path, env: Optional[Mapping[str, str]], timeout: float, max_output: int
 ) -> ProcessCapture:
-    return run_direct(argv, input_bytes, cwd, env, timeout, max_output)
+    return run_direct(argv, input_bytes, cwd, safe_environment(env), timeout, max_output)
 
 
 def _executable_exists(executable: str) -> bool:
@@ -216,12 +355,14 @@ class BaseAdapter:
         max_output_bytes: int = MAX_OUTPUT_BYTES,
         runner: Optional[Runner] = None,
         environment: Optional[Mapping[str, str]] = None,
+        transport: str = "oauth",
     ) -> None:
         self.executable = executable or self.adapter_name
         self.timeout_seconds = timeout_seconds
         self.max_output_bytes = max_output_bytes
         self.runner = runner or _default_runner
-        self.environment = dict(environment) if environment is not None else None
+        self.environment = safe_environment(environment)
+        self.transport = transport
 
     def _run(self, argv: Sequence[str], payload: bytes, cwd: Path) -> ProcessCapture:
         return self.runner(argv, payload, cwd, self.environment, self.timeout_seconds, self.max_output_bytes)
@@ -264,32 +405,167 @@ class BaseAdapter:
         return payload
 
     @staticmethod
-    def _parse_json(stdout: bytes) -> Mapping[str, Any]:
+    def _parse_json(stdout: bytes) -> Any:
         try:
             value = json.loads(stdout.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise AdapterError("CLI stdout is not UTF-8 JSON") from exc
-        if not isinstance(value, Mapping):
-            raise AdapterError("CLI JSON envelope must be an object")
         return value
+
+    @staticmethod
+    def _reject_unexpected_tools(events: Sequence[Mapping[str, Any]]) -> None:
+        """Accept only Claude's non-executable structured-output capability."""
+
+        forbidden_event_types = {
+            "tool",
+            "tool_call",
+            "tool_use",
+            "tool_result",
+            "function_call",
+            "function_result",
+            "file_write",
+            "file_edit",
+            "mcp_tool_call",
+            "mcp_tool_result",
+            "mcp",
+            "shell_command",
+            "command_execution",
+            "file_read",
+        }
+        for event in events:
+            event_type = event.get("type")
+            if event_type in forbidden_event_types:
+                raise AdapterError("CLI emitted an unexpected executable or MCP tool event")
+            for key in ("plugins", "skills", "mcp_servers", "mcpServers"):
+                if key in event and event[key] not in (None, [], {}):
+                    raise AdapterError(f"CLI emitted unexpected {key} metadata")
+            if "tools" in event:
+                tools = event["tools"]
+                if not isinstance(tools, list) or any(tool != "StructuredOutput" for tool in tools):
+                    raise AdapterError("CLI emitted an unexpected model tool")
+            message = event.get("message")
+            if isinstance(message, Mapping):
+                content = message.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, Mapping) and block.get("type") in forbidden_event_types:
+                            raise AdapterError("CLI emitted an unexpected executable or MCP tool block")
+
+    @classmethod
+    def _parse_envelope(
+        cls, stdout: bytes, requested_model_id: str
+    ) -> tuple[Any, dict[str, Any], str]:
+        value = cls._parse_json(stdout)
+        if isinstance(value, list):
+            if not value or any(not isinstance(event, Mapping) for event in value):
+                raise AdapterError("CLI JSON event envelope is invalid")
+            events = list(value)
+            cls._reject_unexpected_tools(events)
+            result_events = [event for event in events if event.get("type") == "result"]
+            if not result_events:
+                raise AdapterError("CLI JSON event array lacks a result envelope")
+            envelope = result_events[-1]
+        elif isinstance(value, Mapping):
+            events = [value]
+            cls._reject_unexpected_tools(events)
+            envelope = value
+        else:
+            raise AdapterError("CLI JSON envelope must be an object or event array")
+        if envelope.get("is_error") is True or envelope.get("isError") is True:
+            raise AdapterError("CLI result envelope reports an error")
+        if envelope.get("subtype") in {"error", "failure"}:
+            raise AdapterError("CLI result envelope reports a failure")
+        if "structured_output" not in envelope:
+            raise AdapterError("CLI JSON envelope lacks structured_output")
+
+        observed_models = []
+        for event in events:
+            if event.get("type") != "assistant":
+                continue
+            message = event.get("message")
+            if isinstance(message, Mapping) and isinstance(message.get("model"), str) and message["model"]:
+                observed_models.append(message["model"])
+        unique_models = list(dict.fromkeys(observed_models))
+        observed_model_id = unique_models[-1] if unique_models else "unavailable"
+        metadata_keys = {
+            "type",
+            "subtype",
+            "is_error",
+            "isError",
+            "duration_ms",
+            "durationMs",
+            "usage",
+            "cost",
+            "cost_usd",
+            "total_cost_usd",
+            "session_id",
+            "sessionId",
+            "model",
+            "modelUsage",
+            "model_usage",
+        }
+        metadata = {key: envelope[key] for key in metadata_keys if key in envelope}
+        if unique_models:
+            metadata["transport_observed_model_ids"] = unique_models
+        init_events = [event for event in events if event.get("type") == "system" and event.get("subtype") == "init"]
+        if init_events:
+            init = init_events[-1]
+            metadata["init"] = {
+                key: init[key]
+                for key in ("subtype", "tools", "plugins", "skills", "mcp_servers", "mcpServers")
+                if key in init
+            }
+        usage = envelope.get("modelUsage", envelope.get("model_usage"))
+        if isinstance(usage, Mapping):
+            metadata["model_usage"] = dict(usage)
+            auxiliary = {str(key): value for key, value in usage.items() if key != requested_model_id}
+            metadata["auxiliary_model_usage"] = auxiliary
+            estimates = []
+            bases = []
+            for entry in usage.values():
+                if not isinstance(entry, Mapping):
+                    continue
+                for cost_key in ("costUSD", "cost_usd"):
+                    cost = entry.get(cost_key)
+                    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                        estimates.append(float(cost))
+                        break
+                basis = entry.get("costBasis", entry.get("cost_basis"))
+                if basis is not None:
+                    bases.append(str(basis))
+            if estimates:
+                metadata["estimated_cost_usd"] = sum(estimates)
+            if bases:
+                metadata["cost_basis"] = list(dict.fromkeys(bases))
+        elif any(key in metadata for key in ("total_cost_usd", "cost_usd", "cost")):
+            cost = metadata.get("total_cost_usd", metadata.get("cost_usd", metadata.get("cost")))
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                metadata["estimated_cost_usd"] = float(cost)
+                metadata["cost_basis"] = ["cli_reported_estimate"]
+        metadata["actual_cost_usd"] = "unknown"
+        return envelope["structured_output"], metadata, observed_model_id
 
     def _response_from_capture(
         self, capture: ProcessCapture, requested_model_id: str, *, require_structured_output: bool = True
     ) -> AdapterResponse:
         if capture.error or capture.timed_out:
             reason = capture.error or "timeout"
-            raise AdapterError(f"{self.adapter_name} invocation failed: {reason}")
+            raise AdapterError(f"{self.adapter_name} invocation failed: {reason}", capture=capture)
         if capture.returncode != 0:
-            raise AdapterError(f"{self.adapter_name} exited with {capture.returncode}")
-        envelope = self._parse_json(capture.stdout)
-        if require_structured_output:
-            if "structured_output" not in envelope:
-                raise AdapterError("CLI JSON envelope lacks structured_output")
-            structured = envelope["structured_output"]
-        else:
-            structured = envelope
-        metadata_keys = {"type", "subtype", "is_error", "duration_ms", "usage", "cost", "cost_usd", "session_id", "model"}
-        actual_metadata = {key: envelope[key] for key in metadata_keys if key in envelope}
+            raise AdapterError(f"{self.adapter_name} exited with {capture.returncode}", capture=capture)
+        try:
+            if require_structured_output:
+                structured, actual_metadata, observed_model_id = self._parse_envelope(capture.stdout, requested_model_id)
+            else:
+                structured = self._parse_json(capture.stdout)
+                if not isinstance(structured, Mapping):
+                    raise AdapterError("CLI JSON envelope must be an object")
+                actual_metadata = {}
+                observed_model_id = "unavailable"
+        except AdapterError as exc:
+            if exc.capture is None:
+                exc.capture = capture
+            raise
         # A model-authored field is never copied into observed identity.  The
         # JSON CLI envelope is retained separately, but identity is unknown
         # unless a future trusted transport explicitly supplies it.
@@ -297,7 +573,7 @@ class BaseAdapter:
         return AdapterResponse(
             structured_output=structured,
             requested_model_id=requested_model_id,
-            observed_model_id="unavailable",
+            observed_model_id=observed_model_id,
             actual_metadata=actual_metadata,
             raw_stdout=capture.stdout,
             raw_stderr=capture.stderr,
@@ -311,16 +587,37 @@ class ClaudeAdapter(BaseAdapter):
 
     adapter_name = "claude"
     required_help_flags = (
-        "--bare",
+        "--safe-mode",
+        "--restricted",
+        "--disable-slash-commands",
         "--no-session-persistence",
         "--output-format",
         "--json-schema",
+        "--model",
         "--tools",
         "--strict-mcp-config",
+        "--setting-sources",
         "--permission-mode",
         "--permission-prompts",
         "--system-prompt",
     )
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        if self.transport == "bare":
+            self.required_help_flags = (
+                "--bare",
+                "--no-session-persistence",
+                "--output-format",
+                "--json-schema",
+                "--model",
+                "--tools",
+                "--strict-mcp-config",
+                "--setting-sources",
+                "--permission-mode",
+                "--permission-prompts",
+                "--system-prompt",
+            )
 
     @staticmethod
     def build_argv(
@@ -328,14 +625,21 @@ class ClaudeAdapter(BaseAdapter):
         model_id: str,
         schema: Mapping[str, Any],
         system_prompt: str,
+        *,
+        transport: str = "oauth",
     ) -> list[str]:
         schema_text = canonical_json(schema)
         _bounded_text(model_id, "model_id", 512)
         _bounded_text(system_prompt, "system_prompt", 32 * 1024)
-        return [
-            executable,
-            "--print",
-            "--bare",
+        if transport not in {"oauth", "bare"}:
+            raise AdapterError(f"unsupported Claude transport {transport!r}")
+        argv = [executable, "--print"]
+        if transport == "oauth":
+            argv.extend(["--safe-mode", "--restricted", "--disable-slash-commands"])
+        else:
+            argv.append("--bare")
+        argv.extend(
+            [
             "--no-session-persistence",
             "--output-format",
             "json",
@@ -350,10 +654,14 @@ class ClaudeAdapter(BaseAdapter):
             "--tools",
             "",
             "--strict-mcp-config",
+            "--setting-sources",
+            "",
             "--system-prompt",
             system_prompt,
             "-",
-        ]
+            ]
+        )
+        return argv
 
     def invoke(
         self,
@@ -364,7 +672,7 @@ class ClaudeAdapter(BaseAdapter):
         system_prompt: str,
         session_dir: Path,
     ) -> AdapterResponse:
-        argv = self.build_argv(self.executable, model_id, schema, system_prompt)
+        argv = self.build_argv(self.executable, model_id, schema, system_prompt, transport=self.transport)
         capture = self._run(argv, self._packet_bytes(packet), session_dir)
         return self._response_from_capture(capture, model_id)
 
@@ -408,18 +716,17 @@ class CodexAdapter(BaseAdapter):
         ]
 
     def probe(self, profile: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
-        base = super().probe(profile)
         proof = profile.get("confinement_proof") if isinstance(profile, Mapping) else None
-        # A configuration claim alone is intentionally not accepted.  The
-        # proof must be a controller-recognised, immutable external attestation
-        # with an evidence digest; no current local path can establish it.
         if not isinstance(proof, Mapping) or proof.get("status") != "verified" or not proof.get("evidence_sha256"):
             return {
                 "status": "unavailable",
                 "adapter": "codex",
                 "reason": "no_verified_no_tools_process_confinement",
-                "cli_probe": base,
             }
+        base = super().probe(profile)
+        # A configuration claim alone is intentionally not accepted.  The
+        # proof must be a controller-recognised, immutable external attestation
+        # with an evidence digest; no current local path can establish it.
         return {
             "status": "unavailable",
             "adapter": "codex",
@@ -445,6 +752,7 @@ def adapter_for_profile(
         timeout_seconds=timeout_seconds,
         runner=runner,
         environment=environment,
+        transport=normalized.get("transport", "oauth"),
     )
 
 

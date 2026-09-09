@@ -2,14 +2,14 @@
 
 `review_model_evaluation.py` evaluates supplied review findings against one
 clean, frozen Git revision. It is an offline controller: it does not change
-verdicts, retries, rosters, GitHub writes, routing, checkout, patches, merge
+verdicts, rosters, GitHub writes, routing, checkout, patches, merge
 state, or production state. It uses only Python's standard library.
 
-The capability-first route is intentional. There is no price table, cache,
-token cap, cheaper fallback, model substitution, or stage omission. Requested
-identity, observed identity, usage, and actual cost are separate fields. If a
-CLI does not emit trusted transport metadata, observed model identity and
-actual cost remain `unavailable`/`unknown`.
+The capability-first route is intentional. There is no price table, token cap,
+cheaper fallback, model substitution, or stage omission. Requested identity,
+observed identity, usage, and actual cost are separate fields. Claude's
+`modelUsage` `costBasis=list` values are retained as list-price estimates, not
+provider-reconciled billing; actual cost remains `unknown`.
 
 ## Command
 
@@ -104,23 +104,35 @@ correlation warning. Every profile must be strong.
 `adapter` is `claude` or `codex`; an optional `executable` selects a literal
 installed executable path. There is no user-written adapter contract.
 
-The shipped Claude argv is direct and has no shell or model tools:
+The default shipped Claude argv is the verified OAuth-safe transport and has
+no shell, file, or MCP tools:
 
 ```text
-claude --print --bare --no-session-persistence --output-format json \
+claude --print --safe-mode --restricted --disable-slash-commands \
+  --no-session-persistence --output-format json \
   --json-schema '<literal serialized JSON schema>' \
   --model <configured-model-id> \
   --permission-mode dontAsk --permission-prompts none --tools '' \
-  --strict-mcp-config --system-prompt '<fixed role prompt>' -
+  --strict-mcp-config --setting-sources '' \
+  --system-prompt '<fixed role prompt>' -
 ```
 
-The schema is one literal argv value, not a filename. The adapter parses only
-the CLI JSON envelope's `structured_output`; prose and model-authored
-`model_id` fields do not define identity. Raw stdout/stderr and transport
-metadata are retained separately. Codex has a command builder for inspection,
-but its adapter reports `unavailable` unless an externally verified
-no-tools/process-confinement attestation exists; read-only sandbox mode alone
-is explicitly insufficient. There is no fallback from Codex to Claude.
+The schema is one literal argv value, not a filename. The adapter accepts
+either the Claude JSON result object or event-array envelope and extracts only
+its `structured_output`. Assistant transport metadata may provide an observed
+backend model, while model-authored fields never define identity. Raw
+stdout/stderr and transport metadata are retained separately. Auxiliary
+`modelUsage` entries are retained separately from the requested model. A
+profile may explicitly select `transport: bare` for the older API-key path;
+the default is OAuth-safe mode, with no fallback between model IDs. Codex
+reports `unavailable` unless an externally verified no-tools/process
+confinement attestation exists; read-only sandbox mode alone is insufficient.
+
+The subprocess receives an explicit allowlist containing only runtime/locale
+variables and supported Claude authentication variables. Arbitrary parent
+environment variables, source-project settings/hooks, and model tools are not
+passed through. Authentication is left to the installed CLI; no credential is
+extracted or copied by this controller.
 
 ### Optional `environment.json`
 
@@ -133,7 +145,7 @@ is explicitly insufficient. There is no fallback from Codex to Claude.
     "max_diff_bytes": 8388608
   },
   "oci": {
-    "image": "python:3.12-slim@sha256:<64 lowercase hex>",
+    "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
     "docker_executable": "docker",
     "probe_daemon": true
   },
@@ -144,14 +156,20 @@ is explicitly insufficient. There is no fallback from Codex to Claude.
 Limits are hard completeness limits. Omitted or unreadable tracked regular
 files and over-limit diff/source bytes are listed in the source packet and
 make the scope incomplete; no result may claim whole-scope support. The
-default OCI image is a documented placeholder digest and therefore normally
-produces `environment_blocked` until an operator supplies a locally present,
-digest-pinned image. No credential or daemon setup is automated.
+OCI image is digest-pinned and must be locally present; the integrated
+default is the verified Python image above and has no automatic unpinned
+fallback. No credential or daemon setup is automated. The validation model
+receives the complete source packet. `/source` is a read-only source mount and
+`/work/generated` is the writable generated-test workspace; the fixed Python
+runner executes only literal argv arrays there.
 
 ## Role isolation and stages
 
-Every role gets the same exact source packet digest. Judge packets contain one
-finding and only its declared evidence. `judge_a` and `judge_b` use fresh
+Every role gets the same exact source packet digest. Validation is generated
+and executed before either independent judge. Judge packets contain one
+finding, only its declared evidence, the complete source packet, and the
+generated validation observations. Each judge adds
+`validation_verdict: valid|invalid|unproven`. `judge_a` and `judge_b` use fresh
 empty CLI working directories and cannot read each other's artifacts.
 Synthesis receives anonymized `judge_1`/`judge_2` assessments, source/evidence,
 and observed validation results; disagreement is preserved and `unknown` is
@@ -179,18 +197,24 @@ Generated paths must stay under `generated/`; files are UTF-8 and bounded.
 Runs use literal argv arrays, `/work`, structured observation objects, and
 distinct argv. Shell interpreters, `-c`, traversal, links, undeclared
 evidence, ordinary crashes, timeout, and assertion-false harnesses are
-rejected. A controller check also requires the literal plan to reach the
-read-only `/source` mount or name the cited source path; printing arbitrary
-JSON is not source evidence. Generated files are materialized only inside the
-container and discarded from the host. Their raw content, digests, and actual
-observations remain in the plan/result artifacts.
+rejected. Source binding is a structural signal (for example, a source read
+through `open` or `Path.read_text`), not substring proof: comments, printed
+constants, and source-path strings alone remain unproven. Independent judge
+validation verdicts are required in addition to the signal. Generated files
+are materialized only inside the container and discarded from the host. Their
+raw content, digests, and actual observations remain in the plan/result
+artifacts.
 
 The OCI executor uses a new non-root container with a digest-pinned image,
 `--network none`, read-only root and source bind mount, writable tmpfs
 `/work`, cleared runtime environment, temporary HOME, dropped capabilities,
 `no-new-privileges`, bounded memory/PIDs/CPU/output/time, and `--rm` cleanup.
 It mounts no credentials, host socket, repository checkout, or project hook.
-An unavailable daemon is an explicit `environment_blocked` result.
+An unavailable daemon is an explicit `environment_blocked` result. OCI
+execution remains raw `unproven` evidence until both judges qualify the
+source-bound controls; the controller derives `executed_reproduced` or
+`executed_refuted` only after their matching assessments and nonconflicting
+synthesis.
 
 An item is classified as exactly one of `static_evidence`,
 `executed_reproduced`, `executed_refuted`, `environment_blocked`, or
@@ -210,18 +234,27 @@ source-packet.json
 findings.json
 omissions.json
 invocations/<id>/{packet.json,argv.json,raw.stdout,raw.stderr,final.json,result.json}
-validation/<item>/{plan.json,generated-file-digests.json,runs/<name>.json}
+validation/<item>/{plan.json,generated-file-digests.json,runs/<name>.json,result.json}
 summary.json
 summary.md
 ```
 
-The snapshot records full revision/base, archive and diff digests, input
-digests, source omissions, and completeness. `run.json` records requested
-model IDs, capability/observed identity status, invocation attempts, unknown
-usage/cost, state, and summary digest. A restart rechecks all completed
-invocation packet/argv/raw/final bytes and refuses tampering or changed input
-identity; it does not repeat a completed call. A partial process failure is
-retained as a failed invocation and cannot become a score.
+`findings.json` contains the normalized input identity plus the complete result
+record for every original finding; `omissions.json` does the same for every
+blind-discovery candidate. The snapshot records full revision/base, archive
+and diff digests, model profiles, input digests, source omissions, and
+completeness. `run.json` records requested model IDs, capability/observed
+identity status, invocation attempts, list-price estimates, unknown actual
+cost, state, and the SHA-256 ledger for every other output file. Failed
+attempts keep their raw partial captures; retries use a new attempt directory.
+
+Before a terminal summary is returned, `verify_evaluation_artifacts(root)`
+checks the snapshot/run identity, output schema, symlink/traversal safety,
+every artifact hash, every invocation packet/argv/raw/final capture, every
+validation plan/run, and the summary digest. A restart reuses completed model
+and validation artifacts only after those checks and refuses changed input or
+tampered bytes. It does not repeat a completed model or OCI call. A partial or
+failed process remains auditable and cannot become a score.
 
 ## Deterministic checks
 
@@ -230,7 +263,8 @@ python3 -m unittest tests.test_review_model_evaluation tests.test_review_model_o
 python3 -m compileall -q scripts/review_model_evaluation.py scripts/review_model_adapters.py scripts/review_model_oci_executor.py
 ```
 
-These checks use fake CLI transports and an OCI boundary seam. They do not
-claim live provider authentication, model success, or a running Docker daemon.
-The final `run.json` contains SHA-256 entries for every other retained output
-artifact and restart verifies those bytes before reusing a completed stage.
+These checks use captured/synthetic CLI envelopes and a fake OCI boundary
+seam. They do not claim live provider authentication, model success, or a
+running Docker daemon. The final `run.json` contains SHA-256 entries for every
+other retained output artifact and restart verifies those bytes before reusing
+a completed stage.

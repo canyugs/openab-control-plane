@@ -774,7 +774,9 @@ def _tombstone_binding(
     bound = _bind_write(abandon[0], observations)
     if bound.get("status") != "ok":
         return None, False
-    return bound["proof"], bool(bound["proof"].get("visible"))
+    if not bound["proof"].get("visible"):
+        return None, False
+    return bound["proof"], True
 
 
 def _latency(
