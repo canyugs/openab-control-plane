@@ -10,7 +10,7 @@
 
 - **Last update:** 2026-09-09 12:01:57 Asia/Taipei.
 
-- **Evidence commit:** uncommitted.
+- **Evidence commit:** 8b35b4c581ac3d2f5f6669511eaa7b318310fc40.
 
 ## Overall state
 
@@ -26,7 +26,7 @@
 
 ## Accepted task checklist
 
-- [x] **T-1:** Create a source-grounded design for SHA integrity, round measurement, and offline comparison; no runtime changes; prove requirements and invariant coverage. Source: A-001.
+- [x] **T-1:** Create a source-grounded design for SHA integrity, round measurement, and offline comparison; no runtime changes; prove requirements and invariant coverage. Source: A-001. Proof: design.md; spec-resolution.md; commit 8b35b4c581ac3d2f5f6669511eaa7b318310fc40.
 
 - [ ] **T-2:** Implement SHA integrity only after the exact design gate; preserve ask/dismiss and retry workflows; prove malformed and mismatched SHA rejection, valid controls, and required Rust checks. Source: A-001.
 

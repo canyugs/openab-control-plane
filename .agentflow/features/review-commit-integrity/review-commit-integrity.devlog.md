@@ -1,22 +1,22 @@
 # STATUS
 
-Project: ocp-review-commit-integrity
+Project: OCP review-service improvement.
 
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
 
-Current commit: initialization pending.
+Current commit: 8b35b4c581ac3d2f5f6669511eaa7b318310fc40 — accepted design; no source changes.
 
-Tests/scenarios: none.
+Tests/scenarios: design coverage inspected; tracker and whitespace checks pending final readback; no runtime tests run.
 
-Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; validated for codex this round.
+Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex. Root ag.json is untracked local bootstrap.
 
-Proven: the host template was initialized.
+Proven: requirements, boundary discovery, Stage 1 design; external reports only changed declared files.
 
-Open: none.
+Open: exact Design Go for 8b35b4c581ac3d2f5f6669511eaa7b318310fc40; Stage 1 code and later-stage designs remain.
 
-Next: await the first request.
+Next: after Design Go, red-first SHA-integrity implementation and independent security/acceptance checks.
 
-Artifacts: none.
+Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service/design.md; .agentflow/features/review-commit-integrity/artifacts/A-001-review-service/tracker.md.
 
 Archived eras: none.
 
@@ -84,3 +84,9 @@ Checkpoint scope verified: changed paths only stream records/artifacts and local
 * _2026-09-09 12:01:57 (GPT-6/default)_
 
 Specification accepted with spec-resolution.md implementation clarification; canonical design.md copied byte-identically from worker report. T-1 complete. No workers remain. Source edits wait for exact Design Go; code tests and final security/acceptance remain unrun. Scope comparison confirms records/artifacts only.
+
+## [RUN-008] Event (during round A-001)
+
+* _2026-09-09 12:02:46 (GPT-6/default)_
+
+Design commit 8b35b4c581ac3d2f5f6669511eaa7b318310fc40. Tracker proof formatting corrected and revalidated; no design/source changes. Handoff awaits Design Go on that exact commit. Required skill instruction: Source work starts only after a later Design Go: <commit>. No implicit Design Go inferred from earlier generic approval.
