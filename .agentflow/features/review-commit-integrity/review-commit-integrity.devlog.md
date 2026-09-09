@@ -218,3 +218,9 @@ Route full_pipeline; allow-ag on; owner approved handoff. Dispatch security, cod
 * _2026-09-09 13:10:22 (GPT-6/default)_
 
 Candidate d6e96c3: scoped fixture correction imported after diff inspection. Host gates: package 167 unit + 3 contract tests PASS; reviewed_sha 8 PASS; cargo build, cargo test, package fmt and clippy -D warnings PASS with TEST_POSTGRES_URL. Workspace fmt reports same three untouched root-file changes as baseline, recorded separately; not a patch regression. Actual Postgres schemas/proof columns independently read back. Security read-only worker session 82336 reviews current candidate without prior rationale/results. Full cross-check selected from frozen seven-file trust-boundary facts.
+
+## [RUN-021] Event (during round A-001)
+
+* _2026-09-09 13:13:17 (GPT-6/default)_
+
+Security pass completed with no surviving SHA-authority bypass, one None-to-Some target enrichment availability observation. Host confirmed source behavior and retained it as the explicitly Design-Go-approved immutable-target failure policy; security-resolution.md names exact design authority and new-review operational consequence. No source repair or extra security cycle. Acceptance next on exact d6e96c3.
