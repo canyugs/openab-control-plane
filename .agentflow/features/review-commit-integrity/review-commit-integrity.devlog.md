@@ -44,3 +44,15 @@ Route full_pipeline; allow-ag on; owner approved handoff. Dispatch requirements,
 * _2026-09-09 11:53:19 (GPT-6/default)_
 
 Requirements inspected and accepted with requirements-resolution.md corrections: human quality separate from integrity; two independent comparison arms; no new comparison DB. Matching report SHA/clone write scope verified. No product changes.
+
+## [RUN-003] Event (during round A-001)
+
+* _2026-09-09 11:53:19 (GPT-6/default)_
+
+Route full_pipeline; allow-ag on; owner approved handoff. Dispatch codewalk, codex-default, better, gpt-5.6-terra/high, external-runner-v1. Executable and ChatGPT login verified. Clone-only report authority; no production access. Root configuration remains local bootstrap; main checkout untouched.
+
+## [RUN-004] Event (during round A-001)
+
+* _2026-09-09 11:57:19 (GPT-6/default)_
+
+Codewalk accepted after source readback. Shared discovery coverage complete. Legacy outbox and finding-decision evidence included. Official GitHub commit_id contract verified. Explore/spike skipped with reasons in codewalk-resolution.md; security review required after implementation. Scope unchanged.
