@@ -1,0 +1,56 @@
+{
+  "claim_observed": "Baseline loads /source/sample.py via importlib and calls the real can_read(\"alice\", \"bob\", public=False); it returns True, so an authenticated non-owner can read a private document, contradicting the README rule that access is permitted only for public documents or an authenticated requester equal to owner. The probe prints claim_present true and echoes the loaded function body. The counterexample loads the same source file (recording the real can_read signature and body) and evaluates the identical call shape against a README-conformant control requiring public or requester == owner; that denies the non-owner private case while still allowing owner-private and anonymous-public, printing claim_present false. The opposing results isolate the defect to the `public or bool(requester)` predicate at sample.py lines 1-2 rather than to the harness.",
+  "files": [
+    {
+      "bytes": 1095,
+      "path": "generated/probe_actual.py",
+      "sha256": "66d1e3196e9918c474dc68da19112b83bec7c5b7ad29439756327ebf069509ed",
+      "utf8": "import importlib.util\nimport inspect\nimport json\n\nSRC = \"/source/sample.py\"\n\nspec = importlib.util.spec_from_file_location(\"sample_under_test\", SRC)\nmodule = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(module)\n\ncan_read = getattr(module, \"can_read\")\nsource_text = inspect.getsource(can_read)\n\n# README rule: access only for public documents, or an authenticated\n# requester equal to owner. A non-owner authenticated requester asking for\n# a private document must be denied.\nnon_owner_private = can_read(\"alice\", \"bob\", public=False)\nowner_private = can_read(\"bob\", \"bob\", public=False)\nanonymous_public = can_read(\"\", \"bob\", public=True)\n\nclaim_present = bool(non_owner_private)\n\nprint(json.dumps({\n    \"probe\": \"actual_source\",\n    \"source_path\": SRC,\n    \"can_read_source\": source_text,\n    \"non_owner_private_document\": bool(non_owner_private),\n    \"owner_private_document\": bool(owner_private),\n    \"anonymous_public_document\": bool(anonymous_public),\n    \"expected_by_readme_for_non_owner_private\": False,\n    \"claim_present\": claim_present,\n}, indent=2, sort_keys=True))\n"
+    },
+    {
+      "bytes": 1394,
+      "path": "generated/probe_fixed.py",
+      "sha256": "5fd0b14a063094d720534bc335c9a7b5d619a40a6cfbe330d59626c1a93e9870",
+      "utf8": "import importlib.util\nimport inspect\nimport json\n\nSRC = \"/source/sample.py\"\n\nspec = importlib.util.spec_from_file_location(\"sample_under_test\", SRC)\nmodule = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(module)\n\noriginal = getattr(module, \"can_read\")\noriginal_signature = str(inspect.signature(original))\noriginal_source = inspect.getsource(original)\n\n\ndef fixed_can_read(requester, owner, public=False):\n    \"\"\"README-conformant control: public documents, or authenticated owner.\"\"\"\n    if public:\n        return True\n    return bool(requester) and requester == owner\n\n\n# Same call shape as the real function, exercised against the control that\n# implements the documented rule.\nnon_owner_private = fixed_can_read(\"alice\", \"bob\", public=False)\nowner_private = fixed_can_read(\"bob\", \"bob\", public=False)\nanonymous_public = fixed_can_read(\"\", \"bob\", public=True)\n\nclaim_present = bool(non_owner_private)\n\nprint(json.dumps({\n    \"probe\": \"readme_conformant_control\",\n    \"source_path\": SRC,\n    \"loaded_original_signature\": original_signature,\n    \"loaded_original_source\": original_source,\n    \"non_owner_private_document\": bool(non_owner_private),\n    \"owner_private_document\": bool(owner_private),\n    \"anonymous_public_document\": bool(anonymous_public),\n    \"expected_by_readme_for_non_owner_private\": False,\n    \"claim_present\": claim_present,\n}, indent=2, sort_keys=True))\n"
+    }
+  ],
+  "item_id": "F-1",
+  "runs": [
+    {
+      "argv": [
+        "python3",
+        "generated/probe_actual.py"
+      ],
+      "cwd": "/work",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "expect": {
+        "exit": 0,
+        "observation": {
+          "claim_present": true
+        }
+      },
+      "name": "baseline"
+    },
+    {
+      "argv": [
+        "python3",
+        "generated/probe_fixed.py"
+      ],
+      "cwd": "/work",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "expect": {
+        "exit": 0,
+        "observation": {
+          "claim_present": false
+        }
+      },
+      "name": "counterexample"
+    }
+  ]
+}

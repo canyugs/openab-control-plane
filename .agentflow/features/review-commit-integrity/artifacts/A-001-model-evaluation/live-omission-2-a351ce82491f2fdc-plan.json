@@ -1,0 +1,56 @@
+{
+  "claim_observed": "Baseline loads /source/sample.py unmodified and calls checkout_total(500, -2): no ValueError is raised and the call returns -1000, so the detector emits claim_present true, confirming the missing negative-quantity guard required by README.md (E_CONTRACT) in sample.py lines 4-5 (E_SAMPLE). The counterexample reads the same source text and inserts the missing `if quantity < 0: raise ValueError(...)` guard before the multiplication; the identical detector then observes a ValueError and emits claim_present false, showing the probe tracks the presence/absence of the validation rather than any constant.",
+  "files": [
+    {
+      "bytes": 891,
+      "path": "generated/probe_source.py",
+      "sha256": "6159b3fbbc64001dbc2ac21834fa0ac49cf56883bf2fc9f1bdd0132fc7deb855",
+      "utf8": "import importlib.util\nimport json\n\nSRC = \"/source/sample.py\"\n\nspec = importlib.util.spec_from_file_location(\"sample_under_test\", SRC)\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\n\nraised_value_error = False\nreturned = None\nerror_type = None\ntry:\n    returned = mod.checkout_total(500, -2)\nexcept ValueError:\n    raised_value_error = True\n    error_type = \"ValueError\"\nexcept Exception as exc:\n    error_type = type(exc).__name__\n\n# Claim: checkout_total does not validate quantity and never raises ValueError,\n# instead returning a negative product for a negative quantity.\nclaim_present = (not raised_value_error) and returned == -1000\n\nprint(json.dumps({\n    \"claim_present\": bool(claim_present),\n    \"target\": SRC,\n    \"call\": \"checkout_total(500, -2)\",\n    \"raised_value_error\": raised_value_error,\n    \"error_type\": error_type,\n    \"returned\": returned,\n}))\n"
+    },
+    {
+      "bytes": 1295,
+      "path": "generated/probe_guarded.py",
+      "sha256": "9003c1641b127adba3eec764a930cc9bf3a9da03e8431e4ca54457a38aff7cff",
+      "utf8": "import json\n\nSRC = \"/source/sample.py\"\n\nwith open(SRC, \"r\", encoding=\"utf-8\") as fh:\n    text = fh.read()\n\nORIGINAL = \"def checkout_total(price, quantity):\\n    return price * quantity\"\nGUARDED = (\n    \"def checkout_total(price, quantity):\\n\"\n    \"    if quantity < 0:\\n\"\n    \"        raise ValueError('quantity must not be negative')\\n\"\n    \"    return price * quantity\"\n)\n\npatched = text.replace(ORIGINAL, GUARDED)\npatch_applied = patched != text\n\nnamespace = {\"__name__\": \"sample_guarded\"}\nexec(compile(patched, SRC + \" (guarded)\", \"exec\"), namespace)\n\nraised_value_error = False\nreturned = None\nerror_type = None\ntry:\n    returned = namespace[\"checkout_total\"](500, -2)\nexcept ValueError:\n    raised_value_error = True\n    error_type = \"ValueError\"\nexcept Exception as exc:\n    error_type = type(exc).__name__\n\n# Same detector as the baseline: the claim holds only when no ValueError is\n# raised and the negative product -1000 is returned.\nclaim_present = (not raised_value_error) and returned == -1000\n\nprint(json.dumps({\n    \"claim_present\": bool(claim_present),\n    \"target\": SRC,\n    \"variant\": \"guarded\",\n    \"patch_applied\": patch_applied,\n    \"call\": \"checkout_total(500, -2)\",\n    \"raised_value_error\": raised_value_error,\n    \"error_type\": error_type,\n    \"returned\": returned,\n}))\n"
+    }
+  ],
+  "item_id": "omission-2-a351ce82491f2fdc",
+  "runs": [
+    {
+      "argv": [
+        "python3",
+        "generated/probe_source.py"
+      ],
+      "cwd": "/work",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "expect": {
+        "exit": 0,
+        "observation": {
+          "claim_present": true
+        }
+      },
+      "name": "baseline"
+    },
+    {
+      "argv": [
+        "python3",
+        "generated/probe_guarded.py"
+      ],
+      "cwd": "/work",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "expect": {
+        "exit": 0,
+        "observation": {
+          "claim_present": false
+        }
+      },
+      "name": "counterexample"
+    }
+  ]
+}

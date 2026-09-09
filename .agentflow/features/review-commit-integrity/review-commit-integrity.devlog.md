@@ -747,3 +747,9 @@ Checkpoint scope: delivery source is committedbb4a22f with69 passed host tests. 
 
 Structured retries worker completed exit0/report SHAfb4e268733aefb2b3624acdad922d4b69d14ef79d1af3f92c214742c1dbc70b4 verified. Exact adapter/auth-tests/captured retry fixture imported; up to8 ordered unique-ID non-executable formatting attempts retained, final successful call must match final structured output. No tools or byte-rewriting enabled. Full actual vulnerable-source CLI now ready; submodule-guard45159 remains isolated and does not affect this no-submodule fixture.
 
+## [RUN-084] Event (during round A-001)
+
+* _2026-09-10 01:09:33 (GPT-6/default)_
+
+Actual full model run generated syntax-valid source-reading baseline/counterexample programs, but integrated OCI execution fails before container creation: core passes validate_generated_plan output (file path/utf8 plus derived bytes/sha256), and OCIExecutor.execute revalidates it with a validator accepting only raw path/utf8. Captured live-oci-normalization-failure.json plus actual plans prove the seam failure. Fix normalization idempotence with derived metadata integrity checks, not by rewriting code. A separate real plan uses shared helper/default arguments: source reading is evident in generated code yet static AST binding is false. After repeated false negatives, reopen the source-binding design with independent better-tier spec review; do not append another ad hoc syntax heuristic before resolving which evidence is authoritative. Accepted E6 requires real controlled execution plus independent semantic assessment, and all outputs remain model_assessment, never human truth.
+

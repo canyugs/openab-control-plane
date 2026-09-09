@@ -1,0 +1,41 @@
+[
+  {
+    "item_id": "F-1",
+    "controls_passed": false,
+    "controller_source_binding": true,
+    "execution": {
+      "classification": "unproven",
+      "controls_passed": false,
+      "reason": "OCIError",
+      "runs": [],
+      "status": "failed"
+    },
+    "plan_artifact": "live-F-1-plan.json"
+  },
+  {
+    "item_id": "omission-2-a351ce82491f2fdc",
+    "controls_passed": false,
+    "controller_source_binding": true,
+    "execution": {
+      "classification": "unproven",
+      "controls_passed": false,
+      "reason": "OCIError",
+      "runs": [],
+      "status": "failed"
+    },
+    "plan_artifact": "live-omission-2-a351ce82491f2fdc-plan.json"
+  },
+  {
+    "item_id": "omission-1-e456c6d814336027",
+    "controls_passed": false,
+    "controller_source_binding": false,
+    "execution": {
+      "classification": "unproven",
+      "controls_passed": false,
+      "reason": "OCIError",
+      "runs": [],
+      "status": "failed"
+    },
+    "plan_artifact": "live-omission-1-e456c6d814336027-plan.json"
+  }
+]
