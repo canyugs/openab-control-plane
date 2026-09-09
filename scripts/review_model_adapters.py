@@ -415,7 +415,7 @@ class BaseAdapter:
 
     @staticmethod
     def _reject_unexpected_tools(events: Sequence[Mapping[str, Any]]) -> None:
-        """Accept only Claude's non-executable structured-output capability."""
+        """Accept only one ID-bound, non-executable StructuredOutput exchange."""
 
         forbidden_event_types = {
             "tool",
@@ -427,30 +427,83 @@ class BaseAdapter:
             "file_write",
             "file_edit",
             "mcp_tool_call",
+            "mcp_tool_use",
             "mcp_tool_result",
             "mcp",
             "shell_command",
             "command_execution",
             "file_read",
         }
-        for event in events:
+        structured_output_declared = False
+        structured_tool_use_ids: list[str] = []
+        structured_tool_result_ids: list[str] = []
+        structured_tool_use_positions: list[int] = []
+        structured_tool_result_positions: list[int] = []
+        result_positions = [index for index, event in enumerate(events) if event.get("type") == "result"]
+        for index, event in enumerate(events):
             event_type = event.get("type")
             if event_type in forbidden_event_types:
                 raise AdapterError("CLI emitted an unexpected executable or MCP tool event")
+            if event_type == "system" and event.get("subtype") == "init":
+                structured_output_declared = event.get("tools") == ["StructuredOutput"]
             for key in ("plugins", "skills", "mcp_servers", "mcpServers"):
                 if key in event and event[key] not in (None, [], {}):
                     raise AdapterError(f"CLI emitted unexpected {key} metadata")
             if "tools" in event:
                 tools = event["tools"]
-                if not isinstance(tools, list) or any(tool != "StructuredOutput" for tool in tools):
+                if (
+                    not isinstance(tools, list)
+                    or any(tool != "StructuredOutput" for tool in tools)
+                    or len(tools) != len(set(tools))
+                ):
                     raise AdapterError("CLI emitted an unexpected model tool")
             message = event.get("message")
             if isinstance(message, Mapping):
                 content = message.get("content")
                 if isinstance(content, list):
                     for block in content:
-                        if isinstance(block, Mapping) and block.get("type") in forbidden_event_types:
+                        if not isinstance(block, Mapping):
+                            continue
+                        block_type = block.get("type")
+                        if block_type == "tool_use":
+                            if (
+                                event_type != "assistant"
+                                or message.get("role") not in (None, "assistant")
+                                or block.get("name") != "StructuredOutput"
+                            ):
+                                raise AdapterError("CLI emitted an unexpected executable or MCP tool block")
+                            tool_use_id = _bounded_text(block.get("id"), "StructuredOutput tool_use id", 512)
+                            if not isinstance(block.get("input"), Mapping):
+                                raise AdapterError("StructuredOutput tool_use input must be an object")
+                            if structured_tool_use_ids:
+                                raise AdapterError("CLI emitted duplicate StructuredOutput tool_use blocks")
+                            structured_tool_use_ids.append(tool_use_id)
+                            structured_tool_use_positions.append(index)
+                        elif block_type == "tool_result":
+                            if event_type != "user" or message.get("role") not in (None, "user"):
+                                raise AdapterError("CLI emitted an unexpected executable or MCP tool block")
+                            tool_use_id = _bounded_text(block.get("tool_use_id"), "StructuredOutput tool_result id", 512)
+                            if block.get("content") != "Structured output provided successfully":
+                                raise AdapterError("CLI emitted an unexpected StructuredOutput completion")
+                            if block.get("is_error") is True or block.get("isError") is True:
+                                raise AdapterError("CLI emitted a failed StructuredOutput completion")
+                            if structured_tool_result_ids:
+                                raise AdapterError("CLI emitted duplicate StructuredOutput tool_result blocks")
+                            structured_tool_result_ids.append(tool_use_id)
+                            structured_tool_result_positions.append(index)
+                        elif block_type in forbidden_event_types:
                             raise AdapterError("CLI emitted an unexpected executable or MCP tool block")
+            if event.get("tool_use_result") not in (None, "Structured output provided successfully"):
+                raise AdapterError("CLI emitted an unexpected StructuredOutput completion")
+        if structured_tool_use_ids or structured_tool_result_ids:
+            if not structured_output_declared:
+                raise AdapterError("CLI StructuredOutput call was not declared by init")
+            if structured_tool_use_ids != structured_tool_result_ids:
+                raise AdapterError("CLI StructuredOutput completion ID does not match its call")
+            if structured_tool_use_positions[0] >= structured_tool_result_positions[0]:
+                raise AdapterError("CLI StructuredOutput completion precedes its call")
+            if result_positions and structured_tool_result_positions[0] >= result_positions[-1]:
+                raise AdapterError("CLI StructuredOutput completion follows the result envelope")
 
     @classmethod
     def _parse_envelope(

@@ -649,3 +649,9 @@ Checkpoint scope: only stream records differ in delivery from5ea1848. live-schem
 
 Live-schema worker terminal exit0, report digest0ad3e361bdb326bf005fdfcf6f09150367cbf90d38f02d2022e7da3280aca7c5 verified; exact core/test/doc diff imported. Complete delivered Python suite59 PASS. Schema now specifies real citation/candidate/generated-run objects while controller still checks dynamic paths/ranges/IDs; normal direct source import signal added with red regression, not treated as semantic proof. Structured transport2638 remains only active worker; full actual CLI success pending that import.
 
+## [RUN-071] Event (during round A-001)
+
+* _2026-09-10 00:41:44 (GPT-6/default)_
+
+Structured transport completed exit0/report SHA cd3a4fc1b202916de1ef959efaf1c887fbdc779c46c98e4ee9d839243e8c012a verified; exact adapter/auth-test plus captured fixture imported. Actual strict-schema negative controls exposed provider400: input_schema does not support oneOf, allOf, anyOf at top level, for both configured models. This reopens only provider-schema subset compatibility: retain typed closed objects, enforce verdict-dependent citation cardinality in existing controller validators, remove unsupported top-level composition from transport schema. No trust boundary/tool/model changes. Full CLI generation/OCI now runs independently to expose remaining execution facts; no success claimed.
+
