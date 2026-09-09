@@ -1,0 +1,220 @@
+diff --git a/tests/test_review_model_evaluation.py b/tests/test_review_model_evaluation.py
+new file mode 100644
+index 0000000..355e407
+--- /dev/null
++++ b/tests/test_review_model_evaluation.py
+@@ -0,0 +1,71 @@
++import importlib.util
++import json
++import tempfile
++import unittest
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def load_module(name, relative_path):
++    path = ROOT / relative_path
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        return None
++    module = importlib.util.module_from_spec(spec)
++    try:
++        spec.loader.exec_module(module)
++    except (FileNotFoundError, ImportError):
++        return None
++    return module
++
++
++class ModelEvaluationBehaviorTests(unittest.TestCase):
++    def test_invalid_citation_is_not_a_model_assessment(self):
++        module = load_module("review_model_evaluation", "scripts/review_model_evaluation.py")
++        self.assertIsNotNone(module, "the evaluation controller must exist")
++        finding = {
++            "finding_id": "F-1",
++            "title": "unsafe path",
++            "severity": "high",
++            "claim": "the changed code is unsafe",
++            "location": {"path": "src/app.py", "start_line": 1, "end_line": 1},
++            "evidence_ids": ["E-1"],
++        }
++        evidence = {
++            "E-1": {
++                "utf8": "a line\n",
++                "sha256": "c4d1d6c2c5c1af4a6b4f9d9c6c5f5a2c29d6d1e22e5b4b5b1f5c3c5d7a8b9c0d",
++                "allowed_ranges": [{"path": "src/app.py", "start": 1, "end": 1}],
++            }
++        }
++        result = {
++            "finding_id": "F-1",
++            "verdict": "support",
++            "severity": "high",
++            "usefulness": "useful",
++            "citations": [
++                {"path": "src/app.py", "start": 99, "end": 99, "evidence_id": "E-1"}
++            ],
++            "counterexample": "none",
++        }
++        with self.assertRaises(Exception):
++            module.validate_judge_result(result, finding, evidence, {"src/app.py": 3})
++
++    def test_discovery_packet_has_no_original_findings(self):
++        module = load_module("review_model_evaluation", "scripts/review_model_evaluation.py")
++        self.assertIsNotNone(module, "the evaluation controller must exist")
++        packet = module.build_discovery_packet(
++            invocation_id="discovery-1",
++            source_packet={"packet_sha256": "source", "files": []},
++            evidence_catalog={"E-1": {"utf8": "evidence"}},
++            original_findings=[{"finding_id": "F-1", "claim": "secret finding"}],
++        )
++        encoded = json.dumps(packet, sort_keys=True)
++        self.assertNotIn("F-1", encoded)
++        self.assertNotIn("secret finding", encoded)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_review_model_oci_executor.py b/tests/test_review_model_oci_executor.py
+new file mode 100644
+index 0000000..b0f9ac2
+--- /dev/null
++++ b/tests/test_review_model_oci_executor.py
+@@ -0,0 +1,56 @@
++import importlib.util
++import unittest
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def load_module():
++    path = ROOT / "scripts/review_model_oci_executor.py"
++    spec = importlib.util.spec_from_file_location("review_model_oci_executor", path)
++    if spec is None or spec.loader is None:
++        return None
++    module = importlib.util.module_from_spec(spec)
++    try:
++        spec.loader.exec_module(module)
++    except (FileNotFoundError, ImportError):
++        return None
++    return module
++
++
++class OciExecutorBehaviorTests(unittest.TestCase):
++    def test_docker_argv_has_isolation_and_no_host_shell(self):
++        module = load_module()
++        self.assertIsNotNone(module, "the OCI executor must exist")
++        argv = module.build_docker_run_argv(
++            image="python:3.12-slim@sha256:" + "a" * 64,
++            source_dir=Path("/tmp/source"),
++            runner_path=Path("/tmp/runner.py"),
++            container_name="eval-item-1",
++        )
++        self.assertIn("--network", argv)
++        self.assertIn("none", argv)
++        self.assertIn("--read-only", argv)
++        self.assertIn("--cap-drop", argv)
++        self.assertIn("ALL", argv)
++        self.assertIn("no-new-privileges", " ".join(argv))
++        self.assertNotIn("sh", [part.lower() for part in argv])
++
++    def test_generated_paths_and_shell_forms_are_rejected(self):
++        module = load_module()
++        self.assertIsNotNone(module, "the OCI executor must exist")
++        with self.assertRaises(Exception):
++            module.validate_generated_plan(
++                {
++                    "item_id": "F-1",
++                    "files": [{"path": "generated/../escape.py", "utf8": "pass"}],
++                    "runs": [],
++                    "claim_observed": "x",
++                },
++                evidence_ids=set(),
++            )
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_review_round_weekly_report.py b/tests/test_review_round_weekly_report.py
+new file mode 100644
+index 0000000..920eee6
+--- /dev/null
++++ b/tests/test_review_round_weekly_report.py
+@@ -0,0 +1,75 @@
++import importlib.util
++import json
++import tempfile
++import unittest
++from datetime import datetime, timezone
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def load_module():
++    path = ROOT / "scripts/review_round_weekly_report.py"
++    spec = importlib.util.spec_from_file_location("review_round_weekly_report", path)
++    if spec is None or spec.loader is None:
++        return None
++    module = importlib.util.module_from_spec(spec)
++    try:
++        spec.loader.exec_module(module)
++    except (FileNotFoundError, ImportError):
++        return None
++    return module
++
++
++class WeeklyReportBehaviorTests(unittest.TestCase):
++    def test_ask_and_plan_only_are_not_reliable_review_cohort(self):
++        module = load_module()
++        self.assertIsNotNone(module, "the weekly report must exist")
++        with tempfile.TemporaryDirectory() as temp:
++            bundle = Path(temp) / "bundle"
++            output = Path(temp) / "output"
++            bundle.mkdir()
++            product = {
++                "session_targets": [
++                    {"session_id": "ask-1", "repo": "o/r", "pr_number": 1, "reason": "ask", "head_sha": "a" * 40},
++                    {"session_id": "review-1", "repo": "o/r", "pr_number": 2, "reason": "review", "head_sha": "b" * 40},
++                ],
++                "review_rounds": [],
++                "review_findings": [],
++                "github_writes": [],
++                "runtime_event_receipts": [],
++            }
++            (bundle / "product.json").write_text(json.dumps(product), encoding="utf-8")
++            (bundle / "audit.ndjson").write_text(
++                json.dumps({
++                    "seq": 1, "version": 1, "event_id": "a1", "event_key": "a1",
++                    "occurred_at": 1788950400000, "recorded_at": 1788950400000,
++                    "service": "controller", "kind": "ingress.accepted", "outcome": "accepted",
++                    "correlation": {"session_id": "review-1"}, "detail": {},
++                }) + "\n" +
++                json.dumps({
++                    "seq": 2, "version": 1, "event_id": "a2", "event_key": "a2",
++                    "occurred_at": 1788950401000, "recorded_at": 1788950401000,
++                    "service": "controller", "kind": "action.accepted", "outcome": "accepted",
++                    "correlation": {"session_id": "ask-1"}, "detail": {},
++                }) + "\n",
++                encoding="utf-8",
++            )
++            manifest = {
++                "schema_version": "review-round-weekly-evidence/v1",
++                "bundle_id": "bundle-1",
++                "snapshot_at": "2026-09-09T08:00:00+08:00",
++                "timezone": "Asia/Taipei",
++                "coverage": {"audit": "complete", "product": "complete", "human": "unknown", "cost": "unknown"},
++                "files": {},
++            }
++            (bundle / "evidence-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
++            report = module.build_report(bundle, "2026-W37", "2026-09-09T08:00:00+08:00")
++            self.assertEqual(report["cohort"]["excluded_ask"], 1)
++            self.assertEqual(report["cohort"]["plan_only"], 1)
++            self.assertEqual(report["reliability"]["reliable"], 0)
++
++
++if __name__ == "__main__":
++    unittest.main()

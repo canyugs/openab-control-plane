@@ -1,0 +1,13 @@
+{
+  "schema_version": "review-model-evidence/v1",
+  "entries": [
+    {
+      "id": "fixture-E1",
+      "utf8": "evidence line\n",
+      "sha256": "4700a49ea4a68dcc4083e4d49c3f13b6aa340eeba6e0682d7761a971a2dedd42",
+      "allowed_ranges": [
+        {"path": "src/example.py", "start": 1, "end": 1}
+      ]
+    }
+  ]
+}

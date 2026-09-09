@@ -454,3 +454,9 @@ Preserved actual early OCI and weekly controls in early-runtime-controls.json fo
 - **Still to do:** Correct observed runtime and raw receipt defects, run complete host tests and real model/OCI PTY, independent security/acceptance and Result Go.
 - **Next work action:** Collect final candidate and hand exact failures to correction worker.
 - **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-047] Event (during round A-001)
+
+* _2026-09-09 23:10:21 (GPT-6/default)_
+
+Implementation worker completed exit0, process group not alive, model/effort dispatcher verified. Full report digest e633c4d3177e22fe4878ae945387f5413ced02bb077c7365da0e71115ae3a20b matched transport; all source/test/docs paths in authority and no tracked clone edits. Imported candidate only; not accepted due known runtime defects. Mechanical report repair: prepend missing literal * and space to first timestamp line, original hash as above, repaired hash 2b2282b01136d2af4a93fd2ed2b87a0175e2762124063fd61c85635e48c31456, all original bytes retained unchanged. Worker claims 18 tests/compileall; host reruns delivered candidate next.

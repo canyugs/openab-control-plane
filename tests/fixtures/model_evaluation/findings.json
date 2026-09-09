@@ -1,0 +1,17 @@
+{
+  "schema_version": "review-model-findings/v1",
+  "findings": [
+    {
+      "finding_id": "fixture-F1",
+      "title": "Fixture finding",
+      "severity": "high",
+      "claim": "the fixture line is unsafe",
+      "location": {
+        "path": "src/example.py",
+        "start_line": 1,
+        "end_line": 1
+      },
+      "evidence_ids": ["fixture-E1"]
+    }
+  ]
+}
