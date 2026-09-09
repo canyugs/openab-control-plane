@@ -6,8 +6,8 @@ Current commit: d6e96c32abfd766588c549e8922e3077d6abcb00 — Stage 1 implementat
 Tests/scenarios: host package 170 tests and root suite 327 tests passed; build, package fmt and clippy passed; workspace fmt has three unchanged baseline differences.
 Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex; root ag.json remains untracked bootstrap.
 Proven: approved design, baseline red failure, delivered SHA tests and real PostgreSQL; security pass resolved with explicit immutable-target recovery limit.
-Open: Stage 2 discovery/design; Stage 1 Result Go recorded in RUN-027; Stage 2/3 implementation remains.
-Next: inspect four metric sources and freeze Stage 2 design before source changes; codewalk worker active; no production action.
+Open: exact Stage 2 Design Go 5f18484; Stage 2/3 implementation remains.
+Next: approve frozen Stage 2 design 5f18484, then implement offline report; Stage 1 Result Go recorded, no worker running.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
 Archived eras: none.
 Streams: fix/review-commit-integrity in isolated worktree.
@@ -306,3 +306,11 @@ Stage 2 draft retained, not accepted. Host source inspection found invented term
 * _2026-09-09 13:57:13 (GPT-6/default)_
 
 Corrected Stage 2 spec accepted with mandatory spec-resolution.md source/requirement clarifications. Canonical design.md copied from final worker report; exact digest and report-only clone verified. Three future Python tool/test/doc paths only; no runtime code modified. Scope R-13..R-18 and INV-7, actual/unknown data and exclusive reliability. Exact Stage 2 Design Go is next; no active worker. Stage 1 approval remains recorded and source unchanged.
+
+## [RUN-033] Event (during round A-001)
+
+* _2026-09-09 13:57:57 (GPT-6/default)_
+
+Stage 2 design commit: 5f18484f24359e2e13278dc216e4462b8b1080df. Design authority includes A-001-round-measurement/design.md AND spec-resolution.md. Human question: approve this exact design to implement the offline weekly report? Suggested default: approve the three-file local report; no runtime/production authority implied. Installed Agentflow SKILL.md requires: "Source work starts only after a later `Design Go: <commit>`." Prior owner go was Result Go for Stage 1 d6e96c3, now complete; this is a new scoped design gate.
+
+No active worker or Stage 2 source change; git diff --check passed. Stage 1 source is unchanged and its tests are not rerun for record-only edits. Tracker 2/3 tasks complete, final task remains gated. Origin was fetched and HEAD..origin/fix/review-commit-integrity inspected empty before this turn's push. Current Ask stays open at the explicit gate, not declared whole-programme complete.

@@ -8,15 +8,15 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-09 13:52:40 Asia/Taipei.
+- **Last update:** 2026-09-09 13:57:57 Asia/Taipei.
 
-- **Evidence commit:** d6e96c32abfd766588c549e8922e3077d6abcb00.
+- **Evidence commit:** 5f18484f24359e2e13278dc216e4462b8b1080df.
 
 ## Overall state
 
-- **State:** active.
+- **State:** blocked.
 
-- **Reason:** Stage 1 accepted; Stage 2/3 remain.
+- **Reason:** Stage 1 accepted; exact Stage 2 Design Go is required before new source work.
 
 - **Total:** 3.
 
@@ -40,11 +40,11 @@
 
 - **Current item:** T-3.
 
-- **Last proven result:** Host gate PASS and fresh full acceptance PASS for d6e96c3; no active workers; local Postgres stopped.
+- **Last proven result:** Stage 1 Result Go d6e96c3; Stage 2 design and source-backed resolution frozen in 5f18484.
 
-- **Active blocker or running process:** Stage 2 spec correction external worker session 76454; same spec stage attempt 2.
+- **Active blocker or running process:** No running process; awaiting Stage 2 Design Go for 5f18484f24359e2e13278dc216e4462b8b1080df.
 
-- **Next safe action:** Inspect Stage 2 metric sources and freeze its minimal design before source work.
+- **Next safe action:** After exact Stage 2 Design Go, implement the three-file offline weekly report and its fixture/PTY checks.
 
 - **Expected changed files:** crates/github-pr-controller/src/{closing.rs,github.rs,lib.rs,deciding.rs,store.rs,store/sqlite.rs,store/postgres.rs}; stream notebook and artifacts.
 
@@ -52,15 +52,15 @@
 
 - **All accepted tasks checked:** no.
 
-- **Blocking accepted decision:** none.
+- **Blocking accepted decision:** Stage 2 Design Go for 5f18484f24359e2e13278dc216e4462b8b1080df.
 
-- **Operation running:** yes.
+- **Operation running:** no.
 
 - **Next action remaining:** T-3.
 
 - **Evidence status:** current.
 
-- **Judgment:** active.
+- **Judgment:** blocked.
 
 ## Update meaning
 
