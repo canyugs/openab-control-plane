@@ -336,3 +336,31 @@ Route remains full_pipeline; authorizing requirement source is the exact owner s
 * _2026-09-09 21:02:26 (GPT-6/default)_
 
 Route full_pipeline; allow-ag on; owner approved handoff. Dispatch design-proposal, codex-default, better, gpt-5.6-terra/high, external-runner-v1. Executable and ChatGPT login verified. Clone-only report authority; no production access. Root configuration remains local bootstrap; main checkout untouched.
+
+## [RUN-036] Event (during round A-001)
+
+* _2026-09-09 21:07:00 (GPT-6/default)_
+
+Route full_pipeline; allow-ag on; owner approved handoff. Dispatch design-final, codex-default, better, gpt-5.6-terra/high, external-runner-v1. Executable and ChatGPT login verified. Clone-only report authority; no production access. Root configuration remains local bootstrap; main checkout untouched.
+
+## [RUN-037] Event (during round A-001)
+
+* _2026-09-09 21:11:07 (GPT-6/default)_
+
+Initial model-evaluation draft returned to same design stage for functional correction: real installed CLI adapters and automatic generated-test execution must replace invented JSON-v1 transports and mandatory human-authored checks. Owner capability-first instruction is authority. Host independently read codex exec --help and claude --help; both executables exist. Docker executable exists but its daemon is not running; later validation setup remains necessary, no runtime test claimed. Revised worker session 34553 remains active; source unchanged from accepted Stage 1. Tracker and record-only scope verified.
+
+## [WIP-009] Checkpoint (during round A-001)
+
+* _2026-09-09 21:11:07 (GPT-6/default)_
+
+- **Finished:** Owner scope and capability-first priority recorded; source map and actual CLI entrypoints checked.
+- **Running now:** Complete automatic-evaluation design correction, session 34553.
+- **Still to do:** Read corrected functional contract, freeze/push design, then exact design gate before implementation. No runtime functionality is claimed yet.
+- **Next work action:** Verify adapter, independent model, generated-test, omission and reporting stages are actually implementable.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-038] Event (during round A-001)
+
+* _2026-09-09 21:13:28 (GPT-6/default)_
+
+Model-evaluation requirements amendment and specification accepted with design-resolution.md concrete adapter/confinement/actual-runtime constraints. Design.md copied from verified final report; raw worker artifact preserved. Scope now includes real model calls, generated tests, blind omission discovery and full automated reporting. Capability first, costs observed without feature cuts. All workers finished; no product source change. Exact design commit follows.
