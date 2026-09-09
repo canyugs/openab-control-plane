@@ -1,0 +1,296 @@
+{
+  "actual_cost_status": "unknown",
+  "artifact_hashes": {
+    "findings.json": "1b710e1bf3aa4c7d115b160825a8ad1be9afb6c8061957e38a5af58d45c4f15f",
+    "invocations/discovery/argv.json": "0cc3c58b498bc3c65316bd99269a74fdc94e5ab92133cfafae69a0f223b336d2",
+    "invocations/discovery/final.json": "ad211a82dcba4781fae8ee4c73c0954b2b66a29db98c2f709c1bf01fc2ef98a0",
+    "invocations/discovery/packet.json": "231c92d9fe2bde0f0acd6eed82e4e85b65fef46fd2a78623af30ee312576cb4e",
+    "invocations/discovery/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/discovery/raw.stdout": "bb16a8d1187beca91528b0d4f9783ea06079c48fe161ec1f892c902a8e1e6b52",
+    "invocations/discovery/result.json": "5d80fb95ccde222c112571212452d8cef53fbc3a428054d9c9c9554735868dd4",
+    "invocations/judge_a-F-1/argv.json": "404fe9c214fa75a50fedb99ffa4662a849618e2cef520fcd9891fe0938c41c27",
+    "invocations/judge_a-F-1/final.json": "948523c1bec9dbbed72368ed502437465a6f506eca47ebabc01bbb34d4bf0f61",
+    "invocations/judge_a-F-1/packet.json": "05b37078dbf3d4eb873520e0c594e01d3f22c9f86d7523e8175ec67b60c78cff",
+    "invocations/judge_a-F-1/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/judge_a-F-1/raw.stdout": "cc5c4424315cc01c036343db745dc8210080a093d647c4c9934e310da2280f5b",
+    "invocations/judge_a-F-1/result.json": "bfae34246b10be2a13f12420667fb8ff48688f3371572a4482727f044145a925",
+    "invocations/judge_b-F-1/argv.json": "95e9717e4906dd677b8ec644a97797a3a450ade1f482c2b988a3728943bdb580",
+    "invocations/judge_b-F-1/final.json": "b54efed8a0713af2b1ab93f9a4a32b28a05e7184ecfff75ff192ff4ea53e9e1a",
+    "invocations/judge_b-F-1/packet.json": "6303536dbabd0268ff697c47bf54d09fe853ce12a2c4005a6ca47d2ede7ae1a9",
+    "invocations/judge_b-F-1/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/judge_b-F-1/raw.stdout": "1d4affd856f94031d121b63765f6d235146e8e481f10c207f52d7a97006f0aba",
+    "invocations/judge_b-F-1/result.json": "aeee23bba5cd5831cc311247f231c30051832a0659e4c0fc48bd3a1b19b5afa3",
+    "invocations/synthesis-F-1/argv.json": "ef92a60d30e8e86c70ca2951e3416cc947473d8b091f2fc06f6b81400702da39",
+    "invocations/synthesis-F-1/final.json": "76f9513d15cbf7ad7381303f89440fcfcf8eb61703f1aba324f3d9b36c12a9ca",
+    "invocations/synthesis-F-1/packet.json": "66dd66b61378d0a81b2c96f75d154b9f5aacbf91ac87dba696dc36c9340efdec",
+    "invocations/synthesis-F-1/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/synthesis-F-1/raw.stdout": "81c5559df0f09215e8c04a79b84fc8f16928e09dcce549bc994616536ce1b469",
+    "invocations/synthesis-F-1/result.json": "794090d03816116318703fb39fa0dd021a28b94003e90f104fe2b9ec116fa057",
+    "invocations/validation-F-1/argv.json": "131b82331007ec7126918303102672f10315d0bc758bf4b4ba4158f971bf6dad",
+    "invocations/validation-F-1/final.json": "c4dff68ed74ff592c3b98433c19da7e387eb0cba863fb427afde7714a242e0ca",
+    "invocations/validation-F-1/packet.json": "6b55b905e766f1c346e0abaabd568917f34b11c1355e6498344b52a7b268e6b1",
+    "invocations/validation-F-1/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/validation-F-1/raw.stdout": "1c6c459f6df6c8d2821931705395ae8e16f28a2fb41e137c47682c5c463e00fe",
+    "invocations/validation-F-1/result.json": "d862959d7b18b04b2b9e497371127f3c692dea4f5f3e32f26f2450d5c5ecc9e9",
+    "omissions.json": "7efde6f824cae313bfffea008325edcfa92c8ef59616d388cb9ab751a511a6a5",
+    "snapshot.json": "c4f6208b574a65e04567286d5e1e473a0417ae52a995f5a75a086780ceb5716f",
+    "source-packet.json": "ddd10dd9f254bd9248aaaf5c372ffa985f517d1e6fd9dc705970b288a70750b2",
+    "summary.json": "dabee3ef62a80d3c3e909c7cd61a9b295ee187d5ac01d47628e03528357d9ef9",
+    "summary.md": "45087da32ddbe244f18c05d3b3f3576f576e432363f0758d70441344799174a9",
+    "validation/F-1/generated-file-digests.json": "e9673b98fdd39155877456e2a49434c90ffe2f752dfdb2ad182036056e181fa2",
+    "validation/F-1/plan.json": "ded4b1a988863834e13c59aa8eb91bf623a68cd12f9049039a161defc2a92c03",
+    "validation/F-1/result.json": "2364c7cce0fe83c7357c78399e89eb0c56404da4409ca416dc4d2b77d200dc38",
+    "validation/F-1/runs/baseline.json": "9bc854d599e6630beaeb2bd706b5f6ecb610ced4051549232e00b9562a7894b1",
+    "validation/F-1/runs/counterexample.json": "eafc9f0061a77a8eb4039f893b1002e9908a5df74c48c8c8702bed2d5851232d"
+  },
+  "completed_invocations": [
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "discovery",
+      "observed_model_id": "claude-opus-5",
+      "requested_model_id": "claude-opus-5",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "judge_a-F-1",
+      "observed_model_id": "claude-opus-5",
+      "requested_model_id": "claude-opus-5",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "judge_b-F-1",
+      "observed_model_id": "claude-opus-4-6",
+      "requested_model_id": "claude-opus-4-6",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "synthesis-F-1",
+      "observed_model_id": "claude-opus-5",
+      "requested_model_id": "claude-opus-5",
+      "status": "success"
+    },
+    {
+      "attempts": 2,
+      "failure_class": null,
+      "id": "validation-F-1",
+      "observed_model_id": "claude-opus-5",
+      "requested_model_id": "claude-opus-5",
+      "status": "success"
+    }
+  ],
+  "failed_invocations": [],
+  "identity_status": {
+    "discovery": {
+      "actual_cost_usd": "unknown",
+      "adapter": "claude",
+      "auxiliary_model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "canonicalModel": "claude-haiku-4-5",
+          "contextWindow": 200000,
+          "costBasis": "list",
+          "costUSD": 0.0023420000000000003,
+          "inputTokens": 2282,
+          "maxOutputTokens": 32000,
+          "outputTokens": 12,
+          "provider": "firstParty",
+          "thinkingTokens": 0,
+          "webSearchRequests": 0
+        }
+      },
+      "capability": "ready",
+      "cost_basis": [
+        "list"
+      ],
+      "estimated_cost_usd": 0.047334,
+      "family": "anthropic",
+      "observed_model_id": "claude-opus-5",
+      "observed_model_ids": [
+        "claude-opus-5"
+      ],
+      "requested_model_id": "claude-opus-5"
+    },
+    "judge_a": {
+      "actual_cost_usd": "unknown",
+      "adapter": "claude",
+      "auxiliary_model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "canonicalModel": "claude-haiku-4-5",
+          "contextWindow": 200000,
+          "costBasis": "list",
+          "costUSD": 0.014043000000000002,
+          "inputTokens": 13978,
+          "maxOutputTokens": 32000,
+          "outputTokens": 13,
+          "provider": "firstParty",
+          "thinkingTokens": 0,
+          "webSearchRequests": 0
+        }
+      },
+      "capability": "ready",
+      "cost_basis": [
+        "list"
+      ],
+      "estimated_cost_usd": 0.20355399999999998,
+      "family": "anthropic",
+      "observed_model_id": "claude-opus-5",
+      "observed_model_ids": [
+        "claude-opus-5"
+      ],
+      "requested_model_id": "claude-opus-5"
+    },
+    "judge_b": {
+      "actual_cost_usd": "unknown",
+      "adapter": "claude",
+      "auxiliary_model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "canonicalModel": "claude-haiku-4-5",
+          "contextWindow": 200000,
+          "costBasis": "list",
+          "costUSD": 0.014043000000000002,
+          "inputTokens": 13978,
+          "maxOutputTokens": 32000,
+          "outputTokens": 13,
+          "provider": "firstParty",
+          "thinkingTokens": 0,
+          "webSearchRequests": 0
+        }
+      },
+      "capability": "ready",
+      "cost_basis": [
+        "list"
+      ],
+      "estimated_cost_usd": 0.194248,
+      "family": "anthropic",
+      "observed_model_id": "claude-opus-4-6",
+      "observed_model_ids": [
+        "claude-opus-4-6"
+      ],
+      "requested_model_id": "claude-opus-4-6"
+    },
+    "synthesis": {
+      "actual_cost_usd": "unknown",
+      "adapter": "claude",
+      "auxiliary_model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "canonicalModel": "claude-haiku-4-5",
+          "contextWindow": 200000,
+          "costBasis": "list",
+          "costUSD": 0.014722,
+          "inputTokens": 14642,
+          "maxOutputTokens": 32000,
+          "outputTokens": 16,
+          "provider": "firstParty",
+          "thinkingTokens": 0,
+          "webSearchRequests": 0
+        }
+      },
+      "capability": "ready",
+      "cost_basis": [
+        "list"
+      ],
+      "estimated_cost_usd": 0.2126965,
+      "family": "anthropic",
+      "observed_model_id": "claude-opus-5",
+      "observed_model_ids": [
+        "claude-opus-5"
+      ],
+      "requested_model_id": "claude-opus-5"
+    },
+    "validation": {
+      "actual_cost_usd": "unknown",
+      "adapter": "claude",
+      "auxiliary_model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "canonicalModel": "claude-haiku-4-5",
+          "contextWindow": 200000,
+          "costBasis": "list",
+          "costUSD": 0.002783,
+          "inputTokens": 2718,
+          "maxOutputTokens": 32000,
+          "outputTokens": 13,
+          "provider": "firstParty",
+          "thinkingTokens": 0,
+          "webSearchRequests": 0
+        }
+      },
+      "capability": "ready",
+      "cost_basis": [
+        "list"
+      ],
+      "estimated_cost_usd": 0.2075335,
+      "family": "anthropic",
+      "observed_model_id": "claude-opus-5",
+      "observed_model_ids": [
+        "claude-opus-5"
+      ],
+      "requested_model_id": "claude-opus-5"
+    }
+  },
+  "input_identity": "c753099055b369381819159fafbc518e9d165d112b65cd8868d6b9fb805e471b",
+  "preflight": {
+    "discovery": {
+      "adapter": "claude",
+      "help_sha256": "ae85d661e9c086f05637ebcd868f5702b477ff6e55e2e65b8ada7807cd51a4b6",
+      "missing_flags": [],
+      "status": "ready",
+      "version": "2.1.266 (Claude Code)"
+    },
+    "judge_a": {
+      "adapter": "claude",
+      "help_sha256": "ae85d661e9c086f05637ebcd868f5702b477ff6e55e2e65b8ada7807cd51a4b6",
+      "missing_flags": [],
+      "status": "ready",
+      "version": "2.1.266 (Claude Code)"
+    },
+    "judge_b": {
+      "adapter": "claude",
+      "help_sha256": "ae85d661e9c086f05637ebcd868f5702b477ff6e55e2e65b8ada7807cd51a4b6",
+      "missing_flags": [],
+      "status": "ready",
+      "version": "2.1.266 (Claude Code)"
+    },
+    "oci": {
+      "daemon_probe": "ok",
+      "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+      "server_version": "29.7.2",
+      "status": "ready"
+    },
+    "synthesis": {
+      "adapter": "claude",
+      "help_sha256": "ae85d661e9c086f05637ebcd868f5702b477ff6e55e2e65b8ada7807cd51a4b6",
+      "missing_flags": [],
+      "status": "ready",
+      "version": "2.1.266 (Claude Code)"
+    },
+    "validation": {
+      "adapter": "claude",
+      "help_sha256": "ae85d661e9c086f05637ebcd868f5702b477ff6e55e2e65b8ada7807cd51a4b6",
+      "missing_flags": [],
+      "status": "ready",
+      "version": "2.1.266 (Claude Code)"
+    }
+  },
+  "preflight_sha256": "e6c69eff17cfdbd556c6b6a7d449725cfe40c6247ac1d825d0a227c40641e8b0",
+  "schema_version": "review-model-evaluation/v1",
+  "scope_complete": true,
+  "source_complete": true,
+  "state": "complete",
+  "summary_sha256": "dabee3ef62a80d3c3e909c7cd61a9b295ee187d5ac01d47628e03528357d9ef9"
+}

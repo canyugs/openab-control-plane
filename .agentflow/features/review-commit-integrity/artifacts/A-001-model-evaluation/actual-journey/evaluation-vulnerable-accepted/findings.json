@@ -1,0 +1,424 @@
+{
+  "findings": [
+    {
+      "author_model_identity": "unknown",
+      "claim": "An authenticated requester who is not the owner can read a private document because can_read accepts any nonempty requester. This violates the explicit README access rule.",
+      "classification": "executed_reproduced",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "finding": {
+        "author_model_identity": "unknown",
+        "claim": "An authenticated requester who is not the owner can read a private document because can_read accepts any nonempty requester. This violates the explicit README access rule.",
+        "evidence_ids": [
+          "E_SAMPLE",
+          "E_CONTRACT"
+        ],
+        "finding_id": "F-1",
+        "location": {
+          "end_line": 2,
+          "path": "sample.py",
+          "start_line": 1
+        },
+        "severity": "high",
+        "title": "Private document access bypass"
+      },
+      "finding_id": "F-1",
+      "item_id": "F-1",
+      "judge_disagreement": false,
+      "judges": [
+        {
+          "assessment": {
+            "citations": [
+              {
+                "end": 2,
+                "evidence_id": "E_SAMPLE",
+                "path": "sample.py",
+                "start": 1
+              },
+              {
+                "end": 1,
+                "evidence_id": "E_CONTRACT",
+                "path": "README.md",
+                "start": 1
+              }
+            ],
+            "counterexample": "Witness: can_read(\"mallory\", \"alice\", public=False). The frozen source body is `return public or bool(requester)`, which ignores `owner` entirely; with public=False and a nonempty requester the disjunction evaluates to True, so a non-owner authenticated requester is granted read access to a private document. The README rule permits access only for public documents or a requester equal to owner, so the owner-equality branch is never enforced.\n\nExecuted controls: the baseline probe imported the shipped module from the read-only source mount and called the real can_read, observing can_read_private_non_owner=true, can_read_private_owner=true, can_read_private_anonymous=false, can_read_public_anonymous=true (exit 0). These four observations are exactly the truth table of `public or bool(requester)` and are inconsistent with any owner-checking policy, so the observation is bound to the shipped implementation rather than to the harness. The counterexample run executed the identical four probe inputs against a README-conformant reference policy (public -> allow; else requester and requester == owner) and flipped only the decisive cell to can_read_private_non_owner=false, yielding claim_present=false (exit 0), while still loading the shipped symbol and reporting its signature [\"requester\",\"owner\",\"public\"].\n\nAssessment of the controls: the pair is a genuine differential — the only variable changed between runs is the policy implementation on fixed inputs, and the harness demonstrably reports false when the implementation conforms, so the baseline's true is not print-only, hard-coded, or argv-echoed. Weakness noted: the negation arm's decisive computation is an in-probe reference policy rather than a mutated copy of the source, so it establishes harness sensitivity rather than a source-derived negation; the source-bound half of the distinction rests on the baseline alone. That baseline is nonetheless a direct call into the frozen file whose outputs uniquely match the frozen source text, which is sufficient for a meaningful executed distinction.",
+            "finding_id": "F-1",
+            "provenance": "model_assessment",
+            "severity": "high",
+            "usefulness": "useful",
+            "validation_verdict": "valid",
+            "verdict": "support"
+          },
+          "failure_class": null,
+          "invocation_id": "judge_a-F-1",
+          "observed_model_id": "claude-opus-5",
+          "requested_model_id": "claude-opus-5",
+          "role": "judge_a",
+          "status": "success"
+        },
+        {
+          "assessment": {
+            "citations": [
+              {
+                "end": 2,
+                "evidence_id": "E_SAMPLE",
+                "path": "sample.py",
+                "start": 1
+              },
+              {
+                "end": 1,
+                "evidence_id": "E_CONTRACT",
+                "path": "README.md",
+                "start": 1
+              }
+            ],
+            "counterexample": "",
+            "finding_id": "F-1",
+            "provenance": "model_assessment",
+            "severity": "high",
+            "usefulness": "useful",
+            "validation_verdict": "valid",
+            "verdict": "support"
+          },
+          "failure_class": null,
+          "invocation_id": "judge_b-F-1",
+          "observed_model_id": "claude-opus-4-6",
+          "requested_model_id": "claude-opus-4-6",
+          "role": "judge_b",
+          "status": "success"
+        }
+      ],
+      "kind": "original",
+      "location": {
+        "end_line": 2,
+        "path": "sample.py",
+        "start_line": 1
+      },
+      "provenance": "model_assessment",
+      "scoreable": true,
+      "severity": "high",
+      "synthesis": {
+        "citations": [
+          {
+            "end": 2,
+            "evidence_id": "E_SAMPLE",
+            "path": "sample.py",
+            "start": 1
+          },
+          {
+            "end": 1,
+            "evidence_id": "E_CONTRACT",
+            "path": "README.md",
+            "start": 1
+          }
+        ],
+        "disagreement": "Both assessments reach the same verdict (support, high severity, useful), so there is no substantive conflict on the outcome. They differ only in rigor of justification: one supplies an explicit witness input, a truth-table argument tying the observed outputs to the frozen source body, and an explicit caveat that the negation arm exercises an in-probe reference policy rather than a mutated copy of the shipped source (so the executed pair proves harness sensitivity, and only the baseline is source-bound). The other offers no counterexample or control analysis at all, asserting validity without reasoning. I preserve the first assessment's caveat and note that the executed-evidence packet itself reports execution_classification \"unproven\" and controller_source_binding false; I therefore do not rest the verdict on the executed differential, and treat the run outputs only as corroboration of a conclusion that the frozen source text establishes on its own.",
+        "item_id": "F-1",
+        "provenance": "model_assessment",
+        "reason": "The frozen source range sample.py:1-2 reads `def can_read(requester, owner, public=False): return public or bool(requester)`. The `owner` parameter is never referenced in the body, so for public=False the result is `bool(requester)` — any nonempty requester is granted access regardless of ownership. The frozen contract at README.md:1 states can_read \"permits access only for public documents or an authenticated requester equal to owner.\" The witness can_read(\"mallory\",\"alice\",public=False) returns True under the shipped code but must be denied under the stated rule, which is a direct contradiction derivable from the two supplied evidence ranges without any execution. The executed baseline is consistent with this (can_read_private_non_owner=true, private_owner=true, private_anonymous=false, public_anonymous=true, exit 0), matching exactly the truth table of `public or bool(requester)`; the counterexample run flips only the decisive cell to false under a README-conformant policy on identical inputs. I weight that pair as corroborating only, since the negation arm substitutes an in-probe reference policy rather than mutating the shipped source and the packet marks the execution \"unproven\" with controller_source_binding false. No control failed and nothing is promoted beyond what the static evidence proves. Severity high is consistent with a private-document read bypass on the documented access rule.",
+        "verdict": "supported"
+      },
+      "title": "Private document access bypass",
+      "valid_judge_count": 2,
+      "validation": {
+        "claim_present": true,
+        "classification": "unproven",
+        "controller_source_binding": false,
+        "controls_passed": true,
+        "execution": {
+          "claim_present": true,
+          "classification": "unproven",
+          "controls_passed": true,
+          "generated_file_digests": [
+            {
+              "bytes": 1840,
+              "path": "generated/probe_bypass.py",
+              "sha256": "65a47ef6a4ff4332d224cde542752c833f6e7ad5777577153fb0ada6301b9199"
+            },
+            {
+              "bytes": 2202,
+              "path": "generated/probe_contract_control.py",
+              "sha256": "d19fa0d711f951d953098a3e21c6ddd312a70ba7663ec12a2e2b1ec7e350a9d1"
+            }
+          ],
+          "operator_checks": "not_run",
+          "plan": {
+            "claim_observed": "Baseline loads the shipped /source/sample.py and calls can_read(\"mallory\", \"alice\", public=False): an authenticated non-owner requester is granted access to a private document (returns True), while can_read(\"alice\",\"alice\",public=False) is also True, so the function accepts any nonempty requester regardless of owner. The baseline also confirms the README access rule text (\"public documents or an authenticated requester equal to owner\") is present in /source/README.md, so claim_present is true. The counterexample loads the same source module (verifying can_read exists with signature requester/owner/public) but routes the identical four probes through a README-conformant reference policy, which denies the non-owner private read; claim_present is false. The differing result on identical inputs shows the bypass is a property of the shipped implementation, not of the probe.",
+            "files": [
+              {
+                "bytes": 1840,
+                "path": "generated/probe_bypass.py",
+                "sha256": "65a47ef6a4ff4332d224cde542752c833f6e7ad5777577153fb0ada6301b9199",
+                "utf8": "import importlib.util\nimport json\nimport sys\n\nSOURCE = \"/source/sample.py\"\nREADME = \"/source/README.md\"\n\n\ndef load_module(path, name):\n    spec = importlib.util.spec_from_file_location(name, path)\n    module = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    return module\n\n\ndef main():\n    mod = load_module(SOURCE, \"sample_under_test\")\n    with open(README, \"r\", encoding=\"utf-8\") as handle:\n        contract = handle.read()\n\n    # README rule: access only for public documents or requester equal to owner.\n    contract_rule_present = (\n        \"public documents or an authenticated requester equal to owner\" in contract\n    )\n\n    # Non-owner, authenticated requester, private (non-public) document.\n    private_non_owner = mod.can_read(\"mallory\", \"alice\", public=False)\n    # Owner on a private document must still be allowed (sanity of the probe).\n    private_owner = mod.can_read(\"alice\", \"alice\", public=False)\n    # Anonymous requester on a private document.\n    private_anonymous = mod.can_read(\"\", \"alice\", public=False)\n    # Public document is allowed for anyone.\n    public_anonymous = mod.can_read(\"\", \"alice\", public=True)\n\n    bypass = bool(private_non_owner) and bool(private_owner)\n\n    result = {\n        \"target\": SOURCE,\n        \"contract_rule_present\": contract_rule_present,\n        \"can_read_private_non_owner\": bool(private_non_owner),\n        \"can_read_private_owner\": bool(private_owner),\n        \"can_read_private_anonymous\": bool(private_anonymous),\n        \"can_read_public_anonymous\": bool(public_anonymous),\n        \"implementation_under_test\": \"as-shipped can_read from /source/sample.py\",\n        \"claim_present\": bool(bypass and contract_rule_present),\n    }\n    json.dump(result, sys.stdout, sort_keys=True)\n    sys.stdout.write(\"\\n\")\n\n\nif __name__ == \"__main__\":\n    main()\n"
+              },
+              {
+                "bytes": 2202,
+                "path": "generated/probe_contract_control.py",
+                "sha256": "d19fa0d711f951d953098a3e21c6ddd312a70ba7663ec12a2e2b1ec7e350a9d1",
+                "utf8": "import importlib.util\nimport inspect\nimport json\nimport sys\n\nSOURCE = \"/source/sample.py\"\nREADME = \"/source/README.md\"\n\n\ndef load_module(path, name):\n    spec = importlib.util.spec_from_file_location(name, path)\n    module = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    return module\n\n\ndef contract_can_read(requester, owner, public=False):\n    \"\"\"Reference policy taken verbatim from the README access rule.\"\"\"\n    if public:\n        return True\n    return bool(requester) and requester == owner\n\n\ndef main():\n    mod = load_module(SOURCE, \"sample_under_test\")\n    with open(README, \"r\", encoding=\"utf-8\") as handle:\n        contract = handle.read()\n\n    contract_rule_present = (\n        \"public documents or an authenticated requester equal to owner\" in contract\n    )\n\n    # The control exercises the same call signature that /source/sample.py exposes,\n    # so the probe is only meaningful if the shipped symbol really exists.\n    shipped = getattr(mod, \"can_read\", None)\n    shipped_params = list(inspect.signature(shipped).parameters)\n\n    # Same four probes as the baseline, but routed through the contract policy.\n    private_non_owner = contract_can_read(\"mallory\", \"alice\", public=False)\n    private_owner = contract_can_read(\"alice\", \"alice\", public=False)\n    private_anonymous = contract_can_read(\"\", \"alice\", public=False)\n    public_anonymous = contract_can_read(\"\", \"alice\", public=True)\n\n    bypass = bool(private_non_owner) and bool(private_owner)\n\n    result = {\n        \"target\": SOURCE,\n        \"contract_rule_present\": contract_rule_present,\n        \"shipped_symbol_loaded\": shipped is not None,\n        \"shipped_signature\": shipped_params,\n        \"can_read_private_non_owner\": bool(private_non_owner),\n        \"can_read_private_owner\": bool(private_owner),\n        \"can_read_private_anonymous\": bool(private_anonymous),\n        \"can_read_public_anonymous\": bool(public_anonymous),\n        \"implementation_under_test\": \"README-conformant reference policy\",\n        \"claim_present\": bool(bypass and contract_rule_present),\n    }\n    json.dump(result, sys.stdout, sort_keys=True)\n    sys.stdout.write(\"\\n\")\n\n\nif __name__ == \"__main__\":\n    main()\n"
+              }
+            ],
+            "item_id": "F-1",
+            "runs": [
+              {
+                "argv": [
+                  "python3",
+                  "generated/probe_bypass.py"
+                ],
+                "cwd": "/work",
+                "evidence_ids": [
+                  "E_SAMPLE",
+                  "E_CONTRACT"
+                ],
+                "expect": {
+                  "exit": 0,
+                  "observation": {
+                    "claim_present": true
+                  }
+                },
+                "name": "baseline"
+              },
+              {
+                "argv": [
+                  "python3",
+                  "generated/probe_contract_control.py"
+                ],
+                "cwd": "/work",
+                "evidence_ids": [
+                  "E_SAMPLE",
+                  "E_CONTRACT"
+                ],
+                "expect": {
+                  "exit": 0,
+                  "observation": {
+                    "claim_present": false
+                  }
+                },
+                "name": "counterexample"
+              }
+            ]
+          },
+          "preflight": {
+            "daemon_probe": "ok",
+            "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+            "server_version": "29.7.2",
+            "status": "ready"
+          },
+          "reason": null,
+          "runs": [
+            {
+              "actual": {
+                "duration_ms": 56,
+                "exit": 0,
+                "name": "baseline",
+                "observation": {
+                  "can_read_private_anonymous": false,
+                  "can_read_private_non_owner": true,
+                  "can_read_private_owner": true,
+                  "can_read_public_anonymous": true,
+                  "claim_present": true,
+                  "contract_rule_present": true,
+                  "implementation_under_test": "as-shipped can_read from /source/sample.py",
+                  "target": "/source/sample.py"
+                },
+                "output_limit": false,
+                "stderr": "",
+                "stderr_b64": "",
+                "stderr_bytes": 0,
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stderr_truncated": false,
+                "stdout": "{\"can_read_private_anonymous\": false, \"can_read_private_non_owner\": true, \"can_read_private_owner\": true, \"can_read_public_anonymous\": true, \"claim_present\": true, \"contract_rule_present\": true, \"implementation_under_test\": \"as-shipped can_read from /source/sample.py\", \"target\": \"/source/sample.py\"}\n",
+                "stdout_b64": "eyJjYW5fcmVhZF9wcml2YXRlX2Fub255bW91cyI6IGZhbHNlLCAiY2FuX3JlYWRfcHJpdmF0ZV9ub25fb3duZXIiOiB0cnVlLCAiY2FuX3JlYWRfcHJpdmF0ZV9vd25lciI6IHRydWUsICJjYW5fcmVhZF9wdWJsaWNfYW5vbnltb3VzIjogdHJ1ZSwgImNsYWltX3ByZXNlbnQiOiB0cnVlLCAiY29udHJhY3RfcnVsZV9wcmVzZW50IjogdHJ1ZSwgImltcGxlbWVudGF0aW9uX3VuZGVyX3Rlc3QiOiAiYXMtc2hpcHBlZCBjYW5fcmVhZCBmcm9tIC9zb3VyY2Uvc2FtcGxlLnB5IiwgInRhcmdldCI6ICIvc291cmNlL3NhbXBsZS5weSJ9Cg==",
+                "stdout_bytes": 301,
+                "stdout_sha256": "a1a4ed6bba4e2031007d5e4617a4cfe0671579cbdd951ec1a78db6a8e2a85dc1",
+                "stdout_truncated": false,
+                "timeout": false
+              },
+              "argv": [
+                "docker",
+                "run",
+                "--rm",
+                "--init",
+                "--pull=never",
+                "-i",
+                "--name",
+                "openab-eval-509db05cfb014ec3aa24",
+                "--network",
+                "none",
+                "--read-only",
+                "--tmpfs",
+                "/work:rw,nosuid,nodev,size=64m,mode=1777",
+                "--tmpfs",
+                "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+                "--mount",
+                "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-source-nboi4nz4,dst=/source,readonly",
+                "--mount",
+                "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-icnkot08/fixed-runner.py,dst=/runner.py,readonly",
+                "--user",
+                "65532:65532",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--pids-limit",
+                "128",
+                "--memory",
+                "512m",
+                "--cpus",
+                "1.0",
+                "--env",
+                "HOME=/tmp/home",
+                "--env",
+                "PATH=/usr/local/bin:/usr/bin:/bin",
+                "--env",
+                "LANG=C.UTF-8",
+                "--env",
+                "LC_ALL=C.UTF-8",
+                "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+                "python3",
+                "/runner.py"
+              ],
+              "container_name": "openab-eval-509db05cfb014ec3aa24",
+              "expect": {
+                "exit": 0,
+                "observation": {
+                  "claim_present": true
+                }
+              },
+              "name": "baseline",
+              "output_limit": false,
+              "stderr": "",
+              "stderr_b64": "",
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_truncated": false,
+              "stdout": "{\"runs\":[{\"duration_ms\":56,\"exit\":0,\"name\":\"baseline\",\"observation\":{\"can_read_private_anonymous\":false,\"can_read_private_non_owner\":true,\"can_read_private_owner\":true,\"can_read_public_anonymous\":true,\"claim_present\":true,\"contract_rule_present\":true,\"implementation_under_test\":\"as-shipped can_read from /source/sample.py\",\"target\":\"/source/sample.py\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\\"can_read_private_anonymous\\\": false, \\\"can_read_private_non_owner\\\": true, \\\"can_read_private_owner\\\": true, \\\"can_read_public_anonymous\\\": true, \\\"claim_present\\\": true, \\\"contract_rule_present\\\": true, \\\"implementation_under_test\\\": \\\"as-shipped can_read from /source/sample.py\\\", \\\"target\\\": \\\"/source/sample.py\\\"}\\n\",\"stdout_b64\":\"eyJjYW5fcmVhZF9wcml2YXRlX2Fub255bW91cyI6IGZhbHNlLCAiY2FuX3JlYWRfcHJpdmF0ZV9ub25fb3duZXIiOiB0cnVlLCAiY2FuX3JlYWRfcHJpdmF0ZV9vd25lciI6IHRydWUsICJjYW5fcmVhZF9wdWJsaWNfYW5vbnltb3VzIjogdHJ1ZSwgImNsYWltX3ByZXNlbnQiOiB0cnVlLCAiY29udHJhY3RfcnVsZV9wcmVzZW50IjogdHJ1ZSwgImltcGxlbWVudGF0aW9uX3VuZGVyX3Rlc3QiOiAiYXMtc2hpcHBlZCBjYW5fcmVhZCBmcm9tIC9zb3VyY2Uvc2FtcGxlLnB5IiwgInRhcmdldCI6ICIvc291cmNlL3NhbXBsZS5weSJ9Cg==\",\"stdout_bytes\":301,\"stdout_sha256\":\"a1a4ed6bba4e2031007d5e4617a4cfe0671579cbdd951ec1a78db6a8e2a85dc1\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+              "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6NTYsImV4aXQiOjAsIm5hbWUiOiJiYXNlbGluZSIsIm9ic2VydmF0aW9uIjp7ImNhbl9yZWFkX3ByaXZhdGVfYW5vbnltb3VzIjpmYWxzZSwiY2FuX3JlYWRfcHJpdmF0ZV9ub25fb3duZXIiOnRydWUsImNhbl9yZWFkX3ByaXZhdGVfb3duZXIiOnRydWUsImNhbl9yZWFkX3B1YmxpY19hbm9ueW1vdXMiOnRydWUsImNsYWltX3ByZXNlbnQiOnRydWUsImNvbnRyYWN0X3J1bGVfcHJlc2VudCI6dHJ1ZSwiaW1wbGVtZW50YXRpb25fdW5kZXJfdGVzdCI6ImFzLXNoaXBwZWQgY2FuX3JlYWQgZnJvbSAvc291cmNlL3NhbXBsZS5weSIsInRhcmdldCI6Ii9zb3VyY2Uvc2FtcGxlLnB5In0sIm91dHB1dF9saW1pdCI6ZmFsc2UsInN0ZGVyciI6IiIsInN0ZGVycl9iNjQiOiIiLCJzdGRlcnJfYnl0ZXMiOjAsInN0ZGVycl9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1Iiwic3RkZXJyX3RydW5jYXRlZCI6ZmFsc2UsInN0ZG91dCI6IntcImNhbl9yZWFkX3ByaXZhdGVfYW5vbnltb3VzXCI6IGZhbHNlLCBcImNhbl9yZWFkX3ByaXZhdGVfbm9uX293bmVyXCI6IHRydWUsIFwiY2FuX3JlYWRfcHJpdmF0ZV9vd25lclwiOiB0cnVlLCBcImNhbl9yZWFkX3B1YmxpY19hbm9ueW1vdXNcIjogdHJ1ZSwgXCJjbGFpbV9wcmVzZW50XCI6IHRydWUsIFwiY29udHJhY3RfcnVsZV9wcmVzZW50XCI6IHRydWUsIFwiaW1wbGVtZW50YXRpb25fdW5kZXJfdGVzdFwiOiBcImFzLXNoaXBwZWQgY2FuX3JlYWQgZnJvbSAvc291cmNlL3NhbXBsZS5weVwiLCBcInRhcmdldFwiOiBcIi9zb3VyY2Uvc2FtcGxlLnB5XCJ9XG4iLCJzdGRvdXRfYjY0IjoiZXlKallXNWZjbVZoWkY5d2NtbDJZWFJsWDJGdWIyNTViVzkxY3lJNklHWmhiSE5sTENBaVkyRnVYM0psWVdSZmNISnBkbUYwWlY5dWIyNWZiM2R1WlhJaU9pQjBjblZsTENBaVkyRnVYM0psWVdSZmNISnBkbUYwWlY5dmQyNWxjaUk2SUhSeWRXVXNJQ0pqWVc1ZmNtVmhaRjl3ZFdKc2FXTmZZVzV2Ym5sdGIzVnpJam9nZEhKMVpTd2dJbU5zWVdsdFgzQnlaWE5sYm5RaU9pQjBjblZsTENBaVkyOXVkSEpoWTNSZmNuVnNaVjl3Y21WelpXNTBJam9nZEhKMVpTd2dJbWx0Y0d4bGJXVnVkR0YwYVc5dVgzVnVaR1Z5WDNSbGMzUWlPaUFpWVhNdGMyaHBjSEJsWkNCallXNWZjbVZoWkNCbWNtOXRJQzl6YjNWeVkyVXZjMkZ0Y0d4bExuQjVJaXdnSW5SaGNtZGxkQ0k2SUNJdmMyOTFjbU5sTDNOaGJYQnNaUzV3ZVNKOUNnPT0iLCJzdGRvdXRfYnl0ZXMiOjMwMSwic3Rkb3V0X3NoYTI1NiI6ImExYTRlZDZiYmE0ZTIwMzEwMDdkNWU0NjE3YTRjZmUwNjcxNTc5Y2JkZDk1MWVjMWE3OGRiNmE4ZTJhODVkYzEiLCJzdGRvdXRfdHJ1bmNhdGVkIjpmYWxzZSwidGltZW91dCI6ZmFsc2V9XX0K",
+              "stdout_bytes": 1428,
+              "stdout_sha256": "9ac870a57ba18abadd4098477e10d2bcb08f29e0ed4a3a23289c8489428c048f",
+              "stdout_truncated": false,
+              "timeout": false,
+              "valid": true
+            },
+            {
+              "actual": {
+                "duration_ms": 91,
+                "exit": 0,
+                "name": "counterexample",
+                "observation": {
+                  "can_read_private_anonymous": false,
+                  "can_read_private_non_owner": false,
+                  "can_read_private_owner": true,
+                  "can_read_public_anonymous": true,
+                  "claim_present": false,
+                  "contract_rule_present": true,
+                  "implementation_under_test": "README-conformant reference policy",
+                  "shipped_signature": [
+                    "requester",
+                    "owner",
+                    "public"
+                  ],
+                  "shipped_symbol_loaded": true,
+                  "target": "/source/sample.py"
+                },
+                "output_limit": false,
+                "stderr": "",
+                "stderr_b64": "",
+                "stderr_bytes": 0,
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stderr_truncated": false,
+                "stdout": "{\"can_read_private_anonymous\": false, \"can_read_private_non_owner\": false, \"can_read_private_owner\": true, \"can_read_public_anonymous\": true, \"claim_present\": false, \"contract_rule_present\": true, \"implementation_under_test\": \"README-conformant reference policy\", \"shipped_signature\": [\"requester\", \"owner\", \"public\"], \"shipped_symbol_loaded\": true, \"target\": \"/source/sample.py\"}\n",
+                "stdout_b64": "eyJjYW5fcmVhZF9wcml2YXRlX2Fub255bW91cyI6IGZhbHNlLCAiY2FuX3JlYWRfcHJpdmF0ZV9ub25fb3duZXIiOiBmYWxzZSwgImNhbl9yZWFkX3ByaXZhdGVfb3duZXIiOiB0cnVlLCAiY2FuX3JlYWRfcHVibGljX2Fub255bW91cyI6IHRydWUsICJjbGFpbV9wcmVzZW50IjogZmFsc2UsICJjb250cmFjdF9ydWxlX3ByZXNlbnQiOiB0cnVlLCAiaW1wbGVtZW50YXRpb25fdW5kZXJfdGVzdCI6ICJSRUFETUUtY29uZm9ybWFudCByZWZlcmVuY2UgcG9saWN5IiwgInNoaXBwZWRfc2lnbmF0dXJlIjogWyJyZXF1ZXN0ZXIiLCAib3duZXIiLCAicHVibGljIl0sICJzaGlwcGVkX3N5bWJvbF9sb2FkZWQiOiB0cnVlLCAidGFyZ2V0IjogIi9zb3VyY2Uvc2FtcGxlLnB5In0K",
+                "stdout_bytes": 381,
+                "stdout_sha256": "bb80a7cc9e5ac6be84d802eb7f78fc5477fb9cca559b27d3df091de69f596540",
+                "stdout_truncated": false,
+                "timeout": false
+              },
+              "argv": [
+                "docker",
+                "run",
+                "--rm",
+                "--init",
+                "--pull=never",
+                "-i",
+                "--name",
+                "openab-eval-89387b0557d4405f9e46",
+                "--network",
+                "none",
+                "--read-only",
+                "--tmpfs",
+                "/work:rw,nosuid,nodev,size=64m,mode=1777",
+                "--tmpfs",
+                "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+                "--mount",
+                "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-source-nboi4nz4,dst=/source,readonly",
+                "--mount",
+                "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-icnkot08/fixed-runner.py,dst=/runner.py,readonly",
+                "--user",
+                "65532:65532",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--pids-limit",
+                "128",
+                "--memory",
+                "512m",
+                "--cpus",
+                "1.0",
+                "--env",
+                "HOME=/tmp/home",
+                "--env",
+                "PATH=/usr/local/bin:/usr/bin:/bin",
+                "--env",
+                "LANG=C.UTF-8",
+                "--env",
+                "LC_ALL=C.UTF-8",
+                "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+                "python3",
+                "/runner.py"
+              ],
+              "container_name": "openab-eval-89387b0557d4405f9e46",
+              "expect": {
+                "exit": 0,
+                "observation": {
+                  "claim_present": false
+                }
+              },
+              "name": "counterexample",
+              "output_limit": false,
+              "stderr": "",
+              "stderr_b64": "",
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_truncated": false,
+              "stdout": "{\"runs\":[{\"duration_ms\":91,\"exit\":0,\"name\":\"counterexample\",\"observation\":{\"can_read_private_anonymous\":false,\"can_read_private_non_owner\":false,\"can_read_private_owner\":true,\"can_read_public_anonymous\":true,\"claim_present\":false,\"contract_rule_present\":true,\"implementation_under_test\":\"README-conformant reference policy\",\"shipped_signature\":[\"requester\",\"owner\",\"public\"],\"shipped_symbol_loaded\":true,\"target\":\"/source/sample.py\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\\"can_read_private_anonymous\\\": false, \\\"can_read_private_non_owner\\\": false, \\\"can_read_private_owner\\\": true, \\\"can_read_public_anonymous\\\": true, \\\"claim_present\\\": false, \\\"contract_rule_present\\\": true, \\\"implementation_under_test\\\": \\\"README-conformant reference policy\\\", \\\"shipped_signature\\\": [\\\"requester\\\", \\\"owner\\\", \\\"public\\\"], \\\"shipped_symbol_loaded\\\": true, \\\"target\\\": \\\"/source/sample.py\\\"}\\n\",\"stdout_b64\":\"eyJjYW5fcmVhZF9wcml2YXRlX2Fub255bW91cyI6IGZhbHNlLCAiY2FuX3JlYWRfcHJpdmF0ZV9ub25fb3duZXIiOiBmYWxzZSwgImNhbl9yZWFkX3ByaXZhdGVfb3duZXIiOiB0cnVlLCAiY2FuX3JlYWRfcHVibGljX2Fub255bW91cyI6IHRydWUsICJjbGFpbV9wcmVzZW50IjogZmFsc2UsICJjb250cmFjdF9ydWxlX3ByZXNlbnQiOiB0cnVlLCAiaW1wbGVtZW50YXRpb25fdW5kZXJfdGVzdCI6ICJSRUFETUUtY29uZm9ybWFudCByZWZlcmVuY2UgcG9saWN5IiwgInNoaXBwZWRfc2lnbmF0dXJlIjogWyJyZXF1ZXN0ZXIiLCAib3duZXIiLCAicHVibGljIl0sICJzaGlwcGVkX3N5bWJvbF9sb2FkZWQiOiB0cnVlLCAidGFyZ2V0IjogIi9zb3VyY2Uvc2FtcGxlLnB5In0K\",\"stdout_bytes\":381,\"stdout_sha256\":\"bb80a7cc9e5ac6be84d802eb7f78fc5477fb9cca559b27d3df091de69f596540\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+              "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6OTEsImV4aXQiOjAsIm5hbWUiOiJjb3VudGVyZXhhbXBsZSIsIm9ic2VydmF0aW9uIjp7ImNhbl9yZWFkX3ByaXZhdGVfYW5vbnltb3VzIjpmYWxzZSwiY2FuX3JlYWRfcHJpdmF0ZV9ub25fb3duZXIiOmZhbHNlLCJjYW5fcmVhZF9wcml2YXRlX293bmVyIjp0cnVlLCJjYW5fcmVhZF9wdWJsaWNfYW5vbnltb3VzIjp0cnVlLCJjbGFpbV9wcmVzZW50IjpmYWxzZSwiY29udHJhY3RfcnVsZV9wcmVzZW50Ijp0cnVlLCJpbXBsZW1lbnRhdGlvbl91bmRlcl90ZXN0IjoiUkVBRE1FLWNvbmZvcm1hbnQgcmVmZXJlbmNlIHBvbGljeSIsInNoaXBwZWRfc2lnbmF0dXJlIjpbInJlcXVlc3RlciIsIm93bmVyIiwicHVibGljIl0sInNoaXBwZWRfc3ltYm9sX2xvYWRlZCI6dHJ1ZSwidGFyZ2V0IjoiL3NvdXJjZS9zYW1wbGUucHkifSwib3V0cHV0X2xpbWl0IjpmYWxzZSwic3RkZXJyIjoiIiwic3RkZXJyX2I2NCI6IiIsInN0ZGVycl9ieXRlcyI6MCwic3RkZXJyX3NoYTI1NiI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJzdGRlcnJfdHJ1bmNhdGVkIjpmYWxzZSwic3Rkb3V0Ijoie1wiY2FuX3JlYWRfcHJpdmF0ZV9hbm9ueW1vdXNcIjogZmFsc2UsIFwiY2FuX3JlYWRfcHJpdmF0ZV9ub25fb3duZXJcIjogZmFsc2UsIFwiY2FuX3JlYWRfcHJpdmF0ZV9vd25lclwiOiB0cnVlLCBcImNhbl9yZWFkX3B1YmxpY19hbm9ueW1vdXNcIjogdHJ1ZSwgXCJjbGFpbV9wcmVzZW50XCI6IGZhbHNlLCBcImNvbnRyYWN0X3J1bGVfcHJlc2VudFwiOiB0cnVlLCBcImltcGxlbWVudGF0aW9uX3VuZGVyX3Rlc3RcIjogXCJSRUFETUUtY29uZm9ybWFudCByZWZlcmVuY2UgcG9saWN5XCIsIFwic2hpcHBlZF9zaWduYXR1cmVcIjogW1wicmVxdWVzdGVyXCIsIFwib3duZXJcIiwgXCJwdWJsaWNcIl0sIFwic2hpcHBlZF9zeW1ib2xfbG9hZGVkXCI6IHRydWUsIFwidGFyZ2V0XCI6IFwiL3NvdXJjZS9zYW1wbGUucHlcIn1cbiIsInN0ZG91dF9iNjQiOiJleUpqWVc1ZmNtVmhaRjl3Y21sMllYUmxYMkZ1YjI1NWJXOTFjeUk2SUdaaGJITmxMQ0FpWTJGdVgzSmxZV1JmY0hKcGRtRjBaVjl1YjI1ZmIzZHVaWElpT2lCbVlXeHpaU3dnSW1OaGJsOXlaV0ZrWDNCeWFYWmhkR1ZmYjNkdVpYSWlPaUIwY25WbExDQWlZMkZ1WDNKbFlXUmZjSFZpYkdsalgyRnViMjU1Ylc5MWN5STZJSFJ5ZFdVc0lDSmpiR0ZwYlY5d2NtVnpaVzUwSWpvZ1ptRnNjMlVzSUNKamIyNTBjbUZqZEY5eWRXeGxYM0J5WlhObGJuUWlPaUIwY25WbExDQWlhVzF3YkdWdFpXNTBZWFJwYjI1ZmRXNWtaWEpmZEdWemRDSTZJQ0pTUlVGRVRVVXRZMjl1Wm05eWJXRnVkQ0J5WldabGNtVnVZMlVnY0c5c2FXTjVJaXdnSW5Ob2FYQndaV1JmYzJsbmJtRjBkWEpsSWpvZ1d5SnlaWEYxWlhOMFpYSWlMQ0FpYjNkdVpYSWlMQ0FpY0hWaWJHbGpJbDBzSUNKemFHbHdjR1ZrWDNONWJXSnZiRjlzYjJGa1pXUWlPaUIwY25WbExDQWlkR0Z5WjJWMElqb2dJaTl6YjNWeVkyVXZjMkZ0Y0d4bExuQjVJbjBLIiwic3Rkb3V0X2J5dGVzIjozODEsInN0ZG91dF9zaGEyNTYiOiJiYjgwYTdjYzllNWFjNmJlODRkODAyZWI3Zjc4ZmM1NDc3ZmI5Y2NhNTU5YjI3ZDNkZjA5MWRlNjlmNTk2NTQwIiwic3Rkb3V0X3RydW5jYXRlZCI6ZmFsc2UsInRpbWVvdXQiOmZhbHNlfV19Cg==",
+              "stdout_bytes": 1702,
+              "stdout_sha256": "a178e314fdb96719500064119ef23184ff7e5157c7ea71288b12d0c17aed5fb5",
+              "stdout_truncated": false,
+              "timeout": false,
+              "valid": true
+            }
+          ],
+          "status": "success"
+        },
+        "execution_classification": "unproven",
+        "finding_sha256": "f240e25a360951eab2f012aa49f6205614beb9d71aafcba542fc291bdc97be21",
+        "generated_file_digests_sha256": "5804ca8677e68354da89ce709437fd6ef4198ab5c6a10d9fe3281c0f41310c44",
+        "invocation_id": "validation-F-1",
+        "item_id": "F-1",
+        "model_status": "success",
+        "plan_sha256": "9685604aa005592cf9a32dd0218b4b46e355f641773b8c27af121e6e9f45b327",
+        "source_packet_sha256": "ade31a8092b0a242f1dc0a83f9fd32943354e0036fdc24dbc519bd127f2186e8",
+        "status": "success",
+        "validation_packet_sha256": "97c2859c1926b2ddcdd06fa0d52393bc0aaa958935d1b12ec1d02ef49bbe9c37"
+      }
+    }
+  ],
+  "input_sha256": "c1bfb1a131dce9900c10075b3f94842065422b52ba7a8dcc4b226718d2270e83",
+  "schema_version": "review-model-findings/v1"
+}

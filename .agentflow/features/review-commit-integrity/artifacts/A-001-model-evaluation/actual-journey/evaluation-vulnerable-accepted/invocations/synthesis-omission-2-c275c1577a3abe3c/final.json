@@ -1,0 +1,20 @@
+{
+  "citations": [
+    {
+      "end": 5,
+      "evidence_id": "E_SAMPLE",
+      "path": "sample.py",
+      "start": 4
+    },
+    {
+      "end": 1,
+      "evidence_id": "E_CONTRACT",
+      "path": "README.md",
+      "start": 1
+    }
+  ],
+  "disagreement": "Both assessments reach the same verdict (support, useful, valid) and cite the same two frozen ranges, so there is no verdict-level conflict. They differ on severity: one rates it medium, the other high; that gap is unresolved here because no supplied evidence establishes exploitability, call-site exposure, or downstream financial impact, so severity remains contested/unknown rather than settled at either value. They also differ in rigor of justification: one supplies a detailed control narrative (baseline returned -750 with claim_present true; counterexample with the guard inserted raised ValueError with claim_present false), while the other asserts support with no counterexample reasoning at all. I additionally record a discrepancy neither assessment addresses: the executed packet reports execution classification \"unproven\" and controller_source_binding false, so the dynamic runs are not treated here as independent proof despite controls_passed true and both runs matching their expectations. My verdict therefore rests on the frozen source text, not on the harness; the first assessment's inference that the probe was source-bound (from source_bytes 149) is not adopted as proof.",
+  "item_id": "omission-2-c275c1577a3abe3c",
+  "reason": "The claim is an omission that is fully decidable from the supplied frozen source. README.md line 1 (E_CONTRACT) states the contract: \"checkout_total must reject negative quantity with ValueError.\" sample.py lines 4-5 (E_SAMPLE) contain the complete definition — `def checkout_total(price, quantity):` followed by the single statement `return price * quantity` — with no guard, no conditional, and no raise anywhere in the two-line body or the rest of the 5-line file. Because the whole function body is visible in the frozen text, the absence of negative-quantity validation is directly observable rather than inferred, and a negative quantity necessarily produces a negative product instead of a ValueError. This matches the finding's claim and its stated location (sample.py 4-5) exactly. The executed runs are consistent with this (baseline claim_present true / value -750; counterexample with the guard inserted claim_present false, both exit 0, controls_passed true), but since the packet marks the execution classification \"unproven\" and controller_source_binding false, I do not promote those runs to proof; they are corroborating only. The static frozen evidence alone is sufficient and complete for this contract violation, so the verdict is supported. Severity is left unadjudicated between the two assessments, as no supplied evidence bears on impact.",
+  "verdict": "supported"
+}

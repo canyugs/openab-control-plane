@@ -1,0 +1,22 @@
+{
+  "citations": [
+    {
+      "end": 2,
+      "evidence_id": "E_SAMPLE",
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "end": 1,
+      "evidence_id": "E_CONTRACT",
+      "path": "README.md",
+      "start": 1
+    }
+  ],
+  "counterexample": "Witness: can_read(\"mallory\", \"alice\", public=False). The frozen source body is `return public or bool(requester)`, which ignores `owner` entirely; with public=False and a nonempty requester the disjunction evaluates to True, so a non-owner authenticated requester is granted read access to a private document. The README rule permits access only for public documents or a requester equal to owner, so the owner-equality branch is never enforced.\n\nExecuted controls: the baseline probe imported the shipped module from the read-only source mount and called the real can_read, observing can_read_private_non_owner=true, can_read_private_owner=true, can_read_private_anonymous=false, can_read_public_anonymous=true (exit 0). These four observations are exactly the truth table of `public or bool(requester)` and are inconsistent with any owner-checking policy, so the observation is bound to the shipped implementation rather than to the harness. The counterexample run executed the identical four probe inputs against a README-conformant reference policy (public -> allow; else requester and requester == owner) and flipped only the decisive cell to can_read_private_non_owner=false, yielding claim_present=false (exit 0), while still loading the shipped symbol and reporting its signature [\"requester\",\"owner\",\"public\"].\n\nAssessment of the controls: the pair is a genuine differential — the only variable changed between runs is the policy implementation on fixed inputs, and the harness demonstrably reports false when the implementation conforms, so the baseline's true is not print-only, hard-coded, or argv-echoed. Weakness noted: the negation arm's decisive computation is an in-probe reference policy rather than a mutated copy of the source, so it establishes harness sensitivity rather than a source-derived negation; the source-bound half of the distinction rests on the baseline alone. That baseline is nonetheless a direct call into the frozen file whose outputs uniquely match the frozen source text, which is sufficient for a meaningful executed distinction.",
+  "finding_id": "F-1",
+  "severity": "high",
+  "usefulness": "useful",
+  "validation_verdict": "valid",
+  "verdict": "support"
+}

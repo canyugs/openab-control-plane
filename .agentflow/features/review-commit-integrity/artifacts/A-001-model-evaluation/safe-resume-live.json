@@ -1,0 +1,7 @@
+{
+  "file_count": 42,
+  "all_hashes_and_mtimes_unchanged": true,
+  "elapsed_seconds_from_pty": 0.238,
+  "model_or_oci_replay": false,
+  "evidence": "complete prepare branch verifies and returns summary before adapters or executor; PTY exited0; all files unchanged"
+}

@@ -1,0 +1,24 @@
+{
+  "candidates": [
+    {
+      "claim": "Broken access control: can_read returns True for any truthy requester without comparing requester to owner, so any authenticated requester can read a non-public document owned by someone else. The stated contract permits access only for public documents or an authenticated requester equal to owner; the owner parameter is never used in the returned expression.",
+      "end": 2,
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "claim": "checkout_total does not validate quantity: it directly returns price * quantity with no negative-quantity check, so a negative quantity yields a negative total instead of raising ValueError as the contract requires.",
+      "end": 5,
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "path": "sample.py",
+      "start": 4
+    }
+  ]
+}

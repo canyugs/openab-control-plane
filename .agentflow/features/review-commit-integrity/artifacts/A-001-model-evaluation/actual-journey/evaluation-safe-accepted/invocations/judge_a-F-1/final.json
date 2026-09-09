@@ -1,0 +1,22 @@
+{
+  "citations": [
+    {
+      "end": 2,
+      "evidence_id": "E_SAMPLE",
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "end": 1,
+      "evidence_id": "E_CONTRACT",
+      "path": "README.md",
+      "start": 1
+    }
+  ],
+  "counterexample": "The finding asserts can_read grants private-document access to any nonempty requester, but line 2 of sample.py returns `public or (bool(requester) and requester == owner)`: the `bool(requester)` test is ANDed with, not substituted for, the ownership equality check, so a non-owner authenticated requester on a private document evaluates False. This matches the README rule that access is permitted only for public documents or a requester equal to owner.\n\nExecuted controls are source-bound and distinguish the claim from its negation. The baseline probe loads the frozen /source/sample.py via importlib (no re-typed logic) and calls the exact scenario named in the finding, can_read(\"mallory\",\"alice\",public=False) -> false; sanity probes in the same run show can_read(\"alice\",\"alice\",False)=true, can_read(\"\",\"alice\",False)=false, can_read(\"mallory\",\"alice\",True)=true, exit 0, claim_present=false. The counterexample is a positive control that reads the same source bytes, textually mutates only `requester == owner` into `requester is not None` (mutation.applied=true), execs the mutated module, and runs the identical probe: can_read(\"mallory\",\"alice\",public=False) -> true, claim_present=true, exit 0. Because the identical probe fires on genuinely bypassed code and does not fire on the shipped code, the observation is caused by the source under test rather than by hard-coding, printing, or argv echo. F-1 is therefore a false positive: no access-control bypass exists in the supplied code.",
+  "finding_id": "F-1",
+  "severity": "none",
+  "usefulness": "not_useful",
+  "validation_verdict": "valid",
+  "verdict": "refute"
+}

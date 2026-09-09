@@ -1,0 +1,22 @@
+{
+  "citations": [
+    {
+      "end": 2,
+      "evidence_id": "E_SAMPLE",
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "end": 1,
+      "evidence_id": "E_CONTRACT",
+      "path": "README.md",
+      "start": 1
+    }
+  ],
+  "counterexample": "No counterexample needed. The finding is valid: the contract requires `requester == owner` for non-public access, but the implementation uses `bool(requester)` which grants access to any authenticated requester regardless of ownership.",
+  "finding_id": "omission-1-f5201e5feb8fc093",
+  "severity": "high",
+  "usefulness": "useful",
+  "validation_verdict": "valid",
+  "verdict": "support"
+}

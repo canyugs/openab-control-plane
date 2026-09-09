@@ -1,0 +1,308 @@
+{
+  "actual_cost_usd": "unknown",
+  "actual_metadata": {
+    "actual_cost_usd": "unknown",
+    "auxiliary_model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.002783,
+        "inputTokens": 2718,
+        "maxOutputTokens": 32000,
+        "outputTokens": 13,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      }
+    },
+    "cost_basis": [
+      "list"
+    ],
+    "duration_ms": 55443,
+    "estimated_cost_usd": 0.2075335,
+    "init": {
+      "mcp_servers": [],
+      "plugins": [],
+      "skills": [],
+      "subtype": "init",
+      "tools": [
+        "StructuredOutput"
+      ]
+    },
+    "is_error": false,
+    "modelUsage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.002783,
+        "inputTokens": 2718,
+        "maxOutputTokens": 32000,
+        "outputTokens": 13,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 6320,
+        "cacheReadInputTokens": 6111,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costBasis": "list",
+        "costUSD": 0.2047505,
+        "inputTokens": 4,
+        "maxOutputTokens": 64000,
+        "outputTokens": 5539,
+        "provider": "firstParty",
+        "thinkingTokens": 981,
+        "webSearchRequests": 0
+      }
+    },
+    "model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.002783,
+        "inputTokens": 2718,
+        "maxOutputTokens": 32000,
+        "outputTokens": 13,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 6320,
+        "cacheReadInputTokens": 6111,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costBasis": "list",
+        "costUSD": 0.2047505,
+        "inputTokens": 4,
+        "maxOutputTokens": 64000,
+        "outputTokens": 5539,
+        "provider": "firstParty",
+        "thinkingTokens": 981,
+        "webSearchRequests": 0
+      }
+    },
+    "num_turns": 3,
+    "redacted_environment": {
+      "HOME": "/Users/can",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "PATH": "/Users/can/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/pkg/env/global/bin:/Library/Apple/usr/bin:/Users/can/.n/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwi",
+      "TMPDIR": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/"
+    },
+    "session_id": "3294464e-73b8-4e93-8053-88ccb2542aab",
+    "structured_output_attempt_count": 2,
+    "structured_output_attempts": [
+      {
+        "call": {
+          "caller": {
+            "type": "direct"
+          },
+          "id": "toolu_014oRcGynvSWEQTYgrJ8fjYY",
+          "input": {
+            "claim_observed": "Executed against the supplied source at /source/sample.py, the claim is NOT reproduced. The baseline control imports sample.py directly (importlib, no re-typed logic) and probes the exact scenario named in the finding: an authenticated non-owner requester on a private document, can_read(\"mallory\", \"alice\", public=False). The real implementation returns False, because `public or (bool(requester) and requester == owner)` short-circuits on the `requester == owner` equality test, not merely on `bool(requester)`. Sanity probes in the same run confirm the intended contract from README.md: owner-on-private is True, empty/unauthenticated requester on private is False, and public documents are readable by anyone. So baseline prints claim_present=false. The counterexample run is a positive control proving the probe is capable of detecting the alleged bypass: it reads the same /source/sample.py bytes, textually mutates only the ownership comparison `requester == owner` into `requester is not None`, execs the mutated module, and the identical probe then reports the non-owner read as permitted, printing claim_present=true. Since the probe fires on genuinely bypassed code but not on the shipped code, F-1 is a false positive: can_read enforces requester == owner as README requires.",
+            "files": [
+              {
+                "path": "generated/probe_baseline.py",
+                "utf8": "import importlib.util\nimport json\nimport sys\n\nSRC = \"/source/sample.py\"\n\n\ndef load_module(path, name):\n    spec = importlib.util.spec_from_file_location(name, path)\n    mod = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(mod)\n    return mod\n\n\ndef main():\n    mod = load_module(SRC, \"sample_under_test\")\n    can_read = getattr(mod, \"can_read\")\n\n    # The exact scenario asserted by finding F-1:\n    # an authenticated requester who is NOT the owner, private document.\n    non_owner_private = bool(can_read(\"mallory\", \"alice\", False))\n\n    # Contract sanity probes from README.md.\n    owner_private = bool(can_read(\"alice\", \"alice\", False))\n    anonymous_private = bool(can_read(\"\", \"alice\", False))\n    anyone_public = bool(can_read(\"mallory\", \"alice\", True))\n\n    claim_present = non_owner_private\n\n    out = {\n        \"claim_present\": claim_present,\n        \"control\": \"baseline_unmodified_source\",\n        \"source_path\": SRC,\n        \"probes\": {\n            \"can_read('mallory','alice',public=False)\": non_owner_private,\n            \"can_read('alice','alice',public=False)\": owner_private,\n            \"can_read('','alice',public=False)\": anonymous_private,\n            \"can_read('mallory','alice',public=True)\": anyone_public,\n        },\n        \"detail\": (\n            \"claim_present is true only if a non-owner authenticated requester \"\n            \"can read a private document\"\n        ),\n    }\n    json.dump(out, sys.stdout)\n    sys.stdout.write(\"\\n\")\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+              },
+              {
+                "path": "generated/probe_mutated_positive_control.py",
+                "utf8": "import json\nimport sys\nimport types\n\nSRC = \"/source/sample.py\"\n\nORIGINAL_GUARD = \"requester == owner\"\nBYPASSED_GUARD = \"requester is not None\"\n\n\ndef main():\n    with open(SRC, \"r\", encoding=\"utf-8\") as fh:\n        source_text = fh.read()\n\n    guard_found = ORIGINAL_GUARD in source_text\n    mutated_text = source_text.replace(ORIGINAL_GUARD, BYPASSED_GUARD, 1)\n    mutation_applied = guard_found and mutated_text != source_text\n\n    mod = types.ModuleType(\"sample_bypassed_variant\")\n    mod.__file__ = SRC\n    exec(compile(mutated_text, \"<sample_bypassed_variant>\", \"exec\"), mod.__dict__)\n    can_read = mod.__dict__[\"can_read\"]\n\n    # Same probe as the baseline control, run against the bypassed variant.\n    non_owner_private = bool(can_read(\"mallory\", \"alice\", False))\n    owner_private = bool(can_read(\"alice\", \"alice\", False))\n\n    claim_present = bool(mutation_applied and non_owner_private)\n\n    out = {\n        \"claim_present\": claim_present,\n        \"control\": \"positive_control_mutated_ownership_check\",\n        \"source_path\": SRC,\n        \"mutation\": {\n            \"applied\": mutation_applied,\n            \"from\": ORIGINAL_GUARD,\n            \"to\": BYPASSED_GUARD,\n        },\n        \"probes\": {\n            \"can_read('mallory','alice',public=False)\": non_owner_private,\n            \"can_read('alice','alice',public=False)\": owner_private,\n        },\n        \"detail\": (\n            \"demonstrates the probe reports claim_present=true when the \"\n            \"ownership equality check is genuinely absent\"\n        ),\n    }\n    json.dump(out, sys.stdout)\n    sys.stdout.write(\"\\n\")\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+              }
+            ],
+            "item_id": "F-1",
+            "path": "generated/probe_baseline.py",
+            "runs": [
+              {
+                "argv": [
+                  "python3",
+                  "generated/probe_baseline.py"
+                ],
+                "cwd": "/work",
+                "evidence_ids": [
+                  "E_SAMPLE",
+                  "E_CONTRACT"
+                ],
+                "expect": {
+                  "exit": 0,
+                  "observation": {
+                    "claim_present": false
+                  }
+                },
+                "name": "baseline"
+              },
+              {
+                "argv": [
+                  "python3",
+                  "generated/probe_mutated_positive_control.py"
+                ],
+                "cwd": "/work",
+                "evidence_ids": [
+                  "E_SAMPLE",
+                  "E_CONTRACT"
+                ],
+                "expect": {
+                  "exit": 0,
+                  "observation": {
+                    "claim_present": true
+                  }
+                },
+                "name": "counterexample"
+              }
+            ]
+          },
+          "name": "StructuredOutput",
+          "type": "tool_use"
+        },
+        "call_event_index": 13,
+        "id": "toolu_014oRcGynvSWEQTYgrJ8fjYY",
+        "result": {
+          "content": "Output does not match required schema: root: must NOT have additional properties ('path' is not allowed)",
+          "is_error": true,
+          "tool_use_id": "toolu_014oRcGynvSWEQTYgrJ8fjYY",
+          "type": "tool_result"
+        },
+        "result_event_index": 14,
+        "status": "error",
+        "tool_use_result": "Error: Output does not match required schema: root: must NOT have additional properties ('path' is not allowed)"
+      },
+      {
+        "call": {
+          "caller": {
+            "type": "direct"
+          },
+          "id": "toolu_01G1VdwAYpGNbbexm3M5nDn4",
+          "input": {
+            "claim_observed": "Executed against the supplied source at /source/sample.py, the claim is NOT reproduced. The baseline control imports sample.py directly (importlib, no re-typed logic) and probes the exact scenario named in the finding: an authenticated non-owner requester on a private document, can_read(\"mallory\", \"alice\", public=False). The real implementation returns False, because `public or (bool(requester) and requester == owner)` is gated by the `requester == owner` equality test, not merely by `bool(requester)`. Sanity probes in the same run confirm the README contract: owner-on-private is True, empty/unauthenticated requester on private is False, and public documents are readable by anyone. Baseline therefore prints claim_present=false. The counterexample is a positive control proving the probe can detect the alleged bypass: it reads the same /source/sample.py bytes, textually mutates only the ownership comparison `requester == owner` into `requester is not None`, execs the mutated module, and the identical probe then reports the non-owner private read as permitted, printing claim_present=true. Because the probe fires on genuinely bypassed code but not on the shipped code, F-1 is a false positive: can_read enforces requester == owner exactly as README.md requires.",
+            "files": [
+              {
+                "path": "generated/probe_baseline.py",
+                "utf8": "import importlib.util\nimport json\nimport sys\n\nSRC = \"/source/sample.py\"\n\n\ndef load_module(path, name):\n    spec = importlib.util.spec_from_file_location(name, path)\n    mod = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(mod)\n    return mod\n\n\ndef main():\n    mod = load_module(SRC, \"sample_under_test\")\n    can_read = getattr(mod, \"can_read\")\n\n    # The exact scenario asserted by finding F-1:\n    # an authenticated requester who is NOT the owner, private document.\n    non_owner_private = bool(can_read(\"mallory\", \"alice\", False))\n\n    # Contract sanity probes from README.md.\n    owner_private = bool(can_read(\"alice\", \"alice\", False))\n    anonymous_private = bool(can_read(\"\", \"alice\", False))\n    anyone_public = bool(can_read(\"mallory\", \"alice\", True))\n\n    claim_present = non_owner_private\n\n    out = {\n        \"claim_present\": claim_present,\n        \"control\": \"baseline_unmodified_source\",\n        \"source_path\": SRC,\n        \"probes\": {\n            \"can_read('mallory','alice',public=False)\": non_owner_private,\n            \"can_read('alice','alice',public=False)\": owner_private,\n            \"can_read('','alice',public=False)\": anonymous_private,\n            \"can_read('mallory','alice',public=True)\": anyone_public,\n        },\n        \"detail\": (\n            \"claim_present is true only if a non-owner authenticated requester \"\n            \"can read a private document\"\n        ),\n    }\n    json.dump(out, sys.stdout)\n    sys.stdout.write(\"\\n\")\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+              },
+              {
+                "path": "generated/probe_mutated_positive_control.py",
+                "utf8": "import json\nimport sys\nimport types\n\nSRC = \"/source/sample.py\"\n\nORIGINAL_GUARD = \"requester == owner\"\nBYPASSED_GUARD = \"requester is not None\"\n\n\ndef main():\n    with open(SRC, \"r\", encoding=\"utf-8\") as fh:\n        source_text = fh.read()\n\n    guard_found = ORIGINAL_GUARD in source_text\n    mutated_text = source_text.replace(ORIGINAL_GUARD, BYPASSED_GUARD, 1)\n    mutation_applied = guard_found and mutated_text != source_text\n\n    mod = types.ModuleType(\"sample_bypassed_variant\")\n    mod.__file__ = SRC\n    exec(compile(mutated_text, \"<sample_bypassed_variant>\", \"exec\"), mod.__dict__)\n    can_read = mod.__dict__[\"can_read\"]\n\n    # Same probe as the baseline control, run against the bypassed variant.\n    non_owner_private = bool(can_read(\"mallory\", \"alice\", False))\n    owner_private = bool(can_read(\"alice\", \"alice\", False))\n\n    claim_present = bool(mutation_applied and non_owner_private)\n\n    out = {\n        \"claim_present\": claim_present,\n        \"control\": \"positive_control_mutated_ownership_check\",\n        \"source_path\": SRC,\n        \"mutation\": {\n            \"applied\": mutation_applied,\n            \"from\": ORIGINAL_GUARD,\n            \"to\": BYPASSED_GUARD,\n        },\n        \"probes\": {\n            \"can_read('mallory','alice',public=False)\": non_owner_private,\n            \"can_read('alice','alice',public=False)\": owner_private,\n        },\n        \"detail\": (\n            \"demonstrates the probe reports claim_present=true when the \"\n            \"ownership equality check is genuinely absent\"\n        ),\n    }\n    json.dump(out, sys.stdout)\n    sys.stdout.write(\"\\n\")\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+              }
+            ],
+            "item_id": "F-1",
+            "runs": [
+              {
+                "argv": [
+                  "python3",
+                  "generated/probe_baseline.py"
+                ],
+                "cwd": "/work",
+                "evidence_ids": [
+                  "E_SAMPLE",
+                  "E_CONTRACT"
+                ],
+                "expect": {
+                  "exit": 0,
+                  "observation": {
+                    "claim_present": false
+                  }
+                },
+                "name": "baseline"
+              },
+              {
+                "argv": [
+                  "python3",
+                  "generated/probe_mutated_positive_control.py"
+                ],
+                "cwd": "/work",
+                "evidence_ids": [
+                  "E_SAMPLE",
+                  "E_CONTRACT"
+                ],
+                "expect": {
+                  "exit": 0,
+                  "observation": {
+                    "claim_present": true
+                  }
+                },
+                "name": "counterexample"
+              }
+            ]
+          },
+          "name": "StructuredOutput",
+          "type": "tool_use"
+        },
+        "call_event_index": 16,
+        "id": "toolu_01G1VdwAYpGNbbexm3M5nDn4",
+        "result": {
+          "content": "Structured output provided successfully",
+          "tool_use_id": "toolu_01G1VdwAYpGNbbexm3M5nDn4",
+          "type": "tool_result"
+        },
+        "result_event_index": 17,
+        "status": "success",
+        "tool_use_result": "Structured output provided successfully"
+      }
+    ],
+    "subtype": "success",
+    "total_cost_usd": 0.2075335,
+    "transport_observed_model_ids": [
+      "claude-opus-5"
+    ],
+    "type": "result",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 6320,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 6320,
+      "cache_read_input_tokens": 6111,
+      "inference_geo": "not_available",
+      "input_tokens": 4,
+      "iterations": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 3337,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 3337,
+          "cache_read_input_tokens": 4547,
+          "input_tokens": 2,
+          "output_tokens": 2285,
+          "type": "message"
+        }
+      ],
+      "output_tokens": 5539,
+      "output_tokens_details": {
+        "thinking_tokens": 981
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    }
+  },
+  "argv_sha256": "131b82331007ec7126918303102672f10315d0bc758bf4b4ba4158f971bf6dad",
+  "artifact_invocation_id": "validation-F-1",
+  "attempts": 2,
+  "capture_status": "success",
+  "failure_class": null,
+  "final_sha256": "c4dff68ed74ff592c3b98433c19da7e387eb0cba863fb427afde7714a242e0ca",
+  "invocation_id": "validation-F-1",
+  "observed_model_id": "claude-opus-5",
+  "packet_artifact_sha256": "6b55b905e766f1c346e0abaabd568917f34b11c1355e6498344b52a7b268e6b1",
+  "packet_sha256": "f01a7bd8e24a0ae197d7be4efe3f965eed4b1a3836756c346a9c35dde25f7d9d",
+  "requested_model_id": "claude-opus-5",
+  "status": "success",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_sha256": "1c6c459f6df6c8d2821931705395ae8e16f28a2fb41e137c47682c5c463e00fe"
+}

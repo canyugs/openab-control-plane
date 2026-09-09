@@ -1,0 +1,22 @@
+{
+  "citations": [
+    {
+      "end": 2,
+      "evidence_id": "E_SAMPLE",
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "end": 1,
+      "evidence_id": "E_CONTRACT",
+      "path": "README.md",
+      "start": 1
+    }
+  ],
+  "counterexample": "Executed controls are source-bound and distinguish the claim from its negation. Baseline loaded the frozen sample.py via importlib from the read-only mounted source (no hard-coded behavior, no argv echo) and called the real can_read: cross_tenant_private_read=true, owner_private_read=true, public_read=true, anonymous_private_read=false, exit 0, claim_present=true. The counterexample read the same source text, confirmed patch_applied=true after substituting only the single returned expression `public or bool(requester)` with an owner-comparing expression, then ran the identical detector: cross_tenant_private_read flipped to false while owner_private_read and public_read remained true, giving claim_present=false, exit 0. The only difference between runs is the missing `requester == owner` comparison in sample.py lines 1-2, so the flip isolates that omission as the cause rather than any harness artifact. Concrete attack: can_read(\"alice\", \"bob\", False) returns True, granting an authenticated non-owner read access to bob's non-public document, contrary to the README contract that permits access only for public documents or an authenticated requester equal to owner.",
+  "finding_id": "omission-1-f5201e5feb8fc093",
+  "severity": "high",
+  "usefulness": "useful",
+  "validation_verdict": "valid",
+  "verdict": "support"
+}

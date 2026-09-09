@@ -1,0 +1,202 @@
+{
+  "actual_cost_usd": "unknown",
+  "actual_metadata": {
+    "actual_cost_usd": "unknown",
+    "auxiliary_model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.013471,
+        "inputTokens": 13406,
+        "maxOutputTokens": 32000,
+        "outputTokens": 13,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      }
+    },
+    "cost_basis": [
+      "list"
+    ],
+    "duration_ms": 18928,
+    "estimated_cost_usd": 0.20740050000000002,
+    "init": {
+      "mcp_servers": [],
+      "plugins": [],
+      "skills": [],
+      "subtype": "init",
+      "tools": [
+        "StructuredOutput"
+      ]
+    },
+    "is_error": false,
+    "modelUsage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.013471,
+        "inputTokens": 13406,
+        "maxOutputTokens": 32000,
+        "outputTokens": 13,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 15971,
+        "cacheReadInputTokens": 1069,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costBasis": "list",
+        "costUSD": 0.1939295,
+        "inputTokens": 2,
+        "maxOutputTokens": 64000,
+        "outputTokens": 1347,
+        "provider": "firstParty",
+        "thinkingTokens": 411,
+        "webSearchRequests": 0
+      }
+    },
+    "model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.013471,
+        "inputTokens": 13406,
+        "maxOutputTokens": 32000,
+        "outputTokens": 13,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 15971,
+        "cacheReadInputTokens": 1069,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costBasis": "list",
+        "costUSD": 0.1939295,
+        "inputTokens": 2,
+        "maxOutputTokens": 64000,
+        "outputTokens": 1347,
+        "provider": "firstParty",
+        "thinkingTokens": 411,
+        "webSearchRequests": 0
+      }
+    },
+    "num_turns": 2,
+    "redacted_environment": {
+      "HOME": "/Users/can",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "PATH": "/Users/can/.n/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex-path:/Users/can/.codex/tmp/arg0/codex-arg0p190Uu:/Users/can/.grok/bin:/opt/homebrew/share/google-cloud-sdk/bin:/Users/can/.local/bin:/Users/can/.n/bin:/Users/can/.bun/bin:/Users/can/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.a",
+      "TMPDIR": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/"
+    },
+    "session_id": "7ffd5d3a-2768-4695-bddf-35c6760f9259",
+    "structured_output_attempt_count": 1,
+    "structured_output_attempts": [
+      {
+        "call": {
+          "caller": {
+            "type": "direct"
+          },
+          "id": "toolu_01J2NoHPD28k6gUz7Ps8r62m",
+          "input": {
+            "citations": [
+              {
+                "end": 2,
+                "evidence_id": "E_SAMPLE",
+                "path": "sample.py",
+                "start": 1
+              },
+              {
+                "end": 1,
+                "evidence_id": "E_CONTRACT",
+                "path": "README.md",
+                "start": 1
+              }
+            ],
+            "disagreement": "Both assessments reach the same verdict (support, high severity, useful), so there is no substantive conflict on the outcome. They differ only in rigor of justification: one supplies an explicit witness input, a truth-table argument tying the observed outputs to the frozen source body, and an explicit caveat that the negation arm exercises an in-probe reference policy rather than a mutated copy of the shipped source (so the executed pair proves harness sensitivity, and only the baseline is source-bound). The other offers no counterexample or control analysis at all, asserting validity without reasoning. I preserve the first assessment's caveat and note that the executed-evidence packet itself reports execution_classification \"unproven\" and controller_source_binding false; I therefore do not rest the verdict on the executed differential, and treat the run outputs only as corroboration of a conclusion that the frozen source text establishes on its own.",
+            "item_id": "F-1",
+            "reason": "The frozen source range sample.py:1-2 reads `def can_read(requester, owner, public=False): return public or bool(requester)`. The `owner` parameter is never referenced in the body, so for public=False the result is `bool(requester)` — any nonempty requester is granted access regardless of ownership. The frozen contract at README.md:1 states can_read \"permits access only for public documents or an authenticated requester equal to owner.\" The witness can_read(\"mallory\",\"alice\",public=False) returns True under the shipped code but must be denied under the stated rule, which is a direct contradiction derivable from the two supplied evidence ranges without any execution. The executed baseline is consistent with this (can_read_private_non_owner=true, private_owner=true, private_anonymous=false, public_anonymous=true, exit 0), matching exactly the truth table of `public or bool(requester)`; the counterexample run flips only the decisive cell to false under a README-conformant policy on identical inputs. I weight that pair as corroborating only, since the negation arm substitutes an in-probe reference policy rather than mutating the shipped source and the packet marks the execution \"unproven\" with controller_source_binding false. No control failed and nothing is promoted beyond what the static evidence proves. Severity high is consistent with a private-document read bypass on the documented access rule.",
+            "verdict": "supported"
+          },
+          "name": "StructuredOutput",
+          "type": "tool_use"
+        },
+        "call_event_index": 8,
+        "id": "toolu_01J2NoHPD28k6gUz7Ps8r62m",
+        "result": {
+          "content": "Structured output provided successfully",
+          "tool_use_id": "toolu_01J2NoHPD28k6gUz7Ps8r62m",
+          "type": "tool_result"
+        },
+        "result_event_index": 9,
+        "status": "success",
+        "tool_use_result": "Structured output provided successfully"
+      }
+    ],
+    "subtype": "success",
+    "total_cost_usd": 0.20740050000000002,
+    "transport_observed_model_ids": [
+      "claude-opus-5"
+    ],
+    "type": "result",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 15971,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 15971,
+      "cache_read_input_tokens": 1069,
+      "inference_geo": "not_available",
+      "input_tokens": 2,
+      "iterations": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 15971,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 15971,
+          "cache_read_input_tokens": 1069,
+          "input_tokens": 2,
+          "output_tokens": 1347,
+          "type": "message"
+        }
+      ],
+      "output_tokens": 1347,
+      "output_tokens_details": {
+        "thinking_tokens": 411
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    }
+  },
+  "argv_sha256": "ef92a60d30e8e86c70ca2951e3416cc947473d8b091f2fc06f6b81400702da39",
+  "artifact_invocation_id": "synthesis-F-1",
+  "attempts": 1,
+  "capture_status": "success",
+  "failure_class": null,
+  "final_sha256": "bf121d5c07863334060ece8518ed4f57706b8cae3314b7fec36160317d5d4c24",
+  "invocation_id": "synthesis-F-1",
+  "observed_model_id": "claude-opus-5",
+  "packet_artifact_sha256": "a3d4a737716f97fca53422df5c606e85d15c114055c7cffab284f9c0ed91eef8",
+  "packet_sha256": "6c61680557a9510cb192020766cd530e9a004a39d11dcec3a2a65950ef8c3b8e",
+  "requested_model_id": "claude-opus-5",
+  "status": "success",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_sha256": "55f6859ac6f165201c25631fd3ee0f3bcdecc556203df0a4a641b31d2db6906a"
+}

@@ -1,0 +1,228 @@
+{
+  "actual_cost_usd": "unknown",
+  "actual_metadata": {
+    "actual_cost_usd": "unknown",
+    "auxiliary_model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.011847,
+        "inputTokens": 11777,
+        "maxOutputTokens": 32000,
+        "outputTokens": 14,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      }
+    },
+    "cost_basis": [
+      "list"
+    ],
+    "duration_ms": 20591,
+    "estimated_cost_usd": 0.2142345,
+    "init": {
+      "mcp_servers": [],
+      "plugins": [],
+      "skills": [],
+      "subtype": "init",
+      "tools": [
+        "StructuredOutput"
+      ]
+    },
+    "is_error": false,
+    "modelUsage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.011847,
+        "inputTokens": 11777,
+        "maxOutputTokens": 32000,
+        "outputTokens": 14,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 15284,
+        "cacheReadInputTokens": 16705,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costBasis": "list",
+        "costUSD": 0.2023875,
+        "inputTokens": 4,
+        "maxOutputTokens": 64000,
+        "outputTokens": 1647,
+        "provider": "firstParty",
+        "thinkingTokens": 493,
+        "webSearchRequests": 0
+      }
+    },
+    "model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.011847,
+        "inputTokens": 11777,
+        "maxOutputTokens": 32000,
+        "outputTokens": 14,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 15284,
+        "cacheReadInputTokens": 16705,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costBasis": "list",
+        "costUSD": 0.2023875,
+        "inputTokens": 4,
+        "maxOutputTokens": 64000,
+        "outputTokens": 1647,
+        "provider": "firstParty",
+        "thinkingTokens": 493,
+        "webSearchRequests": 0
+      }
+    },
+    "num_turns": 3,
+    "redacted_environment": {
+      "HOME": "/Users/can",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "PATH": "/Users/can/.n/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex-path:/Users/can/.codex/tmp/arg0/codex-arg0p190Uu:/Users/can/.grok/bin:/opt/homebrew/share/google-cloud-sdk/bin:/Users/can/.local/bin:/Users/can/.n/bin:/Users/can/.bun/bin:/Users/can/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.a",
+      "TMPDIR": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/"
+    },
+    "session_id": "cff9b0a2-cd0a-43f9-ab63-f1188d90b6f8",
+    "structured_output_attempt_count": 2,
+    "structured_output_attempts": [
+      {
+        "call": {
+          "caller": {
+            "type": "direct"
+          },
+          "id": "toolu_01MY24zdvp7njHbB7fv1dUys",
+          "input": {
+            "properties": "{\"finding_id\":\"omission-2-c275c1577a3abe3c\",\"verdict\":\"support\",\"severity\":\"medium\",\"usefulness\":\"useful\",\"citations\":[{\"path\":\"sample.py\",\"start\":4,\"end\":5,\"evidence_id\":\"E_SAMPLE\"},{\"path\":\"README.md\",\"start\":1,\"end\":1,\"evidence_id\":\"E_CONTRACT\"}],\"counterexample\":\"Frozen source (sample.py lines 4-5) defines checkout_total as a bare `return price * quantity` with no guard, while the contract (README.md line 1) requires rejecting negative quantity with ValueError. Executed controls are source-bound and discriminating: the baseline probe read the real source file at runtime (reported source_bytes 149, matching the frozen sample.py size) and called checkout_total(250, -3), which returned -750 (exit 0, claim_present true) instead of raising. The counterexample applied the identical probe to the same source text with only the contract guard inserted (patch_applied true); there the same call raised ValueError('quantity must not be negative') and claim_present was false (exit 0). Because the sole difference between the two runs is the presence of the negative-quantity check, the harness is not print-only, hard-coded, or always-true: it flips outcome with the source behavior, establishing that the unmodified code lacks validation. The negation ('checkout_total does validate quantity') is directly falsified by the baseline return value of -750.\",\"validation_verdict\":\"valid\"}"
+          },
+          "name": "StructuredOutput",
+          "type": "tool_use"
+        },
+        "call_event_index": 9,
+        "id": "toolu_01MY24zdvp7njHbB7fv1dUys",
+        "result": {
+          "content": "Output does not match required schema: root: must have required property 'finding_id', root: must have required property 'verdict', root: must have required property 'severity', root: must have required property 'usefulness', root: must have required property 'citations', root: must have required property 'counterexample', root: must have required property 'validation_verdict', root: must NOT have additional properties ('properties' is not allowed)",
+          "is_error": true,
+          "tool_use_id": "toolu_01MY24zdvp7njHbB7fv1dUys",
+          "type": "tool_result"
+        },
+        "result_event_index": 10,
+        "status": "error",
+        "tool_use_result": "Error: Output does not match required schema: root: must have required property 'finding_id', root: must have required property 'verdict', root: must have required property 'severity', root: must have required property 'usefulness', root: must have required property 'citations', root: must have required property 'counterexample', root: must have required property 'validation_verdict', root: must NOT have additional properties ('properties' is not allowed)"
+      },
+      {
+        "call": {
+          "caller": {
+            "type": "direct"
+          },
+          "id": "toolu_019uXhhEGDvLh17KGTbCehVL",
+          "input": {
+            "citations": [
+              {
+                "end": 5,
+                "evidence_id": "E_SAMPLE",
+                "path": "sample.py",
+                "start": 4
+              },
+              {
+                "end": 1,
+                "evidence_id": "E_CONTRACT",
+                "path": "README.md",
+                "start": 1
+              }
+            ],
+            "counterexample": "Frozen source (sample.py lines 4-5) defines checkout_total as a bare `return price * quantity` with no guard, while the contract (README.md line 1) requires rejecting negative quantity with ValueError. The executed controls are source-bound and discriminating: the baseline probe read the real source file at runtime (reported source_bytes 149, matching the frozen sample.py size), executed it, and called checkout_total(250, -3), which returned -750 (exit 0, claim_present true) instead of raising. The counterexample applied the identical probe to the same source text with only the contract guard inserted (patch_applied true); there the same call raised ValueError('quantity must not be negative') and claim_present was false (exit 0). Since the only difference between runs is the presence of the negative-quantity check, the harness is not print-only, hard-coded, argv-echoing, or always-true: its outcome flips with source behavior. The negation of the claim (\"checkout_total validates quantity\") is directly falsified by the baseline return value of -750.",
+            "finding_id": "omission-2-c275c1577a3abe3c",
+            "severity": "medium",
+            "usefulness": "useful",
+            "validation_verdict": "valid",
+            "verdict": "support"
+          },
+          "name": "StructuredOutput",
+          "type": "tool_use"
+        },
+        "call_event_index": 11,
+        "id": "toolu_019uXhhEGDvLh17KGTbCehVL",
+        "result": {
+          "content": "Structured output provided successfully",
+          "tool_use_id": "toolu_019uXhhEGDvLh17KGTbCehVL",
+          "type": "tool_result"
+        },
+        "result_event_index": 12,
+        "status": "success",
+        "tool_use_result": "Structured output provided successfully"
+      }
+    ],
+    "subtype": "success",
+    "total_cost_usd": 0.2142345,
+    "transport_observed_model_ids": [
+      "claude-opus-5"
+    ],
+    "type": "result",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 15284,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 15284,
+      "cache_read_input_tokens": 16705,
+      "inference_geo": "not_available",
+      "input_tokens": 4,
+      "iterations": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 1183,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 1183,
+          "cache_read_input_tokens": 15403,
+          "input_tokens": 2,
+          "output_tokens": 618,
+          "type": "message"
+        }
+      ],
+      "output_tokens": 1647,
+      "output_tokens_details": {
+        "thinking_tokens": 493
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    }
+  },
+  "argv_sha256": "404fe9c214fa75a50fedb99ffa4662a849618e2cef520fcd9891fe0938c41c27",
+  "artifact_invocation_id": "judge_a-omission-2-c275c1577a3abe3c",
+  "attempts": 2,
+  "capture_status": "success",
+  "failure_class": null,
+  "final_sha256": "79a1932daead5ab027eb26eef2441d4e48893d43ee04989f01fbb066f4fb1e62",
+  "invocation_id": "judge_a-omission-2-c275c1577a3abe3c",
+  "observed_model_id": "claude-opus-5",
+  "packet_artifact_sha256": "ed601b39394f507dac13f5b4b24fdd4cc33700c96931203c0a59e460439dac55",
+  "packet_sha256": "e23cf7cf540c9664427f8492482673c3b1f95910c98a005539cd7590cd61bd61",
+  "requested_model_id": "claude-opus-5",
+  "status": "success",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_sha256": "bcff73d0ab5086510573b4f16eb8f7d2b3535cf300b2c8b3c024dddbaaa22eb7"
+}

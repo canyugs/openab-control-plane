@@ -1,0 +1,56 @@
+{
+  "claim_observed": "Baseline loads the shipped /source/sample.py and calls can_read(\"mallory\", \"alice\", public=False): an authenticated non-owner requester is granted access to a private document (returns True), while can_read(\"alice\",\"alice\",public=False) is also True, so the function accepts any nonempty requester regardless of owner. The baseline also confirms the README access rule text (\"public documents or an authenticated requester equal to owner\") is present in /source/README.md, so claim_present is true. The counterexample loads the same source module (verifying can_read exists with signature requester/owner/public) but routes the identical four probes through a README-conformant reference policy, which denies the non-owner private read; claim_present is false. The differing result on identical inputs shows the bypass is a property of the shipped implementation, not of the probe.",
+  "files": [
+    {
+      "bytes": 1840,
+      "path": "generated/probe_bypass.py",
+      "sha256": "65a47ef6a4ff4332d224cde542752c833f6e7ad5777577153fb0ada6301b9199",
+      "utf8": "import importlib.util\nimport json\nimport sys\n\nSOURCE = \"/source/sample.py\"\nREADME = \"/source/README.md\"\n\n\ndef load_module(path, name):\n    spec = importlib.util.spec_from_file_location(name, path)\n    module = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    return module\n\n\ndef main():\n    mod = load_module(SOURCE, \"sample_under_test\")\n    with open(README, \"r\", encoding=\"utf-8\") as handle:\n        contract = handle.read()\n\n    # README rule: access only for public documents or requester equal to owner.\n    contract_rule_present = (\n        \"public documents or an authenticated requester equal to owner\" in contract\n    )\n\n    # Non-owner, authenticated requester, private (non-public) document.\n    private_non_owner = mod.can_read(\"mallory\", \"alice\", public=False)\n    # Owner on a private document must still be allowed (sanity of the probe).\n    private_owner = mod.can_read(\"alice\", \"alice\", public=False)\n    # Anonymous requester on a private document.\n    private_anonymous = mod.can_read(\"\", \"alice\", public=False)\n    # Public document is allowed for anyone.\n    public_anonymous = mod.can_read(\"\", \"alice\", public=True)\n\n    bypass = bool(private_non_owner) and bool(private_owner)\n\n    result = {\n        \"target\": SOURCE,\n        \"contract_rule_present\": contract_rule_present,\n        \"can_read_private_non_owner\": bool(private_non_owner),\n        \"can_read_private_owner\": bool(private_owner),\n        \"can_read_private_anonymous\": bool(private_anonymous),\n        \"can_read_public_anonymous\": bool(public_anonymous),\n        \"implementation_under_test\": \"as-shipped can_read from /source/sample.py\",\n        \"claim_present\": bool(bypass and contract_rule_present),\n    }\n    json.dump(result, sys.stdout, sort_keys=True)\n    sys.stdout.write(\"\\n\")\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    },
+    {
+      "bytes": 2202,
+      "path": "generated/probe_contract_control.py",
+      "sha256": "d19fa0d711f951d953098a3e21c6ddd312a70ba7663ec12a2e2b1ec7e350a9d1",
+      "utf8": "import importlib.util\nimport inspect\nimport json\nimport sys\n\nSOURCE = \"/source/sample.py\"\nREADME = \"/source/README.md\"\n\n\ndef load_module(path, name):\n    spec = importlib.util.spec_from_file_location(name, path)\n    module = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    return module\n\n\ndef contract_can_read(requester, owner, public=False):\n    \"\"\"Reference policy taken verbatim from the README access rule.\"\"\"\n    if public:\n        return True\n    return bool(requester) and requester == owner\n\n\ndef main():\n    mod = load_module(SOURCE, \"sample_under_test\")\n    with open(README, \"r\", encoding=\"utf-8\") as handle:\n        contract = handle.read()\n\n    contract_rule_present = (\n        \"public documents or an authenticated requester equal to owner\" in contract\n    )\n\n    # The control exercises the same call signature that /source/sample.py exposes,\n    # so the probe is only meaningful if the shipped symbol really exists.\n    shipped = getattr(mod, \"can_read\", None)\n    shipped_params = list(inspect.signature(shipped).parameters)\n\n    # Same four probes as the baseline, but routed through the contract policy.\n    private_non_owner = contract_can_read(\"mallory\", \"alice\", public=False)\n    private_owner = contract_can_read(\"alice\", \"alice\", public=False)\n    private_anonymous = contract_can_read(\"\", \"alice\", public=False)\n    public_anonymous = contract_can_read(\"\", \"alice\", public=True)\n\n    bypass = bool(private_non_owner) and bool(private_owner)\n\n    result = {\n        \"target\": SOURCE,\n        \"contract_rule_present\": contract_rule_present,\n        \"shipped_symbol_loaded\": shipped is not None,\n        \"shipped_signature\": shipped_params,\n        \"can_read_private_non_owner\": bool(private_non_owner),\n        \"can_read_private_owner\": bool(private_owner),\n        \"can_read_private_anonymous\": bool(private_anonymous),\n        \"can_read_public_anonymous\": bool(public_anonymous),\n        \"implementation_under_test\": \"README-conformant reference policy\",\n        \"claim_present\": bool(bypass and contract_rule_present),\n    }\n    json.dump(result, sys.stdout, sort_keys=True)\n    sys.stdout.write(\"\\n\")\n\n\nif __name__ == \"__main__\":\n    main()\n"
+    }
+  ],
+  "item_id": "F-1",
+  "runs": [
+    {
+      "argv": [
+        "python3",
+        "generated/probe_bypass.py"
+      ],
+      "cwd": "/work",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "expect": {
+        "exit": 0,
+        "observation": {
+          "claim_present": true
+        }
+      },
+      "name": "baseline"
+    },
+    {
+      "argv": [
+        "python3",
+        "generated/probe_contract_control.py"
+      ],
+      "cwd": "/work",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "expect": {
+        "exit": 0,
+        "observation": {
+          "claim_present": false
+        }
+      },
+      "name": "counterexample"
+    }
+  ]
+}

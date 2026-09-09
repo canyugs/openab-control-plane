@@ -1,0 +1,202 @@
+{
+  "actual_cost_usd": "unknown",
+  "actual_metadata": {
+    "actual_cost_usd": "unknown",
+    "auxiliary_model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.012209000000000001,
+        "inputTokens": 12139,
+        "maxOutputTokens": 32000,
+        "outputTokens": 14,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      }
+    },
+    "cost_basis": [
+      "list"
+    ],
+    "duration_ms": 21917,
+    "estimated_cost_usd": 0.19860350000000002,
+    "init": {
+      "mcp_servers": [],
+      "plugins": [],
+      "skills": [],
+      "subtype": "init",
+      "tools": [
+        "StructuredOutput"
+      ]
+    },
+    "is_error": false,
+    "modelUsage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.012209000000000001,
+        "inputTokens": 12139,
+        "maxOutputTokens": 32000,
+        "outputTokens": 14,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 14615,
+        "cacheReadInputTokens": 1069,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costBasis": "list",
+        "costUSD": 0.18639450000000002,
+        "inputTokens": 2,
+        "maxOutputTokens": 64000,
+        "outputTokens": 1588,
+        "provider": "firstParty",
+        "thinkingTokens": 578,
+        "webSearchRequests": 0
+      }
+    },
+    "model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.012209000000000001,
+        "inputTokens": 12139,
+        "maxOutputTokens": 32000,
+        "outputTokens": 14,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 14615,
+        "cacheReadInputTokens": 1069,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costBasis": "list",
+        "costUSD": 0.18639450000000002,
+        "inputTokens": 2,
+        "maxOutputTokens": 64000,
+        "outputTokens": 1588,
+        "provider": "firstParty",
+        "thinkingTokens": 578,
+        "webSearchRequests": 0
+      }
+    },
+    "num_turns": 2,
+    "redacted_environment": {
+      "HOME": "/Users/can",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "PATH": "/Users/can/.n/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex-path:/Users/can/.codex/tmp/arg0/codex-arg0p190Uu:/Users/can/.grok/bin:/opt/homebrew/share/google-cloud-sdk/bin:/Users/can/.local/bin:/Users/can/.n/bin:/Users/can/.bun/bin:/Users/can/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.a",
+      "TMPDIR": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/"
+    },
+    "session_id": "761b23fa-31b3-49b1-bd80-e7c86dd41414",
+    "structured_output_attempt_count": 1,
+    "structured_output_attempts": [
+      {
+        "call": {
+          "caller": {
+            "type": "direct"
+          },
+          "id": "toolu_01EYtyLPZFNePBzr6k4xkmSv",
+          "input": {
+            "citations": [
+              {
+                "end": 5,
+                "evidence_id": "E_SAMPLE",
+                "path": "sample.py",
+                "start": 4
+              },
+              {
+                "end": 1,
+                "evidence_id": "E_CONTRACT",
+                "path": "README.md",
+                "start": 1
+              }
+            ],
+            "disagreement": "Both assessments reach the same verdict (support, useful, valid) and cite the same two frozen ranges, so there is no verdict-level conflict. They differ on severity: one rates it medium, the other high; that gap is unresolved here because no supplied evidence establishes exploitability, call-site exposure, or downstream financial impact, so severity remains contested/unknown rather than settled at either value. They also differ in rigor of justification: one supplies a detailed control narrative (baseline returned -750 with claim_present true; counterexample with the guard inserted raised ValueError with claim_present false), while the other asserts support with no counterexample reasoning at all. I additionally record a discrepancy neither assessment addresses: the executed packet reports execution classification \"unproven\" and controller_source_binding false, so the dynamic runs are not treated here as independent proof despite controls_passed true and both runs matching their expectations. My verdict therefore rests on the frozen source text, not on the harness; the first assessment's inference that the probe was source-bound (from source_bytes 149) is not adopted as proof.",
+            "item_id": "omission-2-c275c1577a3abe3c",
+            "reason": "The claim is an omission that is fully decidable from the supplied frozen source. README.md line 1 (E_CONTRACT) states the contract: \"checkout_total must reject negative quantity with ValueError.\" sample.py lines 4-5 (E_SAMPLE) contain the complete definition — `def checkout_total(price, quantity):` followed by the single statement `return price * quantity` — with no guard, no conditional, and no raise anywhere in the two-line body or the rest of the 5-line file. Because the whole function body is visible in the frozen text, the absence of negative-quantity validation is directly observable rather than inferred, and a negative quantity necessarily produces a negative product instead of a ValueError. This matches the finding's claim and its stated location (sample.py 4-5) exactly. The executed runs are consistent with this (baseline claim_present true / value -750; counterexample with the guard inserted claim_present false, both exit 0, controls_passed true), but since the packet marks the execution classification \"unproven\" and controller_source_binding false, I do not promote those runs to proof; they are corroborating only. The static frozen evidence alone is sufficient and complete for this contract violation, so the verdict is supported. Severity is left unadjudicated between the two assessments, as no supplied evidence bears on impact.",
+            "verdict": "supported"
+          },
+          "name": "StructuredOutput",
+          "type": "tool_use"
+        },
+        "call_event_index": 10,
+        "id": "toolu_01EYtyLPZFNePBzr6k4xkmSv",
+        "result": {
+          "content": "Structured output provided successfully",
+          "tool_use_id": "toolu_01EYtyLPZFNePBzr6k4xkmSv",
+          "type": "tool_result"
+        },
+        "result_event_index": 11,
+        "status": "success",
+        "tool_use_result": "Structured output provided successfully"
+      }
+    ],
+    "subtype": "success",
+    "total_cost_usd": 0.19860350000000002,
+    "transport_observed_model_ids": [
+      "claude-opus-5"
+    ],
+    "type": "result",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 14615,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 14615,
+      "cache_read_input_tokens": 1069,
+      "inference_geo": "not_available",
+      "input_tokens": 2,
+      "iterations": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 14615,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 14615,
+          "cache_read_input_tokens": 1069,
+          "input_tokens": 2,
+          "output_tokens": 1588,
+          "type": "message"
+        }
+      ],
+      "output_tokens": 1588,
+      "output_tokens_details": {
+        "thinking_tokens": 578
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    }
+  },
+  "argv_sha256": "ef92a60d30e8e86c70ca2951e3416cc947473d8b091f2fc06f6b81400702da39",
+  "artifact_invocation_id": "synthesis-omission-2-c275c1577a3abe3c",
+  "attempts": 1,
+  "capture_status": "success",
+  "failure_class": null,
+  "final_sha256": "7d03c0da78c67d65c30b39991b6fdf3059ca15447fd2e9c143d4f67bf29ddf00",
+  "invocation_id": "synthesis-omission-2-c275c1577a3abe3c",
+  "observed_model_id": "claude-opus-5",
+  "packet_artifact_sha256": "8c83cadaf3ed3e019f58931e146c5a93dc13456518b25ffc40dcf1f46be06953",
+  "packet_sha256": "2e094650405fe35e757dc5292a694e84a11bc39537af1dddde7348beda59e3fb",
+  "requested_model_id": "claude-opus-5",
+  "status": "success",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_sha256": "3dad0975fad38e1e42117813aa1553f0d6ec98039ef10c4a3bac1a2b4d153c36"
+}

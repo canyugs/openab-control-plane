@@ -839,3 +839,27 @@ Checkpoint scope verified: source740bbb0 includes only approved normalization an
 
 Binding-authority worker terminal0; report31f35306f1eb80c3da61fd2f59d9212b791ec7586ced8cca5e151575d7f2f15e verified, exact scoped patch plus helper fixture imported without conflicts. AST signal diagnostic-only; item semantic qualification now also gates complete state. No workers remain. Host integrated full suite86 tests PASS, compileall and diffcheck PASS. Starting fresh real vulnerable/safe CLI journey on next source commit; earlier complete transport/partial result remains separate.
 
+## [RUN-096] Event (during round A-001)
+
+* _2026-09-10 01:28:43 (GPT-6/default)_
+
+Dispatch stage2-security, security, codex-default/best, gpt-5.6-sol/low, external-runner-v1 at 6e5784bdd19e5e84ccc19637e67de643e6d65920. Frozen exact authority in stage2-security-brief.md; disposable clone only.
+
+## [RUN-097] Event (during round A-001)
+
+* _2026-09-10 01:31:27 (GPT-6/default)_
+
+Fresh actual journeys now run concurrently at immutable source6e5784b: original reusable PTY53083 /dev/ttys042 for vulnerable and second verified stdin/stdoutTTY59167 /dev/ttys035 for safe. Vulnerable discovery found exact two concrete candidates; safe discovery empty. Current actual generated negative-quantity plan has AST diagnosticfalse but real OCI controls pass; first semantic judge valid, proving diagnostic no longer mechanically rejects helper forms. Safe original controls passed with claim_presentfalse and first judge refute/valid. Stage2 security start1 active92032; main-checkout user changes unchanged. Full terminal summaries still pending.
+
+## [RUN-098] Event (during round A-001)
+
+* _2026-09-10 01:33:27 (GPT-6/default)_
+
+Actual safe journey source6e5784b complete/exit0: originalF1 executed_refuted, two refute/valid judgments, matching synthesis, no omissions; disagreement0/1; actual costunknown, CLI list estimate0.865366USD. Exact same PTY resume exited0 in0.238s with all42 file hashes and mtimes unchanged; prepare verified complete artifact and returned before model/OCI execution. Tampered COPY one raw.stdout byte rejected by actual weekly CLI with exit2 and no traceback. Original complete artifacts unchanged. Vulnerable final original judgments still finishing; independent security active.
+
+## [RUN-099] Event (during round A-001)
+
+* _2026-09-10 01:34:40 (GPT-6/default)_
+
+Fresh vulnerable full journey complete/PTY exit0 at source6e5784bdd19e5e84ccc19637e67de643e6d65920: original supported, three executed_reproduced items, six valid judgments, disagreement0/3, two blind candidates with one genuinely new automatically supported omission (negative quantity) and access-overlap candidate retained separately. Actual costunknown; list estimate2.089123USD. Safe counterpart complete/refuted/no omissions already independently verified. Stage2 security start1 completed PASS at same source; full report SHA7371c0e23fac1dc3ba922cf24ff94c27def31eff72373caa99b160b77421d899 verified; report-only clone,86 full+8 focused tests. No confirmed security finding. Preparing concrete runtime evidence and full independent acceptance; no Result Go claim.
+

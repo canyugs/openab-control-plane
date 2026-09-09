@@ -1,0 +1,22 @@
+{
+  "citations": [
+    {
+      "end": 2,
+      "evidence_id": "E_SAMPLE",
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "end": 1,
+      "evidence_id": "E_CONTRACT",
+      "path": "README.md",
+      "start": 1
+    }
+  ],
+  "counterexample": "",
+  "finding_id": "F-1",
+  "severity": "high",
+  "usefulness": "useful",
+  "validation_verdict": "valid",
+  "verdict": "support"
+}

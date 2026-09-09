@@ -1,0 +1,418 @@
+{
+  "actual_cost_status": "unknown",
+  "artifact_hashes": {
+    "findings.json": "1d7671f7242641f7819f92ce96682fa861ad7c0cd22d2e2dd148f32c743c89cf",
+    "invocations/discovery/argv.json": "0cc3c58b498bc3c65316bd99269a74fdc94e5ab92133cfafae69a0f223b336d2",
+    "invocations/discovery/final.json": "e15bef3d98b10c0454be776bf07a0554270879016e4cebca8b8214d80f5bdeca",
+    "invocations/discovery/packet.json": "e8667f0ca17f74b560e9ffd7a933d636542f9bbb3e4ce66919314c635ca2ca6b",
+    "invocations/discovery/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/discovery/raw.stdout": "61a14638571a147ed839a34877b86c94b20e6cc7f19466235195d60f1318dac7",
+    "invocations/discovery/result.json": "8951d09c6dc3616abffbee7514f656ee050bbe90d14127def2e42c2a1f0fa4e1",
+    "invocations/judge_a-F-1/argv.json": "404fe9c214fa75a50fedb99ffa4662a849618e2cef520fcd9891fe0938c41c27",
+    "invocations/judge_a-F-1/final.json": "1eef293999aad1060491afb79fc7dad9e25fb9121f271a3609cf60fef81b2596",
+    "invocations/judge_a-F-1/packet.json": "7bbb0091c425dae84e7bce839017c47439c123de42fcda7318f3ceeb5938efa3",
+    "invocations/judge_a-F-1/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/judge_a-F-1/raw.stdout": "e9f7551afc94082c76e99804b080249cec64b7af265a97c52dffb892be365869",
+    "invocations/judge_a-F-1/result.json": "e2d9ee1d6268948882a3b49118c4cdc3979f009a760aa26df4c0fe0da01b7976",
+    "invocations/judge_a-omission-1-f5201e5feb8fc093/argv.json": "404fe9c214fa75a50fedb99ffa4662a849618e2cef520fcd9891fe0938c41c27",
+    "invocations/judge_a-omission-1-f5201e5feb8fc093/final.json": "fcc942159016e2925b34066abfca136ce205259c371fc2be69e2d43dfada95c1",
+    "invocations/judge_a-omission-1-f5201e5feb8fc093/packet.json": "34878d3e3fdcf2d8ef966b2d9b8e01b1ed5ecaf83566ce67bb78c99d6f81f4cf",
+    "invocations/judge_a-omission-1-f5201e5feb8fc093/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/judge_a-omission-1-f5201e5feb8fc093/raw.stdout": "87b5edd92da706f5af54dcce29d520b0c0ee027862d403ed21284bc4614210f1",
+    "invocations/judge_a-omission-1-f5201e5feb8fc093/result.json": "e41b7f8ff306c483d8088acef7b7690493c1123aef2f01f386ab410ccf50f000",
+    "invocations/judge_a-omission-2-c275c1577a3abe3c/argv.json": "404fe9c214fa75a50fedb99ffa4662a849618e2cef520fcd9891fe0938c41c27",
+    "invocations/judge_a-omission-2-c275c1577a3abe3c/final.json": "79a1932daead5ab027eb26eef2441d4e48893d43ee04989f01fbb066f4fb1e62",
+    "invocations/judge_a-omission-2-c275c1577a3abe3c/packet.json": "ed601b39394f507dac13f5b4b24fdd4cc33700c96931203c0a59e460439dac55",
+    "invocations/judge_a-omission-2-c275c1577a3abe3c/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/judge_a-omission-2-c275c1577a3abe3c/raw.stdout": "bcff73d0ab5086510573b4f16eb8f7d2b3535cf300b2c8b3c024dddbaaa22eb7",
+    "invocations/judge_a-omission-2-c275c1577a3abe3c/result.json": "760333b4f16eed5a852902b5d8fafdf6307d6cf90c970c94b7ff3f611ffcd5ed",
+    "invocations/judge_b-F-1/argv.json": "95e9717e4906dd677b8ec644a97797a3a450ade1f482c2b988a3728943bdb580",
+    "invocations/judge_b-F-1/final.json": "430a89c7a3fedf8372a81906372e9a377cd889898baec73de21c70c3f0862122",
+    "invocations/judge_b-F-1/packet.json": "f3e36e95f58d2aa5c21e90aa5d63dcb5633da404536e486072c6bb4d4dfb96ee",
+    "invocations/judge_b-F-1/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/judge_b-F-1/raw.stdout": "235c1c2159af230a7649c5c9923bf802920090e2d88fe4fbf40dbcb9bec5d698",
+    "invocations/judge_b-F-1/result.json": "fe0812257c471fdb9a83613eeb7f79e1e4242ff9aea8d6e8c626e5cec6570bc1",
+    "invocations/judge_b-omission-1-f5201e5feb8fc093/argv.json": "95e9717e4906dd677b8ec644a97797a3a450ade1f482c2b988a3728943bdb580",
+    "invocations/judge_b-omission-1-f5201e5feb8fc093/final.json": "db5da9f75c69623993e81f6f43f80e7a428a814b2fb3e3545b56119fb4733a5a",
+    "invocations/judge_b-omission-1-f5201e5feb8fc093/packet.json": "7b820a3f50e273d23e873964ac7f5f584c80d8c2798250602b918b505f7f77b3",
+    "invocations/judge_b-omission-1-f5201e5feb8fc093/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/judge_b-omission-1-f5201e5feb8fc093/raw.stdout": "add4a1f7aa127e9a402ecc8cfab5acbe7b3739b1886426d4999ea8901bafe050",
+    "invocations/judge_b-omission-1-f5201e5feb8fc093/result.json": "9fd83406634802689ab2cdb1b7aa87ddbe2c573964b3494d90ff685475950338",
+    "invocations/judge_b-omission-2-c275c1577a3abe3c/argv.json": "95e9717e4906dd677b8ec644a97797a3a450ade1f482c2b988a3728943bdb580",
+    "invocations/judge_b-omission-2-c275c1577a3abe3c/final.json": "5f845b3c2de27b1c348c24e02c1e336a3807608efacdefa10d726d1948b38dcf",
+    "invocations/judge_b-omission-2-c275c1577a3abe3c/packet.json": "4cfdbf377802ed6be06a04978ad041ded66946638a1e156115c13870cc122713",
+    "invocations/judge_b-omission-2-c275c1577a3abe3c/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/judge_b-omission-2-c275c1577a3abe3c/raw.stdout": "d5cd3b37ae1c75f931ec4fcd823392ecc2134771b5d5d4f0c182be91a29a704c",
+    "invocations/judge_b-omission-2-c275c1577a3abe3c/result.json": "39138d227ee95558ce9d04d10dc29c9d6a8df79881a28fc5a2e94f2e8a4a8110",
+    "invocations/synthesis-F-1/argv.json": "ef92a60d30e8e86c70ca2951e3416cc947473d8b091f2fc06f6b81400702da39",
+    "invocations/synthesis-F-1/final.json": "bf121d5c07863334060ece8518ed4f57706b8cae3314b7fec36160317d5d4c24",
+    "invocations/synthesis-F-1/packet.json": "a3d4a737716f97fca53422df5c606e85d15c114055c7cffab284f9c0ed91eef8",
+    "invocations/synthesis-F-1/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/synthesis-F-1/raw.stdout": "55f6859ac6f165201c25631fd3ee0f3bcdecc556203df0a4a641b31d2db6906a",
+    "invocations/synthesis-F-1/result.json": "b25e1d05833e935c5fbb25cd4fed744d1f0834749810c576c4f3627d7c47060a",
+    "invocations/synthesis-omission-1-f5201e5feb8fc093/argv.json": "ef92a60d30e8e86c70ca2951e3416cc947473d8b091f2fc06f6b81400702da39",
+    "invocations/synthesis-omission-1-f5201e5feb8fc093/final.json": "13030ffa5672ee7faa96b6c93eb9cfb4625af2bb62a1b738b241e269a695f339",
+    "invocations/synthesis-omission-1-f5201e5feb8fc093/packet.json": "5ba51c953e3363acdd22a2d7e9d7737785f75da91123d570aa9967b3dd7d0636",
+    "invocations/synthesis-omission-1-f5201e5feb8fc093/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/synthesis-omission-1-f5201e5feb8fc093/raw.stdout": "7fa8235d07ff49fee98d728328484aff28b494c8d6234e2d284a1e754cf28166",
+    "invocations/synthesis-omission-1-f5201e5feb8fc093/result.json": "beda014adaa199baba9f49d9cfa30a5f7fd1b8166fff996e2cb1b435290b8c32",
+    "invocations/synthesis-omission-2-c275c1577a3abe3c/argv.json": "ef92a60d30e8e86c70ca2951e3416cc947473d8b091f2fc06f6b81400702da39",
+    "invocations/synthesis-omission-2-c275c1577a3abe3c/final.json": "7d03c0da78c67d65c30b39991b6fdf3059ca15447fd2e9c143d4f67bf29ddf00",
+    "invocations/synthesis-omission-2-c275c1577a3abe3c/packet.json": "8c83cadaf3ed3e019f58931e146c5a93dc13456518b25ffc40dcf1f46be06953",
+    "invocations/synthesis-omission-2-c275c1577a3abe3c/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/synthesis-omission-2-c275c1577a3abe3c/raw.stdout": "3dad0975fad38e1e42117813aa1553f0d6ec98039ef10c4a3bac1a2b4d153c36",
+    "invocations/synthesis-omission-2-c275c1577a3abe3c/result.json": "fd3af54fcdcaf75453aa876679d66ee5f9d8a2a3c0b64bc42cbf3412c9affe8f",
+    "invocations/validation-F-1/argv.json": "131b82331007ec7126918303102672f10315d0bc758bf4b4ba4158f971bf6dad",
+    "invocations/validation-F-1/final.json": "1299e7786970ca47f593f22b55fa0067572dca3a3f80d84bb77bba213eb68960",
+    "invocations/validation-F-1/packet.json": "9c3d682debaac64cd07ab97c47bb34da9d0069a1c938bdc04b5fcaf670b24cb9",
+    "invocations/validation-F-1/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/validation-F-1/raw.stdout": "e861bb78607df7492da8bf63c9c9e71d456c7ab8fd5485a011c5962cc4ee5a5f",
+    "invocations/validation-F-1/result.json": "9ae310185af9748adf21939f3bdb173e18986dc3d681ec36dd6a7bf7d2e8af22",
+    "invocations/validation-omission-1-f5201e5feb8fc093/argv.json": "131b82331007ec7126918303102672f10315d0bc758bf4b4ba4158f971bf6dad",
+    "invocations/validation-omission-1-f5201e5feb8fc093/final.json": "3715b67eaca7861efa354cd134d2fb91252eb8e3590ba66a8619684db1646fa7",
+    "invocations/validation-omission-1-f5201e5feb8fc093/packet.json": "4d33c2c8c06e3ac5ff239bc89ac12ad4c22e93cdb08dab33dde208eccb22b6ce",
+    "invocations/validation-omission-1-f5201e5feb8fc093/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/validation-omission-1-f5201e5feb8fc093/raw.stdout": "6516ebd977dcdc1729e53b7f6838a9f391b45ac58ce581971dfae534d6f20d49",
+    "invocations/validation-omission-1-f5201e5feb8fc093/result.json": "ab574f1e95270c768953247f9c81a4b9d9040dc05a629209849ebfe23dc90c33",
+    "invocations/validation-omission-2-c275c1577a3abe3c/argv.json": "131b82331007ec7126918303102672f10315d0bc758bf4b4ba4158f971bf6dad",
+    "invocations/validation-omission-2-c275c1577a3abe3c/final.json": "7f61aae844885cc6451f2930a5f6e3c2a2d523496e0f4f0e8c82f5f67884f19b",
+    "invocations/validation-omission-2-c275c1577a3abe3c/packet.json": "27e79cd82c80380b8bf60271a0bf22a8c5f1ed63830c353cdae62b3d75876ebe",
+    "invocations/validation-omission-2-c275c1577a3abe3c/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "invocations/validation-omission-2-c275c1577a3abe3c/raw.stdout": "d2d18ea57880ed31ec7b89381571f2fa3421b9a6558768a946360b03bc1eec05",
+    "invocations/validation-omission-2-c275c1577a3abe3c/result.json": "bf01efcf176786e533a04224da6425c7b8d247508da760b22ee1e7ba2cdaab86",
+    "omissions.json": "5fff8bd130b23c06c149fef153b3bf1b5b2b8807ea5204cf4f160f7c0d956095",
+    "snapshot.json": "9dc638716a5544aeb9567c8fe9597772874f962f6c136540f1d68a0eab9b12cd",
+    "source-packet.json": "76b63becc0d08ab555b741483ca54f12b9b6483e4a723b4ea419681b373fa3c1",
+    "summary.json": "6d82248bc4736426cadd0670f056e0f4bd5583ae52f5bb7c73a34574ecb57e90",
+    "summary.md": "27fc9995a3fb8fb67f62efbb0e49296f0035d0a299270a5dcfba0e281d40b4ec",
+    "validation/F-1/generated-file-digests.json": "5804ca8677e68354da89ce709437fd6ef4198ab5c6a10d9fe3281c0f41310c44",
+    "validation/F-1/plan.json": "9685604aa005592cf9a32dd0218b4b46e355f641773b8c27af121e6e9f45b327",
+    "validation/F-1/result.json": "5f47d776e22d3e78c5398fcc692203d9bb5278aa7fbdcc71aad2fd7b92351599",
+    "validation/F-1/runs/baseline.json": "a0fb666eb0517411b3764b2266f11da391d81a71c251824243cc2da22e7a06ee",
+    "validation/F-1/runs/counterexample.json": "992c72f64e412d9c170dabc9297dabd9397d48912eeb4b1e155733c2c8e229e8",
+    "validation/omission-1-f5201e5feb8fc093/generated-file-digests.json": "65fdb3ac85e7053b5abf4801a76b08d4f11a9a57b7e327046c98c93ebe59cd48",
+    "validation/omission-1-f5201e5feb8fc093/plan.json": "1fb031d3ab5d6cdf0ed1f3fb956095101ba0e7474b546683ffe17c22fc6f303f",
+    "validation/omission-1-f5201e5feb8fc093/result.json": "166b1bd89f13771210577afdbb89c9864cf9dc99b2c2fd0a68e849f6048a32f5",
+    "validation/omission-1-f5201e5feb8fc093/runs/baseline.json": "daac138807ebeb692754416f610084184344c8be2435284e4bcafb862d95fb2b",
+    "validation/omission-1-f5201e5feb8fc093/runs/counterexample.json": "d8a11215ad8934441d9995a00e75bfec6c2fed06fade585012e520648a0dc7c3",
+    "validation/omission-2-c275c1577a3abe3c/generated-file-digests.json": "2407429d6489fa6d852b737c3223836e267aaeefdd28be724070b4352935f07e",
+    "validation/omission-2-c275c1577a3abe3c/plan.json": "c9720d538d22625544d25d16ae0b5a3732167276d9aa4ed83c8edfd7f9629259",
+    "validation/omission-2-c275c1577a3abe3c/result.json": "9042714b06788f4b24ce8fa12c9bff2d1c92e7f9e8c3f9481b6c02015347ecc5",
+    "validation/omission-2-c275c1577a3abe3c/runs/baseline.json": "6bd653860f849b2bcf81c462b28a7e9633fb90b29f49ddc6d3e5443b6166e7e9",
+    "validation/omission-2-c275c1577a3abe3c/runs/counterexample.json": "7c591622b8718e02d583fe45a908c0311a0efc2e31479d747b755a8bc36f507c"
+  },
+  "completed_invocations": [
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "discovery",
+      "observed_model_id": "claude-opus-5",
+      "requested_model_id": "claude-opus-5",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "judge_a-F-1",
+      "observed_model_id": "claude-opus-5",
+      "requested_model_id": "claude-opus-5",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "judge_a-omission-1-f5201e5feb8fc093",
+      "observed_model_id": "claude-opus-5",
+      "requested_model_id": "claude-opus-5",
+      "status": "success"
+    },
+    {
+      "attempts": 2,
+      "failure_class": null,
+      "id": "judge_a-omission-2-c275c1577a3abe3c",
+      "observed_model_id": "claude-opus-5",
+      "requested_model_id": "claude-opus-5",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "judge_b-F-1",
+      "observed_model_id": "claude-opus-4-6",
+      "requested_model_id": "claude-opus-4-6",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "judge_b-omission-1-f5201e5feb8fc093",
+      "observed_model_id": "claude-opus-4-6",
+      "requested_model_id": "claude-opus-4-6",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "judge_b-omission-2-c275c1577a3abe3c",
+      "observed_model_id": "claude-opus-4-6",
+      "requested_model_id": "claude-opus-4-6",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "synthesis-F-1",
+      "observed_model_id": "claude-opus-5",
+      "requested_model_id": "claude-opus-5",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "synthesis-omission-1-f5201e5feb8fc093",
+      "observed_model_id": "claude-opus-5",
+      "requested_model_id": "claude-opus-5",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "synthesis-omission-2-c275c1577a3abe3c",
+      "observed_model_id": "claude-opus-5",
+      "requested_model_id": "claude-opus-5",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "validation-F-1",
+      "observed_model_id": "claude-opus-5",
+      "requested_model_id": "claude-opus-5",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "failure_class": null,
+      "id": "validation-omission-1-f5201e5feb8fc093",
+      "observed_model_id": "claude-opus-5",
+      "requested_model_id": "claude-opus-5",
+      "status": "success"
+    },
+    {
+      "attempts": 2,
+      "failure_class": null,
+      "id": "validation-omission-2-c275c1577a3abe3c",
+      "observed_model_id": "claude-opus-5",
+      "requested_model_id": "claude-opus-5",
+      "status": "success"
+    }
+  ],
+  "failed_invocations": [],
+  "identity_status": {
+    "discovery": {
+      "actual_cost_usd": "unknown",
+      "adapter": "claude",
+      "auxiliary_model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "canonicalModel": "claude-haiku-4-5",
+          "contextWindow": 200000,
+          "costBasis": "list",
+          "costUSD": 0.0022730000000000003,
+          "inputTokens": 2203,
+          "maxOutputTokens": 32000,
+          "outputTokens": 14,
+          "provider": "firstParty",
+          "thinkingTokens": 0,
+          "webSearchRequests": 0
+        }
+      },
+      "capability": "ready",
+      "cost_basis": [
+        "list"
+      ],
+      "estimated_cost_usd": 0.035269999999999996,
+      "family": "anthropic",
+      "observed_model_id": "claude-opus-5",
+      "observed_model_ids": [
+        "claude-opus-5"
+      ],
+      "requested_model_id": "claude-opus-5"
+    },
+    "judge_a": {
+      "actual_cost_usd": "unknown",
+      "adapter": "claude",
+      "auxiliary_model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "canonicalModel": "claude-haiku-4-5",
+          "contextWindow": 200000,
+          "costBasis": "list",
+          "costUSD": 0.012891999999999999,
+          "inputTokens": 12837,
+          "maxOutputTokens": 32000,
+          "outputTokens": 11,
+          "provider": "firstParty",
+          "thinkingTokens": 0,
+          "webSearchRequests": 0
+        }
+      },
+      "capability": "ready",
+      "cost_basis": [
+        "list"
+      ],
+      "estimated_cost_usd": 0.6005525,
+      "family": "anthropic",
+      "observed_model_id": "claude-opus-5",
+      "observed_model_ids": [
+        "claude-opus-5"
+      ],
+      "requested_model_id": "claude-opus-5"
+    },
+    "judge_b": {
+      "actual_cost_usd": "unknown",
+      "adapter": "claude",
+      "auxiliary_model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "canonicalModel": "claude-haiku-4-5",
+          "contextWindow": 200000,
+          "costBasis": "list",
+          "costUSD": 0.012891999999999999,
+          "inputTokens": 12837,
+          "maxOutputTokens": 32000,
+          "outputTokens": 11,
+          "provider": "firstParty",
+          "thinkingTokens": 0,
+          "webSearchRequests": 0
+        }
+      },
+      "capability": "ready",
+      "cost_basis": [
+        "list"
+      ],
+      "estimated_cost_usd": 0.480813,
+      "family": "anthropic",
+      "observed_model_id": "claude-opus-4-6",
+      "observed_model_ids": [
+        "claude-opus-4-6"
+      ],
+      "requested_model_id": "claude-opus-4-6"
+    },
+    "synthesis": {
+      "actual_cost_usd": "unknown",
+      "adapter": "claude",
+      "auxiliary_model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "canonicalModel": "claude-haiku-4-5",
+          "contextWindow": 200000,
+          "costBasis": "list",
+          "costUSD": 0.013471,
+          "inputTokens": 13406,
+          "maxOutputTokens": 32000,
+          "outputTokens": 13,
+          "provider": "firstParty",
+          "thinkingTokens": 0,
+          "webSearchRequests": 0
+        }
+      },
+      "capability": "ready",
+      "cost_basis": [
+        "list"
+      ],
+      "estimated_cost_usd": 0.5745495,
+      "family": "anthropic",
+      "observed_model_id": "claude-opus-5",
+      "observed_model_ids": [
+        "claude-opus-5"
+      ],
+      "requested_model_id": "claude-opus-5"
+    },
+    "validation": {
+      "actual_cost_usd": "unknown",
+      "adapter": "claude",
+      "auxiliary_model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "canonicalModel": "claude-haiku-4-5",
+          "contextWindow": 200000,
+          "costBasis": "list",
+          "costUSD": 0.0026950000000000003,
+          "inputTokens": 2635,
+          "maxOutputTokens": 32000,
+          "outputTokens": 12,
+          "provider": "firstParty",
+          "thinkingTokens": 0,
+          "webSearchRequests": 0
+        }
+      },
+      "capability": "ready",
+      "cost_basis": [
+        "list"
+      ],
+      "estimated_cost_usd": 0.397938,
+      "family": "anthropic",
+      "observed_model_id": "claude-opus-5",
+      "observed_model_ids": [
+        "claude-opus-5"
+      ],
+      "requested_model_id": "claude-opus-5"
+    }
+  },
+  "input_identity": "0bdae810036a72905fc863438d43efcbc3385709798fa9ccf228880e801b9b2b",
+  "preflight": {
+    "discovery": {
+      "adapter": "claude",
+      "help_sha256": "ae85d661e9c086f05637ebcd868f5702b477ff6e55e2e65b8ada7807cd51a4b6",
+      "missing_flags": [],
+      "status": "ready",
+      "version": "2.1.266 (Claude Code)"
+    },
+    "judge_a": {
+      "adapter": "claude",
+      "help_sha256": "ae85d661e9c086f05637ebcd868f5702b477ff6e55e2e65b8ada7807cd51a4b6",
+      "missing_flags": [],
+      "status": "ready",
+      "version": "2.1.266 (Claude Code)"
+    },
+    "judge_b": {
+      "adapter": "claude",
+      "help_sha256": "ae85d661e9c086f05637ebcd868f5702b477ff6e55e2e65b8ada7807cd51a4b6",
+      "missing_flags": [],
+      "status": "ready",
+      "version": "2.1.266 (Claude Code)"
+    },
+    "oci": {
+      "daemon_probe": "ok",
+      "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+      "server_version": "29.7.2",
+      "status": "ready"
+    },
+    "synthesis": {
+      "adapter": "claude",
+      "help_sha256": "ae85d661e9c086f05637ebcd868f5702b477ff6e55e2e65b8ada7807cd51a4b6",
+      "missing_flags": [],
+      "status": "ready",
+      "version": "2.1.266 (Claude Code)"
+    },
+    "validation": {
+      "adapter": "claude",
+      "help_sha256": "ae85d661e9c086f05637ebcd868f5702b477ff6e55e2e65b8ada7807cd51a4b6",
+      "missing_flags": [],
+      "status": "ready",
+      "version": "2.1.266 (Claude Code)"
+    }
+  },
+  "preflight_sha256": "e6c69eff17cfdbd556c6b6a7d449725cfe40c6247ac1d825d0a227c40641e8b0",
+  "schema_version": "review-model-evaluation/v1",
+  "scope_complete": true,
+  "source_complete": true,
+  "state": "complete",
+  "summary_sha256": "6d82248bc4736426cadd0670f056e0f4bd5583ae52f5bb7c73a34574ecb57e90"
+}
