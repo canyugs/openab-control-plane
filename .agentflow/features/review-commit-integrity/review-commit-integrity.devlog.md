@@ -1,26 +1,16 @@
 # STATUS
 
 Project: OCP review-service improvement.
-
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-
-Current commit: 8b35b4c581ac3d2f5f6669511eaa7b318310fc40 — accepted design; no source changes.
-
-Tests/scenarios: design coverage inspected; tracker and whitespace checks passed; source diff empty; remote branch readback matched 2d5a68f; no runtime tests run.
-
-Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex. Root ag.json is untracked local bootstrap.
-
-Proven: requirements, boundary discovery, Stage 1 design; external reports only changed declared files.
-
-Open: Stage 1 implementation and validation; later-stage designs remain.
-
-Next: red-first SHA-integrity implementation under approved Design Go, then independent security/acceptance checks.
-
-Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service/design.md; .agentflow/features/review-commit-integrity/artifacts/A-001-review-service/tracker.md.
-
+Current commit: d6e96c32abfd766588c549e8922e3077d6abcb00 — Stage 1 implementation; later commits are evidence only.
+Tests/scenarios: host package 170 tests and root suite 327 tests passed; build, package fmt and clippy passed; workspace fmt has three unchanged baseline differences.
+Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex; root ag.json remains untracked bootstrap.
+Proven: approved design, baseline red failure, delivered SHA tests and real PostgreSQL; security pass resolved with explicit immutable-target recovery limit.
+Open: acceptance cross-check; exact Result Go; Stage 2/3 designs and implementation remain.
+Next: collect acceptance evidence, record Host gate, publish result for review; no production deployment.
+Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
 Archived eras: none.
-
-Streams: none.
+Streams: fix/review-commit-integrity in isolated worktree.
 
 ---
 
@@ -224,3 +214,31 @@ Candidate d6e96c3: scoped fixture correction imported after diff inspection. Hos
 * _2026-09-09 13:13:17 (GPT-6/default)_
 
 Security pass completed with no surviving SHA-authority bypass, one None-to-Some target enrichment availability observation. Host confirmed source behavior and retained it as the explicitly Design-Go-approved immutable-target failure policy; security-resolution.md names exact design authority and new-review operational consequence. No source repair or extra security cycle. Acceptance next on exact d6e96c3.
+
+## [RUN-022] Event (during round A-001)
+
+* _2026-09-09 13:13:18 (GPT-6/default)_
+
+Route full_pipeline; allow-ag on; owner approved handoff. Dispatch acceptance, codex-default, better, gpt-5.6-terra/high, external-runner-v1. Executable and ChatGPT login verified. Clone-only report authority; no production access. Root configuration remains local bootstrap; main checkout untouched.
+
+## [RUN-023] Event (during round A-001)
+
+* _2026-09-09 13:16:19 (GPT-6/default)_
+
+Checkpoint scope: exact seven-file implementation remains byte-identical to d6e96c3; host tests/build/package checks passed. Security is resolved with the approved no-enrichment limit. Acceptance session 16637 is active; no production action. Tracker validated. Learn trigger yes: local sandbox test denial and fixture correction produced concrete evidence-handling lessons, to be captured by configured basic advisor after acceptance.
+
+## [WIP-007] Checkpoint (during round A-001)
+
+* _2026-09-09 13:16:19 (GPT-6/default)_
+
+- **Finished:** Stage 1 candidate, independent host tests including PostgreSQL, and security observation resolution.
+- **Running now:** Fresh exact-commit acceptance/full cross-check, session 16637.
+- **Still to do:** Collect acceptance and scoped learn record, Host gate, push and exact Result Go; later stages and production remain untouched.
+- **Next work action:** Inspect acceptance result and its runtime evidence before reporting readiness.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-024] Event (during round A-001)
+
+* _2026-09-09 13:17:35 (GPT-6/default)_
+
+Acceptance full cross-check completed; exact d6e96c3 Outcome/Minimality/Conformance/Overall PASS. Host inspected full report, verified report digest and clone-only result, and confirmed identical source blobs. Host gate: PASS. Human result review ready, exact Result Go still pending. Remaining work now records/learn/push only; no repeated implementation validation.

@@ -8,7 +8,7 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-09 12:57:19 Asia/Taipei.
+- **Last update:** 2026-09-09 13:14:20 Asia/Taipei.
 
 - **Evidence commit:** 8b35b4c581ac3d2f5f6669511eaa7b318310fc40.
 
@@ -42,9 +42,9 @@
 
 - **Last proven result:** Candidate d6e96c3 passes host package/root tests, build, package fmt and clippy; baseline fmt differences documented.
 
-- **Active blocker or running process:** Security review exec session 82336; implementation and host checks completed.
+- **Active blocker or running process:** Acceptance review exec session 16637; security resolution recorded.
 
-- **Next safe action:** Finish host verification then fresh security and acceptance reviews.
+- **Next safe action:** Collect exact-commit acceptance, scoped learn record, and present Result Go gate.
 
 - **Expected changed files:** crates/github-pr-controller/src/{closing.rs,github.rs,lib.rs,deciding.rs,store.rs,store/sqlite.rs,store/postgres.rs}; stream notebook and artifacts.
 
