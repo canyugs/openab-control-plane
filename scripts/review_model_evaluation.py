@@ -750,7 +750,12 @@ def _validate_synthesis_result(result: Mapping[str, Any], item_id: str, finding:
 
 
 def _python_source_binding_signal(content: str, source_path: str) -> bool:
-    """Find a structural source-read signal, never prove semantics by text."""
+    """Record a structural source-reference heuristic for diagnostics only.
+
+    This signal cannot establish meaningful source interaction or qualify an
+    evaluation result; the independent semantic assessments remain the
+    authority for that qualification.
+    """
 
     try:
         tree = ast.parse(content)
@@ -856,6 +861,8 @@ def _python_source_binding_signal(content: str, source_path: str) -> bool:
 
 
 def _plan_source_binding_signal(plan: Mapping[str, Any], finding: Mapping[str, Any]) -> bool:
+    """Return the persisted structural source-reference diagnostic only."""
+
     location = finding.get("location", {})
     source_path = location.get("path") if isinstance(location, Mapping) else ""
     if not isinstance(source_path, str):
@@ -869,7 +876,7 @@ def _plan_source_binding_signal(plan: Mapping[str, Any], finding: Mapping[str, A
 
 
 def _plan_mentions_frozen_source(plan: Mapping[str, Any], finding: Mapping[str, Any]) -> bool:
-    """Compatibility alias for the structural, non-semantic binding signal."""
+    """Compatibility alias for the diagnostic-only structural signal."""
 
     return _plan_source_binding_signal(plan, finding)
 
@@ -1998,11 +2005,9 @@ class EvaluationController:
         )
 
     def _execution_classification(self, validation: Mapping[str, Any]) -> Optional[str]:
-        """Derive an execution direction without trusting OCI semantics."""
+        """Derive a mechanically observed direction without trusting semantics."""
 
         if validation.get("status") != "success" or validation.get("controls_passed") is not True:
-            return None
-        if validation.get("controller_source_binding") is not True:
             return None
         execution = validation.get("execution")
         claim_present = validation.get("claim_present")
@@ -2106,7 +2111,7 @@ class EvaluationController:
         if status == "environment_blocked" or raw_classification == "environment_blocked":
             classification = "environment_blocked"
             status = "environment_blocked"
-        elif not controls_passed or not binding_signal or status != "success":
+        elif not controls_passed or status != "success":
             classification = "unproven"
             status = "unproven"
         claim_present = None
@@ -2472,12 +2477,12 @@ class EvaluationController:
             all_validations_complete = all(
                 item.get("validation", {}).get("status") == "success"
                 and item.get("validation", {}).get("controls_passed") is True
-                and item.get("validation", {}).get("controller_source_binding") is True
                 for item in self.item_records
             )
+            all_items_qualified = all(item.get("scoreable") is True for item in self.item_records)
             if not self.discovery_complete:
                 state = "partial" if successful_stages or any(item.get("validation", {}).get("status") in {"success", "environment_blocked", "unproven"} for item in self.item_records) else "failed"
-            elif attempted >= required and successful_stages == len(self.item_records) and all_validations_complete and self.snapshot["source_complete"]:
+            elif attempted >= required and successful_stages == len(self.item_records) and all_validations_complete and all_items_qualified and self.snapshot["source_complete"]:
                 state = "complete"
             elif successful_stages or any(item.get("classification") == "executed_reproduced" for item in self.item_records):
                 state = "partial"

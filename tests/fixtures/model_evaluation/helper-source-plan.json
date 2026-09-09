@@ -1,0 +1,38 @@
+{
+  "item_id": "F-1",
+  "files": [
+    {
+      "path": "generated/oracle.py",
+      "utf8": "\"\"\"Shared behavioural oracle for the can_read owner-check claim.\n\nContract (README.md of the supplied source packet): can_read permits access\nonly for public documents or an authenticated requester equal to owner.\n\nThe claim under validation is that can_read ignores `owner` entirely, so an\nauthenticated non-owner requester is granted read access to a non-public\ndocument.\n\"\"\"\n\nimport hashlib\nimport importlib.util\n\nSOURCE_PATH = \"/source/sample.py\"\n\n\ndef read_source_text(path=SOURCE_PATH):\n    with open(path, \"r\", encoding=\"utf-8\") as handle:\n        return handle.read()\n\n\ndef source_sha256(path=SOURCE_PATH):\n    return hashlib.sha256(read_source_text(path).encode(\"utf-8\")).hexdigest()\n\n\ndef load_module(path, name):\n    spec = importlib.util.spec_from_file_location(name, path)\n    module = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    return module\n\n\ndef probe(can_read):\n    \"\"\"Exercise can_read and report whether `owner` influences the decision.\"\"\"\n    authenticated_non_owner = bool(can_read(\"alice\", \"bob\"))\n    authenticated_owner = bool(can_read(\"bob\", \"bob\"))\n    anonymous_public = bool(can_read(None, \"bob\", True))\n    anonymous_private = bool(can_read(None, \"bob\"))\n    owner_ignored = authenticated_non_owner and authenticated_owner\n    return {\n        \"can_read_alice_bob\": authenticated_non_owner,\n        \"can_read_bob_bob\": authenticated_owner,\n        \"can_read_none_bob_public\": anonymous_public,\n        \"can_read_none_bob_private\": anonymous_private,\n        \"contract_violated_owner_ignored\": owner_ignored,\n    }\n"
+    },
+    {
+      "path": "generated/check_source.py",
+      "utf8": "\"\"\"Baseline: apply the oracle to the supplied read-only source /source/sample.py.\"\"\"\n\nimport json\nimport os\nimport sys\n\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n\nimport oracle\n\n\ndef main():\n    source_text = oracle.read_source_text()\n    module = oracle.load_module(oracle.SOURCE_PATH, \"supplied_sample\")\n    result = oracle.probe(module.can_read)\n    claim_present = bool(result[\"contract_violated_owner_ignored\"])\n    report = {\n        \"subject\": \"supplied source\",\n        \"subject_path\": oracle.SOURCE_PATH,\n        \"source_sha256\": oracle.source_sha256(),\n        \"can_read_body\": source_text.splitlines()[1].strip(),\n        \"mentions_owner_comparison\": \"requester == owner\" in source_text\n        or \"owner ==\" in source_text,\n        \"probe\": result,\n        \"claim_present\": claim_present,\n    }\n    print(json.dumps(report, indent=2, sort_keys=True))\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+    },
+    {
+      "path": "generated/check_fixed.py",
+      "utf8": "\"\"\"Counterexample: the same oracle applied to a contract-conforming can_read.\n\nThis run still reads and imports the supplied source at /source/sample.py so\nthat the two implementations are compared directly; the reported claim_present\nis computed from the conforming implementation, showing the oracle is\ndiscriminating rather than always-true.\n\"\"\"\n\nimport json\nimport os\nimport sys\n\nHERE = os.path.dirname(os.path.abspath(__file__))\nsys.path.insert(0, HERE)\n\nimport oracle\n\n\ndef main():\n    source_text = oracle.read_source_text()\n    supplied = oracle.load_module(oracle.SOURCE_PATH, \"supplied_sample\")\n    fixed = oracle.load_module(os.path.join(HERE, \"fixed_sample.py\"), \"fixed_sample\")\n\n    supplied_result = oracle.probe(supplied.can_read)\n    fixed_result = oracle.probe(fixed.can_read)\n    claim_present = bool(fixed_result[\"contract_violated_owner_ignored\"])\n\n    report = {\n        \"subject\": \"contract-conforming reference implementation\",\n        \"subject_path\": os.path.join(HERE, \"fixed_sample.py\"),\n        \"supplied_source_path\": oracle.SOURCE_PATH,\n        \"supplied_source_sha256\": oracle.source_sha256(),\n        \"supplied_can_read_body\": source_text.splitlines()[1].strip(),\n        \"supplied_probe\": supplied_result,\n        \"probe\": fixed_result,\n        \"implementations_differ\": supplied_result != fixed_result,\n        \"claim_present\": claim_present,\n    }\n    print(json.dumps(report, indent=2, sort_keys=True))\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+    },
+    {
+      "path": "generated/fixed_sample.py",
+      "utf8": "\"\"\"Contract-conforming reference implementation used by the counterexample.\n\nIdentical in shape to /source/sample.py except that can_read compares the\nrequester against the owner, as the README contract requires.\n\"\"\"\n\n\ndef can_read(requester, owner, public=False):\n    return public or (bool(requester) and requester == owner)\n\n\ndef checkout_total(price, quantity):\n    if quantity < 0:\n        raise ValueError(\"quantity must not be negative\")\n    return price * quantity\n"
+    }
+  ],
+  "runs": [
+    {
+      "name": "baseline",
+      "argv": ["python3", "generated/check_source.py"],
+      "cwd": "/work",
+      "expect": {"exit": 0, "observation": {"claim_present": true}},
+      "evidence_ids": ["E_SAMPLE", "E_CONTRACT"]
+    },
+    {
+      "name": "counterexample",
+      "argv": ["python3", "generated/check_fixed.py"],
+      "cwd": "/work",
+      "expect": {"exit": 0, "observation": {"claim_present": false}},
+      "evidence_ids": ["E_SAMPLE", "E_CONTRACT"]
+    }
+  ],
+  "claim_observed": "The helper oracle reads and imports the supplied source, and its baseline and counterexample distinguish the owner-check claim."
+}

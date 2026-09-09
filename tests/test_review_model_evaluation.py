@@ -696,7 +696,135 @@ class ModelEvaluationBehaviorTests(unittest.TestCase):
             self.assertTrue(timeout.timed_out)
             self.assertIn(b"partial", timeout.stdout)
 
-    def test_print_only_source_reference_is_not_semantic_source_binding(self):
+    def test_helper_direct_import_false_signal_does_not_block_qualified_execution(self):
+        module = load_module("review_model_evaluation_helper_false_negative", "scripts/review_model_evaluation.py")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo, base, revision = self._git_repo(root)
+            findings, evidence, models = self._inputs(root)
+            helper_plan = json.loads(
+                (ROOT / "tests/fixtures/model_evaluation/helper-source-plan.json").read_text(encoding="utf-8")
+            )
+            for generated_file in helper_plan["files"]:
+                generated_file["utf8"] = generated_file["utf8"].replace("/source/sample.py", "/source/app.py")
+            for run in helper_plan["runs"]:
+                run["evidence_ids"] = ["E-1"]
+            calls = []
+
+            def runner(argv, payload, cwd, env, timeout, max_output):
+                if len(argv) == 2 and argv[1] == "--version":
+                    return module.adapters.ProcessCapture(tuple(argv), 0, b"fake\n", b"")
+                if len(argv) == 2 and argv[1] == "--help":
+                    return module.adapters.ProcessCapture(
+                        tuple(argv),
+                        0,
+                        b"--safe-mode --restricted --disable-slash-commands --no-session-persistence --output-format --json-schema --model --tools --strict-mcp-config --setting-sources --permission-mode --permission-prompts --system-prompt\n",
+                        b"",
+                    )
+                packet = json.loads(payload)
+                calls.append(packet)
+                role = packet["role"]
+                if role == "discovery":
+                    output = {"candidates": []}
+                elif role == "validation":
+                    output = helper_plan
+                elif role in {"judge_a", "judge_b"}:
+                    finding = packet["finding"]
+                    output = {
+                        "finding_id": finding["finding_id"],
+                        "verdict": "support",
+                        "severity": finding["severity"],
+                        "usefulness": "useful",
+                        "citations": [
+                            {
+                                "path": finding["location"]["path"],
+                                "start": 1,
+                                "end": 1,
+                                "evidence_id": finding["evidence_ids"][0],
+                            }
+                        ],
+                        "counterexample": "The source is exercised by the helper oracle.",
+                        "validation_verdict": "valid",
+                    }
+                else:
+                    finding = packet["finding"]
+                    output = {
+                        "item_id": finding["finding_id"],
+                        "verdict": "supported",
+                        "citations": [
+                            {
+                                "path": finding["location"]["path"],
+                                "start": 1,
+                                "end": 1,
+                                "evidence_id": finding["evidence_ids"][0],
+                            }
+                        ],
+                        "disagreement": "",
+                        "reason": "Both semantic judges accepted the source-exercising controls.",
+                    }
+                return module.adapters.ProcessCapture(
+                    tuple(argv),
+                    0,
+                    json.dumps({"type": "result", "subtype": "success", "structured_output": output}).encode(),
+                    b"",
+                )
+
+            class FakeOCI:
+                def preflight(self):
+                    return {"status": "ready"}
+
+                def execute(self, plan, *args, **kwargs):
+                    self_binding = module._plan_source_binding_signal(plan, {"location": {"path": "app.py"}})
+                    if self_binding:
+                        raise AssertionError("the helper/direct-import plan must remain an AST false negative")
+                    runs = []
+                    for expected in plan["runs"]:
+                        claim_present = expected["expect"]["observation"]["claim_present"]
+                        runs.append(
+                            {
+                                "name": expected["name"],
+                                "valid": True,
+                                "actual": {
+                                    "name": expected["name"],
+                                    "exit": 0,
+                                    "timeout": False,
+                                    "observation": {"claim_present": claim_present},
+                                },
+                            }
+                        )
+                    return {
+                        "status": "success",
+                        "classification": "unproven",
+                        "controls_passed": True,
+                        "claim_present": True,
+                        "runs": runs,
+                    }
+
+            summary = module.run_evaluation(
+                repo=repo,
+                revision=revision,
+                base=base,
+                findings_path=findings,
+                evidence_dir=evidence,
+                models_path=models,
+                environment_path=None,
+                output=root / "out",
+                adapter_runner=runner,
+                oci_executor=FakeOCI(),
+            )
+
+            self.assertEqual(summary["state"], "complete")
+            self.assertEqual(summary["model_assessment"]["scoreable_items"], 1)
+            result = json.loads((root / "out" / "findings.json").read_text(encoding="utf-8"))["findings"][0]
+            self.assertEqual(result["classification"], "executed_reproduced")
+            self.assertEqual(result["validation"]["status"], "success")
+            self.assertFalse(result["validation"]["controller_source_binding"])
+            self.assertLess(
+                [packet["role"] for packet in calls].index("validation"),
+                [packet["role"] for packet in calls].index("judge_a"),
+            )
+
+    def test_print_only_argv_echo_with_invalid_judges_is_not_scoreable_or_complete(self):
         module = load_module("review_model_evaluation_source_binding", "scripts/review_model_evaluation.py")
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -720,12 +848,22 @@ class ModelEvaluationBehaviorTests(unittest.TestCase):
                 if role == "validation":
                     output = {
                         "item_id": "F-1",
-                        "files": [{"path": "generated/check.py", "utf8": "print('/source/app.py')\n"}],
-                        "runs": [
-                            {"name": "baseline", "argv": ["python3", "/work/generated/check.py"], "cwd": "/work", "expect": {"exit": 0, "observation": {"claim_present": True}}, "evidence_ids": ["E-1"]},
-                            {"name": "counterexample", "argv": ["python3", "/work/generated/check.py", "safe"], "cwd": "/work", "expect": {"exit": 0, "observation": {"claim_present": False}}, "evidence_ids": ["E-1"]},
+                        "files": [
+                            {
+                                "path": "generated/check.py",
+                                "utf8": (
+                                    "# /source/app.py\n"
+                                    "import json\n"
+                                    "import sys\n"
+                                    "print(json.dumps({'claim_present': sys.argv[1] == 'yes'}))\n"
+                                ),
+                            }
                         ],
-                        "claim_observed": "claim",
+                        "runs": [
+                            {"name": "baseline", "argv": ["python3", "/work/generated/check.py", "yes"], "cwd": "/work", "expect": {"exit": 0, "observation": {"claim_present": True}}, "evidence_ids": ["E-1"]},
+                            {"name": "counterexample", "argv": ["python3", "/work/generated/check.py", "no"], "cwd": "/work", "expect": {"exit": 0, "observation": {"claim_present": False}}, "evidence_ids": ["E-1"]},
+                        ],
+                        "claim_observed": "The controls echo argv and never exercise app.py.",
                     }
                 elif role in {"judge_a", "judge_b"}:
                     self.assertIn("validation", packet)
@@ -735,11 +873,17 @@ class ModelEvaluationBehaviorTests(unittest.TestCase):
                         "severity": "high",
                         "usefulness": "useful",
                         "citations": [{"path": "app.py", "start": 1, "end": 1, "evidence_id": "E-1"}],
-                        "counterexample": "safe",
-                        "validation_verdict": "unproven",
+                        "counterexample": "The generated check only echoes argv; changing or deleting app.py would not change either observation.",
+                        "validation_verdict": "invalid",
                     }
                 else:
-                    output = {"item_id": "F-1", "verdict": "unknown", "citations": [], "disagreement": "", "reason": "not source-bound"}
+                    output = {
+                        "item_id": "F-1",
+                        "verdict": "supported",
+                        "citations": [{"path": "app.py", "start": 1, "end": 1, "evidence_id": "E-1"}],
+                        "disagreement": "",
+                        "reason": "The source finding may be supported statically, but the executed distinction is invalid.",
+                    }
                 return module.adapters.ProcessCapture(
                     tuple(argv),
                     0,
@@ -775,8 +919,16 @@ class ModelEvaluationBehaviorTests(unittest.TestCase):
                 adapter_runner=runner,
                 oci_executor=FakeOCI(),
             )
+            self.assertEqual(summary["state"], "partial")
             self.assertEqual(summary["validation_coverage"]["unproven"], 1)
             self.assertEqual(summary["model_assessment"]["scoreable_items"], 0)
+            result = json.loads((root / "out" / "findings.json").read_text(encoding="utf-8"))["findings"][0]
+            self.assertEqual(result["validation"]["status"], "success")
+            self.assertFalse(result["validation"]["controller_source_binding"])
+            self.assertEqual(
+                [judge["assessment"]["validation_verdict"] for judge in result["judges"]],
+                ["invalid", "invalid"],
+            )
             self.assertLess(
                 [packet["role"] for packet in calls].index("validation"),
                 [packet["role"] for packet in calls].index("judge_a"),

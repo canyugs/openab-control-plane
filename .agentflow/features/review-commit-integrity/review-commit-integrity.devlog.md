@@ -2,12 +2,12 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: e8ec8af — Stage2 unaccepted; Stage1 d6e96c3 retains Result Go.
-Tests/scenarios: 76 host Python tests PASS; real model full journey partial, zero scoreable items; Git nested marker fixed. Binding-contract independent spec PASS.
+Current commit: 740bbb0 — Stage2 unaccepted; Stage1 d6e96c3 retains Result Go.
+Tests/scenarios: 83 host Python tests PASS; three actual model-generated plans passed OCI controls. Full semantic journey pending binding correction.
 Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex; root ag.json remains untracked bootstrap.
 Proven: approved design, baseline red failure, delivered SHA tests and real PostgreSQL; security pass resolved with explicit immutable-target recovery limit.
 Open: model/OCI/weekly runtime corrections; full live journey, independent reviews and Result Go still pending.
-Next: integrate normalization-seam36081, disagreement-metric94069 and binding-authority30833; actual generated OCI plus fresh full CLI, independent reviews.
+Next: collect binding-authority30833; fresh vulnerable/safe CLI, replay/weekly verification and independent reviews.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
 Archived eras: none.
 Streams: fix/review-commit-integrity in isolated worktree.
@@ -816,4 +816,26 @@ Imported normalization-seam and disagreement-metric patches after exact report S
 * _2026-09-10 01:25:22 (GPT-6/default)_
 
 Host83 Python tests PASS after normalization+disagreement imports. Actual model-authored F-1 and both blind-discovered candidate plans ran unmodified through OCI successfully: all three have two passed controlled observations, mechanical classification unproven as designed. Preserved normalized-model-plans-live-oci-success.json; earlier daemon-unavailable artifact remains separate. Binding semantic authority correction still running; full fresh model journey follows its import.
+
+## [RUN-094] Event (during round A-001)
+
+* _2026-09-10 01:27:09 (GPT-6/default)_
+
+Checkpoint scope verified: source740bbb0 includes only approved normalization and disagreement corrections;83 host tests and three real generated OCI plans passed. Binding worker report exists but process active, no import before terminal. Tracker current; full fresh model journey, replay/weekly and independent reviews remain.
+
+## [WIP-022] Checkpoint (during round A-001)
+
+* _2026-09-10 01:27:09 (GPT-6/default)_
+
+- **Finished:** Normalization and disagreement corrections imported;83 host tests and all three actual generated OCI controls passed.
+- **Running now:** binding-authority30833 finishing; reusable PTY53083 idle.
+- **Still to do:** Fresh complete vulnerable/safe model journeys, resume/weekly readback, security/acceptance/learn and exact Result Go.
+- **Next work action:** Collect binding patch and run fresh actual evaluation.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-095] Event (during round A-001)
+
+* _2026-09-10 01:28:07 (GPT-6/default)_
+
+Binding-authority worker terminal0; report31f35306f1eb80c3da61fd2f59d9212b791ec7586ced8cca5e151575d7f2f15e verified, exact scoped patch plus helper fixture imported without conflicts. AST signal diagnostic-only; item semantic qualification now also gates complete state. No workers remain. Host integrated full suite86 tests PASS, compileall and diffcheck PASS. Starting fresh real vulnerable/safe CLI journey on next source commit; earlier complete transport/partial result remains separate.
 

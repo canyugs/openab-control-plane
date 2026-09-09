@@ -197,6 +197,58 @@ class LiveEvidenceRegressionTests(unittest.TestCase):
         self.assertTrue(module._plan_source_binding_signal(open_plan, finding))
         self.assertTrue(module._plan_source_binding_signal(importlib_plan, finding))
 
+    def test_helper_direct_import_plan_is_only_a_diagnostic_false_signal(self):
+        module = load_module("review_model_live_helper_binding_false_negative")
+        plan = json.loads(
+            (ROOT / "tests/fixtures/model_evaluation/helper-source-plan.json").read_text(encoding="utf-8")
+        )
+        normalized = module.oci.validate_generated_plan(plan, {"E_SAMPLE", "E_CONTRACT"})
+
+        self.assertFalse(
+            module._plan_source_binding_signal(normalized, {"location": {"path": "sample.py"}})
+        )
+        self.assertIn("read_source_text", normalized["files"][0]["utf8"])
+        self.assertIn("spec_from_file_location", normalized["files"][0]["utf8"])
+
+    def test_print_only_argv_echo_has_distinct_controls_but_no_source_signal(self):
+        module = load_module("review_model_live_argv_echo_negative")
+        plan = {
+            "item_id": "F-1",
+            "files": [
+                {
+                    "path": "generated/check.py",
+                    "utf8": (
+                        "# /source/sample.py\n"
+                        "import json\n"
+                        "import sys\n"
+                        "print(json.dumps({'claim_present': sys.argv[1] == 'yes'}))\n"
+                    ),
+                }
+            ],
+            "runs": [
+                {
+                    "name": "baseline",
+                    "argv": ["python3", "/work/generated/check.py", "yes"],
+                    "cwd": "/work",
+                    "expect": {"exit": 0, "observation": {"claim_present": True}},
+                    "evidence_ids": ["E_SAMPLE"],
+                },
+                {
+                    "name": "counterexample",
+                    "argv": ["python3", "/work/generated/check.py", "no"],
+                    "cwd": "/work",
+                    "expect": {"exit": 0, "observation": {"claim_present": False}},
+                    "evidence_ids": ["E_SAMPLE"],
+                },
+            ],
+            "claim_observed": "The controls echo their argv instead of exercising the supplied source.",
+        }
+        normalized = module.oci.validate_generated_plan(plan, {"E_SAMPLE"})
+
+        self.assertFalse(
+            module._plan_source_binding_signal(normalized, {"location": {"path": "sample.py"}})
+        )
+
     def test_print_path_comment_argv_echo_and_malformed_source_remain_unbound(self):
         module = load_module("review_model_live_source_binding_negative")
         finding = {"location": {"path": "sample.py"}}

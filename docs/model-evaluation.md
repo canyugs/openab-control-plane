@@ -211,8 +211,11 @@ judge adds `validation_verdict: valid|invalid|unproven`. `judge_a` and
 each other's output. Each independently assesses whether the executed
 controls meaningfully distinguish the claim from its negation. A path printed
 as text, a path in a comment, a hard-coded/argv-only result, or a generated-file
-citation is invalid or unproven; structural source binding is only a signal,
-not proof that the claim is semantically correct.
+citation is invalid or unproven. The AST source-binding result is retained as a
+diagnostic audit signal only; it is not proof of meaningful source interaction,
+and it cannot reject, promote, or qualify a run. The independent semantic
+judges assess that qualification from the complete retained source, plan, and
+actual execution evidence.
 Synthesis receives anonymized `judge_1`/`judge_2` assessments, source/evidence,
 and observed validation results; disagreement is preserved and `unknown` is
 allowed. Discovery receives source/evidence only: no original finding,
@@ -243,14 +246,15 @@ Runs use literal argv arrays, `/work`, structured observation objects, and
 distinct argv. The example above imports and calls the source function, then
 prints actual JSON; the argv selects control inputs and is not itself the
 claim. Shell interpreters, `-c`, traversal, links, undeclared evidence, ordinary crashes,
-timeout, and assertion-false harnesses are rejected. Source binding is a
-structural signal (for example, a source read through `open` or
-`Path.read_text`, or an import after adding `/source` to `sys.path`), not
-semantic proof: comments, printed constants, and source-path strings alone
-remain unproven. Independent judge validation verdicts are required in
-addition to the signal. Generated files are materialized only inside the
-container and discarded from the host. Their raw content, digests, and actual
-observations remain in the plan/result artifacts.
+timeout, and assertion-false harnesses are rejected. The AST source-binding
+result is a diagnostic structural signal (for example, a source read through
+`open` or `Path.read_text`, or an import after adding `/source` to `sys.path`),
+not semantic proof and not a promotion prerequisite: comments, printed
+constants, and source-path strings alone remain unproven. Independent judge
+validation verdicts are required to qualify meaningful source interaction from
+the complete retained evidence. Generated files are materialized only inside
+the container and discarded from the host. Their raw content, digests, and
+actual observations remain in the plan/result artifacts.
 
 The OCI executor uses a new non-root container with a digest-pinned image,
 `--network none`, read-only root and source bind mount, writable tmpfs
@@ -258,10 +262,13 @@ The OCI executor uses a new non-root container with a digest-pinned image,
 `no-new-privileges`, bounded memory/PIDs/CPU/output/time, and `--rm` cleanup.
 It mounts no credentials, host socket, repository checkout, or project hook.
 An unavailable daemon is an explicit `environment_blocked` result. OCI
-execution remains raw `unproven` evidence until both judges qualify the
-source-bound controls; the controller derives `executed_reproduced` or
-`executed_refuted` only after their matching assessments and nonconflicting
-synthesis.
+execution remains raw `unproven` evidence until both judges qualify whether the
+controls meaningfully exercise the supplied source and distinguish the claim;
+the controller derives `executed_reproduced` or `executed_refuted` only after
+their matching assessments and nonconflicting synthesis. A run is complete
+only when every item also meets that existing qualification, including complete
+source scope and the passed, distinct controls; invalid, missing, or unknown
+semantic qualification leaves the run partial or failed and unscoreable.
 
 An item is classified as exactly one of `static_evidence`,
 `executed_reproduced`, `executed_refuted`, `environment_blocked`, or

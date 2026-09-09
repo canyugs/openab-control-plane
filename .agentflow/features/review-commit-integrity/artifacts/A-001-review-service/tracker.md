@@ -8,7 +8,7 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-10 01:17:42 Asia/Taipei.
+- **Last update:** 2026-09-10 01:27:09 Asia/Taipei.
 
 - **Evidence commit:** 1107f73567710159c298ff6a60df393e8e6b9775.
 
@@ -40,9 +40,9 @@
 
 - **Current item:** T-3.
 
-- **Last proven result:** 76 host tests PASS; original submodule marker now blocked with unchanged config. Full real model journey produced partial/unscoreable result and exposed normalized OCI seam; independent binding-contract spec PASS accepted.
+- **Last proven result:** Source740bbb0;83 host tests PASS; all3 real generated plans passed OCI controls unchanged. Full fresh semantic journey awaits binding integration.
 
-- **Active blocker or running process:** normalization-seam36081, disagreement-metric94069, binding-authority30833; PTY53083 idle after retained partial journey.
+- **Active blocker or running process:** binding-authority30833 finishing report; PTY53083 idle.
 
 - **Next safe action:** Integrate disjoint correction results, run all tests and full real model/OCI PTY journey, then independent security/acceptance.
 

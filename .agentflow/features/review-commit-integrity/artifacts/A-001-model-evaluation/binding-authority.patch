@@ -1,0 +1,403 @@
+diff --git a/docs/model-evaluation.md b/docs/model-evaluation.md
+index 1706bfd..8c5ab70 100644
+--- a/docs/model-evaluation.md
++++ b/docs/model-evaluation.md
+@@ -211,8 +211,11 @@ judge adds `validation_verdict: valid|invalid|unproven`. `judge_a` and
+ each other's output. Each independently assesses whether the executed
+ controls meaningfully distinguish the claim from its negation. A path printed
+ as text, a path in a comment, a hard-coded/argv-only result, or a generated-file
+-citation is invalid or unproven; structural source binding is only a signal,
+-not proof that the claim is semantically correct.
++citation is invalid or unproven. The AST source-binding result is retained as a
++diagnostic audit signal only; it is not proof of meaningful source interaction,
++and it cannot reject, promote, or qualify a run. The independent semantic
++judges assess that qualification from the complete retained source, plan, and
++actual execution evidence.
+ Synthesis receives anonymized `judge_1`/`judge_2` assessments, source/evidence,
+ and observed validation results; disagreement is preserved and `unknown` is
+ allowed. Discovery receives source/evidence only: no original finding,
+@@ -243,14 +246,15 @@ Runs use literal argv arrays, `/work`, structured observation objects, and
+ distinct argv. The example above imports and calls the source function, then
+ prints actual JSON; the argv selects control inputs and is not itself the
+ claim. Shell interpreters, `-c`, traversal, links, undeclared evidence, ordinary crashes,
+-timeout, and assertion-false harnesses are rejected. Source binding is a
+-structural signal (for example, a source read through `open` or
+-`Path.read_text`, or an import after adding `/source` to `sys.path`), not
+-semantic proof: comments, printed constants, and source-path strings alone
+-remain unproven. Independent judge validation verdicts are required in
+-addition to the signal. Generated files are materialized only inside the
+-container and discarded from the host. Their raw content, digests, and actual
+-observations remain in the plan/result artifacts.
++timeout, and assertion-false harnesses are rejected. The AST source-binding
++result is a diagnostic structural signal (for example, a source read through
++`open` or `Path.read_text`, or an import after adding `/source` to `sys.path`),
++not semantic proof and not a promotion prerequisite: comments, printed
++constants, and source-path strings alone remain unproven. Independent judge
++validation verdicts are required to qualify meaningful source interaction from
++the complete retained evidence. Generated files are materialized only inside
++the container and discarded from the host. Their raw content, digests, and
++actual observations remain in the plan/result artifacts.
+ 
+ The OCI executor uses a new non-root container with a digest-pinned image,
+ `--network none`, read-only root and source bind mount, writable tmpfs
+@@ -258,10 +262,13 @@ The OCI executor uses a new non-root container with a digest-pinned image,
+ `no-new-privileges`, bounded memory/PIDs/CPU/output/time, and `--rm` cleanup.
+ It mounts no credentials, host socket, repository checkout, or project hook.
+ An unavailable daemon is an explicit `environment_blocked` result. OCI
+-execution remains raw `unproven` evidence until both judges qualify the
+-source-bound controls; the controller derives `executed_reproduced` or
+-`executed_refuted` only after their matching assessments and nonconflicting
+-synthesis.
++execution remains raw `unproven` evidence until both judges qualify whether the
++controls meaningfully exercise the supplied source and distinguish the claim;
++the controller derives `executed_reproduced` or `executed_refuted` only after
++their matching assessments and nonconflicting synthesis. A run is complete
++only when every item also meets that existing qualification, including complete
++source scope and the passed, distinct controls; invalid, missing, or unknown
++semantic qualification leaves the run partial or failed and unscoreable.
+ 
+ An item is classified as exactly one of `static_evidence`,
+ `executed_reproduced`, `executed_refuted`, `environment_blocked`, or
+diff --git a/scripts/review_model_evaluation.py b/scripts/review_model_evaluation.py
+index 205e21c..0d6c0a6 100644
+--- a/scripts/review_model_evaluation.py
++++ b/scripts/review_model_evaluation.py
+@@ -750,7 +750,12 @@ def _validate_synthesis_result(result: Mapping[str, Any], item_id: str, finding:
+ 
+ 
+ def _python_source_binding_signal(content: str, source_path: str) -> bool:
+-    """Find a structural source-read signal, never prove semantics by text."""
++    """Record a structural source-reference heuristic for diagnostics only.
++
++    This signal cannot establish meaningful source interaction or qualify an
++    evaluation result; the independent semantic assessments remain the
++    authority for that qualification.
++    """
+ 
+     try:
+         tree = ast.parse(content)
+@@ -856,6 +861,8 @@ def _python_source_binding_signal(content: str, source_path: str) -> bool:
+ 
+ 
+ def _plan_source_binding_signal(plan: Mapping[str, Any], finding: Mapping[str, Any]) -> bool:
++    """Return the persisted structural source-reference diagnostic only."""
++
+     location = finding.get("location", {})
+     source_path = location.get("path") if isinstance(location, Mapping) else ""
+     if not isinstance(source_path, str):
+@@ -869,7 +876,7 @@ def _plan_source_binding_signal(plan: Mapping[str, Any], finding: Mapping[str, A
+ 
+ 
+ def _plan_mentions_frozen_source(plan: Mapping[str, Any], finding: Mapping[str, Any]) -> bool:
+-    """Compatibility alias for the structural, non-semantic binding signal."""
++    """Compatibility alias for the diagnostic-only structural signal."""
+ 
+     return _plan_source_binding_signal(plan, finding)
+ 
+@@ -1998,12 +2005,10 @@ class EvaluationController:
+         )
+ 
+     def _execution_classification(self, validation: Mapping[str, Any]) -> Optional[str]:
+-        """Derive an execution direction without trusting OCI semantics."""
++        """Derive a mechanically observed direction without trusting semantics."""
+ 
+         if validation.get("status") != "success" or validation.get("controls_passed") is not True:
+             return None
+-        if validation.get("controller_source_binding") is not True:
+-            return None
+         execution = validation.get("execution")
+         claim_present = validation.get("claim_present")
+         if isinstance(execution, Mapping):
+@@ -2106,7 +2111,7 @@ class EvaluationController:
+         if status == "environment_blocked" or raw_classification == "environment_blocked":
+             classification = "environment_blocked"
+             status = "environment_blocked"
+-        elif not controls_passed or not binding_signal or status != "success":
++        elif not controls_passed or status != "success":
+             classification = "unproven"
+             status = "unproven"
+         claim_present = None
+@@ -2466,12 +2471,12 @@ class EvaluationController:
+             all_validations_complete = all(
+                 item.get("validation", {}).get("status") == "success"
+                 and item.get("validation", {}).get("controls_passed") is True
+-                and item.get("validation", {}).get("controller_source_binding") is True
+                 for item in self.item_records
+             )
++            all_items_qualified = all(item.get("scoreable") is True for item in self.item_records)
+             if not self.discovery_complete:
+                 state = "partial" if successful_stages or any(item.get("validation", {}).get("status") in {"success", "environment_blocked", "unproven"} for item in self.item_records) else "failed"
+-            elif attempted >= required and successful_stages == len(self.item_records) and all_validations_complete and self.snapshot["source_complete"]:
++            elif attempted >= required and successful_stages == len(self.item_records) and all_validations_complete and all_items_qualified and self.snapshot["source_complete"]:
+                 state = "complete"
+             elif successful_stages or any(item.get("classification") == "executed_reproduced" for item in self.item_records):
+                 state = "partial"
+diff --git a/tests/test_review_model_evaluation.py b/tests/test_review_model_evaluation.py
+index a7f7d6f..3c2b268 100644
+--- a/tests/test_review_model_evaluation.py
++++ b/tests/test_review_model_evaluation.py
+@@ -696,7 +696,135 @@ class ModelEvaluationBehaviorTests(unittest.TestCase):
+             self.assertTrue(timeout.timed_out)
+             self.assertIn(b"partial", timeout.stdout)
+ 
+-    def test_print_only_source_reference_is_not_semantic_source_binding(self):
++    def test_helper_direct_import_false_signal_does_not_block_qualified_execution(self):
++        module = load_module("review_model_evaluation_helper_false_negative", "scripts/review_model_evaluation.py")
++        with tempfile.TemporaryDirectory() as temp:
++            root = Path(temp)
++            repo, base, revision = self._git_repo(root)
++            findings, evidence, models = self._inputs(root)
++            helper_plan = json.loads(
++                (ROOT / "tests/fixtures/model_evaluation/helper-source-plan.json").read_text(encoding="utf-8")
++            )
++            for generated_file in helper_plan["files"]:
++                generated_file["utf8"] = generated_file["utf8"].replace("/source/sample.py", "/source/app.py")
++            for run in helper_plan["runs"]:
++                run["evidence_ids"] = ["E-1"]
++            calls = []
++
++            def runner(argv, payload, cwd, env, timeout, max_output):
++                if len(argv) == 2 and argv[1] == "--version":
++                    return module.adapters.ProcessCapture(tuple(argv), 0, b"fake\n", b"")
++                if len(argv) == 2 and argv[1] == "--help":
++                    return module.adapters.ProcessCapture(
++                        tuple(argv),
++                        0,
++                        b"--safe-mode --restricted --disable-slash-commands --no-session-persistence --output-format --json-schema --model --tools --strict-mcp-config --setting-sources --permission-mode --permission-prompts --system-prompt\n",
++                        b"",
++                    )
++                packet = json.loads(payload)
++                calls.append(packet)
++                role = packet["role"]
++                if role == "discovery":
++                    output = {"candidates": []}
++                elif role == "validation":
++                    output = helper_plan
++                elif role in {"judge_a", "judge_b"}:
++                    finding = packet["finding"]
++                    output = {
++                        "finding_id": finding["finding_id"],
++                        "verdict": "support",
++                        "severity": finding["severity"],
++                        "usefulness": "useful",
++                        "citations": [
++                            {
++                                "path": finding["location"]["path"],
++                                "start": 1,
++                                "end": 1,
++                                "evidence_id": finding["evidence_ids"][0],
++                            }
++                        ],
++                        "counterexample": "The source is exercised by the helper oracle.",
++                        "validation_verdict": "valid",
++                    }
++                else:
++                    finding = packet["finding"]
++                    output = {
++                        "item_id": finding["finding_id"],
++                        "verdict": "supported",
++                        "citations": [
++                            {
++                                "path": finding["location"]["path"],
++                                "start": 1,
++                                "end": 1,
++                                "evidence_id": finding["evidence_ids"][0],
++                            }
++                        ],
++                        "disagreement": "",
++                        "reason": "Both semantic judges accepted the source-exercising controls.",
++                    }
++                return module.adapters.ProcessCapture(
++                    tuple(argv),
++                    0,
++                    json.dumps({"type": "result", "subtype": "success", "structured_output": output}).encode(),
++                    b"",
++                )
++
++            class FakeOCI:
++                def preflight(self):
++                    return {"status": "ready"}
++
++                def execute(self, plan, *args, **kwargs):
++                    self_binding = module._plan_source_binding_signal(plan, {"location": {"path": "app.py"}})
++                    if self_binding:
++                        raise AssertionError("the helper/direct-import plan must remain an AST false negative")
++                    runs = []
++                    for expected in plan["runs"]:
++                        claim_present = expected["expect"]["observation"]["claim_present"]
++                        runs.append(
++                            {
++                                "name": expected["name"],
++                                "valid": True,
++                                "actual": {
++                                    "name": expected["name"],
++                                    "exit": 0,
++                                    "timeout": False,
++                                    "observation": {"claim_present": claim_present},
++                                },
++                            }
++                        )
++                    return {
++                        "status": "success",
++                        "classification": "unproven",
++                        "controls_passed": True,
++                        "claim_present": True,
++                        "runs": runs,
++                    }
++
++            summary = module.run_evaluation(
++                repo=repo,
++                revision=revision,
++                base=base,
++                findings_path=findings,
++                evidence_dir=evidence,
++                models_path=models,
++                environment_path=None,
++                output=root / "out",
++                adapter_runner=runner,
++                oci_executor=FakeOCI(),
++            )
++
++            self.assertEqual(summary["state"], "complete")
++            self.assertEqual(summary["model_assessment"]["scoreable_items"], 1)
++            result = json.loads((root / "out" / "findings.json").read_text(encoding="utf-8"))["findings"][0]
++            self.assertEqual(result["classification"], "executed_reproduced")
++            self.assertEqual(result["validation"]["status"], "success")
++            self.assertFalse(result["validation"]["controller_source_binding"])
++            self.assertLess(
++                [packet["role"] for packet in calls].index("validation"),
++                [packet["role"] for packet in calls].index("judge_a"),
++            )
++
++    def test_print_only_argv_echo_with_invalid_judges_is_not_scoreable_or_complete(self):
+         module = load_module("review_model_evaluation_source_binding", "scripts/review_model_evaluation.py")
+         with tempfile.TemporaryDirectory() as temp:
+             root = Path(temp)
+@@ -720,12 +848,22 @@ class ModelEvaluationBehaviorTests(unittest.TestCase):
+                 if role == "validation":
+                     output = {
+                         "item_id": "F-1",
+-                        "files": [{"path": "generated/check.py", "utf8": "print('/source/app.py')\n"}],
++                        "files": [
++                            {
++                                "path": "generated/check.py",
++                                "utf8": (
++                                    "# /source/app.py\n"
++                                    "import json\n"
++                                    "import sys\n"
++                                    "print(json.dumps({'claim_present': sys.argv[1] == 'yes'}))\n"
++                                ),
++                            }
++                        ],
+                         "runs": [
+-                            {"name": "baseline", "argv": ["python3", "/work/generated/check.py"], "cwd": "/work", "expect": {"exit": 0, "observation": {"claim_present": True}}, "evidence_ids": ["E-1"]},
+-                            {"name": "counterexample", "argv": ["python3", "/work/generated/check.py", "safe"], "cwd": "/work", "expect": {"exit": 0, "observation": {"claim_present": False}}, "evidence_ids": ["E-1"]},
++                            {"name": "baseline", "argv": ["python3", "/work/generated/check.py", "yes"], "cwd": "/work", "expect": {"exit": 0, "observation": {"claim_present": True}}, "evidence_ids": ["E-1"]},
++                            {"name": "counterexample", "argv": ["python3", "/work/generated/check.py", "no"], "cwd": "/work", "expect": {"exit": 0, "observation": {"claim_present": False}}, "evidence_ids": ["E-1"]},
+                         ],
+-                        "claim_observed": "claim",
++                        "claim_observed": "The controls echo argv and never exercise app.py.",
+                     }
+                 elif role in {"judge_a", "judge_b"}:
+                     self.assertIn("validation", packet)
+@@ -735,11 +873,17 @@ class ModelEvaluationBehaviorTests(unittest.TestCase):
+                         "severity": "high",
+                         "usefulness": "useful",
+                         "citations": [{"path": "app.py", "start": 1, "end": 1, "evidence_id": "E-1"}],
+-                        "counterexample": "safe",
+-                        "validation_verdict": "unproven",
++                        "counterexample": "The generated check only echoes argv; changing or deleting app.py would not change either observation.",
++                        "validation_verdict": "invalid",
+                     }
+                 else:
+-                    output = {"item_id": "F-1", "verdict": "unknown", "citations": [], "disagreement": "", "reason": "not source-bound"}
++                    output = {
++                        "item_id": "F-1",
++                        "verdict": "supported",
++                        "citations": [{"path": "app.py", "start": 1, "end": 1, "evidence_id": "E-1"}],
++                        "disagreement": "",
++                        "reason": "The source finding may be supported statically, but the executed distinction is invalid.",
++                    }
+                 return module.adapters.ProcessCapture(
+                     tuple(argv),
+                     0,
+@@ -775,8 +919,16 @@ class ModelEvaluationBehaviorTests(unittest.TestCase):
+                 adapter_runner=runner,
+                 oci_executor=FakeOCI(),
+             )
++            self.assertEqual(summary["state"], "partial")
+             self.assertEqual(summary["validation_coverage"]["unproven"], 1)
+             self.assertEqual(summary["model_assessment"]["scoreable_items"], 0)
++            result = json.loads((root / "out" / "findings.json").read_text(encoding="utf-8"))["findings"][0]
++            self.assertEqual(result["validation"]["status"], "success")
++            self.assertFalse(result["validation"]["controller_source_binding"])
++            self.assertEqual(
++                [judge["assessment"]["validation_verdict"] for judge in result["judges"]],
++                ["invalid", "invalid"],
++            )
+             self.assertLess(
+                 [packet["role"] for packet in calls].index("validation"),
+                 [packet["role"] for packet in calls].index("judge_a"),
+diff --git a/tests/test_review_model_live_evidence.py b/tests/test_review_model_live_evidence.py
+index 31992ec..ec1f09f 100644
+--- a/tests/test_review_model_live_evidence.py
++++ b/tests/test_review_model_live_evidence.py
+@@ -197,6 +197,58 @@ class LiveEvidenceRegressionTests(unittest.TestCase):
+         self.assertTrue(module._plan_source_binding_signal(open_plan, finding))
+         self.assertTrue(module._plan_source_binding_signal(importlib_plan, finding))
+ 
++    def test_helper_direct_import_plan_is_only_a_diagnostic_false_signal(self):
++        module = load_module("review_model_live_helper_binding_false_negative")
++        plan = json.loads(
++            (ROOT / "tests/fixtures/model_evaluation/helper-source-plan.json").read_text(encoding="utf-8")
++        )
++        normalized = module.oci.validate_generated_plan(plan, {"E_SAMPLE", "E_CONTRACT"})
++
++        self.assertFalse(
++            module._plan_source_binding_signal(normalized, {"location": {"path": "sample.py"}})
++        )
++        self.assertIn("read_source_text", normalized["files"][0]["utf8"])
++        self.assertIn("spec_from_file_location", normalized["files"][0]["utf8"])
++
++    def test_print_only_argv_echo_has_distinct_controls_but_no_source_signal(self):
++        module = load_module("review_model_live_argv_echo_negative")
++        plan = {
++            "item_id": "F-1",
++            "files": [
++                {
++                    "path": "generated/check.py",
++                    "utf8": (
++                        "# /source/sample.py\n"
++                        "import json\n"
++                        "import sys\n"
++                        "print(json.dumps({'claim_present': sys.argv[1] == 'yes'}))\n"
++                    ),
++                }
++            ],
++            "runs": [
++                {
++                    "name": "baseline",
++                    "argv": ["python3", "/work/generated/check.py", "yes"],
++                    "cwd": "/work",
++                    "expect": {"exit": 0, "observation": {"claim_present": True}},
++                    "evidence_ids": ["E_SAMPLE"],
++                },
++                {
++                    "name": "counterexample",
++                    "argv": ["python3", "/work/generated/check.py", "no"],
++                    "cwd": "/work",
++                    "expect": {"exit": 0, "observation": {"claim_present": False}},
++                    "evidence_ids": ["E_SAMPLE"],
++                },
++            ],
++            "claim_observed": "The controls echo their argv instead of exercising the supplied source.",
++        }
++        normalized = module.oci.validate_generated_plan(plan, {"E_SAMPLE"})
++
++        self.assertFalse(
++            module._plan_source_binding_signal(normalized, {"location": {"path": "sample.py"}})
++        )
++
+     def test_print_path_comment_argv_echo_and_malformed_source_remain_unbound(self):
+         module = load_module("review_model_live_source_binding_negative")
+         finding = {"location": {"path": "sample.py"}}
