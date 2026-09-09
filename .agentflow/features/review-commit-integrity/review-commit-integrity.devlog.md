@@ -6,8 +6,8 @@ Current commit: d6e96c32abfd766588c549e8922e3077d6abcb00 — Stage 1 implementat
 Tests/scenarios: host package 170 tests and root suite 327 tests passed; build, package fmt and clippy passed; workspace fmt has three unchanged baseline differences.
 Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex; root ag.json remains untracked bootstrap.
 Proven: approved design, baseline red failure, delivered SHA tests and real PostgreSQL; security pass resolved with explicit immutable-target recovery limit.
-Open: exact Design Go 1107f73 for complete automatic model evaluation; prior report-only design superseded.
-Next: implement frozen capability-first design after Design Go; costs already authorized; no active worker or source changes.
+Open: implementation and real model/OCI verification for approved design 1107f73.
+Next: implement full automatic evaluation; Design Go received; costs authorized.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
 Archived eras: none.
 Streams: fix/review-commit-integrity in isolated worktree.
@@ -372,3 +372,9 @@ Model-evaluation requirements amendment and specification accepted with design-r
 Frozen new design: 1107f73567710159c298ff6a60df393e8e6b9775, containing A-001-model-evaluation/design.md plus design-resolution.md. All authorized design work completed and source remained unchanged. Human question: approve this exact design to start the full automatic evaluation implementation? Suggested default: approve capability-first implementation; model cost acceptance is already recorded and is not being asked again.
 
 Installed /Users/can/.agents/skills/agentflow/SKILL.md requires: "Source work starts only after a later `Design Go: <commit>`." The owner approved the scope/cost and priority; the newly concrete commit is now reviewable. Current Ask remains open at that explicit source-work gate, with T-3 unfinished; no completed implementation claim or runtime-test claim. Origin fetched and HEAD..origin/fix/review-commit-integrity inspected empty this turn; push is fast-forward only.
+
+## [RUN-040] Event (during round A-001)
+
+* _2026-09-09 22:14:41 (GPT-6/default)_
+
+Owner message verbatim: `go`. Design Go: 1107f73567710159c298ff6a60df393e8e6b9775. Implement complete automatic evaluation and weekly report; required distinct real models and OCI acceptance remain. Route full_pipeline, allow-ag on. Notebook absolute-path write was rejected without mutation and corrected to repository-relative. Docker application started; CLI OAuth available, API key environment absent; bare adapter authentication needs verification.

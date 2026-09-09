@@ -14,9 +14,9 @@
 
 ## Overall state
 
-- **State:** blocked.
+- **State:** active.
 
-- **Reason:** Revised complete model-evaluation design frozen; exact Design Go precedes source work.
+- **Reason:** Design Go received; implementation starts.
 
 - **Total:** 3.
 
@@ -42,17 +42,17 @@
 
 - **Last proven result:** Capability-first requirements and design accepted; Stage 1 source and Result Go remain unchanged.
 
-- **Active blocker or running process:** No running worker; new Design Go for 1107f73567710159c298ff6a60df393e8e6b9775 pending.
+- **Active blocker or running process:** Preparing external implementation after Design Go.
 
 - **Next safe action:** Implement full automatic model evaluation and weekly report after exact Design Go; include real model and OCI PTY validation.
 
-- **Expected changed files:** crates/github-pr-controller/src/{closing.rs,github.rs,lib.rs,deciding.rs,store.rs,store/sqlite.rs,store/postgres.rs}; stream notebook and artifacts.
+- **Expected changed files:** scripts/review_model_{evaluation,adapters,oci_executor}.py; scripts/review_round_weekly_report.py; tests/test_review_model_{evaluation,oci_executor}.py; tests/test_review_round_weekly_report.py; tests/fixtures/model_evaluation/; docs/model-evaluation.md; docs/review-round-weekly-report.md; stream records.
 
 ## Completion proof
 
 - **All accepted tasks checked:** no.
 
-- **Blocking accepted decision:** Design Go for 1107f73567710159c298ff6a60df393e8e6b9775.
+- **Blocking accepted decision:** none.
 
 - **Operation running:** no.
 
@@ -60,7 +60,7 @@
 
 - **Evidence status:** current.
 
-- **Judgment:** blocked.
+- **Judgment:** active.
 
 ## Update meaning
 
