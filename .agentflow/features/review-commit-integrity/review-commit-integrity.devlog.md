@@ -2,15 +2,16 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: 4b46e16 (source6e5784b) — Stage2 acceptance pending; Stage1 d6e96c3 retains Result Go.
-Tests/scenarios: 86 host tests/security PASS; real vulnerable/safe model+OCI complete, verified replay and tamper rejection; weekly readback passed.
-Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex; root ag.json remains untracked bootstrap.
-Proven: approved design, baseline red failure, delivered SHA tests and real PostgreSQL; security pass resolved with explicit immutable-target recovery limit.
-Open: independent Stage2 acceptance, learn, host gate and exact Result Go; later Stage3 remains separate.
-Next: collect stage2-acceptance34512, learn and prepare exact reviewable result.
+Current commit: 4b46e16c75430f9654b18599e319f978d5b0c3ac reviewed implementation; later commits records only.
+Tests/scenarios: 86 tests, actual model/OCI journeys, replay/tamper/weekly readback, security/acceptance/host gate PASS.
+Configuration: ag.json — schema v7; validated for codex this round.
+Proven: Stage1 SHA integrity accepted; Stage2 automatic model evaluation and weekly report independently verified.
+Open: Stage2 exact Result Go; later Stage3 separately gated. No active workers or PTYs.
+Next: owner Result Go for4b46e16c75430f9654b18599e319f978d5b0c3ac; no deployment or new experiment inferred.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
 Archived eras: none.
-Streams: fix/review-commit-integrity in isolated worktree.
+Streams:
+stream: review-commit-integrity — active — .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md
 
 ---
 
@@ -897,3 +898,68 @@ First pre-push fetch succeeded; HEAD..origin/fix/review-commit-integrity empty, 
 
 Stage2 acceptance start1 terminal0, original report140738247e0da915c5396d05560dbabbf7c035c13112bd5898e416f3f6ab0cc7 verified; all four verdicts PASS,86 independent tests and byte-identical weekly regeneration plus tamper control. Host gate: PASS for4b46e16c75430f9654b18599e319f978d5b0c3ac, product source6e5784b. Original report preserved; formal checker labels and scoped diff command label added from immutable evidence only, resolution records before/after hashes and unchanged substantive bytes. No review retry or source test repetition. Applicable learn follows; Result Go pending.
 
+## [RUN-104] Event (during round A-001)
+
+* _2026-09-10 01:41:50 (GPT-6/default)_
+
+Dispatch stage2-learn, learn, codex-default/basic, gpt-5.6-luna/max, external-runner-v1 at 1d64a12d039b55b02041964ba1f3041ade0f735f. Frozen exact authority in stage2-learn-brief.md; disposable clone only.
+
+## [RUN-105] Event (during round A-001)
+
+* _2026-09-10 01:46:47 (GPT-6/default)_
+
+Applicable learn completed terminal0, only report path changed; full report read and trusted SHAbc404b64cc6c2f6e46dae56ff642883501b70d7118d75636fd38af677a309236 verified. Preserved raw report; removed only stray trailing asterisk from first stamp for canonical format, no content/verdict change. Lessons record observed transport/normalization/semantic/disagreement/Git/unknown boundaries only; no source or memory writes. No active workers or PTYs remain. Ready to present exact Result Go4b46e16c75430f9654b18599e319f978d5b0c3ac; whole program remains pending that gate and later separately gated Stage3.
+
+# ← Reply / A-001
+
+* _2026-09-10 01:49:13 (GPT-6/default)_
+
+## [SUMMARY]
+
+- 第二階段已完成實作與獨立驗收：自動多模型評估、盲測漏報探索、容器驗證、綜合结果及離線週報均可執行。
+- 真實範例確認原 finding、找出一項新漏報，並在修正版本反證原 finding；86項測試、安全覆核、驗收與Host gate全部PASS。
+- 可驗收版本4b46e16c75430f9654b18599e319f978d5b0c3ac；只剩使用者Result Go，尚未部署或進入第三階段比較實驗。
+
+## [FINAL REPORT]
+
+### 交給 Agentflow 與設計內容
+
+第一階段SHA正確性修復d6e96c3已取得Result Go。本次go對應第二階段設計1107f73567710159c298ff6a60df393e8e6b9775；程式實作6e5784bdd19e5e84ccc19637e67de643e6d65920，完整實測與驗收版本4b46e16c75430f9654b18599e319f978d5b0c3ac。後續只有紀錄提交。隔離worktree保留主checkout既有README.md、docs/flow.md及兩份未追蹤PLAN修改。
+
+### 人工如何標注、沒有人時如何運作
+
+人工標注可選擇提供finding/session、標注人、時間、版本、判斷及證據引用；衝突標注保留unknown。沒有人工也能完成自動流程，人工資料保持未收集／未知，模型結果另列model_assessment，不冒充人工確認漏報或recall。完整格式見docs/review-round-weekly-report.md。
+
+### 多模型綜合評估與功能優先
+
+scripts/review_model_evaluation.py會凍結完整Git revision/base，讀取findings與證據，盲測探索候選，自動生成測試，在隔離OCI執行正反對照，交由兩個獨立模型判斷，再匿名綜合。無須先寫reproduction或model adapter。本次使用claude-opus-5與claude-opus-4-6，沒有為省成本縮減階段；相同家族仍有相關性，共識不是人工真值。
+
+### go 後的實作、實測與四項量測
+
+實作成功。真實CLI/OAuth/StructuredOutput、normalized plan介面、AST誤判及分歧分母曾造成失敗，已以實際反例修正並保存失敗證據。完整過程見artifacts/A-001-model-evaluation/actual-journey-report.md及actual-journey/。
+
+- 有問題版本：原finding獲支持；盲測新增負數數量未拒絕的一項漏報，重複存取控制候選不算新漏報。三項執行驗證成立、六份有效模型判斷、分歧0/3。
+- 修正版本：原finding被反證，沒有新候選、分歧0/1。兩模型也都在真實反例中判定argv-echo假驗證無效。
+- 品質／有用性／分歧／漏報候選、延遲、成本、可靠度皆有輸出。合成七session週報為可靠2、可見失敗2、被取代1、待定或未知2；延遲觀測5、未知2。這是可執行能力證明，不是正式環境品質分數。
+- 兩次完整流程CLI list-price估計約2.089123與0.865366 USD；實際帳單與人工資料仍為未知。
+- 完成結果重跑0.238秒，42個檔案內容與修改時間不變；竄改副本一個位元組，週報以exit2拒絕。獨立驗收重建週報JSON逐位元相同。
+
+使用方法見docs/model-evaluation.md及docs/review-round-weekly-report.md。86項Python測試、獨立安全覆核、完整驗收與Host gate PASS；必要learn亦完成。Rust未變更，沿用已通過第一階段證據。第三階段相同PR/SHA的流程比較仍需獨立設計核准；未部署、GitHub發文、變更正式裁決或merge。
+
+Cross-check review: .agentflow/features/review-commit-integrity/artifacts/A-001-model-evaluation/stage2-acceptance-report.md
+Cross-check implementation: 4b46e16c75430f9654b18599e319f978d5b0c3ac
+Host gate: PASS
+
+## Questions (batched — each with a suggested default)
+
+- 是否接受本次已完成實測與獨立驗收的版本：Result Go: 4b46e16c75430f9654b18599e319f978d5b0c3ac？
+- Suggested default: 接受此版本；只確認第二階段成果，不授權部署或第三階段實驗。
+- ans:
+
+[Agentflow SKILL.md](/Users/can/.agents/skills/agentflow/SKILL.md)要求「Consequential work then needs current Result Go for the exact implementation commit.」因此現在才確認已可檢視的精確結果版本；原本go已授權實作，不重問模型或成本授權。
+
+---
+
+# → Ask / A-002
+
++
