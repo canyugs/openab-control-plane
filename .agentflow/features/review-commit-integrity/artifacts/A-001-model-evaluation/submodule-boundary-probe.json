@@ -1,0 +1,6 @@
+{
+  "root": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-submodule-boundary-mblq9es7",
+  "marker_executed": true,
+  "exception": null,
+  "probe": "root snapshot clean check with nested submodule clean filter; benign marker-only helper"
+}

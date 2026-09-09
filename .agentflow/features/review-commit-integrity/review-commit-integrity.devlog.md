@@ -701,3 +701,15 @@ Checkpoint scope: delivered implementation3d14e7 passed61 host tests; ea94f2c on
 
 Provider-schema worker completed exit0/report digest7843d8ec3cb28650a5c33efd5a9d1d1857189d34b6a11421f9b88d1ea78bdde2 verified; exact core/test diff imported. Host complete Python suite62 PASS. Unsupported top-level composition removed while controller citation cardinality remains strict. Actual adapter+schema negative semantic probe started with both exact strong IDs, no parser bypass. live-evidence86498 and structured-retries34309 still active.
 
+## [RUN-078] Event (during round A-001)
+
+* _2026-09-10 00:52:32 (GPT-6/default)_
+
+Actual corrected adapter/schema semantic negative probe completed with both observed exact IDs claude-opus-5 and claude-opus-4-6, exit0 and controller-valid citations. Both support the source finding but mark validation_verdict invalid because generated check only echoes argv and never reads/calls source. Evidence actual-adapter-semantic-negative.json records response metadata, list estimates and unknown actual cost. This proves real no-tools transport plus strict citation validation and rejection of the demonstrated fake validation; it is not the pending full positive CLI journey.
+
+## [RUN-079] Event (during round A-001)
+
+* _2026-09-10 00:57:44 (GPT-6/default)_
+
+Bounded host-execution check found a concrete remaining snapshot path: initialized submodule local filter.probe.clean executes during parent _validate_clean_repo despite submodule.recurse=false. Parent-created harmless helper only wrote an external marker then cat; marker true, no exception. Evidence submodule-boundary-probe.json. Existing E11 forbids source/config host execution, so correct only nested Git snapshot traversal before final security review. Either non-recursive status/diff with explicit incomplete source or conservative pre-status refusal; preserve no source-config mutation. No unrelated hardening.
+
