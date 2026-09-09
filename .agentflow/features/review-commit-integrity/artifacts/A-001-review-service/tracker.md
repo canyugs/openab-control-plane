@@ -8,7 +8,7 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-10 01:27:09 Asia/Taipei.
+- **Last update:** 2026-09-10 01:37:09 Asia/Taipei.
 
 - **Evidence commit:** 1107f73567710159c298ff6a60df393e8e6b9775.
 
@@ -40,11 +40,11 @@
 
 - **Current item:** T-3.
 
-- **Last proven result:** Source740bbb0;83 host tests PASS; all3 real generated plans passed OCI controls unchanged. Full fresh semantic journey awaits binding integration.
+- **Last proven result:** Source6e5784b/evidence4b46e16;86 host tests and independent security PASS. Actual vulnerable/safe model+OCI CLI complete; one new omission and safe refutation, replay/tamper/weekly controls passed.
 
-- **Active blocker or running process:** binding-authority30833 finishing report; PTY53083 idle.
+- **Active blocker or running process:** stage2-acceptance34512; PTYs53083/59167 idle after successful journeys.
 
-- **Next safe action:** Integrate disjoint correction results, run all tests and full real model/OCI PTY journey, then independent security/acceptance.
+- **Next safe action:** Collect full independent acceptance, applicable learn, host gate and exact Result Go.
 
 - **Expected changed files:** scripts/review_model_{evaluation,adapters,oci_executor}.py; scripts/review_round_weekly_report.py; tests/test_review_model_{evaluation,oci_executor}.py; tests/test_review_round_weekly_report.py; tests/fixtures/model_evaluation/; docs/model-evaluation.md; docs/review-round-weekly-report.md; stream records.
 

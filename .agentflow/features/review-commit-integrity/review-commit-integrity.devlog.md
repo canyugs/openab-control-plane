@@ -2,12 +2,12 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: 740bbb0 — Stage2 unaccepted; Stage1 d6e96c3 retains Result Go.
-Tests/scenarios: 83 host Python tests PASS; three actual model-generated plans passed OCI controls. Full semantic journey pending binding correction.
+Current commit: 4b46e16 (source6e5784b) — Stage2 acceptance pending; Stage1 d6e96c3 retains Result Go.
+Tests/scenarios: 86 host tests/security PASS; real vulnerable/safe model+OCI complete, verified replay and tamper rejection; weekly readback passed.
 Configuration: .agentflow/features/review-commit-integrity/ag.json — schema v7; codex; root ag.json remains untracked bootstrap.
 Proven: approved design, baseline red failure, delivered SHA tests and real PostgreSQL; security pass resolved with explicit immutable-target recovery limit.
-Open: model/OCI/weekly runtime corrections; full live journey, independent reviews and Result Go still pending.
-Next: collect binding-authority30833; fresh vulnerable/safe CLI, replay/weekly verification and independent reviews.
+Open: independent Stage2 acceptance, learn, host gate and exact Result Go; later Stage3 remains separate.
+Next: collect stage2-acceptance34512, learn and prepare exact reviewable result.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
 Archived eras: none.
 Streams: fix/review-commit-integrity in isolated worktree.
@@ -862,4 +862,38 @@ Actual safe journey source6e5784b complete/exit0: originalF1 executed_refuted, t
 * _2026-09-10 01:34:40 (GPT-6/default)_
 
 Fresh vulnerable full journey complete/PTY exit0 at source6e5784bdd19e5e84ccc19637e67de643e6d65920: original supported, three executed_reproduced items, six valid judgments, disagreement0/3, two blind candidates with one genuinely new automatically supported omission (negative quantity) and access-overlap candidate retained separately. Actual costunknown; list estimate2.089123USD. Safe counterpart complete/refuted/no omissions already independently verified. Stage2 security start1 completed PASS at same source; full report SHA7371c0e23fac1dc3ba922cf24ff94c27def31eff72373caa99b160b77421d899 verified; report-only clone,86 full+8 focused tests. No confirmed security finding. Preparing concrete runtime evidence and full independent acceptance; no Result Go claim.
+
+## [RUN-100] Event (during round A-001)
+
+* _2026-09-10 01:36:33 (GPT-6/default)_
+
+Dispatch stage2-acceptance, acceptance, codex-default/better, gpt-5.6-terra/high, external-runner-v1 at 4b46e16c75430f9654b18599e319f978d5b0c3ac. Frozen exact authority in stage2-acceptance-brief.md; disposable clone only.
+
+## [RUN-101] Event (during round A-001)
+
+* _2026-09-10 01:37:09 (GPT-6/default)_
+
+Checkpoint scope verified: only approved Stage2 product paths and actual evidence records; source6e5784b unchanged after86 tests/securityPASS; records4b46e16 contain independently verified full actual vulnerable/safe results and weekly. Full cross-check plan froze23paths/11150lines/trustboundarytrue; acceptance start1 active34512. Tracker reconciled; no final verdict yet.
+
+## [WIP-023] Checkpoint (during round A-001)
+
+* _2026-09-10 01:37:09 (GPT-6/default)_
+
+- **Finished:** Actual vulnerable/safe complete journeys, generated OCI, new omission/refutation, replay and tamper controls, verified weekly reports;86 host tests and security PASS.
+- **Running now:** Full independent acceptance34512.
+- **Still to do:** Acceptance readback, applicable learn, host gate, exact Result Go and delivery records/push.
+- **Next work action:** Inspect acceptance result and complete required closeout without restarting unchanged source validation.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-102] Event (during round A-001)
+
+* _2026-09-10 01:38:18 (GPT-6/default)_
+
+First pre-push fetch succeeded; HEAD..origin/fix/review-commit-integrity empty, no remote-only commits. Both actual PTYs closed normally exit0 after all journeys; docker ps owned openab-eval-* empty. No worker except stage2-acceptance34512 active. Full source remains6e5784b with copied evidence4b46e16, no new product edits or repeated source validation.
+
+## [RUN-103] Event (during round A-001)
+
+* _2026-09-10 01:41:49 (GPT-6/default)_
+
+Stage2 acceptance start1 terminal0, original report140738247e0da915c5396d05560dbabbf7c035c13112bd5898e416f3f6ab0cc7 verified; all four verdicts PASS,86 independent tests and byte-identical weekly regeneration plus tamper control. Host gate: PASS for4b46e16c75430f9654b18599e319f978d5b0c3ac, product source6e5784b. Original report preserved; formal checker labels and scoped diff command label added from immutable evidence only, resolution records before/after hashes and unchanged substantive bytes. No review retry or source test repetition. Applicable learn follows; Result Go pending.
 
