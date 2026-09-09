@@ -8,7 +8,7 @@
 
 - **Goal:** Prepare and execute the approved three-stage review-service improvement through Agentflow.
 
-- **Last update:** 2026-09-09 12:05:30 Asia/Taipei.
+- **Last update:** 2026-09-09 12:15:24 Asia/Taipei.
 
 - **Evidence commit:** 8b35b4c581ac3d2f5f6669511eaa7b318310fc40.
 
@@ -40,9 +40,9 @@
 
 - **Current item:** T-2.
 
-- **Last proven result:** Requirements, boundary discovery, and Stage 1 specification accepted; design.md and verification contract recorded.
+- **Last proven result:** Host baseline reproduction: six SHA anomaly assertions fail and full matching-SHA control passes.
 
-- **Active blocker or running process:** No blocker; preparing isolated implementation worker.
+- **Active blocker or running process:** Implementation worker PID 20980, exec session 57621.
 
 - **Next safe action:** Execute Stage 1 red-first implementation for approved design 8b35b4c.
 
@@ -54,7 +54,7 @@
 
 - **Blocking accepted decision:** none.
 
-- **Operation running:** no.
+- **Operation running:** yes.
 
 - **Next action remaining:** T-2.
 

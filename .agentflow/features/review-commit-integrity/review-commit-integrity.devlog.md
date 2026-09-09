@@ -102,3 +102,15 @@ Design Go: 8b35b4c581ac3d2f5f6669511eaa7b318310fc40 — approved by the owner in
 * _2026-09-09 12:05:30 (GPT-6/default)_
 
 Owner said 是 to the exact design-commit question. Design Go: 8b35b4c581ac3d2f5f6669511eaa7b318310fc40. Requirements/spec accepted earlier; source baseline unchanged. Begin Stage 1 only. Stage 2/3 and production rollout remain later work.
+
+## [RUN-010] Event (during round A-001)
+
+* _2026-09-09 12:06:52 (GPT-6/default)_
+
+Dispatch implementation via external-runner-v1, codex-default/basic gpt-5.6-luna/max. Approved design 8b35b4c. Exact seven controller source paths and report/red-regression result only in disposable clone. Local Postgres 17 created for tests; no live services. Parent accepts/imports and reruns verification independently.
+
+## [RUN-011] Event (during round A-001)
+
+* _2026-09-09 12:15:24 (GPT-6/default)_
+
+Host independently applied only 102 added test lines to unchanged baseline 1e98b73. cargo test -p github-pr-controller --lib reviewed_sha: compiled successfully; six anomaly tests fail on old approval/request_changes behavior; matching full-SHA control passes. Canonical git diff captured after worker red patch transport failed parsing; no semantic edits to tests. Evidence: host-red-verification.json and red-regression.patch. Implementation worker remains active.
