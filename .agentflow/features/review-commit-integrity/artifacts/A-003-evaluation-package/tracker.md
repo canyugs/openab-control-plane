@@ -8,25 +8,25 @@
 
 - **Goal:** Deliver the approved independent package, CLI, image and release workflow without changing evaluator semantics.
 
-- **Last update:** 2026-09-10 13:58:33 Asia/Taipei.
+- **Last update:** 2026-09-10 14:09:06 Asia/Taipei.
 
-- **Evidence commit:** 54a0c1a614e29de10ed7decec8cbe0e00e3da46f.
+- **Evidence commit:** ab483e48e99995c90ea2b51bec3432920461a758.
 
 ## Overall state
 
-- **State:** active.
+- **State:** complete.
 
-- **Reason:** Work remains.
+- **Reason:** Approved standalone packaging, validation and independent reviews complete.
 
 - **Total:** 1.
 
-- **Completed:** 0.
+- **Completed:** 1.
 
-- **Remaining:** 1.
+- **Remaining:** 0.
 
 ## Accepted task checklist
 
-- [ ] **T-1:** Package the four existing evaluation/report modules with installable commands, separate version and Docker/release configuration; preserve evaluator behavior and external credentials/data; prove isolated wheel installation, real container controls, applicable tests and independent review. Source: A-003.
+- [x] **T-1:** Package the four existing evaluation/report modules with installable commands, separate version and Docker/release configuration; preserve evaluator behavior and external credentials/data; prove isolated wheel installation, real container controls, applicable tests and independent review. Source: A-003. Proof: host-validation-report.md; host-auth-runtime.json; package-security-2-report.md; package-acceptance-2-report.md; ab483e48e99995c90ea2b51bec3432920461a758.
 
 ## Accepted scope changes
 
@@ -34,29 +34,29 @@
 
 ## Current recovery
 
-- **Current item:** T-1.
+- **Current item:** none.
 
-- **Last proven result:** Final94 tests/no skips, actual final launcher/cleanup/replay, isolated wheel, amd64 image/OCI/weekly and version guards PASS; core unchanged.
+- **Last proven result:** 96 tests/no skips; actual CLI/image/OCI/weekly/auth runtime PASS; both independent reviews and host gate PASS at ab483e48e99995c90ea2b51bec3432920461a758.
 
-- **Active blocker or running process:** Auth correction15204 active; first security blocker reproduced, first acceptance PASS historical.
+- **Active blocker or running process:** none.
 
-- **Next safe action:** Collect auth correction, run final runtime/suite, then second-start reviews and delivery.
+- **Next safe action:** none.
 
 - **Expected changed files:** pyproject.toml; MANIFEST.in; packaging/evaluation/; Dockerfile.evaluation; .github/workflows/evaluation-release.yml; docs/evaluation-package.md; package-specific tests; stream records.
 
 ## Completion proof
 
-- **All accepted tasks checked:** no.
+- **All accepted tasks checked:** yes.
 
 - **Blocking accepted decision:** none.
 
-- **Operation running:** yes.
+- **Operation running:** no.
 
-- **Next action remaining:** T-1.
+- **Next action remaining:** none.
 
-- **Evidence status:** current.
+- **Evidence status:** complete.
 
-- **Judgment:** active.
+- **Judgment:** complete.
 
 ## Update meaning
 

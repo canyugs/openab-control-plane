@@ -2,12 +2,12 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: 54a0c1a614e29de10ed7decec8cbe0e00e3da46f standalone package implementation under review.
-Tests/scenarios: 86 tests, actual model/OCI journeys, replay/tamper/weekly readback, security/acceptance/host gate PASS.
+Current commit: ab483e48e99995c90ea2b51bec3432920461a758 accepted standalone package implementation.
+Tests/scenarios: 96 Python tests/no skips; actual installed CLI/image/OCI/weekly/auth replay and independent reviews PASS.
 Configuration: ag.json — schema v7; validated for codex this round.
-Proven: Stage1 and Stage2 accepted; Stage2 Result Go4b46e16c75430f9654b18599e319f978d5b0c3ac recorded in A-002.
-Open: A-003 approved standalone package/image implementation and runtime checks; no publication or deployment.
-Next: collect security77008 and acceptance21213; finish records and push.
+Proven: Stage1/Stage2 accepted; A-003 independent package 0.1.0 complete; four core modules unchanged; Host gate PASS.
+Open: none in A-003; publication, deployment and Stage3 remain outside this Ask.
+Next: await a new owner request; no implementation work remains.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-003-evaluation-package.
 Archived eras: none.
 Streams:
@@ -1230,3 +1230,67 @@ First reviews terminal and fully inspected: acceptance PASS at54a0c1a; security 
 * _2026-09-10 14:02:42 (GPT-6/default)_
 
 Auth15204 terminal exit0; full2350-byte report7e5f2a5df0ffb75f044e5a1ad622606e515480be8e81ed72410e657d6bb1cc84 and exact3-path scope verified/imported. Parent final96 tests/no skips, bash/shellcheck/product whitespace PASS. Actual new PTY31873 confirmed unsupported PYTHONPATH rejectedexit2 before storage creation, supported dummy auth completed real-image replayexit0, scratch cleanup/source cleanliness/all42 evidence digests+mtimes preserved; PTYexit0. All8 image/core inputs unchanged. Source is ready for start2 of the same security and acceptance stages (max3 each); historical first acceptance is not a current gate, no new publication/deploy authority.
+
+## [RUN-025] Event (during round A-003)
+
+* _2026-09-10 14:02:53 (GPT-6/default)_
+
+Dispatch package-security-2 security, gpt-5.6-sol/low, external-runner-v1 atab483e48e99995c90ea2b51bec3432920461a758; immutable brief frozen, no remote/production authority.
+
+## [RUN-026] Event (during round A-003)
+
+* _2026-09-10 14:02:54 (GPT-6/default)_
+
+Dispatch package-acceptance-2 acceptance, gpt-5.6-terra/high, external-runner-v1 atab483e48e99995c90ea2b51bec3432920461a758; immutable brief frozen, no remote/production authority.
+
+## [RUN-027] Event (during round A-003)
+
+* _2026-09-10 14:09:06 (GPT-6/default)_
+
+Both second-start reviews terminal at ab483e48e99995c90ea2b51bec3432920461a758: security PASS full7664-byte reporte5e45e9087368b0002af2517c0ed6141b406843864982509573ce845823119e8 closes prior auth finding; acceptance PASS full7211-byte report923ad9801e738fd69e3d2e7323086ec126c46d97110a1292f495b36040d4617a covers Outcome/Minimality/Conformance. Fullbytes, trusted hashes, exact bases and report-only clone scopes verified; both independently reran96 tests/no skips and shell checks, acceptance rebuilt/reinstalled bounded archives. Host independently reconciled source, actual runtime evidence and limitations. Host gate: PASS. No worker/PTY remains active; T-1 approved packaging scope complete. Only records remain; no repeated implementation review/tests for record-only closure.
+
+# ← Reply / A-003
+
+* _2026-09-10 14:10:09 (GPT-6/default)_
+
+## [SUMMARY]
+
+- 已完成同一 repository 內的獨立 Python 封裝 ocp-review-eval 0.1.0，提供兩個 CLI、Docker image 與獨立版本釋出流程。
+- 96 項 Python 測試、實際安裝／容器／OCI／週報／重跑驗證，以及兩份獨立複核通過；四個評估模組原始碼保持完全相同。
+- 本次完成封裝；尚未建立釋出標籤、發布套件／映像或部署服務。
+
+## [FINAL REPORT]
+
+### 「這個 python 評估工具可以另外包嗎？」及「好」：已完成
+
+工具保留在這個 repository，以 pyproject.toml 與 MANIFEST.in 定義獨立的 ocp-review-eval 0.1.0。已實際建置 wheel/sdist，從 checkout 外的新虛擬環境安裝成功，提供 ocp-review-eval 與 ocp-review-weekly。Python runtime 沒有新增第三方套件依賴；四支 scripts 與舊 CLI 入口保持相同，週報仍使用 OCP 輸入格式。
+
+Dockerfile.evaluation 提供 linux/amd64 映像，內含 Python、Git、Docker CLI、Node 22 與固定版本 Claude CLI，預設使用非 root 使用者。packaging/evaluation/run.sh 可用專用 Docker runner 執行；repository、findings、evidence、模型設定、認證和輸出由外部提供。認證檔只接受三個支援的模型認證變數，讀取字面值、不執行內容，也不把值放進 Docker 命令列或封裝產物。Repository 暫存副本與 OCI scratch 使用 daemon 可存取的相同絕對路徑，結束後清除本次 staging。
+
+.github/workflows/evaluation-release.yml 只接受與 Python 版本一致的 evaluation-vX.Y.Z 標籤，測試完成後可發布版本化 GHCR image 及 GitHub Release wheel/sdist，獨立於 OCP Rust 的 v* 流程，尚未觸發正式發布。使用文件：docs/evaluation-package.md。實作提交：ab483e48e99995c90ea2b51bec3432920461a758，工作分支 fix/review-commit-integrity。
+
+### 驗證、修復與限制
+
+主程序與兩個獨立 reviewer 都跑完 96 項 Python 測試、零跳過；Bash、shellcheck、產品檔案空白檢查通過。實際 wheel 安裝、兩個入口、amd64 映像、巢狀 OCI 控制、週報及完整評估重跑通過。最終真實 PTY 確認 PYTHONPATH 認證設定在建立目錄前被拒絕；合法 dummy 認證重跑成功，source 乾淨、scratch 清空，42 個既有產物內容與修改時間不變。原始命令、輸出及 digest 位於本輪 host-validation-report.md、host-validation-result.json、package-auth-pty.json 等證據。
+
+實測發現並修復 wheel 名稱、CI builder 缺少 setuptools、測試 discovery、socket GID 0、Docker Desktop mount ownership，以及認證檔不受限轉送問題。沒有修改評估語意、Rust 程式或主要 checkout 的既有使用者修改。
+
+cargo clippy --locked 通過；cargo fmt --check 仍指出三處既有 Rust 格式差異，詳見驗證報告。主機 Python 3.14、映像 Python 3.11；amd64 image 在 arm64 Docker Desktop 模擬環境驗證，沒有宣稱 native amd64 host 或多架構發布。Linux 容器內的真實模型認證尚未測試，部署仍須提供專用 Docker runner 與 runtime 認證。本次沒有新增 OCP 自動觸發／排程、Stage3 實驗、正式發布、merge 或生產部署。
+
+### 獨立複核與交付
+
+package-security-2-report.md 為 PASS，確認先前 auth finding 已關閉；package-acceptance-2-report.md 的 Outcome、Minimality、Conformance、Overall 與 Verdict 均 PASS。兩者指向同一實作提交，完整報告、來源 digest 與僅寫 report 的工作範圍均已由主程序驗證。所有外部執行與 PTY 已結束；文件與工作分支可供檢閱。
+
+Cross-check review: .agentflow/features/review-commit-integrity/artifacts/A-003-evaluation-package/package-acceptance-2-report.md
+Cross-check implementation: ab483e48e99995c90ea2b51bec3432920461a758
+Host gate: PASS
+
+## Questions (batched — each with a suggested default)
+
+- None.
+
+---
+
+# → Ask / A-004
+
++
