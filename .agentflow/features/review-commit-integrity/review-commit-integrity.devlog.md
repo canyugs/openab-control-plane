@@ -2,12 +2,12 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: 7ffa8fd standalone packaging candidate; prior Stage2 accepted4b46e16c75430f9654b18599e319f978d5b0c3ac.
+Current commit: 54a0c1a614e29de10ed7decec8cbe0e00e3da46f standalone package implementation under review.
 Tests/scenarios: 86 tests, actual model/OCI journeys, replay/tamper/weekly readback, security/acceptance/host gate PASS.
 Configuration: ag.json — schema v7; validated for codex this round.
 Proven: Stage1 and Stage2 accepted; Stage2 Result Go4b46e16c75430f9654b18599e319f978d5b0c3ac recorded in A-002.
 Open: A-003 approved standalone package/image implementation and runtime checks; no publication or deployment.
-Next: collect package-ownership98765, verify real launcher/full suite, complete independent cross-check.
+Next: collect security77008 and acceptance21213; finish records and push.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-003-evaluation-package.
 Archived eras: none.
 Streams:
@@ -1168,3 +1168,37 @@ Checkpoint scope: ownership98765 still writes only launcher/tests/docs in isolat
 * _2026-09-10 13:38:14 (GPT-6/default)_
 
 Ownership98765 terminal exit0; full3779-byte reportcfad4d6c50f81766dbacfab34919ea1f41947ab007bb7b4ff493362be5ad7287 verified; imported exact3 paths preserving separate CI setup. Final source differs from earlier successful candidate only in added preflight/help checks and was independently rerun. Parent final94 tests PASS with no skips, shellcheck/product whitespace PASS; actual final launcher PTY exit0, scratch empty, original repo clean, all42 evidence digests/mtimes unchanged. Final installed wheel and image/OCI/weekly evidence current, image8 inputs unchanged. Cross-check plan full frozen from seven product files/new socket-staging boundary. Selected advisor questions: defensive new packaging trust boundaries; independent satisfaction/minimality/conformance of approved standalone package. Source and evidence now ready for separate read-only reviews, no Result Go or publication request added.
+
+## [RUN-018] Event (during round A-003)
+
+* _2026-09-10 13:38:28 (GPT-6/default)_
+
+Dispatch package-security security, gpt-5.6-sol/low, external-runner-v1 at54a0c1a614e29de10ed7decec8cbe0e00e3da46f; immutable brief frozen, no remote/production authority.
+
+## [RUN-019] Event (during round A-003)
+
+* _2026-09-10 13:38:29 (GPT-6/default)_
+
+Dispatch package-acceptance acceptance, gpt-5.6-terra/high, external-runner-v1 at54a0c1a614e29de10ed7decec8cbe0e00e3da46f; immutable brief frozen, no remote/production authority.
+
+## [RUN-020] Event (during round A-003)
+
+* _2026-09-10 13:42:20 (GPT-6/default)_
+
+Checkpoint scope reconciled: exact implementation54a0c1a614e29de10ed7decec8cbe0e00e3da46f has all approved product files and host validation evidence committed; only new review briefs/RUN records are uncommitted. All implementation workers and PTY terminal. Final94 tests/no skips, actual launcher/cleanup/replay, wheel/image/OCI/weekly and version guards PASS; known unchanged Rust fmt differences retained. Read-only security77008 and full acceptance21213 review the same exact source. Origin fetched and HEAD..origin/fix/review-commit-integrity is empty, no incoming divergence; no push/release/deployment yet. Main checkout four user changes independently reread unchanged.
+
+## [WIP-007] Checkpoint (during round A-003)
+
+* _2026-09-10 13:42:20 (GPT-6/default)_
+
+- **Finished:** Final source and host evidence committed;94 tests, real launcher and package/image/OCI/weekly checks passed; no incoming Git divergence.
+- **Running now:** Independent security77008 and full acceptance21213.
+- **Still to do:** Review readback/host judgment and final delivery records/push.
+- **Next work action:** Collect both reports without changing the frozen source.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-021] Event (during round A-003)
+
+* _2026-09-10 13:49:26 (GPT-6/default)_
+
+Independent reviews terminal at54a0c1a: full acceptance PASS report36ed8110998ac39f28466fcc3d3a9f644b54f85b51cb85183b09aa5121fb1394,94 tests/no skips and independent wheel/sdist install; security BLOCKING reportbdcfe1dce2527e09bdd723479551fd22c67bbbb1ecec67a1fcaa1bd42d6f457d. Both full bytes/read-only scopes verified. Host disposition: reviewer HIGH assumes control of operator-managed auth file; no such attacker control/compromise is established. However --auth-env-file's documented supported-model-credential role does not need execution-path variables, and parent actual no-network/no-socket dummy marker proves PYTHONPATH can override installed import. To preserve the approved external-credential/execution boundary, accept only three supported auth keys, parse literal values without execution, forward names via process environment (no values in argv/no credential files), reject unsupported/duplicate/malformed inputs before mutations. This is a scoped launcher correction, not new auth infrastructure or evaluator logic. Acceptance54a0c1a remains historical; Host gate pending until new source and both current second-start reviews.

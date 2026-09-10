@@ -1,0 +1,24 @@
+{
+  "argv": [
+    "docker",
+    "run",
+    "--rm",
+    "--platform",
+    "linux/amd64",
+    "--network",
+    "none",
+    "--env-file",
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/auth-import-proof.env",
+    "--mount",
+    "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/auth-import-proof,dst=/evidence,readonly",
+    "ocp-review-eval:0.1.0-test",
+    "--help"
+  ],
+  "exit": 0,
+  "output": "AUTH_IMPORT_OVERRIDE_PROOF\n",
+  "real_credentials": false,
+  "socket_mounted": false,
+  "proof_code": "trusted host-authored marker only",
+  "observed": "PYTHONPATH in Docker env file replaced the packaged console-module import",
+  "not_claimed": "No evidence of attacker control over operator-managed auth file or actual compromise"
+}

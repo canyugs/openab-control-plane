@@ -8,9 +8,9 @@
 
 - **Goal:** Deliver the approved independent package, CLI, image and release workflow without changing evaluator semantics.
 
-- **Last update:** 2026-09-10 13:31:12 Asia/Taipei.
+- **Last update:** 2026-09-10 13:42:20 Asia/Taipei.
 
-- **Evidence commit:** 47b3c28.
+- **Evidence commit:** 54a0c1a614e29de10ed7decec8cbe0e00e3da46f.
 
 ## Overall state
 
@@ -36,11 +36,11 @@
 
 - **Current item:** T-1.
 
-- **Last proven result:** Actual candidate staged launcher exits0 and cleans scratch; clean CI backend correction and tag guards PASS; image/wheel/core evidence unchanged.
+- **Last proven result:** Final94 tests/no skips, actual final launcher/cleanup/replay, isolated wheel, amd64 image/OCI/weekly and version guards PASS; core unchanged.
 
-- **Active blocker or running process:** package-ownership98765; reusable PTY90890.
+- **Active blocker or running process:** security77008 and full acceptance21213, read-only same exact source.
 
-- **Next safe action:** Collect source staging repair, verify real launcher, full suite and independent reviews.
+- **Next safe action:** Collect independent reviews, resolve within scope, then final records and push.
 
 - **Expected changed files:** pyproject.toml; packaging/evaluation/; Dockerfile.evaluation; .github/workflows/evaluation-release.yml; docs/evaluation-package.md; package-specific tests; stream records.
 
