@@ -19,10 +19,48 @@ docker_gid=""
 run_uid="$(id -u)"
 run_gid="$(id -g)"
 image="$DEFAULT_IMAGE"
+auth_env_keys=()
+auth_env_values=()
 
 die() {
   printf 'evaluation launcher: %s\n' "$*" >&2
   exit 2
+}
+
+parse_auth_env_file() {
+  local file="$1"
+  local line
+  local key
+  local value
+  local line_number=0
+  local existing_key
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line_number=$((line_number + 1))
+    if [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]]; then
+      continue
+    fi
+    [[ "$line" == *=* ]] || die "authentication environment file contains a malformed record at line ${line_number}"
+
+    key="${line%%=*}"
+    value="${line#*=}"
+    [[ -n "$key" ]] || die "authentication environment file contains a malformed record at line ${line_number}"
+    case "$key" in
+      CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)
+        ;;
+      *)
+        die "authentication environment file contains unsupported key: ${key}"
+        ;;
+    esac
+
+    if ((${#auth_env_keys[@]} > 0)); then
+      for existing_key in "${auth_env_keys[@]}"; do
+        [[ "$existing_key" != "$key" ]] || die "authentication environment file contains a duplicate key: ${key}"
+      done
+    fi
+    auth_env_keys+=("$key")
+    auth_env_values+=("$value")
+  done < "$file"
 }
 
 usage() {
@@ -276,6 +314,10 @@ if [[ -n "$auth_env_file" ]]; then
   reject_storage_overlap "$output_dir" "output directory" "$auth_env_file" "authentication environment file"
 fi
 
+if [[ -n "$auth_env_file" ]]; then
+  parse_auth_env_file "$auth_env_file"
+fi
+
 ensure_directory "$scratch_dir" "scratch directory"
 ensure_directory "$output_dir" "output directory"
 
@@ -324,18 +366,23 @@ docker_args=(
 if [[ -n "$environment_file" ]]; then
   docker_args+=(--mount "type=bind,src=${environment_file},dst=${environment_file},readonly")
 fi
-if [[ -n "$auth_env_file" ]]; then
-  docker_args+=(--env-file "$auth_env_file")
-fi
-# Keep these command-line values after the external env-file so Docker's
-# explicit values win if an operator accidentally includes runtime settings in
-# the credential file. In particular, TMPDIR must remain the mapped scratch.
+# Keep these command-line values explicit. In particular, TMPDIR must remain
+# the mapped scratch.
 docker_args+=(
   --env "TMPDIR=${scratch_dir}"
   --env "HOME=/tmp/ocp-review-eval-home"
   --env "LANG=C.UTF-8"
   --env "LC_ALL=C.UTF-8"
 )
+
+auth_env_index=0
+while ((auth_env_index < ${#auth_env_keys[@]})); do
+  auth_env_key="${auth_env_keys[auth_env_index]}"
+  auth_env_value="${auth_env_values[auth_env_index]}"
+  export "${auth_env_key}=${auth_env_value}"
+  docker_args+=(--env "$auth_env_key")
+  auth_env_index=$((auth_env_index + 1))
+done
 
 package_args=(
   run

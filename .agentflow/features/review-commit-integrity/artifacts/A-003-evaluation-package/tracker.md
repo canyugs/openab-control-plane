@@ -8,7 +8,7 @@
 
 - **Goal:** Deliver the approved independent package, CLI, image and release workflow without changing evaluator semantics.
 
-- **Last update:** 2026-09-10 13:42:20 Asia/Taipei.
+- **Last update:** 2026-09-10 13:58:33 Asia/Taipei.
 
 - **Evidence commit:** 54a0c1a614e29de10ed7decec8cbe0e00e3da46f.
 
@@ -38,11 +38,11 @@
 
 - **Last proven result:** Final94 tests/no skips, actual final launcher/cleanup/replay, isolated wheel, amd64 image/OCI/weekly and version guards PASS; core unchanged.
 
-- **Active blocker or running process:** security77008 and full acceptance21213, read-only same exact source.
+- **Active blocker or running process:** Auth correction15204 active; first security blocker reproduced, first acceptance PASS historical.
 
-- **Next safe action:** Collect independent reviews, resolve within scope, then final records and push.
+- **Next safe action:** Collect auth correction, run final runtime/suite, then second-start reviews and delivery.
 
-- **Expected changed files:** pyproject.toml; packaging/evaluation/; Dockerfile.evaluation; .github/workflows/evaluation-release.yml; docs/evaluation-package.md; package-specific tests; stream records.
+- **Expected changed files:** pyproject.toml; MANIFEST.in; packaging/evaluation/; Dockerfile.evaluation; .github/workflows/evaluation-release.yml; docs/evaluation-package.md; package-specific tests; stream records.
 
 ## Completion proof
 

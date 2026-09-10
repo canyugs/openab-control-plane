@@ -1202,3 +1202,31 @@ Checkpoint scope reconciled: exact implementation54a0c1a614e29de10ed7decec8cbe0e
 * _2026-09-10 13:49:26 (GPT-6/default)_
 
 Independent reviews terminal at54a0c1a: full acceptance PASS report36ed8110998ac39f28466fcc3d3a9f644b54f85b51cb85183b09aa5121fb1394,94 tests/no skips and independent wheel/sdist install; security BLOCKING reportbdcfe1dce2527e09bdd723479551fd22c67bbbb1ecec67a1fcaa1bd42d6f457d. Both full bytes/read-only scopes verified. Host disposition: reviewer HIGH assumes control of operator-managed auth file; no such attacker control/compromise is established. However --auth-env-file's documented supported-model-credential role does not need execution-path variables, and parent actual no-network/no-socket dummy marker proves PYTHONPATH can override installed import. To preserve the approved external-credential/execution boundary, accept only three supported auth keys, parse literal values without execution, forward names via process environment (no values in argv/no credential files), reject unsupported/duplicate/malformed inputs before mutations. This is a scoped launcher correction, not new auth infrastructure or evaluator logic. Acceptance54a0c1a remains historical; Host gate pending until new source and both current second-start reviews.
+
+## [RUN-022] Event (during round A-003)
+
+* _2026-09-10 13:49:27 (GPT-6/default)_
+
+Dispatch package-auth implementation, gpt-5.6-luna/max, external-runner-v1 at6d619feced1cc8f279af708c15db56a88f056e90; immutable brief frozen, no remote/production authority.
+
+## [RUN-023] Event (during round A-003)
+
+* _2026-09-10 13:58:33 (GPT-6/default)_
+
+First reviews terminal and fully inspected: acceptance PASS at54a0c1a; security auth import-path blocker reproduced with dummy/no-network/no-socket marker. Scoped auth correction15204 active with only launcher/docs/tests changes. Four core modules, wheel/image inputs and prior actual image/OCI/weekly proofs unchanged. Remaining auth tests/real terminal replay, second-start independent reviews, records and push; tracker scope reconciled.
+
+## [WIP-008] Checkpoint (during round A-003)
+
+* _2026-09-10 13:58:49 (GPT-6/default)_
+
+- **Finished:** First security/acceptance reports verified and auth finding reproduced; core/image evidence unchanged.
+- **Running now:** Scoped auth correction15204 in isolated clone.
+- **Still to do:** Auth runtime/full-suite validation, second-start reviews and delivery.
+- **Next work action:** Collect correction and verify actual launcher.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-024] Event (during round A-003)
+
+* _2026-09-10 14:02:42 (GPT-6/default)_
+
+Auth15204 terminal exit0; full2350-byte report7e5f2a5df0ffb75f044e5a1ad622606e515480be8e81ed72410e657d6bb1cc84 and exact3-path scope verified/imported. Parent final96 tests/no skips, bash/shellcheck/product whitespace PASS. Actual new PTY31873 confirmed unsupported PYTHONPATH rejectedexit2 before storage creation, supported dummy auth completed real-image replayexit0, scratch cleanup/source cleanliness/all42 evidence digests+mtimes preserved; PTYexit0. All8 image/core inputs unchanged. Source is ready for start2 of the same security and acceptance stages (max3 each); historical first acceptance is not a current gate, no new publication/deploy authority.

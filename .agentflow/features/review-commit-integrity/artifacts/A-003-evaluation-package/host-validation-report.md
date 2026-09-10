@@ -1,4 +1,4 @@
-* _2026-09-10 13:38:14 (GPT-6/default)_
+* _2026-09-10 14:02:42 (GPT-6/default)_
 
 # Host standalone package validation
 
@@ -19,9 +19,17 @@ The first candidate renamed its wheel to an invalid filename; pip rejected the r
 
 Socketgroup20 could not access the DockerDesktop socket; group0 succeeds with nonrootUID501. Direct repository bind exposed repo rootUID0 and .gitUID501, and Git correctly rejected ownership. Dedicated child staging solved the actual failure. Original Git global/system isolation, root avoidance, core bytes and generated-executor boundaries remain unchanged. Parent candidate and final launcher success/cleanup are separately recorded; the final file includes additional explicit preflight/help checks and was rerun.
 
+## Authentication-channel correction and actual final readback
+
+The first defensive review identified unrestricted Docker env-file forwarding; the first acceptance PASS at54a0c1a is historical. Parent auth-import-proof.json confirmed Python import replacement using only a trusted dummy marker, network-none and no socket. This does not establish attacker control of the operator-owned auth file or any actual compromise.
+
+The final launcher parses only three supported auth keys as literal values, validates before storage/staging/Docker, never sources or evaluates the file, and exports only parsed allowed values in memory. Docker receives only --env NAME arguments, never raw --env-file or credential values in argv. New tests cover literal spaces/equals/dollar/backtick/empty values and unsupported/duplicate/malformed rejection.
+
+Parent reran the full96 tests with zero skips, bash syntax, shellcheck and product whitespace checks. Actual reusable PTY31873 (/dev/ttys026) ran the shipped launcher with dummy credentials: PYTHONPATH input exited2 before creating scratch/output; supported three-key input replayed the complete evaluation in the installed image with exit0. Scratch cleaned, source clean, all42 original evidence hashes and mtimes unchanged. package-auth-pty.json and host-auth-runtime.json preserve actual outputs; PTY exited0. No live provider request or credential was used. All eight image/core input hashes remain identical, so the earlier actual wheel/image/OCI/weekly proofs remain applicable without a redundant rebuild.
+
 ## Final checks and limits
 
-Host final full suite:94 tests PASS, zero skips, in the clean CI-equivalent venv with build and setuptools>=77. Bash syntax, shellcheck, product-only diff checks and release guards PASS. cargo clippy --locked PASS. cargo fmt --check reports three pre-existing formatting differences in unchanged src/state.rs, src/store/postgres.rs and tests/second_consumer.rs. No unrelated Rust formatting repair was made. Raw weekly Markdown artifacts intentionally retain their baseline two-space line breaks, which default git diff --check flags; product whitespace checks are clean.
+Host final full suite:96 tests PASS, zero skips, in the clean CI-equivalent venv with build and setuptools>=77. Bash syntax, shellcheck, product-only diff checks and release guards PASS. cargo clippy --locked PASS. cargo fmt --check reports three pre-existing formatting differences in unchanged src/state.rs, src/store/postgres.rs and tests/second_consumer.rs. No unrelated Rust formatting repair was made. Raw weekly Markdown artifacts intentionally retain their baseline two-space line breaks, which default git diff --check flags; product whitespace checks are clean.
 
 Python package declares Unix and >=3.9 based on its existing standard-library surface; actual host tests used3.14 and image tests3.11. No untested multiarch release or native amd64-host claim. Staging temporarily requires a second repository copy; launcher must run under its intended nonroot host account with matching UID and suitable socket group. It does not add worktree/submodule support or provision a Docker daemon. Run on a dedicated Docker runner.
 

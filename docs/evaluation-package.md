@@ -61,9 +61,11 @@ export CLAUDE_CODE_OAUTH_TOKEN='provided-at-runtime'
 
 The adapter's supported authentication variables are
 `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, and
-`ANTHROPIC_AUTH_TOKEN`; its allowlist also carries ordinary runtime and
-locale variables. Authentication remains with the installed Claude CLI. Do
-not put secrets in the repository, wheel, evidence, model files, or output.
+`ANTHROPIC_AUTH_TOKEN`. Authentication remains with the installed Claude CLI.
+The dedicated launcher described below accepts only those three names in its
+authentication file; that option is not a general runtime-environment or
+program-loading configuration channel. Do not put secrets in the repository,
+wheel, evidence, model files, or output.
 
 The weekly command consumes an operator-captured bundle without a model or
 OCI call:
@@ -165,9 +167,33 @@ packaging/evaluation/run.sh \
   --image ghcr.io/canyugs/ocp-review-eval:0.1.0
 ```
 
-`claude.env` is an external Docker env-file, for example with a runtime-only
-`CLAUDE_CODE_OAUTH_TOKEN=...` entry. The launcher never copies it into the
-image. `--docker-gid` must be the numeric group owning the dedicated host
+`claude.env` is an external launcher authentication file, for example with a
+runtime-only `CLAUDE_CODE_OAUTH_TOKEN=...` entry. It is read once as literal
+text before scratch/output creation, staging, or Docker invocation. It is
+never mounted, copied, or passed through Docker's `--env-file` option. After
+the entire file validates, the launcher exports only the explicitly parsed
+allowlisted names and gives Docker `--env NAME` entries; credential values
+remain out of Docker's command-line arguments and are not written to files.
+
+The supported authentication-file format is intentionally narrower than a
+generic Docker env-file:
+
+- Use LF-delimited `KEY=VALUE` records; a final record may omit its newline.
+- Empty lines and lines whose first non-space character is `#` are ignored.
+- The key must be exactly one of `CLAUDE_CODE_OAUTH_TOKEN`,
+  `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN`, and each key may appear only
+  once.
+- The value is every byte after the first `=`. Leading/trailing spaces,
+  additional `=`, `$`, backticks, quotes, and an empty value are literal; no
+  quoting, escaping, or shell expansion is performed. Do not add whitespace
+  around the key or `=`.
+
+An omitted `--auth-env-file`, or a file containing only blanks/comments,
+forwards no authentication variables. A supported `KEY=` record forwards that
+key with an empty value. Unsupported keys, duplicate keys, and malformed
+records fail before Docker is invoked or launcher-created scratch/output or
+staging paths exist, and validation errors do not print values or whole input
+records. `--docker-gid` must be the numeric group owning the dedicated host
 socket as seen inside the outer Linux container; that group can be `0` on
 Docker Desktop. `--uid` must be non-zero to retain a nonroot process, while
 `--gid` and `--docker-gid` accept nonnegative numeric IDs that can write the

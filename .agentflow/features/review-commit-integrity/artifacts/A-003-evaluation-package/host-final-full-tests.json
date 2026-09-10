@@ -1,6 +1,6 @@
 {
   "argv": [
-    "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/ci-build-venv/bin/python",
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/ci-build-venv/bin/python",
     "-m",
     "unittest",
     "discover",
@@ -10,5 +10,5 @@
     "test_*.py"
   ],
   "exit": 0,
-  "output": "..............................................................................................\n----------------------------------------------------------------------\nRan 94 tests in 8.621s\n\nOK\n"
+  "output": "................................................................................................\n----------------------------------------------------------------------\nRan 96 tests in 11.785s\n\nOK\n"
 }

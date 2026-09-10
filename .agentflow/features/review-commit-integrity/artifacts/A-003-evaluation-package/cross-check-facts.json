@@ -8,7 +8,7 @@
     "docs/evaluation-package.md",
     "tests/test_evaluation_package.py"
   ],
-  "changed_lines": 1344,
+  "changed_lines": 1583,
   "behavior_change": true,
   "trust_boundary": true,
   "broad_change": false,

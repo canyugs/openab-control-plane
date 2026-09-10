@@ -58,8 +58,8 @@ def _offline_build_command(output: Path):
     return None
 
 
-def _launcher_args(scratch, output, repo, evidence, findings, models, socket_path):
-    return [
+def _launcher_args(scratch, output, repo, evidence, findings, models, socket_path, auth_env_file=None):
+    args = [
         str(LAUNCHER),
         "--scratch-dir",
         str(scratch),
@@ -86,6 +86,9 @@ def _launcher_args(scratch, output, repo, evidence, findings, models, socket_pat
         "--gid",
         "0",
     ]
+    if auth_env_file is not None:
+        args.extend(["--auth-env-file", str(auth_env_file)])
+    return args
 
 
 def _bind_test_socket(root):
@@ -351,6 +354,169 @@ class EvaluationPackageTests(unittest.TestCase):
             image_index = argv.index("ghcr.io/canyugs/ocp-review-eval:0.1.0")
             self.assertEqual(argv[image_index + 1], "run")
             self.assertEqual(argv[image_index + 2 : image_index + 4], ["--repo", str(staged_repo)])
+
+    def test_launcher_forwards_only_literal_supported_auth_values_without_argv_values(self):
+        if os.getuid() == 0:
+            self.skipTest("launcher requires a non-root invoking UID")
+        with tempfile.TemporaryDirectory(prefix="ocp-review-eval-launcher-auth-") as temp:
+            root = Path(temp).resolve()
+            inputs = root / "inputs"
+            inputs.mkdir()
+            repo = inputs / "repo"
+            repo.mkdir()
+            evidence = inputs / "evidence"
+            evidence.mkdir()
+            findings = inputs / "findings.json"
+            findings.write_text("{}\n", encoding="utf-8")
+            models = inputs / "models.json"
+            models.write_text("{}\n", encoding="utf-8")
+            auth_env_file = inputs / "auth.env"
+            auth_env_file.write_text(
+                " \n"
+                " # comments are ignored, including dummy-comment-value\n"
+                "CLAUDE_CODE_OAUTH_TOKEN=dummy-oauth== literal $HOME `ticks`\n"
+                "\n"
+                "ANTHROPIC_API_KEY=dummy-api key=two\n"
+                "ANTHROPIC_AUTH_TOKEN=\n",
+                encoding="utf-8",
+            )
+            scratch = root / "scratch"
+            output = root / "output"
+            argv_capture = root / "docker-argv.txt"
+            environment_capture = root / "docker-environment.txt"
+            fake_docker = (
+                "#!/bin/sh\n"
+                "printf '%s\\n' \"$@\" > \"$ARGV_CAPTURE\"\n"
+                "{\n"
+                "  printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\\n' \"${CLAUDE_CODE_OAUTH_TOKEN-<unset>}\"\n"
+                "  printf 'ANTHROPIC_API_KEY=%s\\n' \"${ANTHROPIC_API_KEY-<unset>}\"\n"
+                "  printf 'ANTHROPIC_AUTH_TOKEN=%s\\n' \"${ANTHROPIC_AUTH_TOKEN-<unset>}\"\n"
+                "} > \"$ENVIRONMENT_CAPTURE\"\n"
+            )
+            environment = _install_fake_docker(root, fake_docker)
+            environment["ARGV_CAPTURE"] = str(argv_capture)
+            environment["ENVIRONMENT_CAPTURE"] = str(environment_capture)
+            server, socket_path = _bind_test_socket(root)
+            try:
+                result = subprocess.run(
+                    _launcher_args(
+                        scratch,
+                        output,
+                        repo,
+                        evidence,
+                        findings,
+                        models,
+                        socket_path,
+                        auth_env_file,
+                    ),
+                    cwd=ROOT,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                if server is not None:
+                    server.close()
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            forwarded = dict(
+                line.split("=", 1)
+                for line in environment_capture.read_text(encoding="utf-8").splitlines()
+            )
+            self.assertEqual(
+                forwarded,
+                {
+                    "CLAUDE_CODE_OAUTH_TOKEN": "dummy-oauth== literal $HOME `ticks`",
+                    "ANTHROPIC_API_KEY": "dummy-api key=two",
+                    "ANTHROPIC_AUTH_TOKEN": "",
+                },
+            )
+
+            argv = argv_capture.read_text(encoding="utf-8").splitlines()
+            self.assertNotIn("--env-file", argv)
+            for key in forwarded:
+                env_indexes = [index for index, value in enumerate(argv) if value == "--env"]
+                self.assertIn(key, [argv[index + 1] for index in env_indexes])
+            for value in forwarded.values():
+                if value:
+                    self.assertNotIn(value, argv)
+            self.assertNotIn(str(auth_env_file), argv)
+            self.assertEqual(list(scratch.iterdir()), [])
+
+    def test_launcher_rejects_invalid_auth_before_docker_or_storage_mutation(self):
+        if os.getuid() == 0:
+            self.skipTest("launcher requires a non-root invoking UID")
+        with tempfile.TemporaryDirectory(prefix="ocp-review-eval-launcher-auth-invalid-") as temp:
+            root = Path(temp).resolve()
+            inputs = root / "inputs"
+            inputs.mkdir()
+            repo = inputs / "repo"
+            repo.mkdir()
+            (repo / "source.txt").write_text("source\n", encoding="utf-8")
+            evidence = inputs / "evidence"
+            evidence.mkdir()
+            findings = inputs / "findings.json"
+            findings.write_text("{}\n", encoding="utf-8")
+            models = inputs / "models.json"
+            models.write_text("{}\n", encoding="utf-8")
+            auth_env_file = inputs / "auth.env"
+            marker = root / "docker-invoked"
+            fake_docker = "printf '%s\\n' invoked > \"$DOCKER_MARKER\"\nexit 99\n"
+            environment = _install_fake_docker(root, fake_docker)
+            environment["DOCKER_MARKER"] = str(marker)
+            server, socket_path = _bind_test_socket(root)
+            cases = (
+                ("PYTHONPATH=dummy-pythonpath-value\n", "PYTHONPATH", "dummy-pythonpath-value"),
+                ("PYTHONHOME=dummy-pythonhome-value\n", "PYTHONHOME", "dummy-pythonhome-value"),
+                ("PATH=dummy-path-value\n", "PATH", "dummy-path-value"),
+                ("DOCKER_HOST=dummy-docker-host-value\n", "DOCKER_HOST", "dummy-docker-host-value"),
+                (
+                    "GIT_CONFIG_GLOBAL=dummy-git-config-value\n",
+                    "GIT_CONFIG_GLOBAL",
+                    "dummy-git-config-value",
+                ),
+                ("GENERIC_UNSUPPORTED=dummy-generic-value\n", "GENERIC_UNSUPPORTED", "dummy-generic-value"),
+                ("malformed dummy-record-value\n", "malformed", "dummy-record-value"),
+                ("=dummy-empty-key-value\n", "malformed", "dummy-empty-key-value"),
+                (
+                    "CLAUDE_CODE_OAUTH_TOKEN=dummy-first-value\n"
+                    "CLAUDE_CODE_OAUTH_TOKEN=dummy-second-value\n",
+                    "duplicate",
+                    "dummy-first-value",
+                ),
+            )
+            try:
+                for index, (contents, expected_error, secret_value) in enumerate(cases):
+                    scratch = root / f"scratch-{index}"
+                    output = root / f"output-{index}"
+                    auth_env_file.write_text(contents, encoding="utf-8")
+                    result = subprocess.run(
+                        _launcher_args(
+                            scratch,
+                            output,
+                            repo,
+                            evidence,
+                            findings,
+                            models,
+                            socket_path,
+                            auth_env_file,
+                        ),
+                        cwd=ROOT,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0, contents)
+                    self.assertIn(expected_error, result.stderr, contents)
+                    self.assertNotIn(secret_value, result.stderr, contents)
+                    self.assertFalse(marker.exists(), contents)
+                    self.assertFalse(scratch.exists(), contents)
+                    self.assertFalse(output.exists(), contents)
+            finally:
+                if server is not None:
+                    server.close()
 
     def test_launcher_stages_repository_bytes_and_symlinks_without_following_them(self):
         if os.getuid() == 0:

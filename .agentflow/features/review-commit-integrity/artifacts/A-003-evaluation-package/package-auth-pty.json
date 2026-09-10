@@ -1,0 +1,41 @@
+[
+  {
+    "action": "start",
+    "chunk_id": "71cbfc",
+    "wall_time_seconds": 1.002802875,
+    "session_id": 31873,
+    "original_token_count": 49,
+    "output": "\r\nThe default interactive shell is now zsh.\r\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\r\nFor more details, please visit https://support.apple.com/kb/HT208050.\r\nbash-3.2$ "
+  },
+  {
+    "input": "python3 -c 'import os; print(\"REAL_PTY\",os.isatty(0),os.ttyname(0))'\n",
+    "chunk_id": "3906b6",
+    "wall_time_seconds": 1.000841875,
+    "session_id": 31873,
+    "original_token_count": 53,
+    "output": "python3 -c 'import os; print(\"REAL_PTY\",os.isatty(0),os.ttyname(0))\r<t os; print(\"REAL_PTY\",os.isatty(0),os.ttyname(0))'                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\nREAL_PTY True /dev/ttys026\r\nbash-3.2$ "
+  },
+  {
+    "input": "python3 /tmp/ocp-package-auth-runtime.py\n",
+    "chunk_id": "b0ba68",
+    "wall_time_seconds": 1.0013505,
+    "session_id": 31873,
+    "original_token_count": 48,
+    "output": "python3 /tmp/ocp-package-auth-runtime.py\r\nRUN invalid-auth\r\nevaluation launcher: authentication environment file contains unsupported key: PYTHONPATH\r\nEXIT 2\r\nRUN valid-auth-complete-replay\r\n"
+  },
+  {
+    "chunk_id": "1c6f50",
+    "wall_time_seconds": 5.002617625,
+    "session_id": 31873,
+    "original_token_count": 101,
+    "output": "{\"state\": \"complete\", \"summary\": \"/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/evaluation-safe-accepted/summary.json\"}\r\nWARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested\r\nEXIT 0\r\nAUTH_RUNTIME_PASS; 42 artifact hashes/mtimes unchanged; source clean\r\nbash-3.2$ "
+  },
+  {
+    "input": "printf 'RUNTIME_SCRIPT_EXIT=%s\\n' \"$?\"\nexit 0\n",
+    "chunk_id": "f1f8de",
+    "wall_time_seconds": 0.000003292,
+    "exit_code": 0,
+    "original_token_count": 22,
+    "output": "printf 'RUNTIME_SCRIPT_EXIT=%s\\n' \"$?\"\r\nRUNTIME_SCRIPT_EXIT=0\r\nbash-3.2$ exit 0\r\nexit\r\n"
+  }
+]
