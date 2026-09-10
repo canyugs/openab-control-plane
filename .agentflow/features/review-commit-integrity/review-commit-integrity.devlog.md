@@ -2,12 +2,12 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: 4b46e16c75430f9654b18599e319f978d5b0c3ac reviewed implementation; later commits records only.
+Current commit: d9c1e2c standalone packaging candidate; prior Stage2 accepted4b46e16c75430f9654b18599e319f978d5b0c3ac.
 Tests/scenarios: 86 tests, actual model/OCI journeys, replay/tamper/weekly readback, security/acceptance/host gate PASS.
 Configuration: ag.json — schema v7; validated for codex this round.
 Proven: Stage1 and Stage2 accepted; Stage2 Result Go4b46e16c75430f9654b18599e319f978d5b0c3ac recorded in A-002.
 Open: A-003 approved standalone package/image implementation and runtime checks; no publication or deployment.
-Next: collect package-implementation78052, verify installed wheel and actual container controls, independent cross-check.
+Next: collect package-repair51980, verify actual launcher and final suite, complete independent cross-check.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-003-evaluation-package.
 Archived eras: none.
 Streams:
@@ -1078,3 +1078,31 @@ Checkpoint scope reconciled: main worktree holds only declared A-003 evidence/re
 * _2026-09-10 13:06:26 (GPT-6/default)_
 
 package-implementation start1 terminal completed exit0. Full6887-byte report read and SHA c22c2915366b7a4e7941aad06a6db74390732ab0a105b8fba712707c3f89ed0a matched trusted metadata; exact7 allowed product files plus report/red evidence safely imported, no undeclared writes or core changes. Worker used local cached setuptools for offline tests; parent relies on its own isolated build/runtime evidence, not worker dependency claims. Current8 image input hashes match delivered files. Actual amd64 image build PASS, nonroot65532, bothCLIs, Python3.11/Node22/Claude2.1.266/Docker20.10 versions PASS; outerUID501 + socketgroup0 + identical scratch paths execute both OCI controls successfully, classification remainsunproven. Image weekly in real PTY exit0 and JSON byte-equal baseline. CI discovery and launcher group0 failures remain and require bounded repair; source is not completion-ready yet.
+
+## [RUN-008] Event (during round A-003)
+
+* _2026-09-10 13:06:34 (GPT-6/default)_
+
+Dispatch package-repair implementation, gpt-5.6-luna/max, external-runner-v1 atd9c1e2ca6632414aedfcaafac1ee19e3d8f45266; immutable brief frozen, no remote/production authority.
+
+## [RUN-009] Event (during round A-003)
+
+* _2026-09-10 13:07:36 (GPT-6/default)_
+
+Current scope reconciled after source commitd9c1e2c: seven package/config/doc/test paths plus A-003 records, no core or Rust changes. Initial worker78052 terminal; bounded second implementation start51980 repairs CI discovery and legitimate Docker socket GID0, with minimal matching docs/tests only. Final metadata wheel build1817 active; existing actual image inputs unchanged. Raw Markdown report evidence contains intentional two-space line breaks preserved from baseline; default diff-check flags those evidence bytes, product diff-check must be reported separately without changing raw output. Tracker updated for current processes and proof.
+
+## [WIP-004] Checkpoint (during round A-003)
+
+* _2026-09-10 13:07:36 (GPT-6/default)_
+
+- **Finished:** Seven packaging files imported; actual amd64 image, nested OCI and image weekly checks passed; core bytes unchanged.
+- **Running now:** Bounded launcher/CI repair51980 and final metadata wheel build1817.
+- **Still to do:** Actual repaired launcher, final full suite, independent reviews and delivery.
+- **Next work action:** Collect repair and finish local validation.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-010] Event (during round A-003)
+
+* _2026-09-10 13:19:22 (GPT-6/default)_
+
+Repair start2 terminal PASS report145f0f1b3b2ebe561349729cbc1e7cb68e2ea02395e43a5abff92553c105caf6 verified and4 scoped paths imported. Parent full91 Python tests PASS with installed builder and no skips; exact CI command now works. Actual launcher exit2 revealed repository ownership boundary: DockerDesktop direct mount rootUID0 vs .gitUID501, so Git correctly refuses. Reopened launcher mount design from concrete failure: retain Git guards, nonroot and unchanged core; stage only the supplied repo under a dedicated host temporary parent, mount that parent readonly, and pass childrepo. Parent ownership-stage-proof actual replay exit0. Rejected global safe.directory (core deliberately ignores globals), root (violates nonroot), and mounting arbitrary original parent (exposes unrelated data). Staging must preserve original input/output separation, callerUID ownership, symlinks, bounded cleanup and exit status. This is reversible correction within approved runnable-package scope, no new production or evaluator authority.

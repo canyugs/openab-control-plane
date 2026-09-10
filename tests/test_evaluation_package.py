@@ -239,11 +239,11 @@ class EvaluationPackageTests(unittest.TestCase):
                         "--docker-socket",
                         str(socket_path),
                         "--docker-gid",
-                        "1234",
+                        "0",
                         "--uid",
                         "1001",
                         "--gid",
-                        "1002",
+                        "0",
                         "--image",
                         "ghcr.io/canyugs/ocp-review-eval:0.1.0",
                     ],
@@ -254,6 +254,18 @@ class EvaluationPackageTests(unittest.TestCase):
                     check=False,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+                root_uid_args = list(result.args)
+                root_uid_args[root_uid_args.index("--uid") + 1] = "0"
+                root_uid = subprocess.run(
+                    root_uid_args,
+                    cwd=ROOT,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertNotEqual(root_uid.returncode, 0, root_uid.stdout + root_uid.stderr)
             finally:
                 if server is not None:
                     server.close()
@@ -264,9 +276,9 @@ class EvaluationPackageTests(unittest.TestCase):
             self.assertIn(f"TMPDIR={scratch}", argv)
             self.assertIn(f"type=bind,src={socket_path},dst=/var/run/docker.sock", argv)
             self.assertIn("--user", argv)
-            self.assertEqual(argv[argv.index("--user") + 1], "1001:1002")
+            self.assertEqual(argv[argv.index("--user") + 1], "1001:0")
             self.assertIn("--group-add", argv)
-            self.assertEqual(argv[argv.index("--group-add") + 1], "1234")
+            self.assertEqual(argv[argv.index("--group-add") + 1], "0")
             self.assertNotIn("--privileged", argv)
             self.assertNotIn("--network=host", argv)
             self.assertNotIn("--network", argv)

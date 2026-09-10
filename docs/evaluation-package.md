@@ -76,6 +76,10 @@ OCI call:
   --output /srv/review-output/weekly-2026-W37
 ```
 
+The weekly bundle schema remains OCP-specific: this command consumes the
+existing OpenAB Control Plane evidence-export contract rather than defining a
+generic review-bundle schema.
+
 ## Versioned image
 
 The release workflow uses the independent package tag
@@ -83,6 +87,11 @@ The release workflow uses the independent package tag
 `ghcr.io/canyugs/ocp-review-eval:0.1.0`. It does not publish a `latest` image
 or a PyPI release. The first image lane is tested and published for
 `linux/amd64` only; no multi-architecture support is claimed.
+
+Local build and test work has not published the wheel, sdist, or image. The
+image and package names above describe the independent release workflow, not a
+claim that these artifacts are currently available from a registry or package
+index.
 
 The image's default entrypoint is the evaluator (`ocp-review-eval`) with the
 legacy `run` subcommand. Its image contains Python in an isolated virtual
@@ -144,7 +153,9 @@ packaging/evaluation/run.sh \
 `claude.env` is an external Docker env-file, for example with a runtime-only
 `CLAUDE_CODE_OAUTH_TOKEN=...` entry. The launcher never copies it into the
 image. `--docker-gid` must be the numeric group owning the dedicated host
-socket; `--uid` and `--gid` must be non-zero numeric IDs that can write the
+socket as seen inside the outer Linux container; that group can be `0` on
+Docker Desktop. `--uid` must be non-zero to retain a nonroot process, while
+`--gid` and `--docker-gid` accept nonnegative numeric IDs that can write the
 external scratch and output directories. The launcher accepts a non-default
 socket only when `--docker-socket` names an existing Unix socket, and always
 maps it to `/var/run/docker.sock` inside the outer image.
@@ -166,6 +177,9 @@ launcher does not provision a daemon, add DinD, or alter the executor.
 - A Linux image cannot use a macOS keychain. No claim is made that macOS
   keychain OAuth state is available inside this image; provide supported
   runtime authentication explicitly.
+- A Linux model-auth run still requires explicit runtime credentials. Existing
+  host-model checks and local package/OCI checks do not imply that model auth
+  works inside the Linux image.
 - Model identity, human truth, list-price estimates, and actual provider
   billing remain separate. Unknown billing is not converted into an estimate,
   and no verdict, roster, routing, GitHub, scheduler, or production behavior

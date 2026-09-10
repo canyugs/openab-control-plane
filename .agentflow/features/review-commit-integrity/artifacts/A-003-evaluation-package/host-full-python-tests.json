@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/build-venv/bin/python",
+    "-m",
+    "unittest",
+    "discover",
+    "--start-directory",
+    "tests",
+    "--pattern",
+    "test_*.py"
+  ],
+  "exit": 0,
+  "output": "...........................................................................................\n----------------------------------------------------------------------\nRan 91 tests in 8.213s\n\nOK\n"
+}

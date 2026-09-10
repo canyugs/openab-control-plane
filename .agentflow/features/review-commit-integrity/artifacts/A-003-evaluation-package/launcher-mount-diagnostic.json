@@ -1,0 +1,12 @@
+[
+  {
+    "destination": "/repo",
+    "exit": 0,
+    "output": "{\"owner\": 0, \"git_owner\": 501}\n128  fatal: detected dubious ownership in repository at '/repo'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /repo\n\n"
+  },
+  {
+    "destination": "/inputs/repo",
+    "exit": 0,
+    "output": "{\"owner\": 0, \"git_owner\": 501}\n128  fatal: detected dubious ownership in repository at '/inputs/repo'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /inputs/repo\n\n"
+  }
+]

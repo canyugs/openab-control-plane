@@ -74,7 +74,7 @@ jobs:
 
       - name: Run the full relevant Python suite
         run: |
-          "$EVALUATION_BUILD_PYTHON" -m unittest discover --start-directory tests --pattern 'test_*.py' --top-level-directory .
+          "$EVALUATION_BUILD_PYTHON" -m unittest discover --start-directory tests --pattern 'test_*.py'
 
       - name: Smoke-test a fresh wheel outside the checkout
         run: |

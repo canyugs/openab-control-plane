@@ -118,10 +118,16 @@ require_file() {
   [[ -f "$path" ]] || die "$label must be an existing regular file"
 }
 
-require_decimal() {
+require_nonzero_decimal() {
   local value="$1"
   local label="$2"
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "$label must be a non-zero decimal integer"
+}
+
+require_nonnegative_decimal() {
+  local value="$1"
+  local label="$2"
+  [[ "$value" =~ ^[0-9]+$ ]] || die "$label must be a non-negative decimal integer"
 }
 
 while (($#)); do
@@ -172,8 +178,8 @@ done
 case "$image" in
   *,*|*$'\n'*|*$'\r'*) die "--image contains unsafe characters" ;;
 esac
-require_decimal "$run_uid" "--uid"
-require_decimal "$run_gid" "--gid"
+require_nonzero_decimal "$run_uid" "--uid"
+require_nonnegative_decimal "$run_gid" "--gid"
 
 ensure_directory "$scratch_dir" "scratch directory"
 ensure_directory "$output_dir" "output directory"
@@ -210,7 +216,7 @@ validate_path_text "$docker_socket" "Docker socket"
 if [[ -z "$docker_gid" ]]; then
   docker_gid="$(stat -c '%g' -- "$docker_socket" 2>/dev/null || stat -f '%g' "$docker_socket" 2>/dev/null || true)"
 fi
-require_decimal "$docker_gid" "--docker-gid"
+require_nonnegative_decimal "$docker_gid" "--docker-gid"
 command -v docker >/dev/null 2>&1 || die "docker executable is not on PATH"
 
 docker_args=(

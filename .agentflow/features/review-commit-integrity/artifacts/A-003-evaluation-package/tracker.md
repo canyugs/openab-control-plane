@@ -8,9 +8,9 @@
 
 - **Goal:** Deliver the approved independent package, CLI, image and release workflow without changing evaluator semantics.
 
-- **Last update:** 2026-09-10 12:55:26 Asia/Taipei.
+- **Last update:** 2026-09-10 13:07:36 Asia/Taipei.
 
-- **Evidence commit:** uncommitted.
+- **Evidence commit:** d9c1e2c.
 
 ## Overall state
 
@@ -36,11 +36,11 @@
 
 - **Current item:** T-1.
 
-- **Last proven result:** Candidate wheel installed outside checkout; actual PTY weekly exact match and complete replay42 files unchanged. Candidate image and launcher/CI issues reproduced, pending scoped repair.
+- **Last proven result:** Seven packaging files imported; amd64 image build, nonroot CLI versions, actual nested OCI controls and image weekly exact JSON all PASS. Core bytes unchanged.
 
-- **Active blocker or running process:** package-implementation78052; reusable verification PTY90890.
+- **Active blocker or running process:** package-repair51980; final metadata wheel1817; reusable PTY90890.
 
-- **Next safe action:** Implement the approved packaging in a disposable clone and verify delivered artifacts.
+- **Next safe action:** Collect bounded launcher/CI repair, verify actual launcher and final suite, then independent reviews.
 
 - **Expected changed files:** pyproject.toml; packaging/evaluation/; Dockerfile.evaluation; .github/workflows/evaluation-release.yml; docs/evaluation-package.md; package-specific tests; stream records.
 
