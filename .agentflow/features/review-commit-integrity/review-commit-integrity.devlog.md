@@ -1358,4 +1358,14 @@ Fresh real Linux evaluation completed exit0/statecomplete in130.482s. Both reque
 
 # → Ask / A-005
 
-+
+使用者原文：
+
+> 好
+
+Approved action: merge the accepted working branch and publish evaluation-v0.1.0 after required checks; verify GitHub wheel/sdist and GHCR image. No production service deployment requested.
+
+## [RUN-001] Event (during round A-005)
+
+* _2026-09-10 18:21:23 (GPT-6/default)_
+
+Route direct release operation on already accepted source. Owner approved merge and evaluation-v0.1.0 publication; no repeat permission or new source review required absent a change/failure. Fresh origin main16aa2d46b0be72a35100e57c8c934bf0835adef4 is ancestor of head90c9d021744dcf91f8b3b3560bbace56502afb27, no incoming divergence; no PR exists. Branch includes previously accepted SHA integrity, model evaluation, package and Linux runtime evidence. Protected main requires openab/council. Merge triggers CI only; evaluation tag is separate from Rust v* release. Plan: create PR, satisfy current checks, merge without deleting user worktree, publish unique tag, independently verify release artifacts and image. Main checkout foreign edits preserved.
