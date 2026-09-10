@@ -36,7 +36,10 @@ Usage: run.sh --scratch-dir ABS_DIR --output-dir ABS_DIR --repo ABS_DIR
 The scratch directory is mounted at the identical absolute path inside the
 outer evaluator container and is exported as TMPDIR. The outer container is
 given the host Docker socket; generated validation containers receive no
-socket mount. Use this only on a dedicated runner.
+socket mount. The repository is copied into a temporary child of scratch with
+symlinks preserved, and only that child's parent is mounted read-only. The
+temporary copy is removed after Docker exits. --uid must match the invoking
+non-root host UID. Use this only on a dedicated runner.
 EOF
 }
 
@@ -100,6 +103,23 @@ ensure_directory() {
   fi
   reject_symlink_components "$path"
   [[ -d "$path" && -w "$path" ]] || die "$label must be writable"
+}
+
+paths_overlap() {
+  local left="$1"
+  local right="$2"
+  [[ "$left" == "$right" || "$left" == "$right/"* || "$right" == "$left/"* ]]
+}
+
+reject_storage_overlap() {
+  local storage_path="$1"
+  local storage_label="$2"
+  local input_path="$3"
+  local input_label="$4"
+  if paths_overlap "$storage_path" "$input_path"; then
+    die "$storage_label overlaps $input_label"
+  fi
+  return 0
 }
 
 require_directory() {
@@ -178,37 +198,89 @@ done
 case "$image" in
   *,*|*$'\n'*|*$'\r'*) die "--image contains unsafe characters" ;;
 esac
+host_uid="$(id -u)"
+[[ "$host_uid" != "0" ]] || die "launcher requires a non-root invoking UID (id -u is 0)"
 require_nonzero_decimal "$run_uid" "--uid"
 require_nonnegative_decimal "$run_gid" "--gid"
+require_nonzero_decimal "$host_uid" "invoking UID"
+[[ "$run_uid" == "$host_uid" ]] || die "--uid must match invoking host UID ${host_uid} (got ${run_uid})"
 
-ensure_directory "$scratch_dir" "scratch directory"
-ensure_directory "$output_dir" "output directory"
-scratch_dir="$(canonical_existing_path "$scratch_dir")"
-output_dir="$(canonical_existing_path "$output_dir")"
-[[ "$scratch_dir" != "$output_dir" ]] || die "scratch and output directories must differ"
-[[ "$scratch_dir" != "$output_dir/"* ]] || die "scratch directory may not contain output directory"
-[[ "$output_dir" != "$scratch_dir/"* ]] || die "output directory may not contain scratch directory"
-
-if [[ -n "$(find "$scratch_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-  die "scratch directory must be empty and dedicated"
+validate_path_text "$scratch_dir" "scratch directory"
+validate_path_text "$output_dir" "output directory"
+if [[ -L "$scratch_dir" ]]; then
+  die "scratch directory may not be a symlink"
+fi
+if [[ -L "$output_dir" ]]; then
+  die "output directory may not be a symlink"
+fi
+reject_symlink_components "$scratch_dir"
+reject_symlink_components "$output_dir"
+if [[ ! -e "$scratch_dir" ]]; then
+  scratch_parent="${scratch_dir%/*}"
+  [[ -n "$scratch_parent" ]] || scratch_parent="/"
+  [[ -d "$scratch_parent" ]] || die "scratch directory parent must already exist"
+  reject_symlink_components "$scratch_parent"
+fi
+if [[ ! -e "$output_dir" ]]; then
+  output_parent="${output_dir%/*}"
+  [[ -n "$output_parent" ]] || output_parent="/"
+  [[ -d "$output_parent" ]] || die "output directory parent must already exist"
+  reject_symlink_components "$output_parent"
 fi
 
 require_directory "$repo" "repository"
 require_directory "$evidence" "evidence directory"
 require_file "$findings" "findings file"
 require_file "$models" "models file"
+if [[ -n "$environment_file" ]]; then
+  require_file "$environment_file" "environment file"
+fi
+if [[ -n "$auth_env_file" ]]; then
+  require_file "$auth_env_file" "authentication environment file"
+fi
+
+scratch_dir="$(canonical_existing_path "$scratch_dir")"
+output_dir="$(canonical_existing_path "$output_dir")"
 repo="$(canonical_existing_path "$repo")"
 evidence="$(canonical_existing_path "$evidence")"
 findings="$(canonical_existing_path "$findings")"
 models="$(canonical_existing_path "$models")"
-
 if [[ -n "$environment_file" ]]; then
-  require_file "$environment_file" "environment file"
   environment_file="$(canonical_existing_path "$environment_file")"
 fi
 if [[ -n "$auth_env_file" ]]; then
-  require_file "$auth_env_file" "authentication environment file"
   auth_env_file="$(canonical_existing_path "$auth_env_file")"
+fi
+
+if paths_overlap "$scratch_dir" "$output_dir"; then
+  die "scratch and output directories must not overlap"
+fi
+reject_storage_overlap "$scratch_dir" "scratch directory" "$repo" "repository"
+reject_storage_overlap "$scratch_dir" "scratch directory" "$evidence" "evidence directory"
+reject_storage_overlap "$scratch_dir" "scratch directory" "$findings" "findings file"
+reject_storage_overlap "$scratch_dir" "scratch directory" "$models" "models file"
+if [[ -n "$environment_file" ]]; then
+  reject_storage_overlap "$scratch_dir" "scratch directory" "$environment_file" "environment file"
+fi
+if [[ -n "$auth_env_file" ]]; then
+  reject_storage_overlap "$scratch_dir" "scratch directory" "$auth_env_file" "authentication environment file"
+fi
+reject_storage_overlap "$output_dir" "output directory" "$repo" "repository"
+reject_storage_overlap "$output_dir" "output directory" "$evidence" "evidence directory"
+reject_storage_overlap "$output_dir" "output directory" "$findings" "findings file"
+reject_storage_overlap "$output_dir" "output directory" "$models" "models file"
+if [[ -n "$environment_file" ]]; then
+  reject_storage_overlap "$output_dir" "output directory" "$environment_file" "environment file"
+fi
+if [[ -n "$auth_env_file" ]]; then
+  reject_storage_overlap "$output_dir" "output directory" "$auth_env_file" "authentication environment file"
+fi
+
+ensure_directory "$scratch_dir" "scratch directory"
+ensure_directory "$output_dir" "output directory"
+
+if [[ -n "$(find "$scratch_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+  die "scratch directory must be empty and dedicated"
 fi
 
 validate_path_text "$docker_socket" "Docker socket"
@@ -219,6 +291,22 @@ fi
 require_nonnegative_decimal "$docker_gid" "--docker-gid"
 command -v docker >/dev/null 2>&1 || die "docker executable is not on PATH"
 
+staging_parent=""
+# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap below.
+cleanup_staging() {
+  local status="$?"
+  trap - EXIT
+  if [[ -n "$staging_parent" ]]; then
+    rm -rf -- "$staging_parent" || printf 'evaluation launcher: could not remove staging directory: %s\n' "$staging_parent" >&2
+  fi
+  exit "$status"
+}
+trap cleanup_staging EXIT
+
+staging_parent="$(mktemp -d "${scratch_dir}/ocp-review-eval-staging.XXXXXX")" || die "could not create repository staging directory"
+staged_repo="${staging_parent}/repo"
+cp -R -P "$repo" "$staged_repo" || die "could not copy repository into staging directory"
+
 docker_args=(
   run
   --rm
@@ -227,7 +315,7 @@ docker_args=(
   --group-add "$docker_gid"
   --mount "type=bind,src=${scratch_dir},dst=${scratch_dir}"
   --mount "type=bind,src=${output_dir},dst=${output_dir}"
-  --mount "type=bind,src=${repo},dst=${repo},readonly"
+  --mount "type=bind,src=${staging_parent},dst=${staging_parent},readonly"
   --mount "type=bind,src=${evidence},dst=${evidence},readonly"
   --mount "type=bind,src=${findings},dst=${findings},readonly"
   --mount "type=bind,src=${models},dst=${models},readonly"
@@ -251,7 +339,7 @@ docker_args+=(
 
 package_args=(
   run
-  --repo "$repo"
+  --repo "$staged_repo"
   --revision "$revision"
   --base "$base"
   --findings "$findings"
@@ -263,4 +351,8 @@ if [[ -n "$environment_file" ]]; then
   package_args+=(--environment "$environment_file")
 fi
 
-exec docker "${docker_args[@]}" "$image" "${package_args[@]}"
+set +e
+docker "${docker_args[@]}" "$image" "${package_args[@]}"
+docker_status=$?
+set -e
+exit "$docker_status"

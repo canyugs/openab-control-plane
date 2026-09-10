@@ -58,6 +58,62 @@ def _offline_build_command(output: Path):
     return None
 
 
+def _launcher_args(scratch, output, repo, evidence, findings, models, socket_path):
+    return [
+        str(LAUNCHER),
+        "--scratch-dir",
+        str(scratch),
+        "--output-dir",
+        str(output),
+        "--repo",
+        str(repo),
+        "--revision",
+        "a" * 40,
+        "--base",
+        "b" * 40,
+        "--findings",
+        str(findings),
+        "--evidence",
+        str(evidence),
+        "--models",
+        str(models),
+        "--docker-socket",
+        str(socket_path),
+        "--docker-gid",
+        "0",
+        "--uid",
+        str(os.getuid()),
+        "--gid",
+        "0",
+    ]
+
+
+def _bind_test_socket(root):
+    socket_path = root / "docker.sock"
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        server.bind(str(socket_path))
+    except OSError:
+        server.close()
+        candidates = [Path("/var/run/docker.sock"), Path("/run/docker.sock")]
+        socket_path = next((candidate for candidate in candidates if candidate.is_socket()), None)
+        if socket_path is None:
+            raise unittest.SkipTest("the test sandbox has no usable Unix socket")
+        return None, socket_path
+    return server, socket_path
+
+
+def _install_fake_docker(root, body):
+    fake_bin = root / "bin"
+    fake_bin.mkdir()
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    fake_docker.chmod(0o755)
+    environment = os.environ.copy()
+    environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+    return environment
+
+
 class EvaluationPackageTests(unittest.TestCase):
     def test_pyproject_declares_the_standalone_surface(self):
         if tomllib is None:
@@ -178,6 +234,8 @@ class EvaluationPackageTests(unittest.TestCase):
             self.assertEqual(imported.returncode, 0, imported.stdout + imported.stderr)
 
     def test_launcher_forwards_identical_scratch_path_and_literal_socket_controls(self):
+        if os.getuid() == 0:
+            self.skipTest("launcher requires a non-root invoking UID")
         with tempfile.TemporaryDirectory(prefix="ocp-review-eval-launcher-") as temp:
             root = Path(temp).resolve()
             inputs = root / "inputs"
@@ -241,7 +299,7 @@ class EvaluationPackageTests(unittest.TestCase):
                         "--docker-gid",
                         "0",
                         "--uid",
-                        "1001",
+                        str(os.getuid()),
                         "--gid",
                         "0",
                         "--image",
@@ -276,15 +334,194 @@ class EvaluationPackageTests(unittest.TestCase):
             self.assertIn(f"TMPDIR={scratch}", argv)
             self.assertIn(f"type=bind,src={socket_path},dst=/var/run/docker.sock", argv)
             self.assertIn("--user", argv)
-            self.assertEqual(argv[argv.index("--user") + 1], "1001:0")
+            self.assertEqual(argv[argv.index("--user") + 1], f"{os.getuid()}:0")
             self.assertIn("--group-add", argv)
             self.assertEqual(argv[argv.index("--group-add") + 1], "0")
             self.assertNotIn("--privileged", argv)
             self.assertNotIn("--network=host", argv)
             self.assertNotIn("--network", argv)
+            staged_repo = Path(argv[argv.index("--repo") + 1])
+            staging_parent = staged_repo.parent
+            self.assertEqual(staging_parent.parent, scratch)
+            self.assertIn(
+                f"type=bind,src={staging_parent},dst={staging_parent},readonly",
+                argv,
+            )
+            self.assertNotIn(f"type=bind,src={repo},dst={repo},readonly", argv)
             image_index = argv.index("ghcr.io/canyugs/ocp-review-eval:0.1.0")
             self.assertEqual(argv[image_index + 1], "run")
-            self.assertEqual(argv[image_index + 2 : image_index + 4], ["--repo", str(repo)])
+            self.assertEqual(argv[image_index + 2 : image_index + 4], ["--repo", str(staged_repo)])
+
+    def test_launcher_stages_repository_bytes_and_symlinks_without_following_them(self):
+        if os.getuid() == 0:
+            self.skipTest("launcher requires a non-root invoking UID")
+        with tempfile.TemporaryDirectory(prefix="ocp-review-eval-launcher-stage-") as temp:
+            root = Path(temp).resolve()
+            inputs = root / "inputs"
+            inputs.mkdir()
+            repo = inputs / "repo"
+            repo.mkdir()
+            (repo / "tracked.txt").write_text("staged repository bytes\n", encoding="utf-8")
+            target = inputs / "symlink-target.txt"
+            target.write_text("must not be copied through the symlink\n", encoding="utf-8")
+            (repo / "linked.txt").symlink_to("../symlink-target.txt")
+            evidence = inputs / "evidence"
+            evidence.mkdir()
+            findings = inputs / "findings.json"
+            findings.write_text("{}\n", encoding="utf-8")
+            models = inputs / "models.json"
+            models.write_text("{}\n", encoding="utf-8")
+            scratch = root / "scratch"
+            output = root / "output"
+            capture = root / "staged-repo.txt"
+            fake_docker = (
+                "repo=\"\"\n"
+                "while [ \"$#\" -gt 0 ]; do\n"
+                "  if [ \"$1\" = \"--repo\" ]; then repo=\"$2\"; shift 2; else shift; fi\n"
+                "done\n"
+                "printf '%s\\n' \"$repo\" > \"$CAPTURE\"\n"
+                "test -f \"$repo/tracked.txt\" || exit 41\n"
+                "test \"$(cat \"$repo/tracked.txt\")\" = 'staged repository bytes' || exit 42\n"
+                "test -L \"$repo/linked.txt\" || exit 43\n"
+                "test \"$(readlink \"$repo/linked.txt\")\" = '../symlink-target.txt' || exit 44\n"
+                "exit 23\n"
+            )
+            environment = _install_fake_docker(root, fake_docker)
+            environment["CAPTURE"] = str(capture)
+            server, socket_path = _bind_test_socket(root)
+            try:
+                result = subprocess.run(
+                    _launcher_args(scratch, output, repo, evidence, findings, models, socket_path),
+                    cwd=ROOT,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                if server is not None:
+                    server.close()
+
+            self.assertEqual(result.returncode, 23, result.stdout + result.stderr)
+            staged_repo = Path(capture.read_text(encoding="utf-8").strip())
+            self.assertEqual(staged_repo.parent.parent, scratch)
+            self.assertFalse(staged_repo.parent.exists())
+            self.assertTrue(scratch.is_dir())
+            self.assertEqual(list(scratch.iterdir()), [])
+            self.assertTrue((repo / "linked.txt").is_symlink())
+
+    def test_launcher_cleans_staging_directory_after_success(self):
+        if os.getuid() == 0:
+            self.skipTest("launcher requires a non-root invoking UID")
+        with tempfile.TemporaryDirectory(prefix="ocp-review-eval-launcher-success-") as temp:
+            root = Path(temp).resolve()
+            inputs = root / "inputs"
+            inputs.mkdir()
+            repo = inputs / "repo"
+            repo.mkdir()
+            (repo / "tracked.txt").write_text("success\n", encoding="utf-8")
+            evidence = inputs / "evidence"
+            evidence.mkdir()
+            findings = inputs / "findings.json"
+            findings.write_text("{}\n", encoding="utf-8")
+            models = inputs / "models.json"
+            models.write_text("{}\n", encoding="utf-8")
+            scratch = root / "scratch"
+            output = root / "output"
+            capture = root / "staged-repo.txt"
+            fake_docker = (
+                "repo=\"\"\n"
+                "while [ \"$#\" -gt 0 ]; do\n"
+                "  if [ \"$1\" = \"--repo\" ]; then repo=\"$2\"; shift 2; else shift; fi\n"
+                "done\n"
+                "printf '%s\\n' \"$repo\" > \"$CAPTURE\"\n"
+                "test -f \"$repo/tracked.txt\"\n"
+                "exit 0\n"
+            )
+            environment = _install_fake_docker(root, fake_docker)
+            environment["CAPTURE"] = str(capture)
+            server, socket_path = _bind_test_socket(root)
+            try:
+                result = subprocess.run(
+                    _launcher_args(scratch, output, repo, evidence, findings, models, socket_path),
+                    cwd=ROOT,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                if server is not None:
+                    server.close()
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            staged_repo = Path(capture.read_text(encoding="utf-8").strip())
+            self.assertFalse(staged_repo.parent.exists())
+            self.assertTrue(scratch.is_dir())
+            self.assertEqual(list(scratch.iterdir()), [])
+
+    def test_launcher_rejects_uid_and_input_overlaps_before_docker_or_copy(self):
+        with tempfile.TemporaryDirectory(prefix="ocp-review-eval-launcher-preflight-") as temp:
+            root = Path(temp).resolve()
+            inputs = root / "inputs"
+            inputs.mkdir()
+            repo = inputs / "repo"
+            repo.mkdir()
+            (repo / "tracked.txt").write_text("source\n", encoding="utf-8")
+            evidence = inputs / "evidence"
+            evidence.mkdir()
+            findings = inputs / "findings.json"
+            findings.write_text("{}\n", encoding="utf-8")
+            models = inputs / "models.json"
+            models.write_text("{}\n", encoding="utf-8")
+            environment_file = inputs / "environment.json"
+            environment_file.write_text("{}\n", encoding="utf-8")
+            auth_env_file = inputs / "auth.env"
+            auth_env_file.write_text("CLAUDE_CODE_OAUTH_TOKEN=not-used\n", encoding="utf-8")
+            marker = root / "docker-invoked"
+            fake_docker = "printf '%s\\n' invoked > \"$DOCKER_MARKER\"\nexit 99\n"
+            environment = _install_fake_docker(root, fake_docker)
+            environment["DOCKER_MARKER"] = str(marker)
+            server, socket_path = _bind_test_socket(root)
+            actual_uid = os.getuid()
+            cases = (
+                ("root UID", root / "scratch-root", root / "output-root", "0"),
+                (
+                    "mismatched UID",
+                    root / "scratch-mismatch",
+                    root / "output-mismatch",
+                    str(actual_uid + 1),
+                ),
+                ("scratch inside repository", repo / "scratch", root / "output-repo", str(actual_uid)),
+                ("output inside repository", root / "scratch-output-repo", repo / "output", str(actual_uid)),
+                ("scratch overlaps evidence", evidence, root / "output-evidence", str(actual_uid)),
+                ("output overlaps findings", root / "scratch-findings", findings, str(actual_uid)),
+                ("scratch overlaps models", models, root / "output-models", str(actual_uid)),
+                ("output overlaps environment", root / "scratch-environment", environment_file, str(actual_uid)),
+                ("scratch overlaps authentication file", auth_env_file, root / "output-auth", str(actual_uid)),
+            )
+            try:
+                for label, scratch, output, uid in cases:
+                    args = _launcher_args(scratch, output, repo, evidence, findings, models, socket_path)
+                    args[args.index("--uid") + 1] = uid
+                    args.extend(["--environment", str(environment_file), "--auth-env-file", str(auth_env_file)])
+                    result = subprocess.run(
+                        args,
+                        cwd=ROOT,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0, label)
+                    self.assertFalse(marker.exists(), label)
+                    if scratch not in (evidence, models, auth_env_file):
+                        self.assertFalse(scratch.exists(), label)
+                    if output not in (findings, environment_file):
+                        self.assertFalse(output.exists(), label)
+            finally:
+                if server is not None:
+                    server.close()
 
     def test_launcher_rejects_shared_or_symlinked_directories_before_docker(self):
         with tempfile.TemporaryDirectory(prefix="ocp-review-eval-launcher-invalid-") as temp:

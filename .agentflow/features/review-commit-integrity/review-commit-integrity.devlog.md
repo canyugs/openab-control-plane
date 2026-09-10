@@ -1146,3 +1146,25 @@ Dispatch package-ci-build implementation, gpt-5.6-luna/max, external-runner-v1 a
 * _2026-09-10 13:26:08 (GPT-6/default)_
 
 Parallel package-ci-build terminal exit0; full1700-byte report6bb22aaeb7d5f662deda1b78080703a4e2419bc1dcd16b0a58baa6b012a162a0 verified. Imported only single workflow setup-line change. Parent clean CI venv gained only setuptools>=77 and all5 packaging tests passed (no wheel dependency needed); exact workflow YAML/shell and matching/nonmatching/malformed tag guards PASS. Ownership98765 remains independent and active; no overlapping writes or runtime dependency change.
+
+## [RUN-016] Event (during round A-003)
+
+* _2026-09-10 13:31:12 (GPT-6/default)_
+
+Checkpoint scope: ownership98765 still writes only launcher/tests/docs in isolated clone; candidate launcher hash587a8d580e77843e71dae8dbb89c281a6e631bbacdb262022ffea11a83173942 actual Docker replay PASS exit0 with scratch empty after cleanup. No broad trust override/chmod/root workaround required. CI-only worker58733 terminal, exact single-line backend setup imported into47b3c28; clean setup5 package tests and release version guards PASS. No workers besides ownership98765 active. Existing image/wheel/core bytes unchanged; remaining final source import, updated full suite, independent security/cross-check and delivery.
+
+## [WIP-006] Checkpoint (during round A-003)
+
+* _2026-09-10 13:31:12 (GPT-6/default)_
+
+- **Finished:** Actual candidate staged launcher and cleanup; clean CI builder tests and tag guards; prior image/wheel/OCI/weekly proofs.
+- **Running now:** Ownership implementation98765 finishing regression tests/report.
+- **Still to do:** Final import, full suite and real terminal check, independent reviews and delivery.
+- **Next work action:** Collect completed ownership worker and freeze final source.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-017] Event (during round A-003)
+
+* _2026-09-10 13:38:14 (GPT-6/default)_
+
+Ownership98765 terminal exit0; full3779-byte reportcfad4d6c50f81766dbacfab34919ea1f41947ab007bb7b4ff493362be5ad7287 verified; imported exact3 paths preserving separate CI setup. Final source differs from earlier successful candidate only in added preflight/help checks and was independently rerun. Parent final94 tests PASS with no skips, shellcheck/product whitespace PASS; actual final launcher PTY exit0, scratch empty, original repo clean, all42 evidence digests/mtimes unchanged. Final installed wheel and image/OCI/weekly evidence current, image8 inputs unchanged. Cross-check plan full frozen from seven product files/new socket-staging boundary. Selected advisor questions: defensive new packaging trust boundaries; independent satisfaction/minimality/conformance of approved standalone package. Source and evidence now ready for separate read-only reviews, no Result Go or publication request added.

@@ -8,9 +8,9 @@
 
 - **Goal:** Deliver the approved independent package, CLI, image and release workflow without changing evaluator semantics.
 
-- **Last update:** 2026-09-10 13:21:17 Asia/Taipei.
+- **Last update:** 2026-09-10 13:31:12 Asia/Taipei.
 
-- **Evidence commit:** 7ffa8fd.
+- **Evidence commit:** 47b3c28.
 
 ## Overall state
 
@@ -36,7 +36,7 @@
 
 - **Current item:** T-1.
 
-- **Last proven result:** Seven packaging files imported; amd64 image build, nonroot CLI versions, actual nested OCI controls and image weekly exact JSON all PASS. Core bytes unchanged.
+- **Last proven result:** Actual candidate staged launcher exits0 and cleans scratch; clean CI backend correction and tag guards PASS; image/wheel/core evidence unchanged.
 
 - **Active blocker or running process:** package-ownership98765; reusable PTY90890.
 

@@ -127,6 +127,21 @@ as the same absolute paths. Use the small launcher in
 `packaging/evaluation/run.sh`; it creates/validates only the requested scratch
 and output directories, requires an empty scratch directory, canonicalizes
 non-symlink paths, and forwards the literal scratch bind and `TMPDIR` value.
+Before invoking Docker, it creates a bounded `mktemp` staging child under the
+scratch directory and copies only the supplied repository into its `repo`
+child. The copy preserves symlinks without following them and does not execute
+repository code, Git, or hooks. Only the staging parent is mounted read-only at
+the identical absolute path; the original repository is not mounted. The
+staging directory is removed after Docker succeeds or fails, while Docker's
+exit status is preserved. This temporarily requires disk space for a second
+copy of the repository.
+
+The launcher rejects scratch or output paths that overlap the repository,
+evidence, findings, models, environment, or authentication input paths before
+creating either directory or copying the repository. Scratch must remain an
+empty dedicated root. `--uid` must be the invoking non-zero host UID (the value
+reported by `id -u`); `--gid` and `--docker-gid` may be any non-negative
+numeric IDs, including `0`.
 
 The following exact invocation assumes all input paths already exist and
 `/srv/ocp-review-eval` is a dedicated runner root whose parent directories are
