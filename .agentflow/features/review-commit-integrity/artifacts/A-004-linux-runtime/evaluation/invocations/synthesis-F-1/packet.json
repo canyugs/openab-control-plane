@@ -1,0 +1,608 @@
+{
+  "packet": {
+    "evidence": {
+      "E_CONTRACT": {
+        "allowed_ranges": [
+          {
+            "end": 1,
+            "path": "README.md",
+            "start": 1
+          }
+        ],
+        "evidence_id": "E_CONTRACT",
+        "sha256": "2e42fa4d4b8ea27e4d8ceedfcebd64a5f017a58a5c2ecad3458d47b3ec6ccc40",
+        "utf8": "Synthetic acceptance repository. can_read permits access only for public documents or an authenticated requester equal to owner. checkout_total must reject negative quantity with ValueError. All prices are integer minor units.\n"
+      },
+      "E_SAMPLE": {
+        "allowed_ranges": [
+          {
+            "end": 7,
+            "path": "sample.py",
+            "start": 1
+          }
+        ],
+        "evidence_id": "E_SAMPLE",
+        "sha256": "227542157de89748282ac98f64786f7e419bd3330493a9d385167c3c8238b86e",
+        "utf8": "def can_read(requester, owner, public=False):\n    return public or (bool(requester) and requester == owner)\n\ndef checkout_total(price, quantity):\n    if quantity < 0:\n        raise ValueError(\"negative quantity\")\n    return price * quantity\n"
+      }
+    },
+    "executed_evidence": {
+      "claim_present": false,
+      "classification": "unproven",
+      "controller_source_binding": true,
+      "controls_passed": true,
+      "execution": {
+        "claim_present": false,
+        "classification": "unproven",
+        "controls_passed": true,
+        "generated_file_digests": [
+          {
+            "bytes": 1006,
+            "path": "generated/probe_real.py",
+            "sha256": "1df0500c34f77874c845270748630ecef7ce3755dc21ada11f945d6c9c67e0f0"
+          },
+          {
+            "bytes": 1162,
+            "path": "generated/probe_mutant.py",
+            "sha256": "a001e0ec77849b4fdcc7f9434c9b09a42d03b99d61c741cbd9dd137f500300c0"
+          }
+        ],
+        "operator_checks": "not_run",
+        "plan": {
+          "claim_observed": "Executing the real /source/sample.py shows the claim is not reproducible: can_read(\"mallory\", \"alice\", public=False) returns False (and False for every authenticated non-owner probe), because the source guard is `public or (bool(requester) and requester == owner)`, which conjoins the non-empty-requester check with an equality-to-owner check. The baseline run therefore prints claim_present=false. The counterexample run proves the detector is live: it reads the same source text, applies a one-token mutation of the equality clause (`requester == owner` -> `True`) to build the bypass-shaped variant the finding describes, and the identical probe then returns True for the authenticated non-owner, printing claim_present=true. So the harness would flag a real bypass, but the shipped code contains none; finding F-1 is not confirmed against the supplied revision.",
+          "files": [
+            {
+              "bytes": 1006,
+              "path": "generated/probe_real.py",
+              "sha256": "1df0500c34f77874c845270748630ecef7ce3755dc21ada11f945d6c9c67e0f0",
+              "utf8": "import importlib.util\nimport json\n\nSRC = \"/source/sample.py\"\n\nspec = importlib.util.spec_from_file_location(\"sample_real\", SRC)\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\n\nprobes = [\n    (\"mallory\", \"alice\", False),\n    (\"bob\", \"alice\", False),\n    (\"authenticated_user\", \"owner_account\", False),\n]\n\nresults = []\nbypass = False\nfor requester, owner, public in probes:\n    got = bool(mod.can_read(requester, owner, public))\n    results.append({\n        \"requester\": requester,\n        \"owner\": owner,\n        \"public\": public,\n        \"can_read\": got,\n    })\n    if got:\n        bypass = True\n\ncontrols = {\n    \"owner_private\": bool(mod.can_read(\"alice\", \"alice\", False)),\n    \"anonymous_public\": bool(mod.can_read(\"\", \"alice\", True)),\n    \"anonymous_private\": bool(mod.can_read(\"\", \"alice\", False)),\n}\n\nprint(json.dumps({\n    \"mode\": \"real_source\",\n    \"source\": SRC,\n    \"probes\": results,\n    \"controls\": controls,\n    \"claim_present\": bypass,\n}, indent=2, sort_keys=True))\n"
+            },
+            {
+              "bytes": 1162,
+              "path": "generated/probe_mutant.py",
+              "sha256": "a001e0ec77849b4fdcc7f9434c9b09a42d03b99d61c741cbd9dd137f500300c0",
+              "utf8": "import json\nimport types\n\nSRC = \"/source/sample.py\"\n\nwith open(SRC, \"r\", encoding=\"utf-8\") as fh:\n    text = fh.read()\n\nEQ = \"requester == owner\"\nif EQ not in text:\n    raise SystemExit(\"unexpected source shape: equality clause not found\")\n\n# Detector-validity control: mutate the real source's owner-equality clause into\n# the bypass shape described by the finding, then run the identical probe.\nmutated = text.replace(EQ, \"True\", 1)\n\nmod = types.ModuleType(\"sample_mutant\")\nexec(compile(mutated, SRC + \"#mutant\", \"exec\"), mod.__dict__)\n\nprobes = [\n    (\"mallory\", \"alice\", False),\n    (\"bob\", \"alice\", False),\n    (\"authenticated_user\", \"owner_account\", False),\n]\n\nresults = []\nbypass = False\nfor requester, owner, public in probes:\n    got = bool(mod.can_read(requester, owner, public))\n    results.append({\n        \"requester\": requester,\n        \"owner\": owner,\n        \"public\": public,\n        \"can_read\": got,\n    })\n    if got:\n        bypass = True\n\nprint(json.dumps({\n    \"mode\": \"mutated_source_control\",\n    \"source\": SRC,\n    \"mutation\": {\"from\": EQ, \"to\": \"True\"},\n    \"probes\": results,\n    \"claim_present\": bypass,\n}, indent=2, sort_keys=True))\n"
+            }
+          ],
+          "item_id": "F-1",
+          "runs": [
+            {
+              "argv": [
+                "python3",
+                "generated/probe_real.py"
+              ],
+              "cwd": "/work",
+              "evidence_ids": [
+                "E_SAMPLE",
+                "E_CONTRACT"
+              ],
+              "expect": {
+                "exit": 0,
+                "observation": {
+                  "claim_present": false
+                }
+              },
+              "name": "baseline"
+            },
+            {
+              "argv": [
+                "python3",
+                "generated/probe_mutant.py"
+              ],
+              "cwd": "/work",
+              "evidence_ids": [
+                "E_SAMPLE",
+                "E_CONTRACT"
+              ],
+              "expect": {
+                "exit": 0,
+                "observation": {
+                  "claim_present": true
+                }
+              },
+              "name": "counterexample"
+            }
+          ]
+        },
+        "preflight": {
+          "daemon_probe": "ok",
+          "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+          "server_version": "29.7.2",
+          "status": "ready"
+        },
+        "reason": null,
+        "runs": [
+          {
+            "actual": {
+              "duration_ms": 71,
+              "exit": 0,
+              "name": "baseline",
+              "observation": {
+                "claim_present": false,
+                "controls": {
+                  "anonymous_private": false,
+                  "anonymous_public": true,
+                  "owner_private": true
+                },
+                "mode": "real_source",
+                "probes": [
+                  {
+                    "can_read": false,
+                    "owner": "alice",
+                    "public": false,
+                    "requester": "mallory"
+                  },
+                  {
+                    "can_read": false,
+                    "owner": "alice",
+                    "public": false,
+                    "requester": "bob"
+                  },
+                  {
+                    "can_read": false,
+                    "owner": "owner_account",
+                    "public": false,
+                    "requester": "authenticated_user"
+                  }
+                ],
+                "source": "/source/sample.py"
+              },
+              "output_limit": false,
+              "stderr": "",
+              "stderr_b64": "",
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_truncated": false,
+              "stdout": "{\n  \"claim_present\": false,\n  \"controls\": {\n    \"anonymous_private\": false,\n    \"anonymous_public\": true,\n    \"owner_private\": true\n  },\n  \"mode\": \"real_source\",\n  \"probes\": [\n    {\n      \"can_read\": false,\n      \"owner\": \"alice\",\n      \"public\": false,\n      \"requester\": \"mallory\"\n    },\n    {\n      \"can_read\": false,\n      \"owner\": \"alice\",\n      \"public\": false,\n      \"requester\": \"bob\"\n    },\n    {\n      \"can_read\": false,\n      \"owner\": \"owner_account\",\n      \"public\": false,\n      \"requester\": \"authenticated_user\"\n    }\n  ],\n  \"source\": \"/source/sample.py\"\n}\n",
+              "stdout_b64": "ewogICJjbGFpbV9wcmVzZW50IjogZmFsc2UsCiAgImNvbnRyb2xzIjogewogICAgImFub255bW91c19wcml2YXRlIjogZmFsc2UsCiAgICAiYW5vbnltb3VzX3B1YmxpYyI6IHRydWUsCiAgICAib3duZXJfcHJpdmF0ZSI6IHRydWUKICB9LAogICJtb2RlIjogInJlYWxfc291cmNlIiwKICAicHJvYmVzIjogWwogICAgewogICAgICAiY2FuX3JlYWQiOiBmYWxzZSwKICAgICAgIm93bmVyIjogImFsaWNlIiwKICAgICAgInB1YmxpYyI6IGZhbHNlLAogICAgICAicmVxdWVzdGVyIjogIm1hbGxvcnkiCiAgICB9LAogICAgewogICAgICAiY2FuX3JlYWQiOiBmYWxzZSwKICAgICAgIm93bmVyIjogImFsaWNlIiwKICAgICAgInB1YmxpYyI6IGZhbHNlLAogICAgICAicmVxdWVzdGVyIjogImJvYiIKICAgIH0sCiAgICB7CiAgICAgICJjYW5fcmVhZCI6IGZhbHNlLAogICAgICAib3duZXIiOiAib3duZXJfYWNjb3VudCIsCiAgICAgICJwdWJsaWMiOiBmYWxzZSwKICAgICAgInJlcXVlc3RlciI6ICJhdXRoZW50aWNhdGVkX3VzZXIiCiAgICB9CiAgXSwKICAic291cmNlIjogIi9zb3VyY2Uvc2FtcGxlLnB5Igp9Cg==",
+              "stdout_bytes": 571,
+              "stdout_sha256": "f569a76c66139358ed8bf8ae9bd06695f5a96c257b061069a367e8c013f757b7",
+              "stdout_truncated": false,
+              "timeout": false
+            },
+            "argv": [
+              "docker",
+              "run",
+              "--rm",
+              "--init",
+              "--pull=never",
+              "-i",
+              "--name",
+              "openab-eval-3ee835e0fa1b410f9597",
+              "--network",
+              "none",
+              "--read-only",
+              "--tmpfs",
+              "/work:rw,nosuid,nodev,size=64m,mode=1777",
+              "--tmpfs",
+              "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+              "--mount",
+              "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch/openab-eval-source-wnsu_fcn,dst=/source,readonly",
+              "--mount",
+              "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch/openab-eval-runner-fc0qnvxc/fixed-runner.py,dst=/runner.py,readonly",
+              "--user",
+              "65532:65532",
+              "--cap-drop",
+              "ALL",
+              "--security-opt",
+              "no-new-privileges",
+              "--pids-limit",
+              "128",
+              "--memory",
+              "512m",
+              "--cpus",
+              "1.0",
+              "--env",
+              "HOME=/tmp/home",
+              "--env",
+              "PATH=/usr/local/bin:/usr/bin:/bin",
+              "--env",
+              "LANG=C.UTF-8",
+              "--env",
+              "LC_ALL=C.UTF-8",
+              "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+              "python3",
+              "/runner.py"
+            ],
+            "container_name": "openab-eval-3ee835e0fa1b410f9597",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": false
+              }
+            },
+            "name": "baseline",
+            "output_limit": false,
+            "stderr": "",
+            "stderr_b64": "",
+            "stderr_bytes": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderr_truncated": false,
+            "stdout": "{\"runs\":[{\"duration_ms\":71,\"exit\":0,\"name\":\"baseline\",\"observation\":{\"claim_present\":false,\"controls\":{\"anonymous_private\":false,\"anonymous_public\":true,\"owner_private\":true},\"mode\":\"real_source\",\"probes\":[{\"can_read\":false,\"owner\":\"alice\",\"public\":false,\"requester\":\"mallory\"},{\"can_read\":false,\"owner\":\"alice\",\"public\":false,\"requester\":\"bob\"},{\"can_read\":false,\"owner\":\"owner_account\",\"public\":false,\"requester\":\"authenticated_user\"}],\"source\":\"/source/sample.py\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\n  \\\"claim_present\\\": false,\\n  \\\"controls\\\": {\\n    \\\"anonymous_private\\\": false,\\n    \\\"anonymous_public\\\": true,\\n    \\\"owner_private\\\": true\\n  },\\n  \\\"mode\\\": \\\"real_source\\\",\\n  \\\"probes\\\": [\\n    {\\n      \\\"can_read\\\": false,\\n      \\\"owner\\\": \\\"alice\\\",\\n      \\\"public\\\": false,\\n      \\\"requester\\\": \\\"mallory\\\"\\n    },\\n    {\\n      \\\"can_read\\\": false,\\n      \\\"owner\\\": \\\"alice\\\",\\n      \\\"public\\\": false,\\n      \\\"requester\\\": \\\"bob\\\"\\n    },\\n    {\\n      \\\"can_read\\\": false,\\n      \\\"owner\\\": \\\"owner_account\\\",\\n      \\\"public\\\": false,\\n      \\\"requester\\\": \\\"authenticated_user\\\"\\n    }\\n  ],\\n  \\\"source\\\": \\\"/source/sample.py\\\"\\n}\\n\",\"stdout_b64\":\"ewogICJjbGFpbV9wcmVzZW50IjogZmFsc2UsCiAgImNvbnRyb2xzIjogewogICAgImFub255bW91c19wcml2YXRlIjogZmFsc2UsCiAgICAiYW5vbnltb3VzX3B1YmxpYyI6IHRydWUsCiAgICAib3duZXJfcHJpdmF0ZSI6IHRydWUKICB9LAogICJtb2RlIjogInJlYWxfc291cmNlIiwKICAicHJvYmVzIjogWwogICAgewogICAgICAiY2FuX3JlYWQiOiBmYWxzZSwKICAgICAgIm93bmVyIjogImFsaWNlIiwKICAgICAgInB1YmxpYyI6IGZhbHNlLAogICAgICAicmVxdWVzdGVyIjogIm1hbGxvcnkiCiAgICB9LAogICAgewogICAgICAiY2FuX3JlYWQiOiBmYWxzZSwKICAgICAgIm93bmVyIjogImFsaWNlIiwKICAgICAgInB1YmxpYyI6IGZhbHNlLAogICAgICAicmVxdWVzdGVyIjogImJvYiIKICAgIH0sCiAgICB7CiAgICAgICJjYW5fcmVhZCI6IGZhbHNlLAogICAgICAib3duZXIiOiAib3duZXJfYWNjb3VudCIsCiAgICAgICJwdWJsaWMiOiBmYWxzZSwKICAgICAgInJlcXVlc3RlciI6ICJhdXRoZW50aWNhdGVkX3VzZXIiCiAgICB9CiAgXSwKICAic291cmNlIjogIi9zb3VyY2Uvc2FtcGxlLnB5Igp9Cg==\",\"stdout_bytes\":571,\"stdout_sha256\":\"f569a76c66139358ed8bf8ae9bd06695f5a96c257b061069a367e8c013f757b7\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+            "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6NzEsImV4aXQiOjAsIm5hbWUiOiJiYXNlbGluZSIsIm9ic2VydmF0aW9uIjp7ImNsYWltX3ByZXNlbnQiOmZhbHNlLCJjb250cm9scyI6eyJhbm9ueW1vdXNfcHJpdmF0ZSI6ZmFsc2UsImFub255bW91c19wdWJsaWMiOnRydWUsIm93bmVyX3ByaXZhdGUiOnRydWV9LCJtb2RlIjoicmVhbF9zb3VyY2UiLCJwcm9iZXMiOlt7ImNhbl9yZWFkIjpmYWxzZSwib3duZXIiOiJhbGljZSIsInB1YmxpYyI6ZmFsc2UsInJlcXVlc3RlciI6Im1hbGxvcnkifSx7ImNhbl9yZWFkIjpmYWxzZSwib3duZXIiOiJhbGljZSIsInB1YmxpYyI6ZmFsc2UsInJlcXVlc3RlciI6ImJvYiJ9LHsiY2FuX3JlYWQiOmZhbHNlLCJvd25lciI6Im93bmVyX2FjY291bnQiLCJwdWJsaWMiOmZhbHNlLCJyZXF1ZXN0ZXIiOiJhdXRoZW50aWNhdGVkX3VzZXIifV0sInNvdXJjZSI6Ii9zb3VyY2Uvc2FtcGxlLnB5In0sIm91dHB1dF9saW1pdCI6ZmFsc2UsInN0ZGVyciI6IiIsInN0ZGVycl9iNjQiOiIiLCJzdGRlcnJfYnl0ZXMiOjAsInN0ZGVycl9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1Iiwic3RkZXJyX3RydW5jYXRlZCI6ZmFsc2UsInN0ZG91dCI6IntcbiAgXCJjbGFpbV9wcmVzZW50XCI6IGZhbHNlLFxuICBcImNvbnRyb2xzXCI6IHtcbiAgICBcImFub255bW91c19wcml2YXRlXCI6IGZhbHNlLFxuICAgIFwiYW5vbnltb3VzX3B1YmxpY1wiOiB0cnVlLFxuICAgIFwib3duZXJfcHJpdmF0ZVwiOiB0cnVlXG4gIH0sXG4gIFwibW9kZVwiOiBcInJlYWxfc291cmNlXCIsXG4gIFwicHJvYmVzXCI6IFtcbiAgICB7XG4gICAgICBcImNhbl9yZWFkXCI6IGZhbHNlLFxuICAgICAgXCJvd25lclwiOiBcImFsaWNlXCIsXG4gICAgICBcInB1YmxpY1wiOiBmYWxzZSxcbiAgICAgIFwicmVxdWVzdGVyXCI6IFwibWFsbG9yeVwiXG4gICAgfSxcbiAgICB7XG4gICAgICBcImNhbl9yZWFkXCI6IGZhbHNlLFxuICAgICAgXCJvd25lclwiOiBcImFsaWNlXCIsXG4gICAgICBcInB1YmxpY1wiOiBmYWxzZSxcbiAgICAgIFwicmVxdWVzdGVyXCI6IFwiYm9iXCJcbiAgICB9LFxuICAgIHtcbiAgICAgIFwiY2FuX3JlYWRcIjogZmFsc2UsXG4gICAgICBcIm93bmVyXCI6IFwib3duZXJfYWNjb3VudFwiLFxuICAgICAgXCJwdWJsaWNcIjogZmFsc2UsXG4gICAgICBcInJlcXVlc3RlclwiOiBcImF1dGhlbnRpY2F0ZWRfdXNlclwiXG4gICAgfVxuICBdLFxuICBcInNvdXJjZVwiOiBcIi9zb3VyY2Uvc2FtcGxlLnB5XCJcbn1cbiIsInN0ZG91dF9iNjQiOiJld29nSUNKamJHRnBiVjl3Y21WelpXNTBJam9nWm1Gc2MyVXNDaUFnSW1OdmJuUnliMnh6SWpvZ2V3b2dJQ0FnSW1GdWIyNTViVzkxYzE5d2NtbDJZWFJsSWpvZ1ptRnNjMlVzQ2lBZ0lDQWlZVzV2Ym5sdGIzVnpYM0IxWW14cFl5STZJSFJ5ZFdVc0NpQWdJQ0FpYjNkdVpYSmZjSEpwZG1GMFpTSTZJSFJ5ZFdVS0lDQjlMQW9nSUNKdGIyUmxJam9nSW5KbFlXeGZjMjkxY21ObElpd0tJQ0FpY0hKdlltVnpJam9nV3dvZ0lDQWdld29nSUNBZ0lDQWlZMkZ1WDNKbFlXUWlPaUJtWVd4elpTd0tJQ0FnSUNBZ0ltOTNibVZ5SWpvZ0ltRnNhV05sSWl3S0lDQWdJQ0FnSW5CMVlteHBZeUk2SUdaaGJITmxMQW9nSUNBZ0lDQWljbVZ4ZFdWemRHVnlJam9nSW0xaGJHeHZjbmtpQ2lBZ0lDQjlMQW9nSUNBZ2V3b2dJQ0FnSUNBaVkyRnVYM0psWVdRaU9pQm1ZV3h6WlN3S0lDQWdJQ0FnSW05M2JtVnlJam9nSW1Gc2FXTmxJaXdLSUNBZ0lDQWdJbkIxWW14cFl5STZJR1poYkhObExBb2dJQ0FnSUNBaWNtVnhkV1Z6ZEdWeUlqb2dJbUp2WWlJS0lDQWdJSDBzQ2lBZ0lDQjdDaUFnSUNBZ0lDSmpZVzVmY21WaFpDSTZJR1poYkhObExBb2dJQ0FnSUNBaWIzZHVaWElpT2lBaWIzZHVaWEpmWVdOamIzVnVkQ0lzQ2lBZ0lDQWdJQ0p3ZFdKc2FXTWlPaUJtWVd4elpTd0tJQ0FnSUNBZ0luSmxjWFZsYzNSbGNpSTZJQ0poZFhSb1pXNTBhV05oZEdWa1gzVnpaWElpQ2lBZ0lDQjlDaUFnWFN3S0lDQWljMjkxY21ObElqb2dJaTl6YjNWeVkyVXZjMkZ0Y0d4bExuQjVJZ3A5Q2c9PSIsInN0ZG91dF9ieXRlcyI6NTcxLCJzdGRvdXRfc2hhMjU2IjoiZjU2OWE3NmM2NjEzOTM1OGVkOGJmOGFlOWJkMDY2OTVmNWE5NmMyNTdiMDYxMDY5YTM2N2U4YzAxM2Y3NTdiNyIsInN0ZG91dF90cnVuY2F0ZWQiOmZhbHNlLCJ0aW1lb3V0IjpmYWxzZX1dfQo=",
+            "stdout_bytes": 2237,
+            "stdout_sha256": "601d338db546f7d75507b41836f08732986669dfa41e048ac74de51dcd2b1839",
+            "stdout_truncated": false,
+            "timeout": false,
+            "valid": true
+          },
+          {
+            "actual": {
+              "duration_ms": 87,
+              "exit": 0,
+              "name": "counterexample",
+              "observation": {
+                "claim_present": true,
+                "mode": "mutated_source_control",
+                "mutation": {
+                  "from": "requester == owner",
+                  "to": "True"
+                },
+                "probes": [
+                  {
+                    "can_read": true,
+                    "owner": "alice",
+                    "public": false,
+                    "requester": "mallory"
+                  },
+                  {
+                    "can_read": true,
+                    "owner": "alice",
+                    "public": false,
+                    "requester": "bob"
+                  },
+                  {
+                    "can_read": true,
+                    "owner": "owner_account",
+                    "public": false,
+                    "requester": "authenticated_user"
+                  }
+                ],
+                "source": "/source/sample.py"
+              },
+              "output_limit": false,
+              "stderr": "",
+              "stderr_b64": "",
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_truncated": false,
+              "stdout": "{\n  \"claim_present\": true,\n  \"mode\": \"mutated_source_control\",\n  \"mutation\": {\n    \"from\": \"requester == owner\",\n    \"to\": \"True\"\n  },\n  \"probes\": [\n    {\n      \"can_read\": true,\n      \"owner\": \"alice\",\n      \"public\": false,\n      \"requester\": \"mallory\"\n    },\n    {\n      \"can_read\": true,\n      \"owner\": \"alice\",\n      \"public\": false,\n      \"requester\": \"bob\"\n    },\n    {\n      \"can_read\": true,\n      \"owner\": \"owner_account\",\n      \"public\": false,\n      \"requester\": \"authenticated_user\"\n    }\n  ],\n  \"source\": \"/source/sample.py\"\n}\n",
+              "stdout_b64": "ewogICJjbGFpbV9wcmVzZW50IjogdHJ1ZSwKICAibW9kZSI6ICJtdXRhdGVkX3NvdXJjZV9jb250cm9sIiwKICAibXV0YXRpb24iOiB7CiAgICAiZnJvbSI6ICJyZXF1ZXN0ZXIgPT0gb3duZXIiLAogICAgInRvIjogIlRydWUiCiAgfSwKICAicHJvYmVzIjogWwogICAgewogICAgICAiY2FuX3JlYWQiOiB0cnVlLAogICAgICAib3duZXIiOiAiYWxpY2UiLAogICAgICAicHVibGljIjogZmFsc2UsCiAgICAgICJyZXF1ZXN0ZXIiOiAibWFsbG9yeSIKICAgIH0sCiAgICB7CiAgICAgICJjYW5fcmVhZCI6IHRydWUsCiAgICAgICJvd25lciI6ICJhbGljZSIsCiAgICAgICJwdWJsaWMiOiBmYWxzZSwKICAgICAgInJlcXVlc3RlciI6ICJib2IiCiAgICB9LAogICAgewogICAgICAiY2FuX3JlYWQiOiB0cnVlLAogICAgICAib3duZXIiOiAib3duZXJfYWNjb3VudCIsCiAgICAgICJwdWJsaWMiOiBmYWxzZSwKICAgICAgInJlcXVlc3RlciI6ICJhdXRoZW50aWNhdGVkX3VzZXIiCiAgICB9CiAgXSwKICAic291cmNlIjogIi9zb3VyY2Uvc2FtcGxlLnB5Igp9Cg==",
+              "stdout_bytes": 541,
+              "stdout_sha256": "b79c694c6167a6b638504ad0e22fbba84fcaadbf8742106b45d58e528542c64c",
+              "stdout_truncated": false,
+              "timeout": false
+            },
+            "argv": [
+              "docker",
+              "run",
+              "--rm",
+              "--init",
+              "--pull=never",
+              "-i",
+              "--name",
+              "openab-eval-350929988a0044209847",
+              "--network",
+              "none",
+              "--read-only",
+              "--tmpfs",
+              "/work:rw,nosuid,nodev,size=64m,mode=1777",
+              "--tmpfs",
+              "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+              "--mount",
+              "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch/openab-eval-source-wnsu_fcn,dst=/source,readonly",
+              "--mount",
+              "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch/openab-eval-runner-fc0qnvxc/fixed-runner.py,dst=/runner.py,readonly",
+              "--user",
+              "65532:65532",
+              "--cap-drop",
+              "ALL",
+              "--security-opt",
+              "no-new-privileges",
+              "--pids-limit",
+              "128",
+              "--memory",
+              "512m",
+              "--cpus",
+              "1.0",
+              "--env",
+              "HOME=/tmp/home",
+              "--env",
+              "PATH=/usr/local/bin:/usr/bin:/bin",
+              "--env",
+              "LANG=C.UTF-8",
+              "--env",
+              "LC_ALL=C.UTF-8",
+              "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+              "python3",
+              "/runner.py"
+            ],
+            "container_name": "openab-eval-350929988a0044209847",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": true
+              }
+            },
+            "name": "counterexample",
+            "output_limit": false,
+            "stderr": "",
+            "stderr_b64": "",
+            "stderr_bytes": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderr_truncated": false,
+            "stdout": "{\"runs\":[{\"duration_ms\":87,\"exit\":0,\"name\":\"counterexample\",\"observation\":{\"claim_present\":true,\"mode\":\"mutated_source_control\",\"mutation\":{\"from\":\"requester == owner\",\"to\":\"True\"},\"probes\":[{\"can_read\":true,\"owner\":\"alice\",\"public\":false,\"requester\":\"mallory\"},{\"can_read\":true,\"owner\":\"alice\",\"public\":false,\"requester\":\"bob\"},{\"can_read\":true,\"owner\":\"owner_account\",\"public\":false,\"requester\":\"authenticated_user\"}],\"source\":\"/source/sample.py\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\n  \\\"claim_present\\\": true,\\n  \\\"mode\\\": \\\"mutated_source_control\\\",\\n  \\\"mutation\\\": {\\n    \\\"from\\\": \\\"requester == owner\\\",\\n    \\\"to\\\": \\\"True\\\"\\n  },\\n  \\\"probes\\\": [\\n    {\\n      \\\"can_read\\\": true,\\n      \\\"owner\\\": \\\"alice\\\",\\n      \\\"public\\\": false,\\n      \\\"requester\\\": \\\"mallory\\\"\\n    },\\n    {\\n      \\\"can_read\\\": true,\\n      \\\"owner\\\": \\\"alice\\\",\\n      \\\"public\\\": false,\\n      \\\"requester\\\": \\\"bob\\\"\\n    },\\n    {\\n      \\\"can_read\\\": true,\\n      \\\"owner\\\": \\\"owner_account\\\",\\n      \\\"public\\\": false,\\n      \\\"requester\\\": \\\"authenticated_user\\\"\\n    }\\n  ],\\n  \\\"source\\\": \\\"/source/sample.py\\\"\\n}\\n\",\"stdout_b64\":\"ewogICJjbGFpbV9wcmVzZW50IjogdHJ1ZSwKICAibW9kZSI6ICJtdXRhdGVkX3NvdXJjZV9jb250cm9sIiwKICAibXV0YXRpb24iOiB7CiAgICAiZnJvbSI6ICJyZXF1ZXN0ZXIgPT0gb3duZXIiLAogICAgInRvIjogIlRydWUiCiAgfSwKICAicHJvYmVzIjogWwogICAgewogICAgICAiY2FuX3JlYWQiOiB0cnVlLAogICAgICAib3duZXIiOiAiYWxpY2UiLAogICAgICAicHVibGljIjogZmFsc2UsCiAgICAgICJyZXF1ZXN0ZXIiOiAibWFsbG9yeSIKICAgIH0sCiAgICB7CiAgICAgICJjYW5fcmVhZCI6IHRydWUsCiAgICAgICJvd25lciI6ICJhbGljZSIsCiAgICAgICJwdWJsaWMiOiBmYWxzZSwKICAgICAgInJlcXVlc3RlciI6ICJib2IiCiAgICB9LAogICAgewogICAgICAiY2FuX3JlYWQiOiB0cnVlLAogICAgICAib3duZXIiOiAib3duZXJfYWNjb3VudCIsCiAgICAgICJwdWJsaWMiOiBmYWxzZSwKICAgICAgInJlcXVlc3RlciI6ICJhdXRoZW50aWNhdGVkX3VzZXIiCiAgICB9CiAgXSwKICAic291cmNlIjogIi9zb3VyY2Uvc2FtcGxlLnB5Igp9Cg==\",\"stdout_bytes\":541,\"stdout_sha256\":\"b79c694c6167a6b638504ad0e22fbba84fcaadbf8742106b45d58e528542c64c\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+            "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6ODcsImV4aXQiOjAsIm5hbWUiOiJjb3VudGVyZXhhbXBsZSIsIm9ic2VydmF0aW9uIjp7ImNsYWltX3ByZXNlbnQiOnRydWUsIm1vZGUiOiJtdXRhdGVkX3NvdXJjZV9jb250cm9sIiwibXV0YXRpb24iOnsiZnJvbSI6InJlcXVlc3RlciA9PSBvd25lciIsInRvIjoiVHJ1ZSJ9LCJwcm9iZXMiOlt7ImNhbl9yZWFkIjp0cnVlLCJvd25lciI6ImFsaWNlIiwicHVibGljIjpmYWxzZSwicmVxdWVzdGVyIjoibWFsbG9yeSJ9LHsiY2FuX3JlYWQiOnRydWUsIm93bmVyIjoiYWxpY2UiLCJwdWJsaWMiOmZhbHNlLCJyZXF1ZXN0ZXIiOiJib2IifSx7ImNhbl9yZWFkIjp0cnVlLCJvd25lciI6Im93bmVyX2FjY291bnQiLCJwdWJsaWMiOmZhbHNlLCJyZXF1ZXN0ZXIiOiJhdXRoZW50aWNhdGVkX3VzZXIifV0sInNvdXJjZSI6Ii9zb3VyY2Uvc2FtcGxlLnB5In0sIm91dHB1dF9saW1pdCI6ZmFsc2UsInN0ZGVyciI6IiIsInN0ZGVycl9iNjQiOiIiLCJzdGRlcnJfYnl0ZXMiOjAsInN0ZGVycl9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1Iiwic3RkZXJyX3RydW5jYXRlZCI6ZmFsc2UsInN0ZG91dCI6IntcbiAgXCJjbGFpbV9wcmVzZW50XCI6IHRydWUsXG4gIFwibW9kZVwiOiBcIm11dGF0ZWRfc291cmNlX2NvbnRyb2xcIixcbiAgXCJtdXRhdGlvblwiOiB7XG4gICAgXCJmcm9tXCI6IFwicmVxdWVzdGVyID09IG93bmVyXCIsXG4gICAgXCJ0b1wiOiBcIlRydWVcIlxuICB9LFxuICBcInByb2Jlc1wiOiBbXG4gICAge1xuICAgICAgXCJjYW5fcmVhZFwiOiB0cnVlLFxuICAgICAgXCJvd25lclwiOiBcImFsaWNlXCIsXG4gICAgICBcInB1YmxpY1wiOiBmYWxzZSxcbiAgICAgIFwicmVxdWVzdGVyXCI6IFwibWFsbG9yeVwiXG4gICAgfSxcbiAgICB7XG4gICAgICBcImNhbl9yZWFkXCI6IHRydWUsXG4gICAgICBcIm93bmVyXCI6IFwiYWxpY2VcIixcbiAgICAgIFwicHVibGljXCI6IGZhbHNlLFxuICAgICAgXCJyZXF1ZXN0ZXJcIjogXCJib2JcIlxuICAgIH0sXG4gICAge1xuICAgICAgXCJjYW5fcmVhZFwiOiB0cnVlLFxuICAgICAgXCJvd25lclwiOiBcIm93bmVyX2FjY291bnRcIixcbiAgICAgIFwicHVibGljXCI6IGZhbHNlLFxuICAgICAgXCJyZXF1ZXN0ZXJcIjogXCJhdXRoZW50aWNhdGVkX3VzZXJcIlxuICAgIH1cbiAgXSxcbiAgXCJzb3VyY2VcIjogXCIvc291cmNlL3NhbXBsZS5weVwiXG59XG4iLCJzdGRvdXRfYjY0IjoiZXdvZ0lDSmpiR0ZwYlY5d2NtVnpaVzUwSWpvZ2RISjFaU3dLSUNBaWJXOWtaU0k2SUNKdGRYUmhkR1ZrWDNOdmRYSmpaVjlqYjI1MGNtOXNJaXdLSUNBaWJYVjBZWFJwYjI0aU9pQjdDaUFnSUNBaVpuSnZiU0k2SUNKeVpYRjFaWE4wWlhJZ1BUMGdiM2R1WlhJaUxBb2dJQ0FnSW5Sdklqb2dJbFJ5ZFdVaUNpQWdmU3dLSUNBaWNISnZZbVZ6SWpvZ1d3b2dJQ0FnZXdvZ0lDQWdJQ0FpWTJGdVgzSmxZV1FpT2lCMGNuVmxMQW9nSUNBZ0lDQWliM2R1WlhJaU9pQWlZV3hwWTJVaUxBb2dJQ0FnSUNBaWNIVmliR2xqSWpvZ1ptRnNjMlVzQ2lBZ0lDQWdJQ0p5WlhGMVpYTjBaWElpT2lBaWJXRnNiRzl5ZVNJS0lDQWdJSDBzQ2lBZ0lDQjdDaUFnSUNBZ0lDSmpZVzVmY21WaFpDSTZJSFJ5ZFdVc0NpQWdJQ0FnSUNKdmQyNWxjaUk2SUNKaGJHbGpaU0lzQ2lBZ0lDQWdJQ0p3ZFdKc2FXTWlPaUJtWVd4elpTd0tJQ0FnSUNBZ0luSmxjWFZsYzNSbGNpSTZJQ0ppYjJJaUNpQWdJQ0I5TEFvZ0lDQWdld29nSUNBZ0lDQWlZMkZ1WDNKbFlXUWlPaUIwY25WbExBb2dJQ0FnSUNBaWIzZHVaWElpT2lBaWIzZHVaWEpmWVdOamIzVnVkQ0lzQ2lBZ0lDQWdJQ0p3ZFdKc2FXTWlPaUJtWVd4elpTd0tJQ0FnSUNBZ0luSmxjWFZsYzNSbGNpSTZJQ0poZFhSb1pXNTBhV05oZEdWa1gzVnpaWElpQ2lBZ0lDQjlDaUFnWFN3S0lDQWljMjkxY21ObElqb2dJaTl6YjNWeVkyVXZjMkZ0Y0d4bExuQjVJZ3A5Q2c9PSIsInN0ZG91dF9ieXRlcyI6NTQxLCJzdGRvdXRfc2hhMjU2IjoiYjc5YzY5NGM2MTY3YTZiNjM4NTA0YWQwZTIyZmJiYTg0ZmNhYWRiZjg3NDIxMDZiNDVkNThlNTI4NTQyYzY0YyIsInN0ZG91dF90cnVuY2F0ZWQiOmZhbHNlLCJ0aW1lb3V0IjpmYWxzZX1dfQo=",
+            "stdout_bytes": 2150,
+            "stdout_sha256": "e9b9e0deed5017623db88cd8d8ef052872c716bdbe3fb4dffdc932433301d70b",
+            "stdout_truncated": false,
+            "timeout": false,
+            "valid": true
+          }
+        ],
+        "status": "success"
+      },
+      "execution_classification": "unproven",
+      "finding_sha256": "f240e25a360951eab2f012aa49f6205614beb9d71aafcba542fc291bdc97be21",
+      "generated_file_digests_sha256": "04faf6be7d109bf1a728d90a8aa6cc14b2ed1e8e37a314bf564579aa575f30fe",
+      "invocation_id": "validation-F-1",
+      "item_id": "F-1",
+      "model_status": "success",
+      "plan_sha256": "d5a8562e7ae5dc1532c2175d5327d7e86ff0fcf32f1227aeed67bffd54ae1a9d",
+      "source_packet_sha256": "3390678cbafb0be96b9f8cdbc815b7627cbf9af816ae63208ebdd6bc92914bba",
+      "status": "success",
+      "validation_packet_sha256": "f01a7bd8e24a0ae197d7be4efe3f965eed4b1a3836756c346a9c35dde25f7d9d"
+    },
+    "finding": {
+      "author_model_identity": "unknown",
+      "claim": "An authenticated requester who is not the owner can read a private document because can_read accepts any nonempty requester. This violates the explicit README access rule.",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "finding_id": "F-1",
+      "location": {
+        "end_line": 2,
+        "path": "sample.py",
+        "start_line": 1
+      },
+      "severity": "high",
+      "title": "Private document access bypass"
+    },
+    "invocation_id": "synthesis-F-1",
+    "judgments": [
+      {
+        "assessment": {
+          "citations": [
+            {
+              "end": 2,
+              "evidence_id": "E_SAMPLE",
+              "path": "sample.py",
+              "start": 1
+            },
+            {
+              "end": 1,
+              "evidence_id": "E_CONTRACT",
+              "path": "README.md",
+              "start": 1
+            }
+          ],
+          "counterexample": "The frozen source guard is `return public or (bool(requester) and requester == owner)`, which conjoins the non-empty-requester test with an equality-to-owner test, so an authenticated non-owner cannot read a private document. Executed controls confirm this against the real source rather than a stub: the baseline probe loaded /source/sample.py via importlib and called can_read(\"mallory\",\"alice\",False), can_read(\"bob\",\"alice\",False), can_read(\"authenticated_user\",\"owner_account\",False), all returning False (claim_present=false, exit 0), while sanity controls behaved per the README (owner_private=true, anonymous_public=true, anonymous_private=false). The counterexample run read the same source text, applied a single-token mutation of the equality clause (`requester == owner` -> `True`) to construct exactly the bypass shape the finding alleges, and the identical probe then returned True for all three authenticated non-owner cases (claim_present=true, exit 0). The two runs differ only in that source-derived mutation, so the harness is source-bound and demonstrably able to detect the alleged bypass when it exists; it did not fire on the shipped revision. The claim is therefore refuted, and the executed baseline/counterexample pair meaningfully distinguishes the claim from its negation.",
+          "finding_id": "F-1",
+          "provenance": "model_assessment",
+          "severity": "none",
+          "usefulness": "not_useful",
+          "validation_verdict": "valid",
+          "verdict": "refute"
+        },
+        "label": "judge_1"
+      },
+      {
+        "assessment": {
+          "citations": [
+            {
+              "end": 2,
+              "evidence_id": "E_SAMPLE",
+              "path": "sample.py",
+              "start": 1
+            },
+            {
+              "end": 1,
+              "evidence_id": "E_CONTRACT",
+              "path": "README.md",
+              "start": 1
+            }
+          ],
+          "counterexample": "The finding misreads the boolean logic. Line 2 uses `bool(requester) and requester == owner`, which is a conjunction: both conditions must be true. For can_read(\"mallory\", \"alice\", False), the evaluation is `False or (True and False)` → False. The executed baseline confirms this: all three non-owner probes (mallory, bob, authenticated_user) return False for private documents. The code correctly implements the README contract that access requires \"an authenticated requester equal to owner.\" The `and` operator ensures the equality check is never bypassed by a merely nonempty requester string.",
+          "finding_id": "F-1",
+          "provenance": "model_assessment",
+          "severity": "no issue",
+          "usefulness": "not_useful",
+          "validation_verdict": "valid",
+          "verdict": "refute"
+        },
+        "label": "judge_2"
+      }
+    ],
+    "role": "synthesis",
+    "rules": [
+      "return exactly the schema fields and preserve the supplied item_id",
+      "preserve disagreement; unknown is allowed; do not invent evidence or promote failed controls",
+      "each citation is exactly {path,start,end,evidence_id} and cites only a supplied frozen-source range covered by that evidence_id",
+      "supported/refuted results require at least one citation; unknown may return an empty citations array",
+      "never cite generated files or /source paths, and return no citation strings"
+    ],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "citations": {
+          "description": "Cite only exact supplied source paths/ranges and supplied evidence_id values; generated files are not citation sources. The transport may return an empty array for unknown; the controller requires at least one citation for supported or refuted.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "end": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "evidence_id": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "path": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "pattern": "^(?!/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*\\/$).+$",
+                "type": "string"
+              },
+              "start": {
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path",
+              "start",
+              "end",
+              "evidence_id"
+            ],
+            "type": "object"
+          },
+          "maxItems": 32,
+          "type": "array"
+        },
+        "disagreement": {
+          "maxLength": 16384,
+          "type": "string"
+        },
+        "item_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 16384,
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "supported",
+            "refuted",
+            "unknown"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "verdict",
+        "citations",
+        "disagreement",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "source_packet": {
+      "archive_sha256": "5e9b80a38bd5f2a4905544e9b0668d04957c9eb159ac7434d2703eff4075f4cf",
+      "complete": true,
+      "diff": {
+        "bytes": 373,
+        "encoding": "utf8",
+        "sha256": "dd9a11ce6057af0f2d81fd2b3b99f3fd85f55fcfa6c4ece099bdd461f17dabd9",
+        "utf8": "diff --git a/sample.py b/sample.py\nnew file mode 100644\nindex 0000000..d4e219e\n--- /dev/null\n+++ b/sample.py\n@@ -0,0 +1,7 @@\n+def can_read(requester, owner, public=False):\n+    return public or (bool(requester) and requester == owner)\n+\n+def checkout_total(price, quantity):\n+    if quantity < 0:\n+        raise ValueError(\"negative quantity\")\n+    return price * quantity\n"
+      },
+      "diff_sha256": "dd9a11ce6057af0f2d81fd2b3b99f3fd85f55fcfa6c4ece099bdd461f17dabd9",
+      "files": [
+        {
+          "bytes": 227,
+          "path": "README.md",
+          "sha256": "2e42fa4d4b8ea27e4d8ceedfcebd64a5f017a58a5c2ecad3458d47b3ec6ccc40",
+          "utf8": "Synthetic acceptance repository. can_read permits access only for public documents or an authenticated requester equal to owner. checkout_total must reject negative quantity with ValueError. All prices are integer minor units.\n"
+        },
+        {
+          "bytes": 241,
+          "path": "sample.py",
+          "sha256": "227542157de89748282ac98f64786f7e419bd3330493a9d385167c3c8238b86e",
+          "utf8": "def can_read(requester, owner, public=False):\n    return public or (bool(requester) and requester == owner)\n\ndef checkout_total(price, quantity):\n    if quantity < 0:\n        raise ValueError(\"negative quantity\")\n    return price * quantity\n"
+        }
+      ],
+      "included_regular_file_count": 2,
+      "omissions": [],
+      "packet_sha256": "3390678cbafb0be96b9f8cdbc815b7627cbf9af816ae63208ebdd6bc92914bba",
+      "revision": "b7927775d4db77f360efe4d96a9b82fc61b7b35c",
+      "schema_version": "model-source-packet/v1",
+      "tracked_regular_file_count": 2
+    }
+  },
+  "packet_sha256": "0ff319b8402f0e42bd0e83c0a7146988114bd7979ca0d7b4a6381d94c53c096c",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "citations": {
+        "description": "Cite only exact supplied source paths/ranges and supplied evidence_id values; generated files are not citation sources. The transport may return an empty array for unknown; the controller requires at least one citation for supported or refuted.",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "end": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "evidence_id": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            "path": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*\\/$).+$",
+              "type": "string"
+            },
+            "start": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "start",
+            "end",
+            "evidence_id"
+          ],
+          "type": "object"
+        },
+        "maxItems": 32,
+        "type": "array"
+      },
+      "disagreement": {
+        "maxLength": 16384,
+        "type": "string"
+      },
+      "item_id": {
+        "maxLength": 512,
+        "minLength": 1,
+        "type": "string"
+      },
+      "reason": {
+        "maxLength": 16384,
+        "type": "string"
+      },
+      "verdict": {
+        "enum": [
+          "supported",
+          "refuted",
+          "unknown"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "item_id",
+      "verdict",
+      "citations",
+      "disagreement",
+      "reason"
+    ],
+    "type": "object"
+  }
+}

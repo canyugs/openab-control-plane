@@ -1,0 +1,20 @@
+{
+  "citations": [
+    {
+      "end": 2,
+      "evidence_id": "E_SAMPLE",
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "end": 1,
+      "evidence_id": "E_CONTRACT",
+      "path": "README.md",
+      "start": 1
+    }
+  ],
+  "disagreement": "None material. Both assessments independently reach \"refute\" with the same reading of the guard and the same executed baseline. They differ only in emphasis: one leans on the mutation-based detector-validity control to argue the harness was source-bound and live, the other rests mainly on the boolean reading of the conjunction plus the baseline probes. Neither line of reasoning contradicts the other, and both cite the same two frozen ranges. Residual caveat worth preserving: the executed packet self-labels classification \"unproven\" (the harness only establishes non-reproduction of the alleged bypass, not a proof of total correctness of can_read under all input types, e.g. non-string or coercible requester/owner values, which were not probed).",
+  "item_id": "F-1",
+  "reason": "The finding claims can_read accepts any nonempty requester, letting an authenticated non-owner read a private document. The frozen source contradicts this: the guard is `public or (bool(requester) and requester == owner)`, a conjunction in which the non-empty-requester test is ANDed with — not substituted for — the equality-to-owner test. For a private document (public=False) with requester != owner, the expression evaluates to False. Executed observations agree: the baseline run loaded the real source and returned can_read=False for (\"mallory\",\"alice\",False), (\"bob\",\"alice\",False), and (\"authenticated_user\",\"owner_account\",False), with claim_present=false at exit 0, while sanity controls matched the README contract (owner_private=true, anonymous_public=true, anonymous_private=false). The counterexample run demonstrates detector validity rather than being treated as evidence of a defect: it read the same source text, replaced the single clause `requester == owner` with `True`, and the identical probe then returned True for all three non-owner cases (claim_present=true, exit 0). Both runs passed (controls_passed=true, valid=true), so the probe would have fired had the alleged bypass existed and did not fire on the shipped revision. The alleged mechanism is therefore contradicted by the cited source at sample.py lines 1-2 read against the README access rule, supporting a refuted verdict; the harness's \"unproven\" self-classification is noted in disagreement as a scope limit on the executed check, not a failed control.",
+  "verdict": "refuted"
+}

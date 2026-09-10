@@ -1,0 +1,186 @@
+{
+  "packet": {
+    "allowed_references": "source packet paths and evidence manifest only",
+    "author_model_identity": "withheld",
+    "evidence_catalog": {
+      "E_CONTRACT": {
+        "allowed_ranges": [
+          {
+            "end": 1,
+            "path": "README.md",
+            "start": 1
+          }
+        ],
+        "evidence_id": "E_CONTRACT",
+        "sha256": "2e42fa4d4b8ea27e4d8ceedfcebd64a5f017a58a5c2ecad3458d47b3ec6ccc40",
+        "utf8": "Synthetic acceptance repository. can_read permits access only for public documents or an authenticated requester equal to owner. checkout_total must reject negative quantity with ValueError. All prices are integer minor units.\n"
+      },
+      "E_SAMPLE": {
+        "allowed_ranges": [
+          {
+            "end": 7,
+            "path": "sample.py",
+            "start": 1
+          }
+        ],
+        "evidence_id": "E_SAMPLE",
+        "sha256": "227542157de89748282ac98f64786f7e419bd3330493a9d385167c3c8238b86e",
+        "utf8": "def can_read(requester, owner, public=False):\n    return public or (bool(requester) and requester == owner)\n\ndef checkout_total(price, quantity):\n    if quantity < 0:\n        raise ValueError(\"negative quantity\")\n    return price * quantity\n"
+      }
+    },
+    "invocation_id": "discovery",
+    "role": "discovery",
+    "rules": [
+      "find new, concrete, source-cited issues",
+      "each candidate is exactly {claim,path,start,end,evidence_ids}; use a supplied relative POSIX source path and inclusive positive range",
+      "each evidence_id must be supplied; at least one declared evidence range must cover the candidate range, and additional evidence may cover related contract or call-path material",
+      "do not infer recall or confirm any original finding, and return no finding identifier",
+      "report only actionable defects directly proven by supplied source under a supplied contract or actual call paths",
+      "do not report style, documentation, type, or other convention assumptions, or speculate about missing callers or unshown behavior",
+      "if no concrete defect is proven, return an empty candidates array",
+      "return JSON only; no citation strings, generated-file references, or /source paths"
+    ],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "candidates": {
+          "description": "Return only new source-cited candidates. Each candidate path/range must be in the frozen source and each evidence_id must be supplied.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "claim": {
+                "maxLength": 16384,
+                "minLength": 1,
+                "type": "string"
+              },
+              "end": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "evidence_ids": {
+                "items": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "path": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "pattern": "^(?!/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*\\/$).+$",
+                "type": "string"
+              },
+              "start": {
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "claim",
+              "path",
+              "start",
+              "end",
+              "evidence_ids"
+            ],
+            "type": "object"
+          },
+          "maxItems": 128,
+          "type": "array"
+        }
+      },
+      "required": [
+        "candidates"
+      ],
+      "type": "object"
+    },
+    "source_packet": {
+      "archive_sha256": "5e9b80a38bd5f2a4905544e9b0668d04957c9eb159ac7434d2703eff4075f4cf",
+      "complete": true,
+      "diff": {
+        "bytes": 373,
+        "encoding": "utf8",
+        "sha256": "dd9a11ce6057af0f2d81fd2b3b99f3fd85f55fcfa6c4ece099bdd461f17dabd9",
+        "utf8": "diff --git a/sample.py b/sample.py\nnew file mode 100644\nindex 0000000..d4e219e\n--- /dev/null\n+++ b/sample.py\n@@ -0,0 +1,7 @@\n+def can_read(requester, owner, public=False):\n+    return public or (bool(requester) and requester == owner)\n+\n+def checkout_total(price, quantity):\n+    if quantity < 0:\n+        raise ValueError(\"negative quantity\")\n+    return price * quantity\n"
+      },
+      "diff_sha256": "dd9a11ce6057af0f2d81fd2b3b99f3fd85f55fcfa6c4ece099bdd461f17dabd9",
+      "files": [
+        {
+          "bytes": 227,
+          "path": "README.md",
+          "sha256": "2e42fa4d4b8ea27e4d8ceedfcebd64a5f017a58a5c2ecad3458d47b3ec6ccc40",
+          "utf8": "Synthetic acceptance repository. can_read permits access only for public documents or an authenticated requester equal to owner. checkout_total must reject negative quantity with ValueError. All prices are integer minor units.\n"
+        },
+        {
+          "bytes": 241,
+          "path": "sample.py",
+          "sha256": "227542157de89748282ac98f64786f7e419bd3330493a9d385167c3c8238b86e",
+          "utf8": "def can_read(requester, owner, public=False):\n    return public or (bool(requester) and requester == owner)\n\ndef checkout_total(price, quantity):\n    if quantity < 0:\n        raise ValueError(\"negative quantity\")\n    return price * quantity\n"
+        }
+      ],
+      "included_regular_file_count": 2,
+      "omissions": [],
+      "packet_sha256": "3390678cbafb0be96b9f8cdbc815b7627cbf9af816ae63208ebdd6bc92914bba",
+      "revision": "b7927775d4db77f360efe4d96a9b82fc61b7b35c",
+      "schema_version": "model-source-packet/v1",
+      "tracked_regular_file_count": 2
+    }
+  },
+  "packet_sha256": "dfeac36b8b14ac4cec343a3bc75f76ef5247feaa7cdac31ac7fa5dd2095edc33",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "candidates": {
+        "description": "Return only new source-cited candidates. Each candidate path/range must be in the frozen source and each evidence_id must be supplied.",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "claim": {
+              "maxLength": 16384,
+              "minLength": 1,
+              "type": "string"
+            },
+            "end": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "evidence_ids": {
+              "items": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "path": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*\\/$).+$",
+              "type": "string"
+            },
+            "start": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "claim",
+            "path",
+            "start",
+            "end",
+            "evidence_ids"
+          ],
+          "type": "object"
+        },
+        "maxItems": 128,
+        "type": "array"
+      }
+    },
+    "required": [
+      "candidates"
+    ],
+    "type": "object"
+  }
+}

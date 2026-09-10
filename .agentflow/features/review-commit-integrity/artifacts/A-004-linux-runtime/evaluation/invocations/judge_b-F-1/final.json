@@ -1,0 +1,22 @@
+{
+  "citations": [
+    {
+      "end": 2,
+      "evidence_id": "E_SAMPLE",
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "end": 1,
+      "evidence_id": "E_CONTRACT",
+      "path": "README.md",
+      "start": 1
+    }
+  ],
+  "counterexample": "The finding misreads the boolean logic. Line 2 uses `bool(requester) and requester == owner`, which is a conjunction: both conditions must be true. For can_read(\"mallory\", \"alice\", False), the evaluation is `False or (True and False)` → False. The executed baseline confirms this: all three non-owner probes (mallory, bob, authenticated_user) return False for private documents. The code correctly implements the README contract that access requires \"an authenticated requester equal to owner.\" The `and` operator ensures the equality check is never bypassed by a merely nonempty requester string.",
+  "finding_id": "F-1",
+  "severity": "no issue",
+  "usefulness": "not_useful",
+  "validation_verdict": "valid",
+  "verdict": "refute"
+}

@@ -2,13 +2,13 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: ab483e48e99995c90ea2b51bec3432920461a758 accepted standalone package implementation.
-Tests/scenarios: 96 Python tests/no skips; actual installed CLI/image/OCI/weekly/auth replay and independent reviews PASS.
+Current commit: a46a93845c0f819362b5f08f07345ffa67cbb69f tested source; A-004 adds runtime evidence only.
+Tests/scenarios: Prior96 Python tests; fresh Linux model auth/evaluation, OCI, no-auth replay and weekly PASS.
 Configuration: ag.json — schema v7; validated for codex this round.
-Proven: Stage1/Stage2 accepted; A-003 independent package 0.1.0 complete; four core modules unchanged; Host gate PASS.
-Open: none in A-003; publication, deployment and Stage3 remain outside this Ask.
-Next: await a new owner request; no implementation work remains.
-Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-003-evaluation-package.
+Proven: A-003 package accepted; A-004 real Linux evaluation complete; source and old evidence unchanged.
+Open: no A-004 task; exact response model identity unavailable; publication/deployment not performed.
+Next: publication/merge is the subsequent step; await owner direction.
+Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-004-linux-runtime.
 Archived eras: none.
 Streams:
 stream: review-commit-integrity — active — .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md
@@ -1292,5 +1292,70 @@ Host gate: PASS
 ---
 
 # → Ask / A-004
+
+使用者原文：
+
+> 好, 下一步呢
+> 好
+
+Accepted immediate action: validate real model authentication and a fresh complete evaluation inside the existing Linux container on the dedicated local Docker runner, using fixed fixture SHAs and separate output. Publication, merge, tag creation and deployment are later steps, not performed by this runtime verification.
+
+## [RUN-001] Event (during round A-004)
+
+* _2026-09-10 18:11:43 (GPT-6/default)_
+
+Route direct: existing approved image/core/runtime require execution evidence, not a new design or source change. Source a46a93845c0f819362b5f08f07345ffa67cbb69f, clean stream; A-003 accepted package ab483e48e99995c90ea2b51bec3432920461a758. First inspect supported runtime auth availability without printing secrets; no auth env or Linux credential file currently available. Keep credentials in process memory only, no copied credential files or report values. Strong model profiles from the accepted real journey persist per owner preference; no cheaper substitution. No publication/deploy authority exercised.
+
+## [RUN-002] Event (during round A-004)
+
+* _2026-09-10 18:13:59 (GPT-6/default)_
+
+Linux image auth probe PASS: real claude-opus-5 reply LINUX_AUTH_OK, exit0, no tools/socket/source mounts, existing unexpired Keychain token held only in process environment. Fresh evaluation started in real PTY54814 (/dev/ttys004), separate temporary output, fixed synthetic safe fixture revision b7927775d4db77f360efe4d96a9b82fc61b7b35c/base4ed638bb12f3e1fa11be2524a48e18973ad4591f, existing Opus5/Opus4.6 profiles. Host driver uses accepted Docker mount/UID/staging contract directly with --env NAME to avoid writing any credential file; no shipped launcher/source change. No production PR quality claim. Runtime operation pending; raw secret-free proof under A-004-linux-runtime.
+
+## [RUN-003] Event (during round A-004)
+
+* _2026-09-10 18:18:14 (GPT-6/default)_
+
+Fresh real Linux evaluation completed exit0/statecomplete in130.482s. Both requested Opus5/Opus4.6 judgments refute the synthetic finding; meaningful baseline/counterexample OCI controls yield executed_refuted, synthesis complete, discovery success/no candidates. Requested model names occur in provider modelUsage, but JSON envelope lacks assistant model events, so observed_model_id correctly remains unavailable; no identity inference/fallback or core change. Actual billing unknown; CLI list-price estimate0.9049775 is not a charge. No-auth replayexit0 and network-none weeklyexit0; all42 new artifact hashes/mtimes and42 prior artifacts unchanged. Final helper initially failed only its empty-scratch assertion: CLI left one empty claude-501 directory, verified empty then removed with rmdir. Original source clean and scratch now empty. Full evidence copied only after exact credential-leak scan passed; credentials never written to disk. PTY54814 endedexit0; no operation remains. Direct operational evidence only, no product/config/user-document changes requiring another implementation review.
+
+# ← Reply / A-004
+
+* _2026-09-10 18:19:19 (GPT-6/default)_
+
+## [SUMMARY]
+
+- Linux 容器內的真實模型認證、全新完整評估、無認證重跑與週報均已成功。
+- 固定 SHA 的合成測試案例約 130 秒完成；兩份判讀與 OCI 驗證一致駁回測試 finding。
+- 原始證據與程式未改動；尚未 merge、建立 release tag、發布映像或部署服務。
+
+## [FINAL REPORT]
+
+### 「好, 下一步呢」及「好」：已完成部署前的 Linux runtime 驗證
+
+使用已驗收的 ocp-review-eval 0.1.0 amd64 image，digest38a45068982b62ad6999173f358b5f468f7e34f06f5dae9f4dd938a94012ab0b，在 Docker Desktop 的 Linux 容器實際執行。先以 Opus5 呼叫取得 LINUX_AUTH_OK，再以既有 Opus5/Opus4.6 profile 跑全新輸出，沒有重用先前模型結果。認證從既有 macOS Keychain 讀入記憶體，Docker 僅收到環境變數名稱；認證未寫入 argv、檔案、映像或證據。為避免建立認證檔，本次以直接 Docker 操作沿用既有 launcher 的 UID/GID、scratch 與 readonly staging 契約，沒有修改產品入口。
+
+來源為既有合成安全案例，revision b7927775d4db77f360efe4d96a9b82fc61b7b35c、base4ed638bb12f3e1fa11be2524a48e18973ad4591f，並非正式 PR。全新評估130.482秒完成，exit0、statecomplete；兩份有效判讀均 refute，baseline/counterexample OCI 驗證為 executed_refuted，綜合結論完成，盲查完成且沒有新候選。不能將這個部署驗證解讀為正式 PR 品質或 recall 證明。
+
+### 結果完整性與已知限制
+
+移除所有模型認證後重跑仍 exit0，42個新產物的 hash／mtime 全部不變。隔離網路的 image 週報命令 exit0，產生 report_id ab9d8019d18f515826cc1cfeb2c927a5f6a0a269f29aadb43b9b20465c6f0476。原 repository 乾淨，42個舊產物也保持原樣。
+
+本次 CLI 的 modelUsage 有請求的 Opus5/Opus4.6 用量與額外 Haiku 用量，但 result-only JSON 沒有 assistant model event，因此精確回應模型 ID 仍為 unavailable；保留此限制，沒有把 requested model 或模型自述當成 observed identity。約 USD0.90498 是 CLI list-price 估值，實際帳單仍為 unknown。
+
+驗證 helper 最後的 scratch-empty 檢查曾失敗：Claude 留下一個空的 claude-501 目錄。先前 replay／hash／週報檢查均已通過；主程序另確認該目錄沒有檔案後以 rmdir 清除，最終 scratch 為空。這不是評估失敗，也未隱藏成所有 helper 檢查一次通過。真實 PTY /dev/ttys004 已結束。
+
+完整證據與說明：.agentflow/features/review-commit-integrity/artifacts/A-004-linux-runtime/runtime-validation-report.md；原始 runtime、重跑、週報與 PTY 證據在同目錄。僅新增操作紀錄，沒有產品 source/config/document 變更，因此沿用已通過的 source 測試與複核，未重跑無關 suite。
+
+### 後續
+
+部署前的 Linux 執行關卡已完成。下一步可檢閱並合併目前工作分支，再建立 evaluation-v0.1.0 發布；本輪未進行這些動作。正式 PR 資料接入與 council 比較仍是後續工作。
+
+## Questions (batched — each with a suggested default)
+
+- None.
+
+---
+
+# → Ask / A-005
 
 +

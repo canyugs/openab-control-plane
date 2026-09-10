@@ -1,0 +1,113 @@
+{
+  "actual": {
+    "duration_ms": 87,
+    "exit": 0,
+    "name": "counterexample",
+    "observation": {
+      "claim_present": true,
+      "mode": "mutated_source_control",
+      "mutation": {
+        "from": "requester == owner",
+        "to": "True"
+      },
+      "probes": [
+        {
+          "can_read": true,
+          "owner": "alice",
+          "public": false,
+          "requester": "mallory"
+        },
+        {
+          "can_read": true,
+          "owner": "alice",
+          "public": false,
+          "requester": "bob"
+        },
+        {
+          "can_read": true,
+          "owner": "owner_account",
+          "public": false,
+          "requester": "authenticated_user"
+        }
+      ],
+      "source": "/source/sample.py"
+    },
+    "output_limit": false,
+    "stderr": "",
+    "stderr_b64": "",
+    "stderr_bytes": 0,
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_truncated": false,
+    "stdout": "{\n  \"claim_present\": true,\n  \"mode\": \"mutated_source_control\",\n  \"mutation\": {\n    \"from\": \"requester == owner\",\n    \"to\": \"True\"\n  },\n  \"probes\": [\n    {\n      \"can_read\": true,\n      \"owner\": \"alice\",\n      \"public\": false,\n      \"requester\": \"mallory\"\n    },\n    {\n      \"can_read\": true,\n      \"owner\": \"alice\",\n      \"public\": false,\n      \"requester\": \"bob\"\n    },\n    {\n      \"can_read\": true,\n      \"owner\": \"owner_account\",\n      \"public\": false,\n      \"requester\": \"authenticated_user\"\n    }\n  ],\n  \"source\": \"/source/sample.py\"\n}\n",
+    "stdout_b64": "ewogICJjbGFpbV9wcmVzZW50IjogdHJ1ZSwKICAibW9kZSI6ICJtdXRhdGVkX3NvdXJjZV9jb250cm9sIiwKICAibXV0YXRpb24iOiB7CiAgICAiZnJvbSI6ICJyZXF1ZXN0ZXIgPT0gb3duZXIiLAogICAgInRvIjogIlRydWUiCiAgfSwKICAicHJvYmVzIjogWwogICAgewogICAgICAiY2FuX3JlYWQiOiB0cnVlLAogICAgICAib3duZXIiOiAiYWxpY2UiLAogICAgICAicHVibGljIjogZmFsc2UsCiAgICAgICJyZXF1ZXN0ZXIiOiAibWFsbG9yeSIKICAgIH0sCiAgICB7CiAgICAgICJjYW5fcmVhZCI6IHRydWUsCiAgICAgICJvd25lciI6ICJhbGljZSIsCiAgICAgICJwdWJsaWMiOiBmYWxzZSwKICAgICAgInJlcXVlc3RlciI6ICJib2IiCiAgICB9LAogICAgewogICAgICAiY2FuX3JlYWQiOiB0cnVlLAogICAgICAib3duZXIiOiAib3duZXJfYWNjb3VudCIsCiAgICAgICJwdWJsaWMiOiBmYWxzZSwKICAgICAgInJlcXVlc3RlciI6ICJhdXRoZW50aWNhdGVkX3VzZXIiCiAgICB9CiAgXSwKICAic291cmNlIjogIi9zb3VyY2Uvc2FtcGxlLnB5Igp9Cg==",
+    "stdout_bytes": 541,
+    "stdout_sha256": "b79c694c6167a6b638504ad0e22fbba84fcaadbf8742106b45d58e528542c64c",
+    "stdout_truncated": false,
+    "timeout": false
+  },
+  "argv": [
+    "docker",
+    "run",
+    "--rm",
+    "--init",
+    "--pull=never",
+    "-i",
+    "--name",
+    "openab-eval-350929988a0044209847",
+    "--network",
+    "none",
+    "--read-only",
+    "--tmpfs",
+    "/work:rw,nosuid,nodev,size=64m,mode=1777",
+    "--tmpfs",
+    "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+    "--mount",
+    "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch/openab-eval-source-wnsu_fcn,dst=/source,readonly",
+    "--mount",
+    "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch/openab-eval-runner-fc0qnvxc/fixed-runner.py,dst=/runner.py,readonly",
+    "--user",
+    "65532:65532",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--pids-limit",
+    "128",
+    "--memory",
+    "512m",
+    "--cpus",
+    "1.0",
+    "--env",
+    "HOME=/tmp/home",
+    "--env",
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "--env",
+    "LANG=C.UTF-8",
+    "--env",
+    "LC_ALL=C.UTF-8",
+    "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+    "python3",
+    "/runner.py"
+  ],
+  "container_name": "openab-eval-350929988a0044209847",
+  "expect": {
+    "exit": 0,
+    "observation": {
+      "claim_present": true
+    }
+  },
+  "name": "counterexample",
+  "output_limit": false,
+  "stderr": "",
+  "stderr_b64": "",
+  "stderr_bytes": 0,
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stderr_truncated": false,
+  "stdout": "{\"runs\":[{\"duration_ms\":87,\"exit\":0,\"name\":\"counterexample\",\"observation\":{\"claim_present\":true,\"mode\":\"mutated_source_control\",\"mutation\":{\"from\":\"requester == owner\",\"to\":\"True\"},\"probes\":[{\"can_read\":true,\"owner\":\"alice\",\"public\":false,\"requester\":\"mallory\"},{\"can_read\":true,\"owner\":\"alice\",\"public\":false,\"requester\":\"bob\"},{\"can_read\":true,\"owner\":\"owner_account\",\"public\":false,\"requester\":\"authenticated_user\"}],\"source\":\"/source/sample.py\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\n  \\\"claim_present\\\": true,\\n  \\\"mode\\\": \\\"mutated_source_control\\\",\\n  \\\"mutation\\\": {\\n    \\\"from\\\": \\\"requester == owner\\\",\\n    \\\"to\\\": \\\"True\\\"\\n  },\\n  \\\"probes\\\": [\\n    {\\n      \\\"can_read\\\": true,\\n      \\\"owner\\\": \\\"alice\\\",\\n      \\\"public\\\": false,\\n      \\\"requester\\\": \\\"mallory\\\"\\n    },\\n    {\\n      \\\"can_read\\\": true,\\n      \\\"owner\\\": \\\"alice\\\",\\n      \\\"public\\\": false,\\n      \\\"requester\\\": \\\"bob\\\"\\n    },\\n    {\\n      \\\"can_read\\\": true,\\n      \\\"owner\\\": \\\"owner_account\\\",\\n      \\\"public\\\": false,\\n      \\\"requester\\\": \\\"authenticated_user\\\"\\n    }\\n  ],\\n  \\\"source\\\": \\\"/source/sample.py\\\"\\n}\\n\",\"stdout_b64\":\"ewogICJjbGFpbV9wcmVzZW50IjogdHJ1ZSwKICAibW9kZSI6ICJtdXRhdGVkX3NvdXJjZV9jb250cm9sIiwKICAibXV0YXRpb24iOiB7CiAgICAiZnJvbSI6ICJyZXF1ZXN0ZXIgPT0gb3duZXIiLAogICAgInRvIjogIlRydWUiCiAgfSwKICAicHJvYmVzIjogWwogICAgewogICAgICAiY2FuX3JlYWQiOiB0cnVlLAogICAgICAib3duZXIiOiAiYWxpY2UiLAogICAgICAicHVibGljIjogZmFsc2UsCiAgICAgICJyZXF1ZXN0ZXIiOiAibWFsbG9yeSIKICAgIH0sCiAgICB7CiAgICAgICJjYW5fcmVhZCI6IHRydWUsCiAgICAgICJvd25lciI6ICJhbGljZSIsCiAgICAgICJwdWJsaWMiOiBmYWxzZSwKICAgICAgInJlcXVlc3RlciI6ICJib2IiCiAgICB9LAogICAgewogICAgICAiY2FuX3JlYWQiOiB0cnVlLAogICAgICAib3duZXIiOiAib3duZXJfYWNjb3VudCIsCiAgICAgICJwdWJsaWMiOiBmYWxzZSwKICAgICAgInJlcXVlc3RlciI6ICJhdXRoZW50aWNhdGVkX3VzZXIiCiAgICB9CiAgXSwKICAic291cmNlIjogIi9zb3VyY2Uvc2FtcGxlLnB5Igp9Cg==\",\"stdout_bytes\":541,\"stdout_sha256\":\"b79c694c6167a6b638504ad0e22fbba84fcaadbf8742106b45d58e528542c64c\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+  "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6ODcsImV4aXQiOjAsIm5hbWUiOiJjb3VudGVyZXhhbXBsZSIsIm9ic2VydmF0aW9uIjp7ImNsYWltX3ByZXNlbnQiOnRydWUsIm1vZGUiOiJtdXRhdGVkX3NvdXJjZV9jb250cm9sIiwibXV0YXRpb24iOnsiZnJvbSI6InJlcXVlc3RlciA9PSBvd25lciIsInRvIjoiVHJ1ZSJ9LCJwcm9iZXMiOlt7ImNhbl9yZWFkIjp0cnVlLCJvd25lciI6ImFsaWNlIiwicHVibGljIjpmYWxzZSwicmVxdWVzdGVyIjoibWFsbG9yeSJ9LHsiY2FuX3JlYWQiOnRydWUsIm93bmVyIjoiYWxpY2UiLCJwdWJsaWMiOmZhbHNlLCJyZXF1ZXN0ZXIiOiJib2IifSx7ImNhbl9yZWFkIjp0cnVlLCJvd25lciI6Im93bmVyX2FjY291bnQiLCJwdWJsaWMiOmZhbHNlLCJyZXF1ZXN0ZXIiOiJhdXRoZW50aWNhdGVkX3VzZXIifV0sInNvdXJjZSI6Ii9zb3VyY2Uvc2FtcGxlLnB5In0sIm91dHB1dF9saW1pdCI6ZmFsc2UsInN0ZGVyciI6IiIsInN0ZGVycl9iNjQiOiIiLCJzdGRlcnJfYnl0ZXMiOjAsInN0ZGVycl9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1Iiwic3RkZXJyX3RydW5jYXRlZCI6ZmFsc2UsInN0ZG91dCI6IntcbiAgXCJjbGFpbV9wcmVzZW50XCI6IHRydWUsXG4gIFwibW9kZVwiOiBcIm11dGF0ZWRfc291cmNlX2NvbnRyb2xcIixcbiAgXCJtdXRhdGlvblwiOiB7XG4gICAgXCJmcm9tXCI6IFwicmVxdWVzdGVyID09IG93bmVyXCIsXG4gICAgXCJ0b1wiOiBcIlRydWVcIlxuICB9LFxuICBcInByb2Jlc1wiOiBbXG4gICAge1xuICAgICAgXCJjYW5fcmVhZFwiOiB0cnVlLFxuICAgICAgXCJvd25lclwiOiBcImFsaWNlXCIsXG4gICAgICBcInB1YmxpY1wiOiBmYWxzZSxcbiAgICAgIFwicmVxdWVzdGVyXCI6IFwibWFsbG9yeVwiXG4gICAgfSxcbiAgICB7XG4gICAgICBcImNhbl9yZWFkXCI6IHRydWUsXG4gICAgICBcIm93bmVyXCI6IFwiYWxpY2VcIixcbiAgICAgIFwicHVibGljXCI6IGZhbHNlLFxuICAgICAgXCJyZXF1ZXN0ZXJcIjogXCJib2JcIlxuICAgIH0sXG4gICAge1xuICAgICAgXCJjYW5fcmVhZFwiOiB0cnVlLFxuICAgICAgXCJvd25lclwiOiBcIm93bmVyX2FjY291bnRcIixcbiAgICAgIFwicHVibGljXCI6IGZhbHNlLFxuICAgICAgXCJyZXF1ZXN0ZXJcIjogXCJhdXRoZW50aWNhdGVkX3VzZXJcIlxuICAgIH1cbiAgXSxcbiAgXCJzb3VyY2VcIjogXCIvc291cmNlL3NhbXBsZS5weVwiXG59XG4iLCJzdGRvdXRfYjY0IjoiZXdvZ0lDSmpiR0ZwYlY5d2NtVnpaVzUwSWpvZ2RISjFaU3dLSUNBaWJXOWtaU0k2SUNKdGRYUmhkR1ZrWDNOdmRYSmpaVjlqYjI1MGNtOXNJaXdLSUNBaWJYVjBZWFJwYjI0aU9pQjdDaUFnSUNBaVpuSnZiU0k2SUNKeVpYRjFaWE4wWlhJZ1BUMGdiM2R1WlhJaUxBb2dJQ0FnSW5Sdklqb2dJbFJ5ZFdVaUNpQWdmU3dLSUNBaWNISnZZbVZ6SWpvZ1d3b2dJQ0FnZXdvZ0lDQWdJQ0FpWTJGdVgzSmxZV1FpT2lCMGNuVmxMQW9nSUNBZ0lDQWliM2R1WlhJaU9pQWlZV3hwWTJVaUxBb2dJQ0FnSUNBaWNIVmliR2xqSWpvZ1ptRnNjMlVzQ2lBZ0lDQWdJQ0p5WlhGMVpYTjBaWElpT2lBaWJXRnNiRzl5ZVNJS0lDQWdJSDBzQ2lBZ0lDQjdDaUFnSUNBZ0lDSmpZVzVmY21WaFpDSTZJSFJ5ZFdVc0NpQWdJQ0FnSUNKdmQyNWxjaUk2SUNKaGJHbGpaU0lzQ2lBZ0lDQWdJQ0p3ZFdKc2FXTWlPaUJtWVd4elpTd0tJQ0FnSUNBZ0luSmxjWFZsYzNSbGNpSTZJQ0ppYjJJaUNpQWdJQ0I5TEFvZ0lDQWdld29nSUNBZ0lDQWlZMkZ1WDNKbFlXUWlPaUIwY25WbExBb2dJQ0FnSUNBaWIzZHVaWElpT2lBaWIzZHVaWEpmWVdOamIzVnVkQ0lzQ2lBZ0lDQWdJQ0p3ZFdKc2FXTWlPaUJtWVd4elpTd0tJQ0FnSUNBZ0luSmxjWFZsYzNSbGNpSTZJQ0poZFhSb1pXNTBhV05oZEdWa1gzVnpaWElpQ2lBZ0lDQjlDaUFnWFN3S0lDQWljMjkxY21ObElqb2dJaTl6YjNWeVkyVXZjMkZ0Y0d4bExuQjVJZ3A5Q2c9PSIsInN0ZG91dF9ieXRlcyI6NTQxLCJzdGRvdXRfc2hhMjU2IjoiYjc5YzY5NGM2MTY3YTZiNjM4NTA0YWQwZTIyZmJiYTg0ZmNhYWRiZjg3NDIxMDZiNDVkNThlNTI4NTQyYzY0YyIsInN0ZG91dF90cnVuY2F0ZWQiOmZhbHNlLCJ0aW1lb3V0IjpmYWxzZX1dfQo=",
+  "stdout_bytes": 2150,
+  "stdout_sha256": "e9b9e0deed5017623db88cd8d8ef052872c716bdbe3fb4dffdc932433301d70b",
+  "stdout_truncated": false,
+  "timeout": false,
+  "valid": true
+}

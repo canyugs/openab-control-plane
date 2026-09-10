@@ -1,0 +1,52 @@
+{
+  "claim_observed": "Executing the real /source/sample.py shows the claim is not reproducible: can_read(\"mallory\", \"alice\", public=False) returns False (and False for every authenticated non-owner probe), because the source guard is `public or (bool(requester) and requester == owner)`, which conjoins the non-empty-requester check with an equality-to-owner check. The baseline run therefore prints claim_present=false. The counterexample run proves the detector is live: it reads the same source text, applies a one-token mutation of the equality clause (`requester == owner` -> `True`) to build the bypass-shaped variant the finding describes, and the identical probe then returns True for the authenticated non-owner, printing claim_present=true. So the harness would flag a real bypass, but the shipped code contains none; finding F-1 is not confirmed against the supplied revision.",
+  "files": [
+    {
+      "path": "generated/probe_real.py",
+      "utf8": "import importlib.util\nimport json\n\nSRC = \"/source/sample.py\"\n\nspec = importlib.util.spec_from_file_location(\"sample_real\", SRC)\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\n\nprobes = [\n    (\"mallory\", \"alice\", False),\n    (\"bob\", \"alice\", False),\n    (\"authenticated_user\", \"owner_account\", False),\n]\n\nresults = []\nbypass = False\nfor requester, owner, public in probes:\n    got = bool(mod.can_read(requester, owner, public))\n    results.append({\n        \"requester\": requester,\n        \"owner\": owner,\n        \"public\": public,\n        \"can_read\": got,\n    })\n    if got:\n        bypass = True\n\ncontrols = {\n    \"owner_private\": bool(mod.can_read(\"alice\", \"alice\", False)),\n    \"anonymous_public\": bool(mod.can_read(\"\", \"alice\", True)),\n    \"anonymous_private\": bool(mod.can_read(\"\", \"alice\", False)),\n}\n\nprint(json.dumps({\n    \"mode\": \"real_source\",\n    \"source\": SRC,\n    \"probes\": results,\n    \"controls\": controls,\n    \"claim_present\": bypass,\n}, indent=2, sort_keys=True))\n"
+    },
+    {
+      "path": "generated/probe_mutant.py",
+      "utf8": "import json\nimport types\n\nSRC = \"/source/sample.py\"\n\nwith open(SRC, \"r\", encoding=\"utf-8\") as fh:\n    text = fh.read()\n\nEQ = \"requester == owner\"\nif EQ not in text:\n    raise SystemExit(\"unexpected source shape: equality clause not found\")\n\n# Detector-validity control: mutate the real source's owner-equality clause into\n# the bypass shape described by the finding, then run the identical probe.\nmutated = text.replace(EQ, \"True\", 1)\n\nmod = types.ModuleType(\"sample_mutant\")\nexec(compile(mutated, SRC + \"#mutant\", \"exec\"), mod.__dict__)\n\nprobes = [\n    (\"mallory\", \"alice\", False),\n    (\"bob\", \"alice\", False),\n    (\"authenticated_user\", \"owner_account\", False),\n]\n\nresults = []\nbypass = False\nfor requester, owner, public in probes:\n    got = bool(mod.can_read(requester, owner, public))\n    results.append({\n        \"requester\": requester,\n        \"owner\": owner,\n        \"public\": public,\n        \"can_read\": got,\n    })\n    if got:\n        bypass = True\n\nprint(json.dumps({\n    \"mode\": \"mutated_source_control\",\n    \"source\": SRC,\n    \"mutation\": {\"from\": EQ, \"to\": \"True\"},\n    \"probes\": results,\n    \"claim_present\": bypass,\n}, indent=2, sort_keys=True))\n"
+    }
+  ],
+  "item_id": "F-1",
+  "runs": [
+    {
+      "argv": [
+        "python3",
+        "generated/probe_real.py"
+      ],
+      "cwd": "/work",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "expect": {
+        "exit": 0,
+        "observation": {
+          "claim_present": false
+        }
+      },
+      "name": "baseline"
+    },
+    {
+      "argv": [
+        "python3",
+        "generated/probe_mutant.py"
+      ],
+      "cwd": "/work",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "expect": {
+        "exit": 0,
+        "observation": {
+          "claim_present": true
+        }
+      },
+      "name": "counterexample"
+    }
+  ]
+}

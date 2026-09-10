@@ -1,0 +1,287 @@
+{
+  "argv": [
+    "docker",
+    "run",
+    "--rm",
+    "--init",
+    "--platform",
+    "linux/amd64",
+    "--user",
+    "501:20",
+    "--group-add",
+    "0",
+    "--mount",
+    "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch,dst=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch",
+    "--mount",
+    "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/evaluation,dst=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/evaluation",
+    "--mount",
+    "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch/repo-stage-nyf6q1nv,dst=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch/repo-stage-nyf6q1nv,readonly",
+    "--mount",
+    "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/safe/evidence,dst=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/safe/evidence,readonly",
+    "--mount",
+    "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/safe/findings.json,dst=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/safe/findings.json,readonly",
+    "--mount",
+    "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/models.json,dst=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/models.json,readonly",
+    "--mount",
+    "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/environment.json,dst=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/environment.json,readonly",
+    "--mount",
+    "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock",
+    "--env",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "--env",
+    "TMPDIR=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch",
+    "--env",
+    "HOME=/tmp/ocp-review-eval-home",
+    "--env",
+    "LANG=C.UTF-8",
+    "--env",
+    "LC_ALL=C.UTF-8",
+    "ocp-review-eval:0.1.0-test",
+    "run",
+    "--repo",
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch/repo-stage-nyf6q1nv/repo",
+    "--revision",
+    "b7927775d4db77f360efe4d96a9b82fc61b7b35c",
+    "--base",
+    "4ed638bb12f3e1fa11be2524a48e18973ad4591f",
+    "--findings",
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/safe/findings.json",
+    "--evidence",
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/safe/evidence",
+    "--models",
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/models.json",
+    "--environment",
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/environment.json",
+    "--output",
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/evaluation"
+  ],
+  "output": "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/evaluation",
+  "image": "ocp-review-eval:0.1.0-test",
+  "source_kind": "synthetic fixed-SHA accepted fixture, not production PR",
+  "credential_source": "Keychain -> process environment; no credential file",
+  "started_at_utc": "2026-09-10T10:13:34Z",
+  "exit": 0,
+  "elapsed_seconds": 130.482,
+  "diagnostic": "{\"state\": \"complete\", \"summary\": \"/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/evaluation/summary.json\"}\n",
+  "credential_leak_found": false,
+  "summary": {
+    "candidate_model_assessment": {
+      "assessed": 0,
+      "refuted": 0,
+      "supported": 0,
+      "unresolved": 0
+    },
+    "delivery_metrics": {
+      "status": "not_collected; use the offline weekly report"
+    },
+    "identity": {
+      "discovery": {
+        "actual_cost_usd": "unknown",
+        "adapter": "claude",
+        "auxiliary_model_usage": {
+          "claude-haiku-4-5-20251001": {
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "canonicalModel": "claude-haiku-4-5",
+            "contextWindow": 200000,
+            "costBasis": "list",
+            "costUSD": 0.0023420000000000003,
+            "inputTokens": 2282,
+            "maxOutputTokens": 32000,
+            "outputTokens": 12,
+            "provider": "firstParty",
+            "thinkingTokens": 0,
+            "webSearchRequests": 0
+          }
+        },
+        "capability": "ready",
+        "cost_basis": [
+          "list"
+        ],
+        "estimated_cost_usd": 0.047536999999999996,
+        "family": "anthropic",
+        "observed_model_id": "unavailable",
+        "observed_model_ids": [],
+        "requested_model_id": "claude-opus-5"
+      },
+      "judge_a": {
+        "actual_cost_usd": "unknown",
+        "adapter": "claude",
+        "auxiliary_model_usage": {
+          "claude-haiku-4-5-20251001": {
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "canonicalModel": "claude-haiku-4-5",
+            "contextWindow": 200000,
+            "costBasis": "list",
+            "costUSD": 0.015484000000000001,
+            "inputTokens": 15414,
+            "maxOutputTokens": 32000,
+            "outputTokens": 14,
+            "provider": "firstParty",
+            "thinkingTokens": 0,
+            "webSearchRequests": 0
+          }
+        },
+        "capability": "ready",
+        "cost_basis": [
+          "list"
+        ],
+        "estimated_cost_usd": 0.231839,
+        "family": "anthropic",
+        "observed_model_id": "unavailable",
+        "observed_model_ids": [],
+        "requested_model_id": "claude-opus-5"
+      },
+      "judge_b": {
+        "actual_cost_usd": "unknown",
+        "adapter": "claude",
+        "auxiliary_model_usage": {
+          "claude-haiku-4-5-20251001": {
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "canonicalModel": "claude-haiku-4-5",
+            "contextWindow": 200000,
+            "costBasis": "list",
+            "costUSD": 0.015474,
+            "inputTokens": 15414,
+            "maxOutputTokens": 32000,
+            "outputTokens": 12,
+            "provider": "firstParty",
+            "thinkingTokens": 0,
+            "webSearchRequests": 0
+          }
+        },
+        "capability": "ready",
+        "cost_basis": [
+          "list"
+        ],
+        "estimated_cost_usd": 0.206264,
+        "family": "anthropic",
+        "observed_model_id": "unavailable",
+        "observed_model_ids": [],
+        "requested_model_id": "claude-opus-4-6"
+      },
+      "synthesis": {
+        "actual_cost_usd": "unknown",
+        "adapter": "claude",
+        "auxiliary_model_usage": {
+          "claude-haiku-4-5-20251001": {
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "canonicalModel": "claude-haiku-4-5",
+            "contextWindow": 200000,
+            "costBasis": "list",
+            "costUSD": 0.016035,
+            "inputTokens": 15965,
+            "maxOutputTokens": 32000,
+            "outputTokens": 14,
+            "provider": "firstParty",
+            "thinkingTokens": 0,
+            "webSearchRequests": 0
+          }
+        },
+        "capability": "ready",
+        "cost_basis": [
+          "list"
+        ],
+        "estimated_cost_usd": 0.24327,
+        "family": "anthropic",
+        "observed_model_id": "unavailable",
+        "observed_model_ids": [],
+        "requested_model_id": "claude-opus-5"
+      },
+      "validation": {
+        "actual_cost_usd": "unknown",
+        "adapter": "claude",
+        "auxiliary_model_usage": {
+          "claude-haiku-4-5-20251001": {
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "canonicalModel": "claude-haiku-4-5",
+            "contextWindow": 200000,
+            "costBasis": "list",
+            "costUSD": 0.002773,
+            "inputTokens": 2718,
+            "maxOutputTokens": 32000,
+            "outputTokens": 11,
+            "provider": "firstParty",
+            "thinkingTokens": 0,
+            "webSearchRequests": 0
+          }
+        },
+        "capability": "ready",
+        "cost_basis": [
+          "list"
+        ],
+        "estimated_cost_usd": 0.17606750000000002,
+        "family": "anthropic",
+        "observed_model_id": "unavailable",
+        "observed_model_ids": [],
+        "requested_model_id": "claude-opus-5"
+      }
+    },
+    "model_assessment": {
+      "actual_cost_usd": "unknown",
+      "disagreement_denominator": 1,
+      "disagreement_items": 0,
+      "estimated_cost_usd": 0.9049775,
+      "execution_conflicts": 0,
+      "original_findings": 1,
+      "refuted": 1,
+      "scoreable_items": 1,
+      "supported": 0,
+      "unresolved": 0,
+      "usefulness": {
+        "not_useful": 2,
+        "unknown": 0,
+        "useful": 0
+      },
+      "valid_judgments": 2
+    },
+    "omissions": {
+      "automatically_supported_omission": 0,
+      "candidate_count": 0,
+      "human_confirmation_status": "not_collected",
+      "human_confirmed_escape": 0,
+      "recall_claim": "not_available",
+      "unknown": 0
+    },
+    "provenance": "model_assessment",
+    "schema_version": "review-model-evaluation/v1",
+    "source": {
+      "base": "4ed638bb12f3e1fa11be2524a48e18973ad4591f",
+      "complete": true,
+      "omissions": [],
+      "revision": "b7927775d4db77f360efe4d96a9b82fc61b7b35c"
+    },
+    "stages": {
+      "discovery": {
+        "candidate_count": 0,
+        "invocation_id": "discovery",
+        "status": "success"
+      },
+      "items": {
+        "F-1": {
+          "classification": "executed_refuted",
+          "judge_count": 2,
+          "synthesis": "complete",
+          "validation": "success"
+        }
+      },
+      "source": {
+        "omissions": [],
+        "status": "complete"
+      }
+    },
+    "state": "complete",
+    "validation_coverage": {
+      "environment_blocked": 0,
+      "executed_refuted": 1,
+      "executed_reproduced": 0,
+      "static_evidence": 0,
+      "unproven": 0
+    }
+  },
+  "staging_cleaned": true
+}

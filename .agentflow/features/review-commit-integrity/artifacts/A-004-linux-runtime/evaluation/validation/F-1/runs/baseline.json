@@ -1,0 +1,114 @@
+{
+  "actual": {
+    "duration_ms": 71,
+    "exit": 0,
+    "name": "baseline",
+    "observation": {
+      "claim_present": false,
+      "controls": {
+        "anonymous_private": false,
+        "anonymous_public": true,
+        "owner_private": true
+      },
+      "mode": "real_source",
+      "probes": [
+        {
+          "can_read": false,
+          "owner": "alice",
+          "public": false,
+          "requester": "mallory"
+        },
+        {
+          "can_read": false,
+          "owner": "alice",
+          "public": false,
+          "requester": "bob"
+        },
+        {
+          "can_read": false,
+          "owner": "owner_account",
+          "public": false,
+          "requester": "authenticated_user"
+        }
+      ],
+      "source": "/source/sample.py"
+    },
+    "output_limit": false,
+    "stderr": "",
+    "stderr_b64": "",
+    "stderr_bytes": 0,
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_truncated": false,
+    "stdout": "{\n  \"claim_present\": false,\n  \"controls\": {\n    \"anonymous_private\": false,\n    \"anonymous_public\": true,\n    \"owner_private\": true\n  },\n  \"mode\": \"real_source\",\n  \"probes\": [\n    {\n      \"can_read\": false,\n      \"owner\": \"alice\",\n      \"public\": false,\n      \"requester\": \"mallory\"\n    },\n    {\n      \"can_read\": false,\n      \"owner\": \"alice\",\n      \"public\": false,\n      \"requester\": \"bob\"\n    },\n    {\n      \"can_read\": false,\n      \"owner\": \"owner_account\",\n      \"public\": false,\n      \"requester\": \"authenticated_user\"\n    }\n  ],\n  \"source\": \"/source/sample.py\"\n}\n",
+    "stdout_b64": "ewogICJjbGFpbV9wcmVzZW50IjogZmFsc2UsCiAgImNvbnRyb2xzIjogewogICAgImFub255bW91c19wcml2YXRlIjogZmFsc2UsCiAgICAiYW5vbnltb3VzX3B1YmxpYyI6IHRydWUsCiAgICAib3duZXJfcHJpdmF0ZSI6IHRydWUKICB9LAogICJtb2RlIjogInJlYWxfc291cmNlIiwKICAicHJvYmVzIjogWwogICAgewogICAgICAiY2FuX3JlYWQiOiBmYWxzZSwKICAgICAgIm93bmVyIjogImFsaWNlIiwKICAgICAgInB1YmxpYyI6IGZhbHNlLAogICAgICAicmVxdWVzdGVyIjogIm1hbGxvcnkiCiAgICB9LAogICAgewogICAgICAiY2FuX3JlYWQiOiBmYWxzZSwKICAgICAgIm93bmVyIjogImFsaWNlIiwKICAgICAgInB1YmxpYyI6IGZhbHNlLAogICAgICAicmVxdWVzdGVyIjogImJvYiIKICAgIH0sCiAgICB7CiAgICAgICJjYW5fcmVhZCI6IGZhbHNlLAogICAgICAib3duZXIiOiAib3duZXJfYWNjb3VudCIsCiAgICAgICJwdWJsaWMiOiBmYWxzZSwKICAgICAgInJlcXVlc3RlciI6ICJhdXRoZW50aWNhdGVkX3VzZXIiCiAgICB9CiAgXSwKICAic291cmNlIjogIi9zb3VyY2Uvc2FtcGxlLnB5Igp9Cg==",
+    "stdout_bytes": 571,
+    "stdout_sha256": "f569a76c66139358ed8bf8ae9bd06695f5a96c257b061069a367e8c013f757b7",
+    "stdout_truncated": false,
+    "timeout": false
+  },
+  "argv": [
+    "docker",
+    "run",
+    "--rm",
+    "--init",
+    "--pull=never",
+    "-i",
+    "--name",
+    "openab-eval-3ee835e0fa1b410f9597",
+    "--network",
+    "none",
+    "--read-only",
+    "--tmpfs",
+    "/work:rw,nosuid,nodev,size=64m,mode=1777",
+    "--tmpfs",
+    "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+    "--mount",
+    "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch/openab-eval-source-wnsu_fcn,dst=/source,readonly",
+    "--mount",
+    "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch/openab-eval-runner-fc0qnvxc/fixed-runner.py,dst=/runner.py,readonly",
+    "--user",
+    "65532:65532",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--pids-limit",
+    "128",
+    "--memory",
+    "512m",
+    "--cpus",
+    "1.0",
+    "--env",
+    "HOME=/tmp/home",
+    "--env",
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "--env",
+    "LANG=C.UTF-8",
+    "--env",
+    "LC_ALL=C.UTF-8",
+    "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+    "python3",
+    "/runner.py"
+  ],
+  "container_name": "openab-eval-3ee835e0fa1b410f9597",
+  "expect": {
+    "exit": 0,
+    "observation": {
+      "claim_present": false
+    }
+  },
+  "name": "baseline",
+  "output_limit": false,
+  "stderr": "",
+  "stderr_b64": "",
+  "stderr_bytes": 0,
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stderr_truncated": false,
+  "stdout": "{\"runs\":[{\"duration_ms\":71,\"exit\":0,\"name\":\"baseline\",\"observation\":{\"claim_present\":false,\"controls\":{\"anonymous_private\":false,\"anonymous_public\":true,\"owner_private\":true},\"mode\":\"real_source\",\"probes\":[{\"can_read\":false,\"owner\":\"alice\",\"public\":false,\"requester\":\"mallory\"},{\"can_read\":false,\"owner\":\"alice\",\"public\":false,\"requester\":\"bob\"},{\"can_read\":false,\"owner\":\"owner_account\",\"public\":false,\"requester\":\"authenticated_user\"}],\"source\":\"/source/sample.py\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\n  \\\"claim_present\\\": false,\\n  \\\"controls\\\": {\\n    \\\"anonymous_private\\\": false,\\n    \\\"anonymous_public\\\": true,\\n    \\\"owner_private\\\": true\\n  },\\n  \\\"mode\\\": \\\"real_source\\\",\\n  \\\"probes\\\": [\\n    {\\n      \\\"can_read\\\": false,\\n      \\\"owner\\\": \\\"alice\\\",\\n      \\\"public\\\": false,\\n      \\\"requester\\\": \\\"mallory\\\"\\n    },\\n    {\\n      \\\"can_read\\\": false,\\n      \\\"owner\\\": \\\"alice\\\",\\n      \\\"public\\\": false,\\n      \\\"requester\\\": \\\"bob\\\"\\n    },\\n    {\\n      \\\"can_read\\\": false,\\n      \\\"owner\\\": \\\"owner_account\\\",\\n      \\\"public\\\": false,\\n      \\\"requester\\\": \\\"authenticated_user\\\"\\n    }\\n  ],\\n  \\\"source\\\": \\\"/source/sample.py\\\"\\n}\\n\",\"stdout_b64\":\"ewogICJjbGFpbV9wcmVzZW50IjogZmFsc2UsCiAgImNvbnRyb2xzIjogewogICAgImFub255bW91c19wcml2YXRlIjogZmFsc2UsCiAgICAiYW5vbnltb3VzX3B1YmxpYyI6IHRydWUsCiAgICAib3duZXJfcHJpdmF0ZSI6IHRydWUKICB9LAogICJtb2RlIjogInJlYWxfc291cmNlIiwKICAicHJvYmVzIjogWwogICAgewogICAgICAiY2FuX3JlYWQiOiBmYWxzZSwKICAgICAgIm93bmVyIjogImFsaWNlIiwKICAgICAgInB1YmxpYyI6IGZhbHNlLAogICAgICAicmVxdWVzdGVyIjogIm1hbGxvcnkiCiAgICB9LAogICAgewogICAgICAiY2FuX3JlYWQiOiBmYWxzZSwKICAgICAgIm93bmVyIjogImFsaWNlIiwKICAgICAgInB1YmxpYyI6IGZhbHNlLAogICAgICAicmVxdWVzdGVyIjogImJvYiIKICAgIH0sCiAgICB7CiAgICAgICJjYW5fcmVhZCI6IGZhbHNlLAogICAgICAib3duZXIiOiAib3duZXJfYWNjb3VudCIsCiAgICAgICJwdWJsaWMiOiBmYWxzZSwKICAgICAgInJlcXVlc3RlciI6ICJhdXRoZW50aWNhdGVkX3VzZXIiCiAgICB9CiAgXSwKICAic291cmNlIjogIi9zb3VyY2Uvc2FtcGxlLnB5Igp9Cg==\",\"stdout_bytes\":571,\"stdout_sha256\":\"f569a76c66139358ed8bf8ae9bd06695f5a96c257b061069a367e8c013f757b7\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+  "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6NzEsImV4aXQiOjAsIm5hbWUiOiJiYXNlbGluZSIsIm9ic2VydmF0aW9uIjp7ImNsYWltX3ByZXNlbnQiOmZhbHNlLCJjb250cm9scyI6eyJhbm9ueW1vdXNfcHJpdmF0ZSI6ZmFsc2UsImFub255bW91c19wdWJsaWMiOnRydWUsIm93bmVyX3ByaXZhdGUiOnRydWV9LCJtb2RlIjoicmVhbF9zb3VyY2UiLCJwcm9iZXMiOlt7ImNhbl9yZWFkIjpmYWxzZSwib3duZXIiOiJhbGljZSIsInB1YmxpYyI6ZmFsc2UsInJlcXVlc3RlciI6Im1hbGxvcnkifSx7ImNhbl9yZWFkIjpmYWxzZSwib3duZXIiOiJhbGljZSIsInB1YmxpYyI6ZmFsc2UsInJlcXVlc3RlciI6ImJvYiJ9LHsiY2FuX3JlYWQiOmZhbHNlLCJvd25lciI6Im93bmVyX2FjY291bnQiLCJwdWJsaWMiOmZhbHNlLCJyZXF1ZXN0ZXIiOiJhdXRoZW50aWNhdGVkX3VzZXIifV0sInNvdXJjZSI6Ii9zb3VyY2Uvc2FtcGxlLnB5In0sIm91dHB1dF9saW1pdCI6ZmFsc2UsInN0ZGVyciI6IiIsInN0ZGVycl9iNjQiOiIiLCJzdGRlcnJfYnl0ZXMiOjAsInN0ZGVycl9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1Iiwic3RkZXJyX3RydW5jYXRlZCI6ZmFsc2UsInN0ZG91dCI6IntcbiAgXCJjbGFpbV9wcmVzZW50XCI6IGZhbHNlLFxuICBcImNvbnRyb2xzXCI6IHtcbiAgICBcImFub255bW91c19wcml2YXRlXCI6IGZhbHNlLFxuICAgIFwiYW5vbnltb3VzX3B1YmxpY1wiOiB0cnVlLFxuICAgIFwib3duZXJfcHJpdmF0ZVwiOiB0cnVlXG4gIH0sXG4gIFwibW9kZVwiOiBcInJlYWxfc291cmNlXCIsXG4gIFwicHJvYmVzXCI6IFtcbiAgICB7XG4gICAgICBcImNhbl9yZWFkXCI6IGZhbHNlLFxuICAgICAgXCJvd25lclwiOiBcImFsaWNlXCIsXG4gICAgICBcInB1YmxpY1wiOiBmYWxzZSxcbiAgICAgIFwicmVxdWVzdGVyXCI6IFwibWFsbG9yeVwiXG4gICAgfSxcbiAgICB7XG4gICAgICBcImNhbl9yZWFkXCI6IGZhbHNlLFxuICAgICAgXCJvd25lclwiOiBcImFsaWNlXCIsXG4gICAgICBcInB1YmxpY1wiOiBmYWxzZSxcbiAgICAgIFwicmVxdWVzdGVyXCI6IFwiYm9iXCJcbiAgICB9LFxuICAgIHtcbiAgICAgIFwiY2FuX3JlYWRcIjogZmFsc2UsXG4gICAgICBcIm93bmVyXCI6IFwib3duZXJfYWNjb3VudFwiLFxuICAgICAgXCJwdWJsaWNcIjogZmFsc2UsXG4gICAgICBcInJlcXVlc3RlclwiOiBcImF1dGhlbnRpY2F0ZWRfdXNlclwiXG4gICAgfVxuICBdLFxuICBcInNvdXJjZVwiOiBcIi9zb3VyY2Uvc2FtcGxlLnB5XCJcbn1cbiIsInN0ZG91dF9iNjQiOiJld29nSUNKamJHRnBiVjl3Y21WelpXNTBJam9nWm1Gc2MyVXNDaUFnSW1OdmJuUnliMnh6SWpvZ2V3b2dJQ0FnSW1GdWIyNTViVzkxYzE5d2NtbDJZWFJsSWpvZ1ptRnNjMlVzQ2lBZ0lDQWlZVzV2Ym5sdGIzVnpYM0IxWW14cFl5STZJSFJ5ZFdVc0NpQWdJQ0FpYjNkdVpYSmZjSEpwZG1GMFpTSTZJSFJ5ZFdVS0lDQjlMQW9nSUNKdGIyUmxJam9nSW5KbFlXeGZjMjkxY21ObElpd0tJQ0FpY0hKdlltVnpJam9nV3dvZ0lDQWdld29nSUNBZ0lDQWlZMkZ1WDNKbFlXUWlPaUJtWVd4elpTd0tJQ0FnSUNBZ0ltOTNibVZ5SWpvZ0ltRnNhV05sSWl3S0lDQWdJQ0FnSW5CMVlteHBZeUk2SUdaaGJITmxMQW9nSUNBZ0lDQWljbVZ4ZFdWemRHVnlJam9nSW0xaGJHeHZjbmtpQ2lBZ0lDQjlMQW9nSUNBZ2V3b2dJQ0FnSUNBaVkyRnVYM0psWVdRaU9pQm1ZV3h6WlN3S0lDQWdJQ0FnSW05M2JtVnlJam9nSW1Gc2FXTmxJaXdLSUNBZ0lDQWdJbkIxWW14cFl5STZJR1poYkhObExBb2dJQ0FnSUNBaWNtVnhkV1Z6ZEdWeUlqb2dJbUp2WWlJS0lDQWdJSDBzQ2lBZ0lDQjdDaUFnSUNBZ0lDSmpZVzVmY21WaFpDSTZJR1poYkhObExBb2dJQ0FnSUNBaWIzZHVaWElpT2lBaWIzZHVaWEpmWVdOamIzVnVkQ0lzQ2lBZ0lDQWdJQ0p3ZFdKc2FXTWlPaUJtWVd4elpTd0tJQ0FnSUNBZ0luSmxjWFZsYzNSbGNpSTZJQ0poZFhSb1pXNTBhV05oZEdWa1gzVnpaWElpQ2lBZ0lDQjlDaUFnWFN3S0lDQWljMjkxY21ObElqb2dJaTl6YjNWeVkyVXZjMkZ0Y0d4bExuQjVJZ3A5Q2c9PSIsInN0ZG91dF9ieXRlcyI6NTcxLCJzdGRvdXRfc2hhMjU2IjoiZjU2OWE3NmM2NjEzOTM1OGVkOGJmOGFlOWJkMDY2OTVmNWE5NmMyNTdiMDYxMDY5YTM2N2U4YzAxM2Y3NTdiNyIsInN0ZG91dF90cnVuY2F0ZWQiOmZhbHNlLCJ0aW1lb3V0IjpmYWxzZX1dfQo=",
+  "stdout_bytes": 2237,
+  "stdout_sha256": "601d338db546f7d75507b41836f08732986669dfa41e048ac74de51dcd2b1839",
+  "stdout_truncated": false,
+  "timeout": false,
+  "valid": true
+}
