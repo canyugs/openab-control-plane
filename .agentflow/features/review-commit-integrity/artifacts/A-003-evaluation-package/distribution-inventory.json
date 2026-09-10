@@ -1,0 +1,41 @@
+{
+  "wheel": {
+    "name": "ocp_review_eval-0.1.0-py3-none-any.whl",
+    "sha256": "9d25dd9c7790bb297c21a6d2cdb68a0c746228b1a37f5ca0651f8c212232793c",
+    "files": [
+      "review_model_adapters.py",
+      "review_model_evaluation.py",
+      "review_model_oci_executor.py",
+      "review_round_weekly_report.py",
+      "ocp_review_eval-0.1.0.dist-info/licenses/LICENSE",
+      "ocp_review_eval-0.1.0.dist-info/METADATA",
+      "ocp_review_eval-0.1.0.dist-info/WHEEL",
+      "ocp_review_eval-0.1.0.dist-info/entry_points.txt",
+      "ocp_review_eval-0.1.0.dist-info/top_level.txt",
+      "ocp_review_eval-0.1.0.dist-info/RECORD"
+    ]
+  },
+  "sdist": {
+    "name": "ocp_review_eval-0.1.0.tar.gz",
+    "sha256": "8ec6aaf0d4e2132554f7b6f88a9964ca22ed88424d54d41cee15c0a30447a5f0",
+    "files": [
+      "ocp_review_eval-0.1.0",
+      "ocp_review_eval-0.1.0/LICENSE",
+      "ocp_review_eval-0.1.0/MANIFEST.in",
+      "ocp_review_eval-0.1.0/PKG-INFO",
+      "ocp_review_eval-0.1.0/pyproject.toml",
+      "ocp_review_eval-0.1.0/scripts",
+      "ocp_review_eval-0.1.0/scripts/ocp_review_eval.egg-info",
+      "ocp_review_eval-0.1.0/scripts/ocp_review_eval.egg-info/PKG-INFO",
+      "ocp_review_eval-0.1.0/scripts/ocp_review_eval.egg-info/SOURCES.txt",
+      "ocp_review_eval-0.1.0/scripts/ocp_review_eval.egg-info/dependency_links.txt",
+      "ocp_review_eval-0.1.0/scripts/ocp_review_eval.egg-info/entry_points.txt",
+      "ocp_review_eval-0.1.0/scripts/ocp_review_eval.egg-info/top_level.txt",
+      "ocp_review_eval-0.1.0/scripts/review_model_adapters.py",
+      "ocp_review_eval-0.1.0/scripts/review_model_evaluation.py",
+      "ocp_review_eval-0.1.0/scripts/review_model_oci_executor.py",
+      "ocp_review_eval-0.1.0/scripts/review_round_weekly_report.py",
+      "ocp_review_eval-0.1.0/setup.cfg"
+    ]
+  }
+}

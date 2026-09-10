@@ -1,0 +1,12 @@
+[
+  {
+    "group": "20",
+    "exit": 1,
+    "output": "Client:\n Version:           20.10.24\n API version:       1.41\n Go version:        go1.19.7\n Git commit:        297e128\n Built:             Tue Apr  4 18:15:42 2023\n OS/Arch:           linux/arm64\n Context:           default\n Experimental:      true\nGot permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.24/version\": dial unix /var/run/docker.sock: connect: permission denied\n"
+  },
+  {
+    "group": "0",
+    "exit": 0,
+    "output": "Client:\n Version:           20.10.24\n API version:       1.41\n Go version:        go1.19.7\n Git commit:        297e128\n Built:             Tue Apr  4 18:15:42 2023\n OS/Arch:           linux/arm64\n Context:           default\n Experimental:      true\n\nServer: Docker Desktop 4.90.0 (238679)\n Engine:\n  Version:          29.7.2\n  API version:      1.55 (minimum version 1.40)\n  Go version:       go1.26.5\n  Git commit:       6a43e3d\n  Built:            Wed Aug  5 18:28:35 2026\n  OS/Arch:          linux/arm64\n  Experimental:     false\n containerd:\n  Version:          v2.3.3\n  GitCommit:        aad11006b869517fcd3009450b6f82da282e1a9b\n runc:\n  Version:          1.4.3\n  GitCommit:        v1.4.3-0-gbb14dabe\n docker-init:\n  Version:          0.19.0\n  GitCommit:        de40ad0\n"
+  }
+]

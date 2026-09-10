@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ocp-review-eval"
+version = "0.1.0"
+description = "Offline model evaluation and review-round weekly report tools"
+readme = {text = "Standalone offline model evaluation and review-round weekly report tools.", content-type = "text/plain"}
+requires-python = ">=3.9"
+dependencies = []
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: POSIX",
+  "Operating System :: MacOS",
+]
+
+[project.scripts]
+ocp-review-eval = "review_model_evaluation:main"
+ocp-review-weekly = "review_round_weekly_report:main"
+
+[tool.setuptools]
+package-dir = {"" = "scripts"}
+py-modules = [
+  "review_model_evaluation",
+  "review_model_adapters",
+  "review_model_oci_executor",
+  "review_round_weekly_report",
+]
+include-package-data = false
+platforms = ["Unix"]

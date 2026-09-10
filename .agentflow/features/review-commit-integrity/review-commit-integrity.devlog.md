@@ -6,9 +6,9 @@ Current commit: 4b46e16c75430f9654b18599e319f978d5b0c3ac reviewed implementation
 Tests/scenarios: 86 tests, actual model/OCI journeys, replay/tamper/weekly readback, security/acceptance/host gate PASS.
 Configuration: ag.json — schema v7; validated for codex this round.
 Proven: Stage1 and Stage2 accepted; Stage2 Result Go4b46e16c75430f9654b18599e319f978d5b0c3ac recorded in A-002.
-Open: none for accepted Stage1-2; Stage3 remains separately gated future work.
-Next: separate Stage3 design when requested; no deployment or merge inferred.
-Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-001-review-service.
+Open: A-003 approved standalone package/image implementation and runtime checks; no publication or deployment.
+Next: collect package-implementation78052, verify installed wheel and actual container controls, independent cross-check.
+Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-003-evaluation-package.
 Archived eras: none.
 Streams:
 stream: review-commit-integrity — active — .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md
@@ -1000,4 +1000,81 @@ Route direct: record explicit Result Go4b46e16c75430f9654b18599e319f978d5b0c3ac 
 
 # → Ask / A-003
 
-+
+使用者原文：
+
+> 這個 python 評估工具可以另外包嗎？
+> 好
+
+Accepted direction: independently installable Python package/CLI and Docker image in this same repository, with their own version and release workflow. Keep credentials, input evidence, and outputs external; preserve the accepted evaluator semantics and OCP-specific weekly input schema. No separate repository or production deployment was requested.
+
+## [RUN-001] Event (during round A-003)
+
+* _2026-09-10 12:23:51 (GPT-6/default)_
+
+Route selected_advisors for the bounded packaging implementation and independent cross-check. Owner approved the concrete same-repo independent package/image/version/release direction; local reversible packaging proceeds within that authorization, no repeat design permission. Named implementation question: preserve existing four module bytes and CLI behavior while exposing installable commands and a Docker runner whose source/runner bind paths are visible to the daemon. Publication, production deployment, new evaluator policies, auto-trigger/export/scheduler and separate repository remain excluded. Existing source reviewed4b46e16 is accepted; current clean HEADdf101e8. Runtime dependencies verified: Python and pip available; registry confirms Claude CLI2.1.266 requires Node>=22. Worker family codex only; basic Luna/max implementation, best Sol/low defensive boundary review, better Terra/high final cross-check. Actual package/OCI checks remain parent-owned; no worker credentials/live APIs.
+
+## [RUN-002] Event (during round A-003)
+
+* _2026-09-10 12:25:00 (GPT-6/default)_
+
+Dispatch package-implementation implementation, gpt-5.6-luna/max, external-runner-v1 atdf101e86fb428d458bf8cd057829de03cd991fb4; immutable brief frozen, no remote/production authority.
+
+## [RUN-003] Event (during round A-003)
+
+* _2026-09-10 12:34:49 (GPT-6/default)_
+
+Checkpoint scope: current main-worktree changes are A-003 records only; implementation worker78052 active in declared no-remote clone. Baseline accepted core hashes retained, build dependencies and node22 image fetched into isolated validation environment; no runtime changes, package/image success or publication claimed. Tracker reconciled.
+
+## [WIP-001] Checkpoint (during round A-003)
+
+* _2026-09-10 12:34:49 (GPT-6/default)_
+
+- **Finished:** Baseline/core boundary and runtime dependency checks; isolated wheel build environment and model-generated OCI proof inputs ready.
+- **Running now:** Package implementation78052.
+- **Still to do:** Import scoped package files, actual wheel/image/OCI validation, independent review and delivery records.
+- **Next work action:** Collect worker and build/install delivered artifacts.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-004] Event (during round A-003)
+
+* _2026-09-10 12:44:52 (GPT-6/default)_
+
+Checkpoint scope reconciled: delivered worktree still contains only A-003 records; package worker78052 actively writes only declared packaging paths in its clone. Host copied candidate Docker/package inputs into disposable image-candidate-1 and started real amd64 build74180 (not acceptance). Docker amd64 node22 pull and child-image multiarch index verified. cargo clippy --locked PASS; cargo fmt --check reports pre-existing formatting in src/state.rs, src/store/postgres.rs, tests/second_consumer.rs, all byte-unchanged from df101e8. No Rust repair added. Remaining work stays package install/image/OCI validation and independent review.
+
+## [WIP-002] Checkpoint (during round A-003)
+
+* _2026-09-10 12:44:52 (GPT-6/default)_
+
+- **Finished:** Independent build environment, amd64 base pull and Docker path proof preparation; Rust clippy passed, existing format differences recorded.
+- **Running now:** Package implementation78052 and candidate image build74180.
+- **Still to do:** Import final files, installed CLI and actual OCI verification, independent review and delivery.
+- **Next work action:** Collect implementation and image results.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-005] Event (during round A-003)
+
+* _2026-09-10 12:45:43 (GPT-6/default)_
+
+Parent candidate image74180 terminal exit1, pip rejects renamed ocp-review-eval.whl as invalid wheel filename. This is reproduced packaging failure in the owner's approved runnable-image outcome; return to implementation after its current dispatch finishes. Raw bounded failure and exact candidate Dockerfile digest retained. No deployed or accepted image claimed; no core semantic changes authorized by this finding.
+
+## [RUN-006] Event (during round A-003)
+
+* _2026-09-10 12:55:26 (GPT-6/default)_
+
+Checkpoint scope reconciled: main worktree holds only declared A-003 evidence/records; worker78052 remains active and scoped clone files continue changing. Candidate wheel/sdist built and fresh installed outside checkout; real reusable PTY90890 confirms weekly exit0 and exact prior JSON, complete evaluation replay exit0 with all42 hashes/mtimes unchanged. Candidate image failed invalid wheel basename; release unittest --top-level-directory independently failed; Docker socket group20 fails and group0 succeeds for nonrootUID501. Repairs remain within owner's runnable independent-package outcome. Docker20.10 client itself successfully connects to current29.7.2 daemon; no unnecessary client upgrade. No image acceptance, model-in-Linux auth proof or release claimed.
+
+## [WIP-003] Checkpoint (during round A-003)
+
+* _2026-09-10 12:55:26 (GPT-6/default)_
+
+- **Finished:** Candidate wheel and fresh install; real installed CLI weekly/replay and preserved artifact evidence; Docker/CI/socket failures reproduced.
+- **Running now:** Initial packaging implementation78052, reusable verification PTY90890.
+- **Still to do:** Scoped packaging repairs, real successful image/OCI proof, independent review and delivery.
+- **Next work action:** Collect implementation and return reproduced packaging failures.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-007] Event (during round A-003)
+
+* _2026-09-10 13:06:26 (GPT-6/default)_
+
+package-implementation start1 terminal completed exit0. Full6887-byte report read and SHA c22c2915366b7a4e7941aad06a6db74390732ab0a105b8fba712707c3f89ed0a matched trusted metadata; exact7 allowed product files plus report/red evidence safely imported, no undeclared writes or core changes. Worker used local cached setuptools for offline tests; parent relies on its own isolated build/runtime evidence, not worker dependency claims. Current8 image input hashes match delivered files. Actual amd64 image build PASS, nonroot65532, bothCLIs, Python3.11/Node22/Claude2.1.266/Docker20.10 versions PASS; outerUID501 + socketgroup0 + identical scratch paths execute both OCI controls successfully, classification remainsunproven. Image weekly in real PTY exit0 and JSON byte-equal baseline. CI discovery and launcher group0 failures remain and require bounded repair; source is not completion-ready yet.

@@ -1,0 +1,68 @@
+[
+  {
+    "argv": [
+      "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/build-venv/bin/python",
+      "-m",
+      "build",
+      "--no-isolation",
+      "--outdir",
+      "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/dist"
+    ],
+    "cwd": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/build-source",
+    "exit": 0,
+    "output": "cense-files' (available on setuptools>=77.0.0).\n!!\n\n        ********************************************************************************\n\n        By 2027-Feb-18, you need to update your project and remove deprecated calls\n        or your builds will no longer be supported.\n\n        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license-files for details.\n        ********************************************************************************\n\n!!\n  _apply_tool_table(dist, config, filename)\nwarning: sdist: standard file not found: should have one of README, README.rst, README.txt, README.md\n\n* Building wheel from sdist\n* Getting build dependencies for wheel...\n/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/build-venv/lib/python3.14/site-packages/setuptools/config/_apply_pyprojecttoml.py:82: SetuptoolsDeprecationWarning: `project.license` as a TOML table is deprecated\n!!\n\n        ********************************************************************************\n        Please use a simple string containing a SPDX expression for `project.license`. You can also use `project.license-files`. (Both options available on setuptools>=77.0.0).\n\n        By 2027-Feb-18, you need to update your project and remove deprecated calls\n        or your builds will no longer be supported.\n\n        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.\n        ********************************************************************************\n\n!!\n  corresp(dist, value, root_dir)\n/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/build-venv/lib/python3.14/site-packages/setuptools/config/_apply_pyprojecttoml.py:55: SetuptoolsDeprecationWarning: 'tool.setuptools.license-files' is deprecated in favor of 'project.license-files' (available on setuptools>=77.0.0).\n!!\n\n        ********************************************************************************\n\n        By 2027-Feb-18, you need to update your project and remove deprecated calls\n        or your builds will no longer be supported.\n\n        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license-files for details.\n        ********************************************************************************\n\n!!\n  _apply_tool_table(dist, config, filename)\n* Building wheel...\n/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/build-venv/lib/python3.14/site-packages/setuptools/config/_apply_pyprojecttoml.py:82: SetuptoolsDeprecationWarning: `project.license` as a TOML table is deprecated\n!!\n\n        ********************************************************************************\n        Please use a simple string containing a SPDX expression for `project.license`. You can also use `project.license-files`. (Both options available on setuptools>=77.0.0).\n\n        By 2027-Feb-18, you need to update your project and remove deprecated calls\n        or your builds will no longer be supported.\n\n        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.\n        ********************************************************************************\n\n!!\n  corresp(dist, value, root_dir)\n/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/build-venv/lib/python3.14/site-packages/setuptools/config/_apply_pyprojecttoml.py:55: SetuptoolsDeprecationWarning: 'tool.setuptools.license-files' is deprecated in favor of 'project.license-files' (available on setuptools>=77.0.0).\n!!\n\n        ********************************************************************************\n\n        By 2027-Feb-18, you need to update your project and remove deprecated calls\n        or your builds will no longer be supported.\n\n        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license-files for details.\n        ********************************************************************************\n\n!!\n  _apply_tool_table(dist, config, filename)\n"
+  },
+  {
+    "argv": [
+      "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/build-venv/bin/python",
+      "-m",
+      "venv",
+      "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/installed"
+    ],
+    "cwd": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w",
+    "exit": 0,
+    "output": ""
+  },
+  {
+    "argv": [
+      "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/installed/bin/python",
+      "-m",
+      "pip",
+      "install",
+      "--no-index",
+      "--no-deps",
+      "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/dist/ocp_review_eval-0.1.0-py3-none-any.whl"
+    ],
+    "cwd": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w",
+    "exit": 0,
+    "output": "Processing /var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/dist/ocp_review_eval-0.1.0-py3-none-any.whl\nInstalling collected packages: ocp-review-eval\nSuccessfully installed ocp-review-eval-0.1.0\n"
+  },
+  {
+    "argv": [
+      "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/installed/bin/ocp-review-eval",
+      "--help"
+    ],
+    "cwd": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w",
+    "exit": 0,
+    "output": "usage: ocp-review-eval [-h] {run} ...\n\nRun immutable offline model evaluation\n\npositional arguments:\n  {run}\n\noptions:\n  -h, --help  show this help message and exit\n"
+  },
+  {
+    "argv": [
+      "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/installed/bin/ocp-review-weekly",
+      "--help"
+    ],
+    "cwd": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w",
+    "exit": 0,
+    "output": "usage: ocp-review-weekly [-h] --bundle BUNDLE --week WEEK --as-of AS_OF\n                         --output OUTPUT [--evaluation-root EVALUATION_ROOT]\n\nRender the frozen offline review-round weekly report\n\noptions:\n  -h, --help            show this help message and exit\n  --bundle BUNDLE\n  --week WEEK\n  --as-of AS_OF\n  --output OUTPUT\n  --evaluation-root EVALUATION_ROOT\n"
+  },
+  {
+    "argv": [
+      "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/installed/bin/python",
+      "-c",
+      "import review_model_evaluation, review_model_adapters, review_model_oci_executor, review_round_weekly_report; import importlib.metadata; print(importlib.metadata.version(\"ocp-review-eval\")); print(review_model_evaluation.__file__)"
+    ],
+    "cwd": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w",
+    "exit": 0,
+    "output": "0.1.0\n/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/installed/lib/python3.14/site-packages/review_model_evaluation.py\n"
+  }
+]

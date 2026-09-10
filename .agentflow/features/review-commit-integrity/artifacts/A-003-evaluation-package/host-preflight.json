@@ -1,0 +1,13 @@
+{
+  "source_commit": "df101e86fb428d458bf8cd057829de03cd991fb4",
+  "module_hashes": {
+    "scripts/review_model_evaluation.py": "ef6ca77e1466ebbada4d7d8c3c911c18934e673cafa62e8d39dded4d5a3f89bf",
+    "scripts/review_model_adapters.py": "dac5dcebff8438ef49d1b437faf87eb5f6cc09759ef0656dcbf3c5504e8547e7",
+    "scripts/review_model_oci_executor.py": "5fdcfff0a0ffa0714f0681949aba31d7c7b1494b02248fdb51bea798ecd2f73f",
+    "scripts/review_round_weekly_report.py": "1493f337c6afb05921912a0712314859fdefa97f9929e640e650e4b60c453e29"
+  },
+  "node_base_digest": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
+  "claude_cli_registry_version": "2.1.266",
+  "claude_node_engine": ">=22.0.0",
+  "docker_server": "29.7.2"
+}

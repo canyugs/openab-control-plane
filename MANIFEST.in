@@ -1,0 +1,8 @@
+global-exclude *
+include LICENSE
+include MANIFEST.in
+include pyproject.toml
+include scripts/review_model_evaluation.py
+include scripts/review_model_adapters.py
+include scripts/review_model_oci_executor.py
+include scripts/review_round_weekly_report.py

@@ -1,0 +1,176 @@
+# Standalone review-evaluation package
+
+`ocp-review-eval` version `0.1.0` packages the four existing offline Python
+modules as a small Unix-only distribution:
+
+- `review_model_evaluation`
+- `review_model_adapters`
+- `review_model_oci_executor`
+- `review_round_weekly_report`
+
+The package has no third-party runtime Python dependencies. Python `>=3.9` is
+required because the source uses `zoneinfo`, `str.removesuffix`, and built-in
+generic types. The subprocess and OCI boundaries require a Unix host with
+`git` and the Docker CLI when evaluation controls are enabled. The source
+files remain available through their legacy `python3 scripts/...py` calls.
+
+## Install and run from a wheel
+
+Build or obtain the versioned wheel, then install it into an isolated virtual
+environment. The following uses only the local wheel and performs no package
+index lookup:
+
+```sh
+python3 -m venv /tmp/ocp-review-eval-0.1.0
+/tmp/ocp-review-eval-0.1.0/bin/python -m pip install \
+  --no-index --no-deps \
+  /srv/ocp-review-eval/dist/ocp_review_eval-0.1.0-py3-none-any.whl
+
+mkdir -p /tmp/ocp-review-eval-run
+cd /tmp/ocp-review-eval-run
+/tmp/ocp-review-eval-0.1.0/bin/ocp-review-eval run \
+  --repo /srv/review-input/repository \
+  --revision 0123456789abcdef0123456789abcdef01234567 \
+  --base fedcba9876543210fedcba9876543210fedcba98 \
+  --findings /srv/review-input/findings.json \
+  --evidence /srv/review-input/evidence \
+  --models /srv/review-input/models.json \
+  --environment /srv/review-input/environment.json \
+  --output /srv/review-output/evaluation-0.1.0
+```
+
+The repository, input files, evidence, model profiles, and output are external
+operator data. `models.json` retains the shipped adapter choices (`claude` or
+the explicitly gated `codex`) and Claude's `oauth` default or explicit `bare`
+transport. No credentials are read from package data.
+
+For a Claude run, provide authentication to the process at runtime, for
+example through an operator-managed environment file or shell environment:
+
+```sh
+export CLAUDE_CODE_OAUTH_TOKEN='provided-at-runtime'
+/tmp/ocp-review-eval-0.1.0/bin/ocp-review-eval run \
+  --repo /srv/review-input/repository \
+  --revision 0123456789abcdef0123456789abcdef01234567 \
+  --base fedcba9876543210fedcba9876543210fedcba98 \
+  --findings /srv/review-input/findings.json \
+  --evidence /srv/review-input/evidence \
+  --models /srv/review-input/models.json \
+  --output /srv/review-output/evaluation-0.1.0
+```
+
+The adapter's supported authentication variables are
+`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, and
+`ANTHROPIC_AUTH_TOKEN`; its allowlist also carries ordinary runtime and
+locale variables. Authentication remains with the installed Claude CLI. Do
+not put secrets in the repository, wheel, evidence, model files, or output.
+
+The weekly command consumes an operator-captured bundle without a model or
+OCI call:
+
+```sh
+/tmp/ocp-review-eval-0.1.0/bin/ocp-review-weekly \
+  --bundle /srv/review-input/review-round-weekly-evidence \
+  --week 2026-W37 \
+  --as-of 2026-09-09T08:10:00+08:00 \
+  --output /srv/review-output/weekly-2026-W37
+```
+
+## Versioned image
+
+The release workflow uses the independent package tag
+`evaluation-v0.1.0` and publishes the versioned image
+`ghcr.io/canyugs/ocp-review-eval:0.1.0`. It does not publish a `latest` image
+or a PyPI release. The first image lane is tested and published for
+`linux/amd64` only; no multi-architecture support is claimed.
+
+The image's default entrypoint is the evaluator (`ocp-review-eval`) with the
+legacy `run` subcommand. Its image contains Python in an isolated virtual
+environment, Git, timezone data, the Docker CLI, Node 22, and the pinned
+Claude CLI `2.1.266`. The image build copies only the wheel into its final
+stage; repository source, tests, records, and credentials are not copied.
+
+For an offline weekly report, override the entrypoint and use read-only input
+and a writable external output directory:
+
+```sh
+docker run --rm --network none \
+  --user "$(id -u):$(id -g)" \
+  --mount type=bind,src=/srv/review-input/review-round-weekly-evidence,dst=/srv/review-input/review-round-weekly-evidence,readonly \
+  --mount type=bind,src=/srv/review-output/weekly-2026-W37,dst=/srv/review-output/weekly-2026-W37 \
+  --entrypoint ocp-review-weekly \
+  ghcr.io/canyugs/ocp-review-eval:0.1.0 \
+  --bundle /srv/review-input/review-round-weekly-evidence \
+  --week 2026-W37 \
+  --as-of 2026-09-09T08:10:00+08:00 \
+  --output /srv/review-output/weekly-2026-W37
+```
+
+The weekly command needs no host Docker socket or credentials. Its output
+directory must be new or empty as required by the existing report contract.
+
+## Dedicated Docker-socket evaluation runner
+
+The evaluation controller creates its source tree, fixed runner, and process
+working paths with `tempfile`. When it runs inside an outer container while
+using a host Docker socket, those paths must be visible to the Docker daemon
+as the same absolute paths. Use the small launcher in
+`packaging/evaluation/run.sh`; it creates/validates only the requested scratch
+and output directories, requires an empty scratch directory, canonicalizes
+non-symlink paths, and forwards the literal scratch bind and `TMPDIR` value.
+
+The following exact invocation assumes all input paths already exist and
+`/srv/ocp-review-eval` is a dedicated runner root whose parent directories are
+operator-created:
+
+```sh
+packaging/evaluation/run.sh \
+  --scratch-dir /srv/ocp-review-eval/scratch \
+  --output-dir /srv/ocp-review-eval/output \
+  --repo /srv/review-input/repository \
+  --revision 0123456789abcdef0123456789abcdef01234567 \
+  --base fedcba9876543210fedcba9876543210fedcba98 \
+  --findings /srv/review-input/findings.json \
+  --evidence /srv/review-input/evidence \
+  --models /srv/review-input/models.json \
+  --environment /srv/review-input/environment.json \
+  --auth-env-file /srv/review-input/claude.env \
+  --docker-gid 998 \
+  --uid "$(id -u)" \
+  --gid "$(id -g)" \
+  --image ghcr.io/canyugs/ocp-review-eval:0.1.0
+```
+
+`claude.env` is an external Docker env-file, for example with a runtime-only
+`CLAUDE_CODE_OAUTH_TOKEN=...` entry. The launcher never copies it into the
+image. `--docker-gid` must be the numeric group owning the dedicated host
+socket; `--uid` and `--gid` must be non-zero numeric IDs that can write the
+external scratch and output directories. The launcher accepts a non-default
+socket only when `--docker-socket` names an existing Unix socket, and always
+maps it to `/var/run/docker.sock` inside the outer image.
+
+The host Docker socket is a trusted orchestration authority. Run this launcher
+only on a dedicated runner with an explicitly provisioned daemon and socket
+group. The outer evaluator gets the socket; generated validation containers
+created by the existing OCI executor receive no socket, repository checkout,
+credential mount, host-root mount, privileged mode, or host networking. The
+launcher does not provision a daemon, add DinD, or alter the executor.
+
+## Limits and truth boundaries
+
+- The package is a standalone offline controller/report tool, not Rust/OCP
+  runtime code and not an automatic OCP integration.
+- `git`, a pinned local OCI image from the evaluation environment, and a
+  usable Docker daemon are operator prerequisites for the corresponding
+  stages. The package does not install a daemon or log in to providers.
+- A Linux image cannot use a macOS keychain. No claim is made that macOS
+  keychain OAuth state is available inside this image; provide supported
+  runtime authentication explicitly.
+- Model identity, human truth, list-price estimates, and actual provider
+  billing remain separate. Unknown billing is not converted into an estimate,
+  and no verdict, roster, routing, GitHub, scheduler, or production behavior
+  is changed by packaging.
+- The package release is independent of Cargo versioning. Existing
+  `release.yml` responds to `v*` Rust/OCP tags; only
+  `.github/workflows/evaluation-release.yml` responds to strict
+  `evaluation-vX.Y.Z` tags.
