@@ -2,12 +2,12 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: d9c1e2c standalone packaging candidate; prior Stage2 accepted4b46e16c75430f9654b18599e319f978d5b0c3ac.
+Current commit: 7ffa8fd standalone packaging candidate; prior Stage2 accepted4b46e16c75430f9654b18599e319f978d5b0c3ac.
 Tests/scenarios: 86 tests, actual model/OCI journeys, replay/tamper/weekly readback, security/acceptance/host gate PASS.
 Configuration: ag.json — schema v7; validated for codex this round.
 Proven: Stage1 and Stage2 accepted; Stage2 Result Go4b46e16c75430f9654b18599e319f978d5b0c3ac recorded in A-002.
 Open: A-003 approved standalone package/image implementation and runtime checks; no publication or deployment.
-Next: collect package-repair51980, verify actual launcher and final suite, complete independent cross-check.
+Next: collect package-ownership98765, verify real launcher/full suite, complete independent cross-check.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-003-evaluation-package.
 Archived eras: none.
 Streams:
@@ -1106,3 +1106,43 @@ Current scope reconciled after source commitd9c1e2c: seven package/config/doc/te
 * _2026-09-10 13:19:22 (GPT-6/default)_
 
 Repair start2 terminal PASS report145f0f1b3b2ebe561349729cbc1e7cb68e2ea02395e43a5abff92553c105caf6 verified and4 scoped paths imported. Parent full91 Python tests PASS with installed builder and no skips; exact CI command now works. Actual launcher exit2 revealed repository ownership boundary: DockerDesktop direct mount rootUID0 vs .gitUID501, so Git correctly refuses. Reopened launcher mount design from concrete failure: retain Git guards, nonroot and unchanged core; stage only the supplied repo under a dedicated host temporary parent, mount that parent readonly, and pass childrepo. Parent ownership-stage-proof actual replay exit0. Rejected global safe.directory (core deliberately ignores globals), root (violates nonroot), and mounting arbitrary original parent (exposes unrelated data). Staging must preserve original input/output separation, callerUID ownership, symlinks, bounded cleanup and exit status. This is reversible correction within approved runnable-package scope, no new production or evaluator authority.
+
+## [RUN-011] Event (during round A-003)
+
+* _2026-09-10 13:19:28 (GPT-6/default)_
+
+Dispatch package-ownership implementation, gpt-5.6-luna/max, external-runner-v1 at7ffa8fd77ee9fef70fb5ceba17ca9f08f198637f; immutable brief frozen, no remote/production authority.
+
+## [RUN-012] Event (during round A-003)
+
+* _2026-09-10 13:21:17 (GPT-6/default)_
+
+Checkpoint scope reconciled: current source commit7ffa8fd contains prior4-path group/CI repair; worker98765 is the third bounded implementation start for the reproduced DockerDesktop repository ownership issue. Final wheel/image/core inputs unchanged; parent91 full tests and actual nestedOCI/weekly remain current for those unchanged paths. Actual launcher failure and successful dedicated readonly staging experiment retained. All42 existing evaluation artifact hashes/mtimes independently reread unchanged after diagnostics. Remaining scope is launcher staging, callerUID/preflight overlap/cleanup tests, then exact source reviews and delivery.
+
+## [WIP-005] Checkpoint (during round A-003)
+
+* _2026-09-10 13:21:17 (GPT-6/default)_
+
+- **Finished:** Group/CI fixes, full91 tests, final wheel/image/OCI/weekly evidence; actual source ownership failure and successful staging experiment.
+- **Running now:** Source staging implementation98765.
+- **Still to do:** Real repaired launcher, updated suite, independent reviews and delivery.
+- **Next work action:** Collect staging repair and verify it end to end.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-013] Event (during round A-003)
+
+* _2026-09-10 13:23:36 (GPT-6/default)_
+
+Independent clean CI builder reproduction found a second release-only dependency failure: fresh venv + pip install build lacks setuptools; offline wheel test fails BackendUnavailable(setuptools.build_meta). Prior parent91 suite used explicitly provisioned setuptools and remains honest local evidence, not proof of this broken CI setup. Named bounded parallel package-ci-build worker will correct only existing workflow builder installation to satisfy pyproject setuptools>=77; ownership98765 retains launcher/tests/docs exclusively. User's usable standalone release outcome authorizes this minimal correction, no new runtime dependency or test weakening.
+
+## [RUN-014] Event (during round A-003)
+
+* _2026-09-10 13:23:36 (GPT-6/default)_
+
+Dispatch package-ci-build implementation, gpt-5.6-luna/max, external-runner-v1 at7ffa8fd77ee9fef70fb5ceba17ca9f08f198637f; immutable brief frozen, no remote/production authority.
+
+## [RUN-015] Event (during round A-003)
+
+* _2026-09-10 13:26:08 (GPT-6/default)_
+
+Parallel package-ci-build terminal exit0; full1700-byte report6bb22aaeb7d5f662deda1b78080703a4e2419bc1dcd16b0a58baa6b012a162a0 verified. Imported only single workflow setup-line change. Parent clean CI venv gained only setuptools>=77 and all5 packaging tests passed (no wheel dependency needed); exact workflow YAML/shell and matching/nonmatching/malformed tag guards PASS. Ownership98765 remains independent and active; no overlapping writes or runtime dependency change.

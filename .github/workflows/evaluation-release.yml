@@ -40,7 +40,7 @@ jobs:
           set -euo pipefail
           BUILD_VENV="$RUNNER_TEMP/ocp-review-eval-build-venv"
           python3 -m venv "$BUILD_VENV"
-          "$BUILD_VENV/bin/python" -m pip install --disable-pip-version-check build
+          "$BUILD_VENV/bin/python" -m pip install --disable-pip-version-check build "setuptools>=77"
           echo "EVALUATION_BUILD_PYTHON=$BUILD_VENV/bin/python" >> "$GITHUB_ENV"
 
       - name: Build wheel and sdist
