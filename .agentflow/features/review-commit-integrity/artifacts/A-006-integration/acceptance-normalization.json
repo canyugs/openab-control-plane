@@ -1,0 +1,7 @@
+{
+  "raw_report": "integration-crosscheck-2-report.md",
+  "raw_sha256": "038e5abc200c411234e5ffafbce2958ddabacad44254027172f4513cf4cb6775",
+  "normalized_report": "integration-crosscheck-2-acceptance.md",
+  "normalized_sha256": "ad6c0f02d026648db40a988b14713aa7816595799dd0561aa4696b0d93f6a414",
+  "change": "Normalize implementation commit field name for terminal parser; preserve all review content and raw report."
+}

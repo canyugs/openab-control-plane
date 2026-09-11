@@ -2,12 +2,12 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: a4017b8 accepted integration scope; isolated implementation active.
-Tests/scenarios: A-006 Rust all-features suite and clippy PASS; baseline fmt differences; bridge tests in progress.
+Current commit: 043201b141c2bd549c119998b26fc158aec31c0f accepted implementation; final records only follow.
+Tests/scenarios: 110 Python tests/no skips, Rust suite and clippy PASS; unrelated baseline fmt differences retained.
 Configuration: ag.json — schema v7; validated for codex this round.
-Proven: Published evaluator retained; production read-only findings/audit and complete private source available for pilot.
-Open: A-006 bridge implementation, real evaluation/report journey and independent review; dev observer signature invalid, prod read available.
-Next: Verify/import bridge and run the scoped real-data pilot.
+Proven: A-006 single-session capture, private model pilot and verified report complete; independent review PASS; draft PR419 source CI passed.
+Open: No single-session implementation blocker. Future scheduling needs runner identity and complete reporting sources.
+Next: Choose runner and connect complete product tables in subsequent work; no deployment or schedule activated.
 Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-006-integration.
 Archived eras: none.
 Streams:
@@ -1643,3 +1643,53 @@ Weekly gate repair63907 active in isolated clone; parent inspected bounded run()
 * _2026-09-11 19:09:55 (GPT-6/default)_
 
 Weekly-gate63907 terminal0; full3683-byte0446bf1cf08948daa0b0a3f1dac3fcbc0573aa90ac1cce9718a3179a828f125d report read/verified and exact3-file scope imported. Exception/tamper red tests now block weekly while preserving evidence; verified failed-artifact test stays green. Parent final110-test suite/no skips PASS (same non-blocking loopback ResourceWarning); product diffcheckPASS. Only run() changed versus reviewed96f329d, with capture/preparation and4 released core modules unchanged. Real PTY99387 no-auth replay uses verified actual pilot artifacts, makes0 new model/OCI calls, and produces byte-identical weekly JSON/Markdown. Closeout now rechecks the one adopted failure-gate repair under same acceptance identity attempt2; no unrelated source edits.
+
+## [RUN-014] Event (during round A-006)
+
+* _2026-09-11 19:09:55 (GPT-6/default)_
+
+Dispatch integration-crosscheck-2 acceptance, gpt-5.6-terra/high, external-runner-v1 at043201b141c2bd549c119998b26fc158aec31c0f; immutable brief frozen, no remote/production authority.
+
+## [RUN-015] Event (during round A-006)
+
+* _2026-09-11 19:20:57 (GPT-6/default)_
+
+Acceptance attempt2 worker40183 terminal0; full5945-byte038e5abc200c411234e5ffafbce2958ddabacad44254027172f4513cf4cb6775 report read/hash verified, report-only scope, Outcome/Minimality/Conformance/Overall/Verdict PASS at043201b141c2bd549c119998b26fc158aec31c0f. Parent confirmed adopted gate resolved,110 tests/no skips and actual replay proof; Host gate: PASS. Source pushed and draft PR419 independently read back at043201b; CI34592725486 SUCCESS. All workers and local journeys terminal. Private scope identifiers absent from public changed files. Implementation complete; remaining work is record-only closeout, no repeated source review/test. Scheduled operation awaits runner identity and complete reporting sources; it was not activated.
+
+# ← Reply / A-006
+
+## [SUMMARY]
+
+- Completed the authorized single-session read-only integration and real private pilot. Draft PR #419 is ready for review; 110 Python tests and independent review passed. No deployment or scheduler activation occurred.
+
+## [FINAL REPORT]
+
+# Evaluation integration verification
+
+The owner-approved single-session observation integration is implemented in scripts/review_evaluation_bridge.py and documented in docs/evaluation-integration.md. Capture signs bounded read-only controller requests; prepare binds source rows and evidence to explicit repository/PR/session/full revision/base; run calls the existing evaluator and reports only verified evaluation artifacts. Omitted/null audit cursors follow the controller's terminal-page contract. Missing or tampered evaluation artifacts retain failed evidence and block weekly output; verified partial/failed evaluations still produce unscoreable coverage reports.
+
+Delivery: draft PR https://github.com/canyugs/openab-control-plane/pull/419 at implementation043201b141c2bd549c119998b26fc158aec31c0f. Source was independently read back after push. CI34592725486 succeeded at that implementation. No merge, tag, service deployment or scheduled job was performed.
+
+Parent validation: complete110-test Python suite with no skips; Rust workspace/all-features suite and clippy passed. Product diff whitespace check passed. Existing unrelated Rust formatting differences remain, as does a non-blocking loopback ResourceWarning during parent Python tests. Reviewer sandbox skipped loopback binding and offline wheel building; parent exercised both. These limits are retained in the raw bounded test records.
+
+Real private pilot:2 positive observations,22 audit events,50 files/238617 source bytes,9 successful role invocations in267.869 seconds. Both claims supported and qualified executed_reproduced;0 omission candidates; usefulness split2 useful/2 not_useful judgments. Primary requested/observed IDs match Opus5/Opus4.6. Actual billing unknown; provider list estimate14.1102285 USD. This sample does not establish defect precision, recall or human truth. Provider auxiliary usage remains in private original records.
+
+The paid run used a frozen candidate. Subsequent capture-only corrections were checked with fresh actual PTY capture/prepare and byte-identical model findings/evidence/source packet. The final weekly failure-gate repair changed only run(); a no-auth real PTY replay of the verified actual outputs produced byte-identical weekly JSON/Markdown with0 additional model/OCI calls. Four released evaluator core modules remain byte-identical. Source working files were unchanged; credential readback found no leaked credential. Private inputs, captures and provider output remain outside the public repository; only sanitized attestations are committed here.
+
+Coverage: capture exhausts an exact session API query, not a retained-history or whole-week population. Missing product tables prevent delivery/reliability metrics; zero eligible sessions does not mean zero reviews. Human and actual billing coverage remain unknown; an empty per_currency map is not actual billing even with the existing empty-cohort label. Scheduling awaits a named dedicated runner and complete source capture; no recurring operation was activated. The dev observer returned invalid_observation_signature; the prod read-only route succeeded, so no credential change was needed for this pilot.
+
+Cross-check review: .agentflow/features/review-commit-integrity/artifacts/A-006-integration/integration-crosscheck-2-acceptance.md
+Cross-check implementation: 043201b141c2bd549c119998b26fc158aec31c0f
+Host gate: PASS
+
+## Questions (batched — each with a suggested default)
+
+Which existing dedicated Linux runner should host subsequent scheduled operation? Suggested default: retain manual execution until the runner is identified and complete reporting sources are available.
+
+ans:
+
+---
+
+# → Ask / A-007
+
++
