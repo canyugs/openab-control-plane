@@ -1385,3 +1385,15 @@ CI34465635212 PASS all steps. Council round1 changes requested at db4c91f: F1 mu
 - **Still to do:** Pin/hash-check build inputs, independent review and council, merge, publish and read back artifacts.
 - **Next work action:** Dispatch bounded implementation from frozen registry identities.
 - **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-003] Event (during round A-005)
+
+* _2026-09-11 09:26:52 (GPT-6/default)_
+
+Dispatch release-pins implementation, gpt-5.6-luna/max, external-runner-v1 ataebf538fe8fa03d50c88946bdbf1a9b637e07145; immutable brief frozen, no remote/production authority.
+
+## [RUN-004] Event (during round A-005)
+
+* _2026-09-11 09:34:42 (GPT-6/default)_
+
+Release-pins91094 terminalexit0; full4322-byte report98542b3ffd827fe1f2f0e0be1185a1248803551dfb4498c8842abd131e27e746 and exact4-file scope verified/imported. Parent pip tamper rejection, final locked clean install, no-isolation wheel/sdist/fresh CLI install,96 tests/no skips, final actual image and UID/module hashes PASS. Nine image input hashes match finalsource. Cross-check plan full (small change but explicit builder trust inputs), frozen facts; no wider source review. Freeze source, update PR description, then independent review and automated council on same head. No merge/tag yet.

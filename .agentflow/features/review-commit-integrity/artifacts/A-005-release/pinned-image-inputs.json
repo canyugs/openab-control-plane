@@ -1,0 +1,11 @@
+{
+  "Dockerfile.evaluation": "f30bdfba0c8b54d5e25534bbb2b32e1397e60e3de8173e37c9fd50f162020dba",
+  "pyproject.toml": "01f6e8e8219cf681407454eddfdc40a1f76d0952122dd03ca8ba2aa9146f3c86",
+  "MANIFEST.in": "841d7a2fb3b208d34ab97fbb1a29564419008101271db4ccb70865fd378dc293",
+  "LICENSE": "91699f6fe6937b7cec99ea20ceed2101009ff372a4dc1fc5377070bf07d52d22",
+  "packaging/evaluation/build-requirements.lock": "458f32b239892800691cc607cb0c069a54e06d75f8bd90d41cbc4c6df978e8e0",
+  "scripts/review_model_evaluation.py": "ef6ca77e1466ebbada4d7d8c3c911c18934e673cafa62e8d39dded4d5a3f89bf",
+  "scripts/review_model_adapters.py": "dac5dcebff8438ef49d1b437faf87eb5f6cc09759ef0656dcbf3c5504e8547e7",
+  "scripts/review_model_oci_executor.py": "5fdcfff0a0ffa0714f0681949aba31d7c7b1494b02248fdb51bea798ecd2f73f",
+  "scripts/review_round_weekly_report.py": "1493f337c6afb05921912a0712314859fdefa97f9929e640e650e4b60c453e29"
+}

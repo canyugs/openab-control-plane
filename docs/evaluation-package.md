@@ -82,6 +82,28 @@ The weekly bundle schema remains OCP-specific: this command consumes the
 existing OpenAB Control Plane evidence-export contract rather than defining a
 generic review-bundle schema.
 
+## Release build inputs
+
+The release workflow and the Docker package-build stage share
+`packaging/evaluation/build-requirements.lock`. It contains the exact
+`setuptools` 84.0.0, `pyproject-hooks` 1.2.0, `packaging` 26.3, and `build`
+1.6.0 wheels, each with its approved SHA256 hash. Both release paths install
+that lock with `--require-hashes --only-binary=:all:` and then use the verified
+toolchain without isolated build dependency resolution (`python -m build
+--no-isolation` in CI and `pip wheel --no-build-isolation --no-deps` in the
+Docker package-build stage). Normal source consumers continue to use the
+minimum build-system requirement in `pyproject.toml`; this lock is only for
+the release paths.
+
+Refresh these inputs deliberately as one reviewed change: select the new base
+image tag and verify its registry index digest, then update the corresponding
+tag-plus-digest `FROM` line; for the Python builder, update each exact wheel
+version and its SHA256 hash in the lock together. Re-run the release checks
+and record the new identities in the release report. The pins make these
+selected image and Python builder inputs auditable, but do not promise a
+bit-for-bit reproducible image: Debian packages installed by `apt` and the
+Claude CLI installed by `npm` still resolve through their upstream registries.
+
 ## Versioned image
 
 The release workflow uses the independent package tag

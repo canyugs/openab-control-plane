@@ -1,0 +1,15 @@
+{
+  "changed_files": [
+    "Dockerfile.evaluation",
+    ".github/workflows/evaluation-release.yml",
+    "packaging/evaluation/build-requirements.lock",
+    "docs/evaluation-package.md"
+  ],
+  "changed_lines": 50,
+  "behavior_change": true,
+  "trust_boundary": true,
+  "broad_change": false,
+  "consequential_change": false,
+  "workspace_layout_change": false,
+  "owner_control": "default"
+}

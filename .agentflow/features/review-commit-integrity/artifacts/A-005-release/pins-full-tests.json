@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/venv/bin/python",
+    "-m",
+    "unittest",
+    "discover",
+    "--start-directory",
+    "tests",
+    "--pattern",
+    "test_*.py"
+  ],
+  "exit": 0,
+  "output": "................................................................................................\n----------------------------------------------------------------------\nRan 96 tests in 10.341s\n\nOK\n"
+}

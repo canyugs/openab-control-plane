@@ -40,12 +40,16 @@ jobs:
           set -euo pipefail
           BUILD_VENV="$RUNNER_TEMP/ocp-review-eval-build-venv"
           python3 -m venv "$BUILD_VENV"
-          "$BUILD_VENV/bin/python" -m pip install --disable-pip-version-check build "setuptools>=77"
+          "$BUILD_VENV/bin/python" -m pip install \
+            --disable-pip-version-check \
+            --require-hashes \
+            --only-binary=:all: \
+            --requirement packaging/evaluation/build-requirements.lock
           echo "EVALUATION_BUILD_PYTHON=$BUILD_VENV/bin/python" >> "$GITHUB_ENV"
 
       - name: Build wheel and sdist
         run: |
-          "$EVALUATION_BUILD_PYTHON" -m build --wheel --sdist --outdir dist
+          "$EVALUATION_BUILD_PYTHON" -m build --wheel --sdist --no-isolation --outdir dist
 
       - name: Check bounded distribution contents
         run: |
