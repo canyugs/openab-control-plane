@@ -1566,3 +1566,38 @@ Dispatch cursor-fix implementation, gpt-5.6-luna/max, external-runner-v1 at6408b
 * _2026-09-11 18:37:52 (GPT-6/default)_
 
 Cursor70735 terminal0; full3411-byte528b9ecc2ca0bc310c5d45d8f08cd235f1c34f91a1945474a57d8323ff81d846 report and exact3-file scope verified/imported. Parent AST comparison found3 capture/HTTP helpers differ from live candidate (including stricter echoed findings limit5000); preparation/run and all4 released core modules are unchanged. Final source accepts original prepared input and verified evaluation. Final actual PTYs30456 capture0 and52894 prepare0: source packet/findings/evidence byte-identical to successful paid evaluation, so no duplicate model call. Final complete Python suite109 tests/no skips PASS (one loopback ResourceWarning retained); diffcheckPASS. Full cross-check selected for network/immutable-data boundary. Freeze source for independent acceptance. Pending optional runner question concerns subsequent scheduling only; this round did not deploy or schedule services.
+
+## [RUN-009] Event (during round A-006)
+
+* _2026-09-11 18:38:41 (GPT-6/default)_
+
+Dispatch integration-crosscheck acceptance, gpt-5.6-terra/high, external-runner-v1 at96f329d33ec82461954d6fee77c63f80a566cf68; immutable brief frozen, no remote/production authority.
+
+## [WIP-003] Checkpoint (during round A-006)
+
+* _2026-09-11 18:39:19 (GPT-6/default)_
+
+### Finished:
+
+1. Read-only bridge and cursor correction implemented;109 Python tests/no skips, Rust suite and clippy passed.
+2. Real private capture/prepare/model/report complete; final model inputs identical; source and credential boundaries verified.
+
+### Running now:
+
+1. Independent full cross-check66970 at96f329d.
+
+### Still to do:
+
+1. Accept review, prepare final report and push reviewable delivery.
+
+### Next work action:
+
+1. Inspect exact-head reviewer findings while retaining private outputs outside public repo.
+
+[x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-010] Event (during round A-006)
+
+* _2026-09-11 18:46:19 (GPT-6/default)_
+
+Cross-check66970 terminal0; full5751-byte4b37da6d5f5aa80c81ccce5709dcc303f3a7ca401fae3e02e2eca754e2725218 report verified/read, report-only scope. Minimality PASS; Outcome/Conformance BLOCKING: unverified failed evaluation still causes an evaluation-less weekly report, contradicting the documented verified-output gate. Parent confirmed run() passesNone after verifier failure and existing test codifies complete weekly status. Adopt bounded repair under owner's connect-to-evaluation/report request and existing verified-artifact boundary: retain failure artifacts/run ledger but block weekly creation unless evaluation artifact verification passes. Verified partial/failed artifacts still produce unscoreable coverage reports. This changes only failure handoff, not prior successful paid model inputs; fix then recheck same review identity attempt2. ResourceWarning/record whitespace are non-blocking observations, not new product scope.
