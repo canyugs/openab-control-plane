@@ -567,7 +567,7 @@ def capture(
         value, raw, observed_target, _ = _request_json(url, secret)
         if observed_target != target:
             raise BridgeError("audit request target changed")
-        events, next_cursor, has_cursor = _validate_audit_page(value)
+        events, next_cursor, _ = _validate_audit_page(value)
         relative = f"raw/audit-page-{page:04d}.json"
         _write_new(output / relative, raw)
         file_record = _capture_file_record(relative, raw, "audit", page, target, len(events))
@@ -577,13 +577,10 @@ def capture(
         audit_events += len(events)
         audit_last_cursor = cursor
         if next_cursor is None:
-            # Rust may omit an Option::None cursor on an empty terminal page.
-            # A non-empty page without an explicit terminal cursor is
-            # ambiguous and remains partial, even when it is short.
-            if has_cursor or not events:
-                audit_terminal = True
-            else:
-                audit_partial_reason = "missing_next_cursor_at_page_limit"
+            # Rust omits an Option::None cursor on every terminal page;
+            # an explicit null decodes to the same None value. This applies
+            # to non-empty and exactly full pages too.
+            audit_terminal = True
             break
         if next_cursor in seen_cursors or next_cursor == cursor:
             raise BridgeError("audit pagination repeated an opaque cursor")

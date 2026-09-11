@@ -41,10 +41,12 @@ their byte counts and SHA-256 hashes in `capture.json`. It records the fixed
 scope, `capture_start_ms`, offset-bearing Taipei `snapshot_at`, page/query
 targets, cursors, bounds, and coverage. Findings at the 5,000-row boundary
 are `partial`; the findings endpoint has no cursor. A repeated audit cursor is
-an error. Rust's empty terminal page may omit its `None` cursor; a non-empty
-page without an explicit cursor, an audit page cap, or an ambiguous missing
-cursor is explicitly `partial`, never complete. The capture is non-atomic and
-session-scoped.
+an error. After a successful Rust `AuditEventPage` shape check, an omitted or
+explicit `null` `next_cursor` means that the endpoint is exhausted, regardless
+of the event count, including an exactly full page. An audit page cap remains
+`partial`. Terminal completeness applies only to this exact session query at
+the capture cutoff; it does not establish controller-retention completeness or
+whole-week completeness. The capture is non-atomic and session-scoped.
 
 Preparation uses a clean checkout and immutable full SHAs:
 
@@ -148,9 +150,14 @@ max_diff_bytes  8 MiB
 
 An API response that is complete for the selected session is not evidence of
 global controller retention or a whole-week population. This bridge reports
-session-scoped retained API coverage only. Missing product, human, and cost
-tables stay unknown; no full-week reliability, recall, human truth, provider
-identity, or actual cost metric is claimed.
+session-scoped retained API coverage only. The API capture does not provide a
+full product-table cohort, so zero eligible sessions is not zero reviews.
+Missing product, human, and cost tables stay unknown. Cost coverage is unknown;
+an empty `per_currency` object must not be interpreted as known actual billing,
+irrespective of an empty-cohort status label. Model support on positive
+observations is not defect precision or human-confirmed usefulness. No
+full-week reliability, recall, human truth, provider identity, or actual cost
+metric is claimed.
 
 Runnable offline checks from the repository root are:
 

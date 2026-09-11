@@ -1,0 +1,14 @@
+{
+  "changed_functions": [
+    "_request_json",
+    "_validate_findings_page",
+    "capture"
+  ],
+  "differences": "HTTP status fallback/error close; require echoed findings limit5000; omitted terminal cursor accepted at every page length",
+  "prepare_run_functions_unchanged": true,
+  "all_four_released_modules_unchanged": true,
+  "final_source_accepts_prepared_inputs": true,
+  "evaluation_artifacts_verified": true,
+  "candidate_bridge_sha256": "0aaa632ed9540e112cc90358d06bb2cfb47b83c3549facd9a522747ef2e88750",
+  "final_bridge_sha256": "c644fce879ce40477130bd2a4d75e37419f4179ba978f8f68e3bec0cbbf5277d"
+}

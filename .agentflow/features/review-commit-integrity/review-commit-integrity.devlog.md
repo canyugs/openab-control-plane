@@ -1554,3 +1554,15 @@ Parent froze candidate bridge plus four unchanged released core modules in a pri
 * _2026-09-11 18:27:56 (GPT-6/default)_
 
 Worker3373 terminal0; full2787-byte report e34cefa05950a0f5f403a984dc06098e1394efffba2d6e0c97992b1ccff890a4 and exact3 product paths plus report verified/imported. Parent real PTY87533 terminal0 after267.869seconds;2 model-supported/qualified executed_reproduced items, no discovery candidates, differing usefulness judgments, verified weekly output. No credential leak and no source mutation observed. Source contract reopened for cursor family: initial brief's missing-cursor premise was wrong; Rust skips every Option::None terminal cursor, regardless of event count. Later worker conservative nonempty-page rule regresses actual22-event API response. Owner's connect request requires correcting that false partial status; bounded follow-up changes only capture cursor handling/tests and observed report-interpretation docs, not model/preparation/core behavior.
+
+## [RUN-007] Event (during round A-006)
+
+* _2026-09-11 18:27:57 (GPT-6/default)_
+
+Dispatch cursor-fix implementation, gpt-5.6-luna/max, external-runner-v1 at6408b48980863aa1d336c25dc8188e3f1caeb6c9; immutable brief frozen, no remote/production authority.
+
+## [RUN-008] Event (during round A-006)
+
+* _2026-09-11 18:37:52 (GPT-6/default)_
+
+Cursor70735 terminal0; full3411-byte528b9ecc2ca0bc310c5d45d8f08cd235f1c34f91a1945474a57d8323ff81d846 report and exact3-file scope verified/imported. Parent AST comparison found3 capture/HTTP helpers differ from live candidate (including stricter echoed findings limit5000); preparation/run and all4 released core modules are unchanged. Final source accepts original prepared input and verified evaluation. Final actual PTYs30456 capture0 and52894 prepare0: source packet/findings/evidence byte-identical to successful paid evaluation, so no duplicate model call. Final complete Python suite109 tests/no skips PASS (one loopback ResourceWarning retained); diffcheckPASS. Full cross-check selected for network/immutable-data boundary. Freeze source for independent acceptance. Pending optional runner question concerns subsequent scheduling only; this round did not deploy or schedule services.

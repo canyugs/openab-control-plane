@@ -8,9 +8,9 @@
 
 - **Goal:** Connect read-only review capture to standalone evaluation and reports.
 
-- **Last update:** 2026-09-11 17:46:56 Asia/Taipei.
+- **Last update:** 2026-09-11 18:29:19 Asia/Taipei.
 
-- **Evidence commit:** uncommitted.
+- **Evidence commit:** 6408b48 initial bridge; cursor correction active.
 
 ## Overall state
 
@@ -40,11 +40,11 @@
 
 - **Current item:** T-1.
 
-- **Last proven result:** None.
+- **Last proven result:** Real candidate PTY capture/prepare/evaluate/report completed; 2 findings, 9 successful model calls; private evidence retained. Proof: live-pilot-summary.json.
 
-- **Active blocker or running process:** None.
+- **Active blocker or running process:** Cursor correction worker70735 active; dev observer invalid but prod read-only pilot passed.
 
-- **Next safe action:** Implement the accepted integration flow.
+- **Next safe action:** Verify cursor correction, final-source equivalence, full Python suite and independent review.
 
 - **Expected changed files:** scripts/review_evaluation_bridge.py; tests/test_review_evaluation_bridge.py; docs/evaluation-integration.md; active stream records.
 
@@ -54,7 +54,7 @@
 
 - **Blocking accepted decision:** none.
 
-- **Operation running:** no.
+- **Operation running:** yes.
 
 - **Next action remaining:** T-1, T-2, T-3.
 

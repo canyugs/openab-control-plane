@@ -17,6 +17,22 @@ ROOT = Path(__file__).resolve().parents[1]
 SECRET = "bridge-test-secret"
 
 
+def rust_audit_event(seq):
+    return {
+        "seq": seq,
+        "version": 1,
+        "event_id": f"event-{seq}",
+        "event_key": f"event-key-{seq}",
+        "occurred_at": seq,
+        "recorded_at": seq,
+        "service": "test-service",
+        "kind": "test.event",
+        "outcome": "succeeded",
+        "correlation": {},
+        "detail": {},
+    }
+
+
 def load_module():
     path = ROOT / "scripts/review_evaluation_bridge.py"
     spec = importlib.util.spec_from_file_location("review_evaluation_bridge", path)
@@ -108,11 +124,12 @@ class FakeOpener:
 
 
 class CaptureFixtureOpener(FakeOpener):
-    def __init__(self, secret, findings, *, audit_events=None, next_cursor=None):
+    def __init__(self, secret, findings, *, audit_events=None, next_cursor=None, explicit_null_cursor=False):
         super().__init__(secret, {})
         self.findings = findings
-        self.audit_events = audit_events or []
+        self.audit_events = [] if audit_events is None else audit_events
         self.next_cursor = next_cursor
+        self.explicit_null_cursor = explicit_null_cursor
 
     def open(self, request, timeout):
         parsed = urlsplit(request.full_url)
@@ -123,6 +140,8 @@ class CaptureFixtureOpener(FakeOpener):
             body = json.dumps({"events": self.audit_events}).encode()
         elif self.next_cursor is not None:
             body = json.dumps({"events": self.audit_events, "next_cursor": self.next_cursor}).encode()
+        elif self.explicit_null_cursor:
+            body = json.dumps({"events": self.audit_events, "next_cursor": None}).encode()
         else:
             body = json.dumps({"events": self.audit_events}).encode()
         self.pages[target] = body
@@ -431,7 +450,11 @@ class ReviewEvaluationBridgeTests(unittest.TestCase):
             self.assertEqual(result["audit"]["partial_reason"], "page_cap")
             self.assertEqual(result["audit"]["page_count"], 1)
 
-            missing_cursor = CaptureFixtureOpener(SECRET, [], audit_events=[{"seq": number} for number in range(500)])
+            missing_cursor = CaptureFixtureOpener(
+                SECRET,
+                [],
+                audit_events=[rust_audit_event(number) for number in range(500)],
+            )
             with mock.patch.object(module, "_OPENER", missing_cursor), mock.patch.dict(
                 module.os.environ, {"OCP_EVAL_OBSERVER_SECRET": SECRET}, clear=False
             ):
@@ -443,10 +466,11 @@ class ReviewEvaluationBridgeTests(unittest.TestCase):
                     Path(temp) / "missing-cursor",
                     allow_local_http=True,
                 )
-            self.assertEqual(missing["audit"]["coverage"], "partial")
-            self.assertEqual(missing["audit"]["partial_reason"], "missing_next_cursor_at_page_limit")
+            self.assertEqual(missing["audit"]["coverage"], "complete")
+            self.assertTrue(missing["audit"]["final_null_cursor"])
+            self.assertIsNone(missing["audit"]["partial_reason"])
 
-            short_missing_cursor = CaptureFixtureOpener(SECRET, [], audit_events=[{"seq": 1}])
+            short_missing_cursor = CaptureFixtureOpener(SECRET, [], audit_events=[rust_audit_event(1)])
             with mock.patch.object(module, "_OPENER", short_missing_cursor), mock.patch.dict(
                 module.os.environ, {"OCP_EVAL_OBSERVER_SECRET": SECRET}, clear=False
             ):
@@ -458,8 +482,58 @@ class ReviewEvaluationBridgeTests(unittest.TestCase):
                     Path(temp) / "short-missing-cursor",
                     allow_local_http=True,
                 )
-            self.assertEqual(short_missing["audit"]["coverage"], "partial")
-            self.assertEqual(short_missing["audit"]["partial_reason"], "missing_next_cursor_at_page_limit")
+            self.assertEqual(short_missing["audit"]["coverage"], "complete")
+            self.assertTrue(short_missing["audit"]["final_null_cursor"])
+            self.assertIsNone(short_missing["audit"]["partial_reason"])
+
+    def test_nonempty_rust_terminal_pages_without_cursor_are_complete_and_preserved(self):
+        module = load_module()
+        cases = (
+            ("short-omitted", 22, False),
+            ("short-explicit-null", 22, True),
+            ("full-omitted", module.AUDIT_LIMIT, False),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            for name, event_count, explicit_null_cursor in cases:
+                with self.subTest(name=name):
+                    events = [rust_audit_event(number) for number in range(1, event_count + 1)]
+                    opener = CaptureFixtureOpener(
+                        SECRET,
+                        [],
+                        audit_events=events,
+                        explicit_null_cursor=explicit_null_cursor,
+                    )
+                    output = Path(temp) / name
+                    with mock.patch.object(module, "_OPENER", opener), mock.patch.dict(
+                        module.os.environ, {"OCP_EVAL_OBSERVER_SECRET": SECRET}, clear=False
+                    ):
+                        result = module.capture(
+                            "http://127.0.0.1:8090",
+                            "owner/repo",
+                            17,
+                            "session-1",
+                            output,
+                            allow_local_http=True,
+                        )
+
+                    self.assertEqual(result["status"], "complete")
+                    self.assertEqual(result["audit"]["coverage"], "complete")
+                    self.assertTrue(result["audit"]["final_null_cursor"])
+                    self.assertIsNone(result["audit"]["terminal_next_cursor"])
+                    self.assertIsNone(result["audit"]["partial_reason"])
+                    self.assertEqual(len(opener.requests), 2)
+                    self.assertTrue(all("cursor=" not in request["target"] for request in opener.requests))
+                    audit_record = next(record for record in result["files"] if record["kind"] == "audit")
+                    raw = (output / audit_record["path"]).read_bytes()
+                    self.assertEqual(raw, opener.pages[audit_record["request_target"]])
+                    self.assertEqual(audit_record["bytes"], len(raw))
+                    self.assertEqual(audit_record["sha256"], module.sha256_bytes(raw))
+                    response = json.loads(raw)
+                    self.assertEqual(response["events"], events)
+                    if explicit_null_cursor:
+                        self.assertIsNone(response["next_cursor"])
+                    else:
+                        self.assertNotIn("next_cursor", response)
 
     def test_capture_rejects_repeated_cursor_and_http_errors_without_body(self):
         module = load_module()
