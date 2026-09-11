@@ -2,13 +2,13 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: a46a93845c0f819362b5f08f07345ffa67cbb69f tested source; A-004 adds runtime evidence only.
-Tests/scenarios: Prior96 Python tests; fresh Linux model auth/evaluation, OCI, no-auth replay and weekly PASS.
+Current commit: 4b9ea56f0fd7466685ee57b196f6947c7de713a7 reviewed; release merge e33f77c78c4137abd7104f2e0b6acb667f0c4a5d has identical tree.
+Tests/scenarios: 96 Python tests; Rust/Postgres CI; locked builds; published asset hashes/install; anonymous image pull and CLI/module hashes PASS.
 Configuration: ag.json — schema v7; validated for codex this round.
-Proven: A-003 package accepted; A-004 real Linux evaluation complete; source and old evidence unchanged.
-Open: no A-004 task; exact response model identity unavailable; publication/deployment not performed.
-Next: publication/merge is the subsequent step; await owner direction.
-Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-004-linux-runtime.
+Proven: A-005 PR418 merged; evaluation-v0.1.0 and linux/amd64 GHCR image published and independently verified.
+Open: none for A-005; no service deployment performed.
+Next: none within accepted A-005 scope.
+Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-005-release/release-verification-report.md.
 Archived eras: none.
 Streams:
 stream: review-commit-integrity — active — .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md
@@ -1397,3 +1397,73 @@ Dispatch release-pins implementation, gpt-5.6-luna/max, external-runner-v1 ataeb
 * _2026-09-11 09:34:42 (GPT-6/default)_
 
 Release-pins91094 terminalexit0; full4322-byte report98542b3ffd827fe1f2f0e0be1185a1248803551dfb4498c8842abd131e27e746 and exact4-file scope verified/imported. Parent pip tamper rejection, final locked clean install, no-isolation wheel/sdist/fresh CLI install,96 tests/no skips, final actual image and UID/module hashes PASS. Nine image input hashes match finalsource. Cross-check plan full (small change but explicit builder trust inputs), frozen facts; no wider source review. Freeze source, update PR description, then independent review and automated council on same head. No merge/tag yet.
+
+## [RUN-005] Event (during round A-005)
+
+* _2026-09-11 09:35:13 (GPT-6/default)_
+
+Dispatch release-crosscheck acceptance, gpt-5.6-terra/high, external-runner-v1 at4b9ea56f0fd7466685ee57b196f6947c7de713a7; immutable brief frozen, no remote/production authority.
+
+## [RUN-006] Event (during round A-005)
+
+* _2026-09-11 09:36:12 (GPT-6/default)_
+
+Source4b9ea56f0fd7466685ee57b196f6947c7de713a7 pushed to PR418; description now explicitly net-new evaluator modules relative to main and host inventory basis for mtime observation. Scope reconciled:4 declared product paths plus stream records only; core/launcher/metadata unchanged. Implementation91094, image64267, builder68915, suite63901 and push93419 terminal. Cross-check88116 active at same source; GitHub CI/council now review this head. Tracker updated; no merge/tag/publication yet.
+
+## [WIP-002] Checkpoint (during round A-005)
+
+* _2026-09-11 09:36:12 (GPT-6/default)_
+
+- **Finished:** Release pins and PR clarification pushed;96 tests, actual locked package/image and negative hash verification PASS.
+- **Running now:** Independent cross-check88116 and PR418 CI/council at4b9ea56.
+- **Still to do:** Current review results, exact-head merge, evaluation tag publication and artifact readback.
+- **Next work action:** Collect required checks while keeping source frozen.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-007] Event (during round A-005)
+
+* _2026-09-11 09:40:43 (GPT-6/default)_
+
+Cross-check88116 terminalexit0, full5629-byte report3d9a127c292f2f22f6cf310f754f7d3e47b667b1ff37c870c18df6922feb7c54 verified/read, report-only scope. Outcome/Minimality/Conformance/Overall/Verdict PASS at4b9ea56. Parent independently read corrected PR body and current head, successful CI34551280096 and council round2 LGTM/all F1-F4 resolved; PR CLEAN. F5 no-action wheel-library note already addressed by actual parent+reviewer no-isolation builds; release workflow will provide final hosted proof. Host gate: PASS. All workers terminal. Proceed under owner merge/publication approval with exact-head guard; no admin bypass or unrelated service changes.
+
+## [RUN-008] Event (during round A-005)
+
+* _2026-09-11 09:42:50 (GPT-6/default)_
+
+PR418 merged at e33f77c78c4137abd7104f2e0b6acb667f0c4a5d using exact-head guard4b9ea56, no bypass. Independent GitHub readback MERGED; fetched merge tree equals reviewed head tree. Confirmed no local/remote evaluation-v0.1.0 collision, created annotated tag at exact merged commit and pushed successfully. Main checkout untouched; only evaluation release lane triggered. T-1 complete; T-2/T-3 running publication/readback, no production deployment.
+
+# ← Reply / A-005
+
+* _2026-09-11 10:03:15 (GPT-6/default)_
+
+## [SUMMARY]
+
+- PR418 已合併，evaluation-v0.1.0 已發布 wheel、sdist 與 GHCR image。
+- 發布附件安裝、匿名 image 拉取、CLI 與核心模組雜湊驗證通過。
+- 本輪沒有部署服務；image 平台為 linux/amd64。
+
+## [FINAL REPORT]
+
+# Evaluation v0.1.0 release verification
+
+PR418 merged as e33f77c78c4137abd7104f2e0b6acb667f0c4a5d; its tree equals reviewed source4b9ea56f0fd7466685ee57b196f6947c7de713a7. Required CI/council and independent cross-check passed. Release workflow34551718016 succeeded; annotated evaluation-v0.1.0 resolves to the merge commit.
+
+Release: https://github.com/canyugs/openab-control-plane/releases/tag/evaluation-v0.1.0
+
+Downloaded wheel and sdist SHA256 match GitHub asset digests. Fresh offline wheel installation outside checkout and both CLI help commands passed. Anonymous pull of ghcr.io/canyugs/ocp-review-eval:0.1.0 passed. Registry digest: sha256:b7eaa9fa9b963f26c929db73b216be9dd8ba31bb60c6537ef024f13c51eb2cc3. Actual linux/amd64 image runs as UID65532; both CLI help commands pass with network disabled and all four installed core module hashes match the reviewed source.
+
+96 Python tests, hosted Rust/Postgres CI, locked package/image builds and tampered builder rejection passed before merge. No service deployment or new model evaluation was performed this round. Image supports linux/amd64; apt/npm remain upstream-resolved, so this is not a bit-for-bit reproducibility claim. Prior real model evaluation evidence remains A-004, including unavailable observed response model identity.
+
+Cross-check review: .agentflow/features/review-commit-integrity/artifacts/A-005-release/release-crosscheck-report.md
+Cross-check implementation: 4b9ea56f0fd7466685ee57b196f6947c7de713a7
+Host gate: PASS
+
+## Questions (batched — each with a suggested default)
+
+- None.
+
+---
+
+# → Ask / A-006
+
++

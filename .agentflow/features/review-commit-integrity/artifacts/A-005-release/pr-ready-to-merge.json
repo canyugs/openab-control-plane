@@ -1,0 +1,28 @@
+{
+  "baseRefOid": "16aa2d46b0be72a35100e57c8c934bf0835adef4",
+  "body": "Bind PR review authority to verified commit identities and add an independently packaged offline evaluator. Reviews reject malformed or mismatched SHAs; the evaluator combines independent judgments, source-bound OCI validation, synthesis, discovery and hash-verified weekly reporting.\n\nThe Python package exposes ocp-review-eval and ocp-review-weekly at version 0.1.0 with a dedicated nonroot Docker image and evaluation-vX.Y.Z release workflow. All four evaluator modules are new relative to main in this PR, including security-sensitive OCI execution and artifact verification. They were implemented and independently reviewed in the earlier commits of this branch; the later packaging commits preserved those module bytes. Credentials and review inputs stay external; the launcher accepts only supported authentication keys and stages repository input readonly.\n\nValidation: prior independent SHA-integrity and evaluator acceptance, 96 Python tests with no skips, isolated wheel/sdist installation, actual amd64 image and nested OCI checks, and independent package security/acceptance PASS. A fresh authenticated Linux evaluation completed in 130 seconds; no-auth replay and weekly generation passed with all 42 artifact hashes and mtimes unchanged in host before/after inventory. This is observed replay/read-only behavior, not an os.utime or timestamp-restoration feature in the weekly-report module. Full evidence is in the review-commit-integrity Agentflow stream.\n\nLimits: Linux execution was tested on a synthetic fixed-SHA fixture under Docker Desktop emulation. Response model identity can remain unavailable even when provider usage names the requested models; actual billing remains unknown. Existing unrelated Rust formatting differences are documented. This PR does not deploy services or start production evaluation.\n\nRelease-input review corrections: Docker bases are pinned by digest and CI/Docker install a shared SHA-256-verified build-tool lock without isolated dependency re-resolution. This fixes floating base and builder inputs, while apt/npm registry resolution remains an explicit limitation; no bit-for-bit reproducibility claim is made.\n",
+  "headRefOid": "4b9ea56f0fd7466685ee57b196f6947c7de713a7",
+  "mergeStateStatus": "CLEAN",
+  "number": 418,
+  "state": "OPEN",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-11T01:36:53Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/canyugs/openab-control-plane/actions/runs/34551280096/job/103114527176",
+      "name": "rust",
+      "startedAt": "2026-09-11T01:35:30Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "StatusContext",
+      "context": "openab/council",
+      "startedAt": "2026-09-11T01:38:19Z",
+      "state": "SUCCESS",
+      "targetUrl": ""
+    }
+  ],
+  "url": "https://github.com/canyugs/openab-control-plane/pull/418"
+}

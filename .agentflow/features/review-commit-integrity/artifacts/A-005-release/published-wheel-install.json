@@ -1,0 +1,34 @@
+{
+  "asset_digests_match": true,
+  "checks": [
+    {
+      "argv": [
+        "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-published-release-2oh2zwxh/venv/bin/python",
+        "-m",
+        "pip",
+        "install",
+        "--no-index",
+        "--no-deps",
+        "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-published-release-2oh2zwxh/ocp_review_eval-0.1.0-py3-none-any.whl"
+      ],
+      "exit": 0,
+      "output": "Processing ./ocp_review_eval-0.1.0-py3-none-any.whl\nInstalling collected packages: ocp-review-eval\nSuccessfully installed ocp-review-eval-0.1.0\n"
+    },
+    {
+      "argv": [
+        "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-published-release-2oh2zwxh/venv/bin/ocp-review-eval",
+        "--help"
+      ],
+      "exit": 0,
+      "output": "usage: ocp-review-eval [-h] {run} ...\n\nRun immutable offline model evaluation\n\npositional arguments:\n  {run}\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    {
+      "argv": [
+        "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-published-release-2oh2zwxh/venv/bin/ocp-review-weekly",
+        "--help"
+      ],
+      "exit": 0,
+      "output": "usage: ocp-review-weekly [-h] --bundle BUNDLE --week WEEK --as-of AS_OF\n                         --output OUTPUT [--evaluation-root EVALUATION_ROOT]\n\nRender the frozen offline review-round weekly report\n\noptions:\n  -h, --help            show this help message and exit\n  --bundle BUNDLE\n  --week WEEK\n  --as-of AS_OF\n  --output OUTPUT\n  --evaluation-root EVALUATION_ROOT\n"
+    }
+  ]
+}

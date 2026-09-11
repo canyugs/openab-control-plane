@@ -1,0 +1,37 @@
+{
+  "assets": [
+    {
+      "apiUrl": "https://api.github.com/repos/canyugs/openab-control-plane/releases/assets/556237299",
+      "contentType": "application/octet-stream",
+      "createdAt": "2026-09-11T01:43:24Z",
+      "digest": "sha256:627f2d620d1cdf5222d7e2832c4196391e2e6daa840a69fae36e00c8754b53e5",
+      "downloadCount": 0,
+      "id": "RA_kwDOTEi0F84hJ4Hz",
+      "label": "",
+      "name": "ocp_review_eval-0.1.0-py3-none-any.whl",
+      "size": 68581,
+      "state": "uploaded",
+      "updatedAt": "2026-09-11T01:43:24Z",
+      "url": "https://github.com/canyugs/openab-control-plane/releases/download/evaluation-v0.1.0/ocp_review_eval-0.1.0-py3-none-any.whl"
+    },
+    {
+      "apiUrl": "https://api.github.com/repos/canyugs/openab-control-plane/releases/assets/556237300",
+      "contentType": "application/x-gtar",
+      "createdAt": "2026-09-11T01:43:24Z",
+      "digest": "sha256:dc75061a9720d1d251cae2f3628fef53112cc4c7c39701063ee6266f6b90dca5",
+      "downloadCount": 0,
+      "id": "RA_kwDOTEi0F84hJ4H0",
+      "label": "",
+      "name": "ocp_review_eval-0.1.0.tar.gz",
+      "size": 66027,
+      "state": "uploaded",
+      "updatedAt": "2026-09-11T01:43:24Z",
+      "url": "https://github.com/canyugs/openab-control-plane/releases/download/evaluation-v0.1.0/ocp_review_eval-0.1.0.tar.gz"
+    }
+  ],
+  "isDraft": false,
+  "isPrerelease": false,
+  "publishedAt": "2026-09-11T01:43:25Z",
+  "tagName": "evaluation-v0.1.0",
+  "url": "https://github.com/canyugs/openab-control-plane/releases/tag/evaluation-v0.1.0"
+}

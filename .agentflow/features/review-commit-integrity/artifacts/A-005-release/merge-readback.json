@@ -1,0 +1,10 @@
+{
+  "headRefOid": "4b9ea56f0fd7466685ee57b196f6947c7de713a7",
+  "mergeCommit": {
+    "oid": "e33f77c78c4137abd7104f2e0b6acb667f0c4a5d"
+  },
+  "mergedAt": "2026-09-11T01:40:45Z",
+  "state": "MERGED",
+  "url": "https://github.com/canyugs/openab-control-plane/pull/418",
+  "tree_matches_reviewed_head": true
+}
