@@ -752,20 +752,38 @@ class ReviewEvaluationBridgeTests(unittest.TestCase):
                 (kwargs["output"] / "failed-attempt.txt").write_text("retained", encoding="utf-8")
                 raise RuntimeError("model seam failure")
 
-            result = module.run(root / "prepared", repo, models, root / "run", evaluator=failed_evaluator)
+            weekly = module._weekly()
+            with mock.patch.object(weekly, "build_report") as build_report, mock.patch.object(
+                weekly, "write_report"
+            ) as write_report:
+                build_report.return_value = {"report_id": "test-report"}
+                write_report.return_value = (root / "report.md", root / "report.json")
+                result = module.run(root / "prepared", repo, models, root / "run", evaluator=failed_evaluator)
             self.assertEqual(result["state"], "failed")
             self.assertEqual(result["quality"], "not_scoreable")
-            self.assertEqual(result["weekly_report"]["status"], "complete")
+            self.assertEqual(
+                result["weekly_report"],
+                {"status": "blocked", "reason": "evaluation_not_verified"},
+            )
             self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0]["revision"], revision.lower())
             self.assertEqual(calls[0]["base"], base.lower())
             self.assertEqual(calls[0]["findings_path"], root / "prepared" / "findings.json")
             self.assertEqual(calls[0]["evidence_dir"], root / "prepared" / "evidence")
             self.assertTrue((root / "run" / "evaluation" / "failed-attempt.txt").is_file())
+            self.assertFalse((root / "run" / "weekly-report").exists())
+            build_report.assert_not_called()
+            write_report.assert_not_called()
             ledger = json.loads((root / "run" / "run.json").read_text())
+            self.assertEqual(ledger["state"], "failed")
+            self.assertEqual(ledger["quality"], "not_scoreable")
             self.assertEqual(ledger["evaluation"]["status"], "failed")
             self.assertFalse(ledger["evaluation"]["verified"])
-            self.assertEqual(ledger["weekly_report"]["status"], "complete")
+            self.assertEqual(ledger["evaluation"]["error"], "RuntimeError")
+            self.assertEqual(
+                ledger["weekly_report"],
+                {"status": "blocked", "reason": "evaluation_not_verified"},
+            )
 
     def test_run_accepts_the_existing_core_failure_artifact_and_marks_quality_unknown(self):
         module = load_module()
@@ -826,6 +844,102 @@ class ReviewEvaluationBridgeTests(unittest.TestCase):
             self.assertTrue((root / "run" / "evaluation" / "summary.json").is_file())
             self.assertEqual(json.loads((root / "run" / "run.json").read_text())["evaluation"]["verified"], True)
             self.assertEqual(json.loads((root / "run" / "run.json").read_text())["weekly_report"]["status"], "complete")
+
+    def test_run_blocks_tampered_evaluation_after_core_verifier_rejects_it(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo, base, revision = init_git_repo(root)
+            finding = {
+                "id": 41,
+                "session_id": "session-1",
+                "repo": "owner/repo",
+                "pr_number": 17,
+                "stable_id": "stable",
+                "severity": "red",
+                "status": "open",
+                "title": "frozen claim",
+                "path": "src/app.py",
+                "line": 2,
+                "raised_by": None,
+                "angle": None,
+                "head_sha": revision,
+                "created_at": 1,
+            }
+            capture_fixture(module, root, [finding])
+            module.prepare(root / "capture", repo, revision, base, root / "prepared")
+            models = root / "models.json"
+            models_fixture(models)
+            core = module._core()
+
+            def failed_runner(argv, payload, cwd, env, timeout, max_output):
+                if len(argv) == 2 and argv[1] == "--version":
+                    return core.adapters.ProcessCapture(tuple(argv), 0, b"fixture\n", b"")
+                if len(argv) == 2 and argv[1] == "--help":
+                    return core.adapters.ProcessCapture(
+                        tuple(argv),
+                        0,
+                        b"--safe-mode --restricted --disable-slash-commands --no-session-persistence --output-format --json-schema --model --tools --strict-mcp-config --setting-sources --permission-mode --permission-prompts --system-prompt\n",
+                        b"",
+                    )
+                return core.adapters.ProcessCapture(tuple(argv), 17, b"partial stdout", b"transport failed")
+
+            class BlockedOCI:
+                def preflight(self):
+                    return {"status": "environment_blocked", "reason": "test seam"}
+
+                def execute(self, *args, **kwargs):
+                    raise AssertionError("blocked test OCI must not execute")
+
+            def tampering_evaluator(**kwargs):
+                result = core.run_evaluation(
+                    **kwargs,
+                    adapter_runner=failed_runner,
+                    oci_executor=BlockedOCI(),
+                )
+                summary = kwargs["output"] / "summary.json"
+                tampered = json.loads(summary.read_text())
+                tampered["state"] = "complete"
+                summary.write_text(json.dumps(tampered), encoding="utf-8")
+                return result
+
+            weekly = module._weekly()
+            with mock.patch.object(weekly, "build_report") as build_report, mock.patch.object(
+                weekly, "write_report"
+            ) as write_report:
+                build_report.return_value = {"report_id": "test-report"}
+                write_report.return_value = (root / "report.md", root / "report.json")
+                result = module.run(
+                    root / "prepared",
+                    repo,
+                    models,
+                    root / "run",
+                    evaluator=tampering_evaluator,
+                )
+
+            self.assertEqual(result["state"], "failed")
+            self.assertEqual(result["quality"], "not_scoreable")
+            self.assertEqual(
+                result["weekly_report"],
+                {"status": "blocked", "reason": "evaluation_not_verified"},
+            )
+            self.assertEqual(
+                json.loads((root / "run" / "evaluation" / "summary.json").read_text())["state"],
+                "complete",
+            )
+            self.assertFalse((root / "run" / "weekly-report").exists())
+            build_report.assert_not_called()
+            write_report.assert_not_called()
+            ledger = json.loads((root / "run" / "run.json").read_text())
+            self.assertEqual(ledger["state"], "failed")
+            self.assertEqual(ledger["quality"], "not_scoreable")
+            self.assertEqual(ledger["evaluation"]["status"], "failed")
+            self.assertFalse(ledger["evaluation"]["verified"])
+            self.assertEqual(ledger["evaluation"]["error"], "EvaluationConflict")
+            self.assertEqual(
+                ledger["weekly_report"],
+                {"status": "blocked", "reason": "evaluation_not_verified"},
+            )
 
 
 if __name__ == "__main__":

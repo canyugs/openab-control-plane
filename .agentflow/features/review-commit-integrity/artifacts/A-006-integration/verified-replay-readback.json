@@ -1,0 +1,15 @@
+{
+  "tty": "/dev/ttys007",
+  "typed_input": "replay",
+  "state": "complete",
+  "quality": "available",
+  "weekly_byte_identical_to_real_pilot": true,
+  "new_model_or_oci_calls": 0,
+  "elapsed_seconds": 0.311,
+  "credentials_present": false,
+  "changed_functions_from_previous_review": [
+    "run"
+  ],
+  "all_four_released_modules_unchanged": true,
+  "final_bridge_sha256": "d2b6a756a46ee1bb2d7e97d57fc37e8170ec6cedf46be652e8653fd6bd8cbac1"
+}

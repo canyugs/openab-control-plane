@@ -1601,3 +1601,45 @@ Dispatch integration-crosscheck acceptance, gpt-5.6-terra/high, external-runner-
 * _2026-09-11 18:46:19 (GPT-6/default)_
 
 Cross-check66970 terminal0; full5751-byte4b37da6d5f5aa80c81ccce5709dcc303f3a7ca401fae3e02e2eca754e2725218 report verified/read, report-only scope. Minimality PASS; Outcome/Conformance BLOCKING: unverified failed evaluation still causes an evaluation-less weekly report, contradicting the documented verified-output gate. Parent confirmed run() passesNone after verifier failure and existing test codifies complete weekly status. Adopt bounded repair under owner's connect-to-evaluation/report request and existing verified-artifact boundary: retain failure artifacts/run ledger but block weekly creation unless evaluation artifact verification passes. Verified partial/failed artifacts still produce unscoreable coverage reports. This changes only failure handoff, not prior successful paid model inputs; fix then recheck same review identity attempt2. ResourceWarning/record whitespace are non-blocking observations, not new product scope.
+
+## [RUN-011] Event (during round A-006)
+
+* _2026-09-11 18:46:19 (GPT-6/default)_
+
+Dispatch weekly-gate-fix implementation, gpt-5.6-luna/max, external-runner-v1 at52d0e6d8a4bed6e37118d76e918830b396c53c66; immutable brief frozen, no remote/production authority.
+
+## [RUN-012] Event (during round A-006)
+
+* _2026-09-11 19:07:39 (GPT-6/default)_
+
+Weekly gate repair63907 active in isolated clone; parent inspected bounded run() guard diff and matching tests/docs. No live/private/model operations by worker. Candidate success/failure handoff scope unchanged; only stream records changed in parent checkout. All earlier implementation/review/model/PTY processes terminal. Parent prepared a no-auth real-artifact replay journey and private durable pilot report; final source import/tests/review still pending.
+
+## [WIP-004] Checkpoint (during round A-006)
+
+* _2026-09-11 19:07:39 (GPT-6/default)_
+
+### Finished:
+
+1. Real single-session capture/model/report journey verified and private evidence retained.
+2. Independent review completed; one concrete weekly verification-gate defect adopted for repair.
+
+### Running now:
+
+1. Bounded weekly gate fix63907; candidate diff inspected.
+
+### Still to do:
+
+1. Import finished repair, rerun relevant suite and verified-artifact replay.
+2. Acceptance attempt2 and delivery.
+
+### Next work action:
+
+1. Validate repaired failure gate and unchanged successful report output.
+
+[x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-013] Event (during round A-006)
+
+* _2026-09-11 19:09:55 (GPT-6/default)_
+
+Weekly-gate63907 terminal0; full3683-byte0446bf1cf08948daa0b0a3f1dac3fcbc0573aa90ac1cce9718a3179a828f125d report read/verified and exact3-file scope imported. Exception/tamper red tests now block weekly while preserving evidence; verified failed-artifact test stays green. Parent final110-test suite/no skips PASS (same non-blocking loopback ResourceWarning); product diffcheckPASS. Only run() changed versus reviewed96f329d, with capture/preparation and4 released core modules unchanged. Real PTY99387 no-auth replay uses verified actual pilot artifacts, makes0 new model/OCI calls, and produces byte-identical weekly JSON/Markdown. Closeout now rechecks the one adopted failure-gate repair under same acceptance identity attempt2; no unrelated source edits.

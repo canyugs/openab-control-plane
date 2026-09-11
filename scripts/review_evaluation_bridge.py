@@ -1639,28 +1639,34 @@ def run(
     report: Optional[Mapping[str, Any]] = None
     report_error: Optional[str] = None
     report_dir = output / "weekly-report"
-    try:
-        report = weekly.build_report(
-            prepared / "weekly-bundle",
-            week,
-            snapshot_at,
-            evaluation_root if verified_evaluation is not None else None,
-        )
-        markdown_path, json_path = weekly.write_report(
-            report,
-            report_dir,
-            prepared / "weekly-bundle",
-            evaluation_root if verified_evaluation is not None else None,
-        )
+    if verified_evaluation is None:
         ledger["weekly_report"] = {
-            "status": "complete",
-            "markdown": str(markdown_path),
-            "json": str(json_path),
-            "report_id": report.get("report_id"),
+            "status": "blocked",
+            "reason": "evaluation_not_verified",
         }
-    except Exception as exc:
-        report_error = type(exc).__name__
-        ledger["weekly_report"] = {"status": "failed", "error": report_error}
+    else:
+        try:
+            report = weekly.build_report(
+                prepared / "weekly-bundle",
+                week,
+                snapshot_at,
+                evaluation_root,
+            )
+            markdown_path, json_path = weekly.write_report(
+                report,
+                report_dir,
+                prepared / "weekly-bundle",
+                evaluation_root,
+            )
+            ledger["weekly_report"] = {
+                "status": "complete",
+                "markdown": str(markdown_path),
+                "json": str(json_path),
+                "report_id": report.get("report_id"),
+            }
+        except Exception as exc:
+            report_error = type(exc).__name__
+            ledger["weekly_report"] = {"status": "failed", "error": report_error}
 
     if report_error is not None:
         state = "failed"

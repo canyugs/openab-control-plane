@@ -127,6 +127,9 @@ under `evaluation/`, including failed or partial attempts. The weekly report
 is written under `weekly-report/` only after evaluation output passes the core
 artifact verifier. A failed or unverified evaluator result remains
 `not_scoreable`; an exit status or returned object alone is not a quality pass.
+If verification returns no evaluation, `run` retains the evaluator artifacts,
+marks the run failed, and records `weekly_report.status = blocked` with reason
+`evaluation_not_verified` without creating `weekly-report/`.
 
 All output directories must be new, and output/input ancestor overlap and
 symlink components are rejected before writes. CLI status is compact JSON.

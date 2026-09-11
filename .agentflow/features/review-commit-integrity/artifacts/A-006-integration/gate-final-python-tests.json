@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/venv/bin/python",
+    "-m",
+    "unittest",
+    "discover",
+    "--start-directory",
+    "tests",
+    "--pattern",
+    "test_*.py"
+  ],
+  "exit": 0,
+  "diagnostic": "............./opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/case.py:615: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 55107)>\n  result = method()\nResourceWarning: Enable tracemalloc to get the object allocation traceback\n.................................................................................................\n----------------------------------------------------------------------\nRan 110 tests in 15.415s\n\nOK\n"
+}
