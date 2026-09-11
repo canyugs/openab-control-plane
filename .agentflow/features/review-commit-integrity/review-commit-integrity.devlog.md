@@ -1466,4 +1466,9 @@ Host gate: PASS
 
 # → Ask / A-006
 
-+
+使用者原文：
+
+> 下一步
+> 那可以開始接上了
+
+Approved scope: connect the previously proposed read-only OCP review capture, fixed PR/SHA findings/evidence, standalone model evaluation and weekly report flow. Implement and validate the integration; scheduling follows a proven first real-data run. No verdict, GitHub write, service deployment or credential rotation.
