@@ -1,0 +1,13 @@
+{
+  "root": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-git-boundary-probe-v64guhkz",
+  "fsmonitor_executed": true,
+  "source_complete": false,
+  "source_paths": [
+    ".gitattributes",
+    "visible.py"
+  ],
+  "omissions": [
+    "missing:hidden.py"
+  ],
+  "hidden_tracked": true
+}

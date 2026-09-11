@@ -1,0 +1,9 @@
+{
+  "roles": {
+    "judge_a": {"adapter": "claude", "model_id": "fixture-judge-a", "family": "fixture", "strength": "strong"},
+    "judge_b": {"adapter": "claude", "model_id": "fixture-judge-b", "family": "fixture", "strength": "strong"},
+    "synthesis": {"adapter": "claude", "model_id": "fixture-synthesis", "family": "fixture", "strength": "strong"},
+    "discovery": {"adapter": "claude", "model_id": "fixture-discovery", "family": "fixture", "strength": "strong"},
+    "validation": {"adapter": "claude", "model_id": "fixture-validation", "family": "fixture", "strength": "strong"}
+  }
+}

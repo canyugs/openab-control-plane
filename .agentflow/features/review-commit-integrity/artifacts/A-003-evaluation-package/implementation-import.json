@@ -1,0 +1,18 @@
+{
+  "report_sha256": "c22c2915366b7a4e7941aad06a6db74390732ab0a105b8fba712707c3f89ed0a",
+  "imported": [
+    ".github/workflows/evaluation-release.yml",
+    "Dockerfile.evaluation",
+    "MANIFEST.in",
+    "docs/evaluation-package.md",
+    "packaging/evaluation/run.sh",
+    "pyproject.toml",
+    "tests/test_evaluation_package.py"
+  ],
+  "core_source_diff": false,
+  "actual_image_inputs_equal": true,
+  "remaining_failures": [
+    "CI test discovery --top-level-directory",
+    "socket GID0 launcher validation"
+  ]
+}

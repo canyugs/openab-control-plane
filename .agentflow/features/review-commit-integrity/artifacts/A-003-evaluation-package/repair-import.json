@@ -1,0 +1,9 @@
+{
+  "report_sha256": "145f0f1b3b2ebe561349729cbc1e7cb68e2ea02395e43a5abff92553c105caf6",
+  "imported": [
+    ".github/workflows/evaluation-release.yml",
+    "docs/evaluation-package.md",
+    "packaging/evaluation/run.sh",
+    "tests/test_evaluation_package.py"
+  ]
+}

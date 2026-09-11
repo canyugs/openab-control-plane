@@ -1,0 +1,62 @@
+diff --git a/tests/test_review_round_weekly_report.py b/tests/test_review_round_weekly_report.py
+index f8aa292..9c7bb27 100644
+--- a/tests/test_review_round_weekly_report.py
++++ b/tests/test_review_round_weekly_report.py
+@@ -251,6 +251,10 @@ class WeeklyReportBehaviorTests(unittest.TestCase):
+             self.assertEqual(report["reliability"]["pending_or_unknown"], 0)
+             self.assertEqual(report["latency"]["counts"]["observed"], 2)
+             self.assertEqual(report["latency"]["counts"]["reconciliation_upper_bound"], 0)
++            by_session = {row["session_id"]: row for row in report["cohort"]["sessions"]}
++            for session in ("approve", "changes"):
++                self.assertEqual(by_session[session]["latency"]["status"], "observed")
++                self.assertEqual(by_session[session]["latency"]["qualification"], "original_receipt")
+ 
+     def test_opening_and_decision_writes_are_not_terminal_requirements(self):
+         module = load_module()
+@@ -294,6 +298,7 @@ class WeeklyReportBehaviorTests(unittest.TestCase):
+             fixture.tombstone("sup", event_type="session.superseded", comment_id=501)
+             fixture.tombstone("timeout", event_type="session.timeout", comment_id=502)
+             fixture.tombstone("null", event_type="session.timeout", comment_id=None)
++            fixture.tombstone("sup-null", event_type="session.superseded", comment_id=None)
+             fixture.tombstone("unbound", event_type="session.timeout", comment_id=503, bind=False)
+             bundle = fixture.finish()
+             report = module.build_report(bundle, WEEK, AS_OF)
+@@ -301,10 +306,30 @@ class WeeklyReportBehaviorTests(unittest.TestCase):
+             self.assertEqual(by_session["sup"]["category"], "superseded")
+             self.assertTrue(by_session["sup"]["tombstone_visible"])
+             self.assertEqual(by_session["timeout"]["category"], "visible_failure")
++            self.assertEqual(by_session["timeout"]["latency"]["status"], "observed")
++            self.assertEqual(by_session["timeout"]["latency"]["duration_ms"], 290)
++            self.assertEqual(by_session["timeout"]["latency"]["qualification"], "original_receipt")
+             self.assertEqual(by_session["null"]["category"], "pending_or_unknown")
+             self.assertFalse(by_session["null"]["tombstone_visible"])
+             self.assertEqual(by_session["unbound"]["category"], "pending_or_unknown")
+ 
++    def test_incomplete_projection_latency_is_unavailable_for_timeout_and_supersession(self):
++        module = load_module()
++        with tempfile.TemporaryDirectory() as temp:
++            fixture = EvidenceFixture(Path(temp))
++            fixture.tombstone("timeout-noop", event_type="session.timeout", comment_id=None)
++            fixture.tombstone("superseded-noop", event_type="session.superseded", comment_id=None)
++            bundle = fixture.finish()
++            report = module.build_report(bundle, WEEK, AS_OF)
++            by_session = {row["session_id"]: row for row in report["cohort"]["sessions"]}
++            self.assertEqual(by_session["timeout-noop"]["category"], "pending_or_unknown")
++            self.assertEqual(by_session["superseded-noop"]["category"], "superseded")
++            for session in ("timeout-noop", "superseded-noop"):
++                self.assertFalse(by_session[session]["tombstone_visible"])
++                self.assertEqual(by_session[session]["latency"]["status"], "unknown")
++                self.assertIsNone(by_session[session]["latency"]["duration_ms"])
++                self.assertEqual(by_session[session]["latency"]["qualification"], "unavailable")
++
+     def test_write_binding_corruption_stays_unknown(self):
+         module = load_module()
+         corruptions = ("write_id", "digest", "operation", "provider")
+@@ -365,6 +390,7 @@ class WeeklyReportBehaviorTests(unittest.TestCase):
+             report = module.build_report(bundle, WEEK, AS_OF)
+             by_session = {row["session_id"]: row for row in report["cohort"]["sessions"]}
+             self.assertEqual(by_session["upper"]["latency"]["qualification"], "reconciliation_upper_bound")
++            self.assertEqual(by_session["upper"]["latency"]["duration_ms"], 292)
+             self.assertEqual(by_session["negative"]["latency"]["status"], "clock_invalid")
+             self.assertEqual(report["capture"]["future_audit_records_excluded"], 2)
+ 

@@ -1,0 +1,204 @@
+{
+  "actual_cost_usd": "unknown",
+  "actual_metadata": {
+    "actual_cost_usd": "unknown",
+    "auxiliary_model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.010064,
+        "inputTokens": 9999,
+        "maxOutputTokens": 32000,
+        "outputTokens": 13,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      }
+    },
+    "cost_basis": [
+      "list"
+    ],
+    "duration_ms": 27974,
+    "estimated_cost_usd": 0.149729,
+    "init": {
+      "mcp_servers": [],
+      "plugins": [],
+      "skills": [],
+      "subtype": "init",
+      "tools": [
+        "StructuredOutput"
+      ]
+    },
+    "is_error": false,
+    "modelUsage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.010064,
+        "inputTokens": 9999,
+        "maxOutputTokens": 32000,
+        "outputTokens": 13,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-4-6": {
+        "cacheCreationInputTokens": 10670,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-opus-4-6",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.139665,
+        "inputTokens": 3,
+        "maxOutputTokens": 64000,
+        "outputTokens": 1318,
+        "provider": "firstParty",
+        "thinkingTokens": 693,
+        "webSearchRequests": 0
+      }
+    },
+    "model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.010064,
+        "inputTokens": 9999,
+        "maxOutputTokens": 32000,
+        "outputTokens": 13,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-4-6": {
+        "cacheCreationInputTokens": 10670,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-opus-4-6",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.139665,
+        "inputTokens": 3,
+        "maxOutputTokens": 64000,
+        "outputTokens": 1318,
+        "provider": "firstParty",
+        "thinkingTokens": 693,
+        "webSearchRequests": 0
+      }
+    },
+    "num_turns": 2,
+    "redacted_environment": {
+      "HOME": "/Users/can",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "PATH": "/Users/can/.n/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex-path:/Users/can/.codex/tmp/arg0/codex-arg0p190Uu:/Users/can/.grok/bin:/opt/homebrew/share/google-cloud-sdk/bin:/Users/can/.local/bin:/Users/can/.n/bin:/Users/can/.bun/bin:/Users/can/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.a",
+      "TMPDIR": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/"
+    },
+    "session_id": "e96a6b4b-2033-4921-af14-3130132954d8",
+    "structured_output_attempt_count": 1,
+    "structured_output_attempts": [
+      {
+        "call": {
+          "caller": {
+            "type": "direct"
+          },
+          "id": "toolu_01MDwFZqGPwzuXavXjLsMXBY",
+          "input": {
+            "citations": [
+              {
+                "end": 2,
+                "evidence_id": "E_SAMPLE",
+                "path": "sample.py",
+                "start": 1
+              },
+              {
+                "end": 1,
+                "evidence_id": "E_CONTRACT",
+                "path": "README.md",
+                "start": 1
+              }
+            ],
+            "counterexample": "No counterexample needed. The finding is valid: the contract requires `requester == owner` for non-public access, but the implementation uses `bool(requester)` which grants access to any authenticated requester regardless of ownership.",
+            "finding_id": "omission-1-f5201e5feb8fc093",
+            "severity": "high",
+            "usefulness": "useful",
+            "validation_verdict": "valid",
+            "verdict": "support"
+          },
+          "name": "StructuredOutput",
+          "type": "tool_use"
+        },
+        "call_event_index": 16,
+        "id": "toolu_01MDwFZqGPwzuXavXjLsMXBY",
+        "result": {
+          "content": "Structured output provided successfully",
+          "tool_use_id": "toolu_01MDwFZqGPwzuXavXjLsMXBY",
+          "type": "tool_result"
+        },
+        "result_event_index": 17,
+        "status": "success",
+        "tool_use_result": "Structured output provided successfully"
+      }
+    ],
+    "subtype": "success",
+    "total_cost_usd": 0.149729,
+    "transport_observed_model_ids": [
+      "claude-opus-4-6"
+    ],
+    "type": "result",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 10670,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 10670,
+      "cache_read_input_tokens": 0,
+      "inference_geo": "not_available",
+      "input_tokens": 3,
+      "iterations": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 10670,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 10670,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 3,
+          "output_tokens": 1318,
+          "type": "message"
+        }
+      ],
+      "output_tokens": 1318,
+      "output_tokens_details": {
+        "thinking_tokens": 693
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    }
+  },
+  "argv_sha256": "95e9717e4906dd677b8ec644a97797a3a450ade1f482c2b988a3728943bdb580",
+  "artifact_invocation_id": "judge_b-omission-1-f5201e5feb8fc093",
+  "attempts": 1,
+  "capture_status": "success",
+  "failure_class": null,
+  "final_sha256": "db5da9f75c69623993e81f6f43f80e7a428a814b2fb3e3545b56119fb4733a5a",
+  "invocation_id": "judge_b-omission-1-f5201e5feb8fc093",
+  "observed_model_id": "claude-opus-4-6",
+  "packet_artifact_sha256": "7b820a3f50e273d23e873964ac7f5f584c80d8c2798250602b918b505f7f77b3",
+  "packet_sha256": "b1d2013323eb7286f867ed1e050b57c371d2e822977767f3065d2a92ab2fc9ce",
+  "requested_model_id": "claude-opus-4-6",
+  "status": "success",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_sha256": "add4a1f7aa127e9a402ecc8cfab5acbe7b3739b1886426d4999ea8901bafe050"
+}

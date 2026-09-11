@@ -1,0 +1,31 @@
+{
+  "archive_sha256": "db965f928456801d858082f1bd79424eac6211efad9d523b4a8cc0e89b314725",
+  "complete": true,
+  "diff": {
+    "bytes": 279,
+    "encoding": "utf8",
+    "sha256": "142fe6ac27caaaf029fe36c1c6095aaf411d7f41485626f2c9bb4285d33f5e2b",
+    "utf8": "diff --git a/sample.py b/sample.py\nnew file mode 100644\nindex 0000000..e83472f\n--- /dev/null\n+++ b/sample.py\n@@ -0,0 +1,5 @@\n+def can_read(requester, owner, public=False):\n+    return public or bool(requester)\n+\n+def checkout_total(price, quantity):\n+    return price * quantity\n"
+  },
+  "diff_sha256": "142fe6ac27caaaf029fe36c1c6095aaf411d7f41485626f2c9bb4285d33f5e2b",
+  "files": [
+    {
+      "bytes": 227,
+      "path": "README.md",
+      "sha256": "2e42fa4d4b8ea27e4d8ceedfcebd64a5f017a58a5c2ecad3458d47b3ec6ccc40",
+      "utf8": "Synthetic acceptance repository. can_read permits access only for public documents or an authenticated requester equal to owner. checkout_total must reject negative quantity with ValueError. All prices are integer minor units.\n"
+    },
+    {
+      "bytes": 149,
+      "path": "sample.py",
+      "sha256": "2342f9789ab39e3c357137e2d2a11fb0747cdb0526c1d05086940da66dd2f09e",
+      "utf8": "def can_read(requester, owner, public=False):\n    return public or bool(requester)\n\ndef checkout_total(price, quantity):\n    return price * quantity\n"
+    }
+  ],
+  "included_regular_file_count": 2,
+  "omissions": [],
+  "packet_sha256": "ade31a8092b0a242f1dc0a83f9fd32943354e0036fdc24dbc519bd127f2186e8",
+  "revision": "52e3039afd1aa96baddcaf934967b974315d3c34",
+  "schema_version": "model-source-packet/v1",
+  "tracked_regular_file_count": 2
+}

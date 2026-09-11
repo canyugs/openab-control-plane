@@ -1,0 +1,457 @@
+{
+  "capture": {
+    "audit_cursor_complete": true,
+    "capture_spans": {
+      "audit": "2026-09-09T08:10:00+08:00..2026-09-09T08:10:00+08:00",
+      "cost": "2026-09-09T08:10:00+08:00..2026-09-09T08:10:00+08:00",
+      "github_writes": "2026-09-09T08:10:00+08:00..2026-09-09T08:10:00+08:00",
+      "human": "2026-09-09T08:10:00+08:00..2026-09-09T08:10:00+08:00",
+      "review_findings": "2026-09-09T08:10:00+08:00..2026-09-09T08:10:00+08:00",
+      "review_rounds": "2026-09-09T08:10:00+08:00..2026-09-09T08:10:00+08:00",
+      "runtime_event_receipts": "2026-09-09T08:10:00+08:00..2026-09-09T08:10:00+08:00",
+      "session_targets": "2026-09-09T08:10:00+08:00..2026-09-09T08:10:00+08:00"
+    },
+    "conflicts": {
+      "audit": 0,
+      "product": {}
+    },
+    "coverage": {
+      "audit": "complete",
+      "cost": "unknown",
+      "human": "unknown",
+      "product": "complete",
+      "product_tables": {
+        "github_writes": "complete",
+        "review_findings": "complete",
+        "review_rounds": "complete",
+        "runtime_event_receipts": "complete",
+        "session_targets": "complete"
+      }
+    },
+    "file_hashes": {
+      "audit.ndjson": "7f4d0fdf1a3a68150ef32468f1fe40dfe454ba6afe2d2d79508f1bf241576178",
+      "product.json": "f27aea7227008a9dd8f2b7d66569ef0dbfb68585fde9792426020c3e0a1c4e06"
+    },
+    "future_audit_records_excluded": 0,
+    "future_runtime_receipts_excluded": 0,
+    "non_atomic_capture": true
+  },
+  "cohort": {
+    "accepted_denominator": 7,
+    "accepted_total": 7,
+    "deduplicated_sessions": 7,
+    "eligible_review_total": 7,
+    "excluded_ask": 0,
+    "plan_only": 0,
+    "sessions": [
+      {
+        "accepted_event_id": "event-1",
+        "action_completed": true,
+        "category": "reliable",
+        "eligibility": "review",
+        "latency": {
+          "duration_ms": 292,
+          "qualification": "original_receipt",
+          "status": "observed"
+        },
+        "pr_number": 1,
+        "repo": "org/repo",
+        "session_id": "normal-approve",
+        "source_rows": {
+          "finding_ids": [],
+          "round_id": "1",
+          "target_session_id": "normal-approve",
+          "write_ids": [
+            "1",
+            "2",
+            "3"
+          ]
+        },
+        "target_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "terminal_issue": null,
+        "timeout_evidence": false,
+        "tombstone_visible": false,
+        "verified_commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "accepted_event_id": "event-6",
+        "action_completed": true,
+        "category": "reliable",
+        "eligibility": "review",
+        "latency": {
+          "duration_ms": 292,
+          "qualification": "original_receipt",
+          "status": "observed"
+        },
+        "pr_number": 2,
+        "repo": "org/repo",
+        "session_id": "normal-request-changes",
+        "source_rows": {
+          "finding_ids": [],
+          "round_id": "2",
+          "target_session_id": "normal-request-changes",
+          "write_ids": [
+            "4",
+            "5",
+            "6"
+          ]
+        },
+        "target_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "terminal_issue": null,
+        "timeout_evidence": false,
+        "tombstone_visible": false,
+        "verified_commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "accepted_event_id": "event-24",
+        "action_completed": true,
+        "category": "pending_or_unknown",
+        "eligibility": "review",
+        "latency": {
+          "duration_ms": null,
+          "qualification": "incomplete_receipts",
+          "status": "unknown"
+        },
+        "pr_number": 7,
+        "repo": "org/repo",
+        "session_id": "pending",
+        "source_rows": {
+          "finding_ids": [],
+          "round_id": null,
+          "target_session_id": "pending",
+          "write_ids": []
+        },
+        "target_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "terminal_issue": "missing_or_conflicting_round",
+        "timeout_evidence": false,
+        "tombstone_visible": false,
+        "verified_commit_id": null
+      },
+      {
+        "accepted_event_id": "event-21",
+        "action_completed": true,
+        "category": "superseded",
+        "eligibility": "review",
+        "latency": {
+          "duration_ms": 290,
+          "qualification": "original_receipt",
+          "status": "observed"
+        },
+        "pr_number": 1,
+        "repo": "org/repo",
+        "session_id": "superseded",
+        "source_rows": {
+          "finding_ids": [],
+          "round_id": null,
+          "target_session_id": "superseded",
+          "write_ids": [
+            "11"
+          ]
+        },
+        "target_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "terminal_issue": null,
+        "timeout_evidence": false,
+        "tombstone_visible": true,
+        "verified_commit_id": null
+      },
+      {
+        "accepted_event_id": "event-18",
+        "action_completed": true,
+        "category": "pending_or_unknown",
+        "eligibility": "review",
+        "latency": {
+          "duration_ms": null,
+          "qualification": "unavailable",
+          "status": "unknown"
+        },
+        "pr_number": 1,
+        "repo": "org/repo",
+        "session_id": "timeout-noop",
+        "source_rows": {
+          "finding_ids": [],
+          "round_id": null,
+          "target_session_id": "timeout-noop",
+          "write_ids": [
+            "10"
+          ]
+        },
+        "target_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "terminal_issue": "unbound_or_invisible_tombstone",
+        "timeout_evidence": true,
+        "tombstone_visible": false,
+        "verified_commit_id": null
+      },
+      {
+        "accepted_event_id": "event-15",
+        "action_completed": true,
+        "category": "visible_failure",
+        "eligibility": "review",
+        "latency": {
+          "duration_ms": 290,
+          "qualification": "original_receipt",
+          "status": "observed"
+        },
+        "pr_number": 1,
+        "repo": "org/repo",
+        "session_id": "timeout-visible",
+        "source_rows": {
+          "finding_ids": [],
+          "round_id": null,
+          "target_session_id": "timeout-visible",
+          "write_ids": [
+            "9"
+          ]
+        },
+        "target_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "terminal_issue": null,
+        "timeout_evidence": true,
+        "tombstone_visible": true,
+        "verified_commit_id": null
+      },
+      {
+        "accepted_event_id": "event-11",
+        "action_completed": true,
+        "category": "visible_failure",
+        "eligibility": "review",
+        "latency": {
+          "duration_ms": 291,
+          "qualification": "original_receipt",
+          "status": "observed"
+        },
+        "pr_number": 3,
+        "repo": "org/repo",
+        "session_id": "visible-diagnostic",
+        "source_rows": {
+          "finding_ids": [],
+          "round_id": "3",
+          "target_session_id": "visible-diagnostic",
+          "write_ids": [
+            "7",
+            "8"
+          ]
+        },
+        "target_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "terminal_issue": null,
+        "timeout_evidence": false,
+        "tombstone_visible": false,
+        "verified_commit_id": null
+      }
+    ],
+    "unknown_eligibility": 0,
+    "unmatched_actions": 0
+  },
+  "cost": {
+    "actual_total_status": "totalunknown",
+    "coverage": "unknown",
+    "cross_currency_arithmetic": false,
+    "future_rows_excluded": 0,
+    "invalid_rows": 0,
+    "partial_sessions": 0,
+    "per_currency": {},
+    "per_session": {
+      "normal-approve": {
+        "attempt_coverage": "unknown",
+        "completeness": "unknown",
+        "currency": null,
+        "known_minor": null,
+        "partial_known_minor": null,
+        "reconciliation_references": [],
+        "status": "totalunknown"
+      },
+      "normal-request-changes": {
+        "attempt_coverage": "unknown",
+        "completeness": "unknown",
+        "currency": null,
+        "known_minor": null,
+        "partial_known_minor": null,
+        "reconciliation_references": [],
+        "status": "totalunknown"
+      },
+      "pending": {
+        "attempt_coverage": "unknown",
+        "completeness": "unknown",
+        "currency": null,
+        "known_minor": null,
+        "partial_known_minor": null,
+        "reconciliation_references": [],
+        "status": "totalunknown"
+      },
+      "superseded": {
+        "attempt_coverage": "unknown",
+        "completeness": "unknown",
+        "currency": null,
+        "known_minor": null,
+        "partial_known_minor": null,
+        "reconciliation_references": [],
+        "status": "totalunknown"
+      },
+      "timeout-noop": {
+        "attempt_coverage": "unknown",
+        "completeness": "unknown",
+        "currency": null,
+        "known_minor": null,
+        "partial_known_minor": null,
+        "reconciliation_references": [],
+        "status": "totalunknown"
+      },
+      "timeout-visible": {
+        "attempt_coverage": "unknown",
+        "completeness": "unknown",
+        "currency": null,
+        "known_minor": null,
+        "partial_known_minor": null,
+        "reconciliation_references": [],
+        "status": "totalunknown"
+      },
+      "visible-diagnostic": {
+        "attempt_coverage": "unknown",
+        "completeness": "unknown",
+        "currency": null,
+        "known_minor": null,
+        "partial_known_minor": null,
+        "reconciliation_references": [],
+        "status": "totalunknown"
+      }
+    },
+    "pricing_table_used": false,
+    "unknown_sessions": 7
+  },
+  "definition_version": "review-round-weekly-report/v1",
+  "delivery": {
+    "accepted_to_projection_denominator": 7,
+    "latency": {
+      "actual_latency_status": "unknown",
+      "counts": {
+        "clock_invalid": 0,
+        "observed": 5,
+        "reconciliation_upper_bound": 0,
+        "unknown": 2
+      },
+      "denominator": 7,
+      "durations_ms": [
+        290,
+        290,
+        291,
+        292,
+        292
+      ]
+    },
+    "pending_or_unknown": 2,
+    "reliable": 2,
+    "superseded": 1,
+    "visible_failure": 2
+  },
+  "evaluation": {
+    "availability": "failed",
+    "denominator": 0,
+    "disagreement_denominator": 1,
+    "disagreement_items": 0,
+    "evaluations": 1,
+    "failed_evaluations": 1,
+    "human_confirmed_escapes": 0,
+    "human_escape_denominator": 0,
+    "identity_digest": "59d561d5ee8df133a22c3f678085a7bee53cfa84b8e1da3a01bb475ebbeb4cb3",
+    "identity_hashes": [
+      "a0ca3c6f850863964b55b1f33b5d3a8a66d9e9996455691e85cbd41b7e823ab5"
+    ],
+    "omissions": {
+      "automatically_supported_omission": 0,
+      "candidate_count": 0,
+      "unknown": 0
+    },
+    "partial_evaluations": 0,
+    "quality": {
+      "denominator": 0,
+      "score": null,
+      "status": "not_scoreable"
+    },
+    "raw_counts": [
+      {
+        "refuted": 0,
+        "state": "failed",
+        "supported": 0,
+        "unresolved": 1
+      }
+    ],
+    "recall_claim": "not_available",
+    "refuted": 0,
+    "supported": 0,
+    "unresolved": 0,
+    "usefulness": {
+      "not_useful": 0,
+      "unknown": 0,
+      "useful": 0
+    },
+    "usefulness_denominator": 0,
+    "validation": {
+      "environment_blocked": 0,
+      "executed_refuted": 0,
+      "executed_reproduced": 0,
+      "static_evidence": 0,
+      "unproven": 1
+    },
+    "validation_denominator": 1
+  },
+  "human_quality": {
+    "annotation_counts": {
+      "invalid": 0,
+      "unknown": 0,
+      "valid_not_useful": 0,
+      "valid_useful": 0
+    },
+    "annotation_denominator": 0,
+    "annotations": [],
+    "confirmed_escapes": 0,
+    "conflicting_rows": 0,
+    "coverage": "unknown",
+    "escape_counts": {
+      "confirmed_escape": 0,
+      "not_escape": 0,
+      "unknown": 0
+    },
+    "escapes": [],
+    "future_rows_excluded": 0,
+    "recall_claim": "not_available",
+    "reviewed_window_coverage": "unknown",
+    "reviewed_window_denominator": 0,
+    "unknown_rows": 0
+  },
+  "latency": {
+    "actual_latency_status": "unknown",
+    "counts": {
+      "clock_invalid": 0,
+      "observed": 5,
+      "reconciliation_upper_bound": 0,
+      "unknown": 2
+    },
+    "denominator": 7,
+    "durations_ms": [
+      290,
+      290,
+      291,
+      292,
+      292
+    ]
+  },
+  "limitations": [
+    "Reliability is source-bound and mutually classified; missing joins, conflicts, and incomplete capture remain pending_or_unknown.",
+    "Formal review proof uses provider_receipt.review_id/state/commit_id/reconciled; provider event is not a source field.",
+    "Human usefulness, model evaluation, omissions, confirmed escapes, and delivery reliability have separate denominators.",
+    "Costs are source minor units only; no price table, estimate, allocation, float-dollar conversion, or cross-currency total is made.",
+    "No model, OCI executor, network, database, provider, or live API is invoked by this report."
+  ],
+  "manifest_sha256": "02682cd19126fb22cf6db41e2c7a37ed283b32840f775b6c5683bb0943e5972a",
+  "reliability": {
+    "coverage_blocked": false,
+    "denominator": 7,
+    "pending_or_unknown": 2,
+    "reliable": 2,
+    "superseded": 1,
+    "unknown_denominator": 0,
+    "visible_failure": 2
+  },
+  "report_id": "d3cdd9bfc48c034b2039c619254e44282a672a9a70e595cf90f5278dfe92fec2",
+  "snapshot_at": "2026-09-09T08:10:00+08:00",
+  "timezone": "Asia/Taipei",
+  "week": "2026-W37"
+}

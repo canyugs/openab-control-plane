@@ -1,0 +1,18 @@
+{
+  "baseline": "1e98b73",
+  "clone": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-integrity-red-7anro0f9/clone",
+  "patch_sha256": "bdcbc43c36be643cf680003c8edf0c91cda4cf82b9ffc4641a23b04af64e01c8",
+  "transport_note": "Worker patch file was malformed; captured canonical git diff of exactly 102 added test lines before implementation edits.",
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "github-pr-controller",
+    "--lib",
+    "reviewed_sha",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 101,
+  "output_tail": "   Compiling controller-protocol v0.1.0 (/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-integrity-red-7anro0f9/clone/crates/controller-protocol)\n   Compiling github-pr-controller v0.1.0 (/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-integrity-red-7anro0f9/clone/crates/github-pr-controller)\n    Finished `test` profile [unoptimized] target(s) in 6.90s\n     Running unittests src/lib.rs (/tmp/ocp-integrity-target/debug/deps/github_pr_controller-f3930830f6373fab)\n\nrunning 7 tests\n\nthread 'closing::tests::missing_reviewed_sha_cannot_approve' (124332051) panicked at crates/github-pr-controller/src/closing.rs:565:9:\nassertion `left == right` failed\n  left: \"approve\"\n right: \"sha_integrity_failed\"\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\nthread 'closing::tests::malformed_reviewed_sha_cannot_approve' (124332046) panicked at crates/github-pr-controller/src/closing.rs:565:9:\nassertion `left == right` failed\n  left: \"approve\"\n right: \"sha_integrity_failed\"\n\nthread 'closing::tests::mismatched_reviewed_sha_cannot_request_changes' (124332050) panicked at crates/github-pr-controller/src/closing.rs:565:9:\nassertion `left == right` failed\n  left: \"request_changes\"\n right: \"sha_integrity_failed\"\n\nthread 'closing::tests::mismatched_reviewed_sha_cannot_approve' (124332049) panicked at crates/github-pr-controller/src/closing.rs:565:9:\nassertion `left == right` failed\n  left: \"approve\"\n right: \"sha_integrity_failed\"\n\nthread 'closing::tests::missing_reviewed_sha_cannot_request_changes' (124332052) panicked at crates/github-pr-controller/src/closing.rs:565:9:\nassertion `left == right` failed\n  left: \"request_changes\"\n right: \"sha_integrity_failed\"\n\nthread 'closing::tests::malformed_reviewed_sha_cannot_request_changes' (124332047) panicked at crates/github-pr-controller/src/closing.rs:565:9:\nassertion `left == right` failed\n  left: \"request_changes\"\n right: \"sha_integrity_failed\"\ntest closing::tests::matching_full_reviewed_sha_remains_authoritative ... ok\ntest closing::tests::mismatched_reviewed_sha_cannot_request_changes ... FAILED\ntest closing::tests::malformed_reviewed_sha_cannot_request_changes ... FAILED\ntest closing::tests::missing_reviewed_sha_cannot_request_changes ... FAILED\ntest closing::tests::mismatched_reviewed_sha_cannot_approve ... FAILED\ntest closing::tests::missing_reviewed_sha_cannot_approve ... FAILED\ntest closing::tests::malformed_reviewed_sha_cannot_approve ... FAILED\n\nfailures:\n\nfailures:\n    closing::tests::malformed_reviewed_sha_cannot_approve\n    closing::tests::malformed_reviewed_sha_cannot_request_changes\n    closing::tests::mismatched_reviewed_sha_cannot_approve\n    closing::tests::mismatched_reviewed_sha_cannot_request_changes\n    closing::tests::missing_reviewed_sha_cannot_approve\n    closing::tests::missing_reviewed_sha_cannot_request_changes\n\ntest result: FAILED. 1 passed; 6 failed; 0 ignored; 0 measured; 152 filtered out; finished in 0.01s\n\nerror: test failed, to rerun pass `-p github-pr-controller --lib`\n"
+}

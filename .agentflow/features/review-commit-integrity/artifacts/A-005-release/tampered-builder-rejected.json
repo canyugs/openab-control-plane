@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/venv/bin/python",
+    "-m",
+    "pip",
+    "install",
+    "--no-index",
+    "--find-links",
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/tampered-wheelhouse",
+    "--require-hashes",
+    "--only-binary=:all:",
+    "-r",
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/candidate.lock"
+  ],
+  "exit": 1,
+  "diagnostic": "Looking in links: /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/tampered-wheelhouse\nProcessing /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/tampered-wheelhouse/build-1.6.0-py3-none-any.whl (from -r /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/candidate.lock (line 1))\nERROR: THESE PACKAGES DO NOT MATCH THE HASHES FROM THE REQUIREMENTS FILE. If you have updated the package versions, please update the hashes. Otherwise, examine the package contents carefully; someone may have tampered with them.\n    build==1.6.0 from file:///private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/tampered-wheelhouse/build-1.6.0-py3-none-any.whl (from -r /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/candidate.lock (line 1)):\n        Expected sha256 f7aaf1ebbb79178a02ba248bb524f2176b256017e17e8e4bd4289c7b38cc2bad\n             Got        d91c4f6e14feb7ce290496dcf5c07119b6a7f72e87e975fc56b0c16b12f1e473\n\n"
+}

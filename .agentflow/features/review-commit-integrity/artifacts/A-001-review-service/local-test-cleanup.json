@@ -1,0 +1,7 @@
+{
+  "resource": "owned temporary PostgreSQL 17 test instance",
+  "data_directory": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-integrity-pg-rr7qf5os/data",
+  "command": "pg_ctl -D <owned-data-directory> -m fast -w stop",
+  "exit_code": 0,
+  "output_tail": "waiting for server to shut down.... done\nserver stopped\n"
+}

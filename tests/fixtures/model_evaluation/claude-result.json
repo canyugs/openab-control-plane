@@ -1,0 +1,13 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "model": "provider metadata is intentionally not trusted as identity",
+  "usage": {"input_tokens": 1, "output_tokens": 1},
+  "structured_output": {
+    "item_id": "fixture-F1",
+    "verdict": "supported",
+    "citations": [],
+    "disagreement": "",
+    "reason": "fixture only"
+  }
+}

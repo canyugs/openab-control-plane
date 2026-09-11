@@ -1,0 +1,20 @@
+{
+  "citations": [
+    {
+      "end": 2,
+      "evidence_id": "E_SAMPLE",
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "end": 1,
+      "evidence_id": "E_CONTRACT",
+      "path": "README.md",
+      "start": 1
+    }
+  ],
+  "disagreement": "Both assessments reach the same verdict (support, high severity, useful), so there is no substantive conflict on the outcome. They differ in rigor: one grounds the verdict in the two executed, source-bound runs and states the differential result; the other asserts validity by inspection alone and explicitly declines to produce a counterexample. A residual tension worth preserving: the executed evidence block carries execution_classification/classification \"unproven\" even though controls_passed is true, controller_source_binding is true, and both runs returned exit 0 with observations exactly matching their expectations. I did not treat that harness-level label as a failed control, but I also did not let either assessment's confidence override it; the verdict rests primarily on the frozen source text and contract, which are decisive on their own, with the runs as corroboration rather than as the sole basis.",
+  "item_id": "omission-1-f5201e5feb8fc093",
+  "reason": "The frozen source (E_SAMPLE) shows can_read(requester, owner, public=False) returning `public or bool(requester)`; the owner parameter never appears in the returned expression, so ownership is never enforced. The frozen contract (E_CONTRACT) states access is permitted only for public documents or an authenticated requester equal to owner. Any truthy requester therefore reads a non-public document owned by another principal, which is exactly the omission claimed. This is verifiable from the supplied source text alone. The executed controls corroborate it in a source-bound way: the baseline loaded the mounted frozen sample.py and observed cross_tenant_private_read=true with owner_private_read=true, public_read=true, anonymous_private_read=false (claim_present=true, exit 0), while the counterexample, built from the same source text with patch_applied=true after substituting only the single returned expression for an owner-comparing one, flipped cross_tenant_private_read to false and left the legitimate cases true (claim_present=false, exit 0). The single-line delta isolates the missing requester==owner comparison rather than a harness artifact. Severity is not established by this record beyond the fact of the contract violation; the finding itself carries severity \"unknown\", and I do not adopt either assessment's \"high\" rating as proven.",
+  "verdict": "supported"
+}

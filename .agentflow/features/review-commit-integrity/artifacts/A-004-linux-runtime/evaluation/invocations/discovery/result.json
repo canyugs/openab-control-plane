@@ -1,0 +1,148 @@
+{
+  "actual_cost_usd": "unknown",
+  "actual_metadata": {
+    "actual_cost_usd": "unknown",
+    "auxiliary_model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.0023420000000000003,
+        "inputTokens": 2282,
+        "maxOutputTokens": 32000,
+        "outputTokens": 12,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      }
+    },
+    "cost_basis": [
+      "list"
+    ],
+    "duration_ms": 8200,
+    "estimated_cost_usd": 0.047536999999999996,
+    "is_error": false,
+    "modelUsage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.0023420000000000003,
+        "inputTokens": 2282,
+        "maxOutputTokens": 32000,
+        "outputTokens": 12,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 3176,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costBasis": "list",
+        "costUSD": 0.045195,
+        "inputTokens": 2,
+        "maxOutputTokens": 64000,
+        "outputTokens": 537,
+        "provider": "firstParty",
+        "thinkingTokens": 303,
+        "webSearchRequests": 0
+      }
+    },
+    "model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.0023420000000000003,
+        "inputTokens": 2282,
+        "maxOutputTokens": 32000,
+        "outputTokens": 12,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 3176,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costBasis": "list",
+        "costUSD": 0.045195,
+        "inputTokens": 2,
+        "maxOutputTokens": 64000,
+        "outputTokens": 537,
+        "provider": "firstParty",
+        "thinkingTokens": 303,
+        "webSearchRequests": 0
+      }
+    },
+    "num_turns": 2,
+    "redacted_environment": {
+      "CLAUDE_CODE_OAUTH_TOKEN": "<redacted>",
+      "HOME": "/tmp/ocp-review-eval-home",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "PATH": "/opt/ocp-review-eval/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "TMPDIR": "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/scratch"
+    },
+    "session_id": "37a4b4b0-13f6-4597-8d11-9307c8f01d35",
+    "subtype": "success",
+    "total_cost_usd": 0.047536999999999996,
+    "type": "result",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 3176,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 3176,
+      "cache_read_input_tokens": 0,
+      "inference_geo": "not_available",
+      "input_tokens": 2,
+      "iterations": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 3176,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 3176,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 2,
+          "output_tokens": 537,
+          "type": "message"
+        }
+      ],
+      "output_tokens": 537,
+      "output_tokens_details": {
+        "thinking_tokens": 303
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    }
+  },
+  "argv_sha256": "0cc3c58b498bc3c65316bd99269a74fdc94e5ab92133cfafae69a0f223b336d2",
+  "artifact_invocation_id": "discovery",
+  "attempts": 1,
+  "capture_status": "success",
+  "failure_class": null,
+  "final_sha256": "ad211a82dcba4781fae8ee4c73c0954b2b66a29db98c2f709c1bf01fc2ef98a0",
+  "invocation_id": "discovery",
+  "observed_model_id": "unavailable",
+  "packet_artifact_sha256": "231c92d9fe2bde0f0acd6eed82e4e85b65fef46fd2a78623af30ee312576cb4e",
+  "packet_sha256": "dfeac36b8b14ac4cec343a3bc75f76ef5247feaa7cdac31ac7fa5dd2095edc33",
+  "requested_model_id": "claude-opus-5",
+  "status": "success",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_sha256": "c0d85fc83bfeb7dde9182c0a84cca025269054e1cfa75e3c9a671a6139cc4c3d"
+}

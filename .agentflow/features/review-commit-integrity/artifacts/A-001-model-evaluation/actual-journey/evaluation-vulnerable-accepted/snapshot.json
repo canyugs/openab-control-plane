@@ -1,0 +1,50 @@
+{
+  "archive_sha256": "db965f928456801d858082f1bd79424eac6211efad9d523b4a8cc0e89b314725",
+  "base": "4ed638bb12f3e1fa11be2524a48e18973ad4591f",
+  "diff_sha256": "142fe6ac27caaaf029fe36c1c6095aaf411d7f41485626f2c9bb4285d33f5e2b",
+  "environment_sha256": "9327b4d6c2c86fbad59214c38ef3e009c40ead8e92de55fa5e85ff29d7f7547f",
+  "evidence_manifest_sha256": "0fa80109716693926b1d55b56075eaf743d64ef2133d2d25e276e0208d2bb7c6",
+  "findings_sha256": "c1bfb1a131dce9900c10075b3f94842065422b52ba7a8dcc4b226718d2270e83",
+  "input_identity": "0bdae810036a72905fc863438d43efcbc3385709798fa9ccf228880e801b9b2b",
+  "model_family_warnings": [
+    "judge_a and judge_b share a model family; correlation remains possible"
+  ],
+  "model_profiles": {
+    "discovery": {
+      "adapter": "claude",
+      "family": "anthropic",
+      "model_id": "claude-opus-5",
+      "transport": "oauth"
+    },
+    "judge_a": {
+      "adapter": "claude",
+      "family": "anthropic",
+      "model_id": "claude-opus-5",
+      "transport": "oauth"
+    },
+    "judge_b": {
+      "adapter": "claude",
+      "family": "anthropic",
+      "model_id": "claude-opus-4-6",
+      "transport": "oauth"
+    },
+    "synthesis": {
+      "adapter": "claude",
+      "family": "anthropic",
+      "model_id": "claude-opus-5",
+      "transport": "oauth"
+    },
+    "validation": {
+      "adapter": "claude",
+      "family": "anthropic",
+      "model_id": "claude-opus-5",
+      "transport": "oauth"
+    }
+  },
+  "models_sha256": "f60b0e1b8b12d97047dd64736de0af31a4c514f2810edd7611d102dc489cb959",
+  "revision": "52e3039afd1aa96baddcaf934967b974315d3c34",
+  "schema_version": "review-model-evaluation/v1",
+  "source_complete": true,
+  "source_omissions": [],
+  "source_packet_sha256": "ade31a8092b0a242f1dc0a83f9fd32943354e0036fdc24dbc519bd127f2186e8"
+}

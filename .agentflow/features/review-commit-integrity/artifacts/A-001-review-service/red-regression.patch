@@ -1,0 +1,113 @@
+diff --git a/crates/github-pr-controller/src/closing.rs b/crates/github-pr-controller/src/closing.rs
+index e139daa..3ac87ed 100644
+--- a/crates/github-pr-controller/src/closing.rs
++++ b/crates/github-pr-controller/src/closing.rs
+@@ -541,6 +541,108 @@ mod tests {
+         );
+     }
+ 
++    fn full_target() -> SessionTarget {
++        SessionTarget {
++            repo: "example/repo".into(),
++            pr_number: 7,
++            head_sha: Some("0123456789abcdef0123456789abcdef01234567".into()),
++            reason: None,
++            required_valid_reviewers: Some(2),
++        }
++    }
++
++    fn findings_result(trailer: &str, head_sha: Option<&str>) -> ParsedResult {
++        let body = match head_sha {
++            Some(head_sha) => format!(
++                "report\n<!-- openab-findings\n{{\"head_sha\":\"{head_sha}\",\"findings\":[{{\"id\":\"F1\",\"severity\":\"yellow\",\"title\":\"finding\"}}]}}\n-->\n{trailer}"
++            ),
++            None => format!("report\n{trailer}"),
++        };
++        parse_final_messages(&[body])
++    }
++
++    fn assert_sha_integrity_failure(plan: &ClosingPlan) {
++        assert_eq!(plan.decision, "sha_integrity_failed");
++        assert_eq!(kinds(plan), [KIND_COMMENT, KIND_STATUS]);
++        assert!(plan.findings.is_empty());
++        assert!(plan.fired_waivers.is_empty());
++        assert_eq!(write(plan, KIND_STATUS)["state"], "error");
++        assert_eq!(
++            write(plan, KIND_STATUS)["sha"],
++            "0123456789abcdef0123456789abcdef01234567"
++        );
++    }
++
++    #[test]
++    fn missing_reviewed_sha_cannot_approve() {
++        let parsed = findings_result("[[verdict:approve r=0 y=0 g=1]] [done]", None);
++        let plan = plan_close(&full_target(), &parsed, None, "ses_missing_approve", false);
++        assert_sha_integrity_failure(&plan);
++    }
++
++    #[test]
++    fn missing_reviewed_sha_cannot_request_changes() {
++        let parsed = findings_result(
++            "[[verdict:request_changes r=1 y=0 g=0]] [done]",
++            None,
++        );
++        let plan = plan_close(&full_target(), &parsed, None, "ses_missing_request", false);
++        assert_sha_integrity_failure(&plan);
++    }
++
++    #[test]
++    fn malformed_reviewed_sha_cannot_approve() {
++        let parsed = findings_result(
++            "[[verdict:approve r=0 y=0 g=1]] [done]",
++            Some("not-a-sha"),
++        );
++        let plan = plan_close(&full_target(), &parsed, None, "ses_malformed_approve", false);
++        assert_sha_integrity_failure(&plan);
++    }
++
++    #[test]
++    fn malformed_reviewed_sha_cannot_request_changes() {
++        let parsed = findings_result(
++            "[[verdict:request_changes r=1 y=0 g=0]] [done]",
++            Some("not-a-sha"),
++        );
++        let plan = plan_close(&full_target(), &parsed, None, "ses_malformed_request", false);
++        assert_sha_integrity_failure(&plan);
++    }
++
++    #[test]
++    fn mismatched_reviewed_sha_cannot_approve() {
++        let parsed = findings_result(
++            "[[verdict:approve r=0 y=0 g=1]] [done]",
++            Some("fedcba9876543210fedcba9876543210fedcba98"),
++        );
++        let plan = plan_close(&full_target(), &parsed, None, "ses_mismatch_approve", false);
++        assert_sha_integrity_failure(&plan);
++    }
++
++    #[test]
++    fn mismatched_reviewed_sha_cannot_request_changes() {
++        let parsed = findings_result(
++            "[[verdict:request_changes r=1 y=0 g=0]] [done]",
++            Some("fedcba9876543210fedcba9876543210fedcba98"),
++        );
++        let plan = plan_close(&full_target(), &parsed, None, "ses_mismatch_request", false);
++        assert_sha_integrity_failure(&plan);
++    }
++
++    #[test]
++    fn matching_full_reviewed_sha_remains_authoritative() {
++        let parsed = findings_result(
++            "[[verdict:approve r=0 y=0 g=1]] [done]",
++            Some("0123456789ABCDEF0123456789ABCDEF01234567"),
++        );
++        let plan = plan_close(&full_target(), &parsed, None, "ses_matching", false);
++        assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_STATUS, KIND_REVIEW]);
++        assert_eq!(plan.decision, "approve");
++        assert_eq!(write(&plan, KIND_STATUS)["state"], "success");
++        assert_eq!(write(&plan, KIND_REVIEW)["event"], "APPROVE");
++    }
++
+     #[test]
+     fn fenced_findings_tables_are_unwrapped_but_code_blocks_survive() {
+         // Shape of nuphos#664: the chair fences the table header and body as

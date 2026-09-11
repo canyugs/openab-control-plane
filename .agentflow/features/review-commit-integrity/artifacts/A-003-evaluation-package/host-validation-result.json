@@ -1,0 +1,34 @@
+{
+  "source_baseline": "df101e86fb428d458bf8cd057829de03cd991fb4",
+  "product_sha256": {
+    "pyproject.toml": "01f6e8e8219cf681407454eddfdc40a1f76d0952122dd03ca8ba2aa9146f3c86",
+    "MANIFEST.in": "841d7a2fb3b208d34ab97fbb1a29564419008101271db4ccb70865fd378dc293",
+    "Dockerfile.evaluation": "aea186c813b4e4dd9d0445f4c2bda507e23fe2a962f8e672ec750d5bbf0fed2b",
+    "packaging/evaluation/run.sh": "18f705ceab8f9dd2beece3d3668ffa0b079c429df3a0bd27b6d6f7456eda9a8d",
+    ".github/workflows/evaluation-release.yml": "ab800a6117b75f68a7e037967997ad2dcf9251249f2d7ef2da058441354e419a",
+    "docs/evaluation-package.md": "0c4d1b2768daa9a23c4414e396d1a17c1ab0e6126b15e61c4a6fa03e90d5bfc2",
+    "tests/test_evaluation_package.py": "addbaa15cc1758b29fe987d594e56ba76bcb5569ca17ab701bdda400616e8420"
+  },
+  "core_modules_unchanged": true,
+  "image_inputs_unchanged": true,
+  "final_full_tests": 96,
+  "test_skips": 0,
+  "final_launcher_exit": 0,
+  "scratch_empty_after_exit": true,
+  "existing_artifact_hashes_mtimes_unchanged": 42,
+  "fixture_repo_clean": true,
+  "pty_exit": 0,
+  "rust_clippy_exit": 0,
+  "rust_fmt_existing_differences": [
+    "src/state.rs",
+    "src/store/postgres.rs",
+    "tests/second_consumer.rs"
+  ],
+  "published": false,
+  "deployed": false,
+  "linux_model_auth_tested": false,
+  "auth_restricted_to_supported_keys": true,
+  "auth_rejection_before_mutation": true,
+  "auth_actual_complete_replay_exit": 0,
+  "auth_pty_exit": 0
+}

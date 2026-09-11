@@ -30,6 +30,14 @@ pub const KIND_REVIEW: &str = "review";
 pub const KIND_COMMENT_OPEN: &str = "comment_open";
 pub const KIND_COMMENT_ABANDON: &str = "comment_abandon";
 
+/// A Git object id is evidence only when it is the complete SHA-1 shape the
+/// controller's current policy admits. This intentionally works on bytes so
+/// non-ASCII lookalikes cannot pass a character-count check.
+pub(crate) fn canonical_commit_id(value: &str) -> Option<String> {
+    (value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| value.to_ascii_lowercase())
+}
+
 /// The invisible identity a write carries so a retry can recognise its own
 /// earlier success. A crash between sending and marking done replays the write
 /// after the claim lease lapses, and neither a comment nor a review is
@@ -60,6 +68,11 @@ pub struct ClosingPlan {
     /// What the council says it read — recorded with the round and its
     /// findings. NOT what the commit status is posted against; see `plan_close`.
     pub head_sha: Option<String>,
+    /// Explicit proof used by authority-bearing writes. None is intentional
+    /// for failed, unparseable, reviewer-insufficient, and ask outcomes.
+    pub verified_commit_id: Option<String>,
+    /// Controller-derived integrity result persisted with the round.
+    pub integrity_disposition: String,
     pub findings: Vec<ReviewFinding>,
     /// ADR 035: waiver ids named by `status:"waived"` findings — the terminal
     /// path bumps their repo-scoped fired counters once per first-time round.
@@ -92,12 +105,13 @@ pub fn plan_insufficient_reviewers(
             ),
         }),
     )];
-    if let Some(sha) = target.head_sha.as_deref() {
+    if let Some(sha) = target.head_sha.as_deref().and_then(canonical_commit_id) {
         writes.push((
             KIND_STATUS,
             json!({
                 "repo": target.repo,
                 "sha": sha,
+                "commit_id": sha,
                 "state": "error",
                 "context": STATUS_CONTEXT,
                 "description": "council error - insufficient valid reviewers",
@@ -110,6 +124,8 @@ pub fn plan_insufficient_reviewers(
         yellow: 0,
         green: 0,
         head_sha: target.head_sha.clone(),
+        verified_commit_id: None,
+        integrity_disposition: "insufficient_valid_reviewers".into(),
         findings: vec![],
         fired_waivers: vec![],
         writes,
@@ -143,6 +159,8 @@ pub fn plan_close(
             yellow: 0,
             green: 0,
             head_sha: target.head_sha.clone(),
+            verified_commit_id: None,
+            integrity_disposition: "ask".into(),
             findings: vec![],
             fired_waivers: vec![],
             writes: vec![(
@@ -169,26 +187,32 @@ pub fn plan_close(
     let decision = trailer
         .map(|t| t.decision.clone())
         .unwrap_or_else(|| "unknown".to_string());
-    // Two head shas, two different levels of trust.
-    //
-    // `target.head_sha` came from the webhook GitHub signed: it is the commit
-    // this session was opened for. The chair's findings block carries a sha it
-    // *claims* to have reviewed — useful provenance, but agent output, and an
-    // agent that named someone else's commit could park a green
-    // `openab/council` status on code no one reviewed and satisfy branch
-    // protection with it (council F1, #305).
-    //
-    // So the status — the write with authority — is pinned to the webhook sha.
-    // The claimed sha is recorded with the findings, where it describes what
-    // was read without granting anything. A council that reviewed a newer
-    // commit than the one it was convened for is a supersede, and supersede
-    // opens a new session with its own webhook sha.
-    let status_sha = target.head_sha.clone();
-    let reviewed_sha = parsed
-        .findings
-        .as_ref()
-        .and_then(|block| block.head_sha.clone())
-        .or_else(|| target.head_sha.clone());
+    // The target is controller-owned evidence; the findings SHA is only a
+    // claim until it is complete, canonical, and equal to that target. Do this
+    // before touching findings or waiver bookkeeping so neither verdict can
+    // turn an unproven result into an authority-bearing write.
+    let integrity = if trailer.is_some() {
+        classify_integrity(target, parsed)
+    } else {
+        // Keep the existing unparseable-close behavior. There is no verdict
+        // that could become authority, so the SHA claim is only historical
+        // data and must not turn this path into an integrity diagnostic.
+        IntegrityDecision {
+            disposition: "unparseable",
+            target_commit_id: target.head_sha.as_deref().and_then(canonical_commit_id),
+            verified_commit_id: None,
+            reviewed_sha: parsed
+                .findings
+                .as_ref()
+                .and_then(|block| block.head_sha.clone())
+                .or_else(|| target.head_sha.clone()),
+        }
+    };
+    if trailer.is_some() && integrity.disposition != "verified" {
+        return plan_sha_integrity_failure(target, trailer, comment_id, session_id, integrity);
+    }
+    let status_sha = integrity.target_commit_id.clone();
+    let reviewed_sha = integrity.reviewed_sha.clone();
 
     let findings = parsed
         .findings
@@ -240,6 +264,7 @@ pub fn plan_close(
             json!({
                 "repo": target.repo,
                 "sha": sha,
+                "commit_id": sha,
                 "state": status_state(trailer),
                 "context": STATUS_CONTEXT,
                 "description": status_description(trailer),
@@ -259,6 +284,10 @@ pub fn plan_close(
                 } else {
                     "APPROVE"
                 },
+                "commit_id": integrity
+                    .verified_commit_id
+                    .as_deref()
+                    .expect("verified integrity has a commit id"),
                 "body": format!("{}\n\n{marker}", review_body(trailer, reviewed_sha.as_deref())),
             }),
         ));
@@ -270,8 +299,151 @@ pub fn plan_close(
         yellow,
         green,
         head_sha: reviewed_sha,
+        verified_commit_id: integrity.verified_commit_id,
+        integrity_disposition: integrity.disposition.to_string(),
         findings,
         fired_waivers,
+        writes,
+    }
+}
+
+#[derive(Debug)]
+struct IntegrityDecision {
+    disposition: &'static str,
+    target_commit_id: Option<String>,
+    verified_commit_id: Option<String>,
+    /// The raw claimed value retained only as historical provenance.
+    reviewed_sha: Option<String>,
+}
+
+fn classify_integrity(target: &SessionTarget, parsed: &ParsedResult) -> IntegrityDecision {
+    let target_raw = target.head_sha.as_deref();
+    let target_commit_id = match target_raw {
+        None | Some("") => {
+            return IntegrityDecision {
+                disposition: "missing_target",
+                target_commit_id: None,
+                verified_commit_id: None,
+                reviewed_sha: target.head_sha.clone(),
+            }
+        }
+        Some(raw) => match canonical_commit_id(raw) {
+            Some(canonical) => canonical,
+            None => {
+                return IntegrityDecision {
+                    disposition: "invalid_target",
+                    target_commit_id: None,
+                    verified_commit_id: None,
+                    reviewed_sha: target.head_sha.clone(),
+                }
+            }
+        },
+    };
+
+    let Some(block) = parsed.findings.as_ref() else {
+        return IntegrityDecision {
+            disposition: "missing_reviewed_sha",
+            target_commit_id: Some(target_commit_id),
+            verified_commit_id: None,
+            reviewed_sha: None,
+        };
+    };
+    let Some(reviewed_raw) = block.head_sha.as_deref() else {
+        return IntegrityDecision {
+            disposition: "missing_reviewed_sha",
+            target_commit_id: Some(target_commit_id),
+            verified_commit_id: None,
+            reviewed_sha: None,
+        };
+    };
+    if reviewed_raw.is_empty() {
+        return IntegrityDecision {
+            disposition: "missing_reviewed_sha",
+            target_commit_id: Some(target_commit_id),
+            verified_commit_id: None,
+            reviewed_sha: Some(reviewed_raw.to_string()),
+        };
+    }
+    let Some(reviewed_commit_id) = canonical_commit_id(reviewed_raw) else {
+        return IntegrityDecision {
+            disposition: "invalid_reviewed_sha",
+            target_commit_id: Some(target_commit_id),
+            verified_commit_id: None,
+            reviewed_sha: Some(reviewed_raw.to_string()),
+        };
+    };
+    if reviewed_commit_id != target_commit_id {
+        return IntegrityDecision {
+            disposition: "reviewed_sha_mismatch",
+            target_commit_id: Some(target_commit_id),
+            verified_commit_id: None,
+            reviewed_sha: Some(reviewed_raw.to_string()),
+        };
+    }
+    IntegrityDecision {
+        disposition: "verified",
+        target_commit_id: Some(reviewed_commit_id.clone()),
+        verified_commit_id: Some(reviewed_commit_id.clone()),
+        reviewed_sha: Some(reviewed_commit_id),
+    }
+}
+
+fn plan_sha_integrity_failure(
+    target: &SessionTarget,
+    trailer: Option<&VerdictTrailer>,
+    comment_id: Option<i64>,
+    session_id: &str,
+    integrity: IntegrityDecision,
+) -> ClosingPlan {
+    let (red, yellow, green) = trailer
+        .map(|trailer| {
+            (
+                trailer.red.unwrap_or_default(),
+                trailer.yellow.unwrap_or_default(),
+                trailer.green.unwrap_or_default(),
+            )
+        })
+        .unwrap_or_default();
+    let verdict = trailer
+        .map(|trailer| trailer.decision.as_str())
+        .unwrap_or("unknown");
+    let marker = round_marker(session_id);
+    let diagnostic = format!(
+        "⚠️ Review SHA integrity failed ({}) for `{verdict}`. Approval or change-request review was withheld; no findings or waiver effects were recorded. Re-run the council for this pull request.\n\n{marker}",
+        integrity.disposition
+    );
+    let mut writes = vec![(
+        KIND_COMMENT,
+        json!({
+            "repo": target.repo,
+            "pr_number": target.pr_number,
+            "comment_id": comment_id,
+            "body": diagnostic,
+        }),
+    )];
+    if let Some(sha) = integrity.target_commit_id.as_deref() {
+        writes.push((
+            KIND_STATUS,
+            json!({
+                "repo": target.repo,
+                "sha": sha,
+                "commit_id": sha,
+                "state": "error",
+                "context": STATUS_CONTEXT,
+                "description": format!("council error - SHA integrity failed ({})", integrity.disposition),
+            }),
+        ));
+    }
+    ClosingPlan {
+        decision: "sha_integrity_failed".into(),
+        red,
+        yellow,
+        green,
+        head_sha: integrity.reviewed_sha,
+        verified_commit_id: integrity.verified_commit_id,
+        integrity_disposition: integrity.disposition.into(),
+        findings: vec![],
+        fired_waivers: vec![],
         writes,
     }
 }
@@ -492,13 +664,13 @@ fn unfence_tables(lines: Vec<&str>) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::verdict::parse_final_messages;
+    use crate::verdict::{parse_final_messages, parse_verdict_trailer, FindingsBlock};
 
     fn target() -> SessionTarget {
         SessionTarget {
             repo: "example/repo".into(),
             pr_number: 7,
-            head_sha: Some("openingsha".into()),
+            head_sha: Some("0123456789abcdef0123456789abcdef01234567".into()),
             reason: None,
             required_valid_reviewers: Some(2),
         }
@@ -517,10 +689,22 @@ mod tests {
             .1
     }
 
+    fn valid_parsed(source: &str, trailer: &str) -> ParsedResult {
+        ParsedResult {
+            trailer: parse_verdict_trailer(trailer),
+            findings: Some(FindingsBlock {
+                head_sha: Some("0123456789abcdef0123456789abcdef01234567".into()),
+                findings: vec![],
+            }),
+            source: source.into(),
+        }
+    }
+
     #[test]
     fn an_approve_becomes_a_comment_a_success_status_and_a_formal_approval() {
-        let parsed = parse_final_messages(
-            &["<!-- openab-council -->\nLGTM\n[[verdict:approve r=0 y=0 g=2]] [done]".into()],
+        let parsed = valid_parsed(
+            "<!-- openab-council -->\nLGTM\n[[verdict:approve r=0 y=0 g=2]] [done]",
+            "[[verdict:approve r=0 y=0 g=2]] [done]",
         );
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_STATUS, KIND_REVIEW]);
@@ -535,10 +719,169 @@ mod tests {
         assert_eq!(description, "approve · red 0 · yellow 0 · green 2");
         assert_eq!(write(&plan, KIND_REVIEW)["event"], "APPROVE");
         assert_eq!(
+            write(&plan, KIND_REVIEW)["commit_id"],
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+        assert_eq!(
+            write(&plan, KIND_STATUS)["commit_id"],
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+        assert_eq!(
             write(&plan, KIND_COMMENT)["body"],
             format!("<!-- openab-council -->\nLGTM\n\n{}", round_marker("ses_t")),
             "the comment carries its round marker"
         );
+    }
+
+    fn full_target() -> SessionTarget {
+        SessionTarget {
+            repo: "example/repo".into(),
+            pr_number: 7,
+            head_sha: Some("0123456789abcdef0123456789abcdef01234567".into()),
+            reason: None,
+            required_valid_reviewers: Some(2),
+        }
+    }
+
+    fn findings_result(trailer: &str, head_sha: Option<&str>) -> ParsedResult {
+        let body = match head_sha {
+            Some(head_sha) => format!(
+                "report\n<!-- openab-findings\n{{\"head_sha\":\"{head_sha}\",\"findings\":[{{\"id\":\"F1\",\"severity\":\"yellow\",\"title\":\"finding\"}}]}}\n-->\n{trailer}"
+            ),
+            None => format!("report\n{trailer}"),
+        };
+        parse_final_messages(&[body])
+    }
+
+    fn assert_sha_integrity_failure(plan: &ClosingPlan) {
+        assert_eq!(plan.decision, "sha_integrity_failed");
+        assert_eq!(kinds(plan), [KIND_COMMENT, KIND_STATUS]);
+        assert!(plan.findings.is_empty());
+        assert!(plan.fired_waivers.is_empty());
+        assert_eq!(write(plan, KIND_STATUS)["state"], "error");
+        assert_eq!(
+            write(plan, KIND_STATUS)["sha"],
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+    }
+
+    #[test]
+    fn missing_reviewed_sha_cannot_approve() {
+        let parsed = findings_result("[[verdict:approve r=0 y=0 g=1]] [done]", None);
+        let plan = plan_close(&full_target(), &parsed, None, "ses_missing_approve", false);
+        assert_sha_integrity_failure(&plan);
+    }
+
+    #[test]
+    fn missing_reviewed_sha_cannot_request_changes() {
+        let parsed = findings_result("[[verdict:request_changes r=1 y=0 g=0]] [done]", None);
+        let plan = plan_close(&full_target(), &parsed, None, "ses_missing_request", false);
+        assert_sha_integrity_failure(&plan);
+    }
+
+    #[test]
+    fn malformed_reviewed_sha_cannot_approve() {
+        let parsed = findings_result("[[verdict:approve r=0 y=0 g=1]] [done]", Some("not-a-sha"));
+        let plan = plan_close(
+            &full_target(),
+            &parsed,
+            None,
+            "ses_malformed_approve",
+            false,
+        );
+        assert_sha_integrity_failure(&plan);
+    }
+
+    #[test]
+    fn malformed_reviewed_sha_cannot_request_changes() {
+        let parsed = findings_result(
+            "[[verdict:request_changes r=1 y=0 g=0]] [done]",
+            Some("not-a-sha"),
+        );
+        let plan = plan_close(
+            &full_target(),
+            &parsed,
+            None,
+            "ses_malformed_request",
+            false,
+        );
+        assert_sha_integrity_failure(&plan);
+    }
+
+    #[test]
+    fn mismatched_reviewed_sha_cannot_approve() {
+        let parsed = findings_result(
+            "[[verdict:approve r=0 y=0 g=1]] [done]",
+            Some("fedcba9876543210fedcba9876543210fedcba98"),
+        );
+        let plan = plan_close(&full_target(), &parsed, None, "ses_mismatch_approve", false);
+        assert_sha_integrity_failure(&plan);
+    }
+
+    #[test]
+    fn mismatched_reviewed_sha_cannot_request_changes() {
+        let parsed = findings_result(
+            "[[verdict:request_changes r=1 y=0 g=0]] [done]",
+            Some("fedcba9876543210fedcba9876543210fedcba98"),
+        );
+        let plan = plan_close(&full_target(), &parsed, None, "ses_mismatch_request", false);
+        assert_sha_integrity_failure(&plan);
+    }
+
+    #[test]
+    fn empty_reviewed_sha_cannot_authorize_either_verdict() {
+        for (session_id, trailer) in [
+            (
+                "ses_empty_approve",
+                "[[verdict:approve r=0 y=0 g=1]] [done]",
+            ),
+            (
+                "ses_empty_request",
+                "[[verdict:request_changes r=1 y=0 g=0]] [done]",
+            ),
+        ] {
+            let parsed = findings_result(trailer, Some(""));
+            let plan = plan_close(&full_target(), &parsed, None, session_id, false);
+            assert_sha_integrity_failure(&plan);
+            assert_eq!(plan.integrity_disposition, "missing_reviewed_sha");
+        }
+    }
+
+    #[test]
+    fn invalid_target_cannot_authorize_either_verdict() {
+        for (session_id, trailer) in [
+            (
+                "ses_bad_target_approve",
+                "[[verdict:approve r=0 y=0 g=1]] [done]",
+            ),
+            (
+                "ses_bad_target_request",
+                "[[verdict:request_changes r=1 y=0 g=0]] [done]",
+            ),
+        ] {
+            let parsed = findings_result(trailer, Some("0123456789abcdef0123456789abcdef01234567"));
+            let mut target = full_target();
+            target.head_sha = Some("placeholder".into());
+            let plan = plan_close(&target, &parsed, None, session_id, false);
+            assert_eq!(plan.decision, "sha_integrity_failed");
+            assert_eq!(plan.integrity_disposition, "invalid_target");
+            assert_eq!(kinds(&plan), [KIND_COMMENT]);
+            assert!(plan.findings.is_empty());
+            assert!(plan.fired_waivers.is_empty());
+        }
+    }
+
+    #[test]
+    fn matching_full_reviewed_sha_remains_authoritative() {
+        let parsed = findings_result(
+            "[[verdict:approve r=0 y=0 g=1]] [done]",
+            Some("0123456789ABCDEF0123456789ABCDEF01234567"),
+        );
+        let plan = plan_close(&full_target(), &parsed, None, "ses_matching", false);
+        assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_STATUS, KIND_REVIEW]);
+        assert_eq!(plan.decision, "approve");
+        assert_eq!(write(&plan, KIND_STATUS)["state"], "success");
+        assert_eq!(write(&plan, KIND_REVIEW)["event"], "APPROVE");
     }
 
     #[test]
@@ -559,7 +902,7 @@ mod tests {
              let keep = me;\n\
              ```\n\
              [[verdict:request_changes r=0 y=1 g=0]] [done]";
-        let parsed = parse_final_messages(&[report.into()]);
+        let parsed = valid_parsed(report, "[[verdict:request_changes r=0 y=1 g=0]] [done]");
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(!body.contains("```\n| ID"), "table header unfenced");
@@ -581,7 +924,7 @@ mod tests {
              ## Delta since d3fbb56\n\n- One appended line.";
         let closing = "🔴×0 🟡×0 🟢×1 · 💬 Comment `@bot <question>` for a follow-up\n\n\
              <!-- openab-findings\n\
-             {\"head_sha\":\"701a1bf\",\"findings\":[]}\n\
+             {\"head_sha\":\"0123456789ABCDEF0123456789ABCDEF01234567\",\"findings\":[]}\n\
              -->\n\
              [[verdict:approve r=0 y=0 g=1]] [done]";
         let parsed = parse_final_messages(&[synthesis.into(), closing.into()]);
@@ -618,7 +961,7 @@ mod tests {
              CHANGES REQUESTED ⚠️ — the real report.\n\n\
              ## Findings\n\n| F1 | 🟡 | real |\n\n\
              [[verdict:request_changes r=0 y=1 g=0]] [done]";
-        let parsed = parse_final_messages(&[noisy.into()]);
+        let parsed = valid_parsed(noisy, "[[verdict:request_changes r=0 y=1 g=0]] [done]");
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(
@@ -642,10 +985,12 @@ mod tests {
              [[verdict:request_changes r=0 y=2 g=1]] [done]\n\
              ✅ `Running: printf '%s' '{\"pullNumber\":725}' | /home/agent/bin/octobroker-mcp call pull_request_read`\n\
              Let me fetch the head SHA again.";
-        let parsed = parse_final_messages(&[
-            one_draft_then_noise.into(),
-            "footer\n[[verdict:request_changes r=0 y=2 g=1]] [done]".into(),
-        ]);
+        let parsed = valid_parsed(
+            &format!(
+                "{one_draft_then_noise}\nfooter\n[[verdict:request_changes r=0 y=2 g=1]] [done]"
+            ),
+            "[[verdict:request_changes r=0 y=2 g=1]] [done]",
+        );
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(
@@ -664,7 +1009,7 @@ mod tests {
              <!-- openab-council -->\n\
              CHANGES REQUESTED ⚠️ — the final draft.\n\
              [[verdict:request_changes r=0 y=2 g=1]] [done]";
-        let parsed = parse_final_messages(&[redraft.into()]);
+        let parsed = valid_parsed(redraft, "[[verdict:request_changes r=0 y=2 g=1]] [done]");
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(
@@ -680,12 +1025,12 @@ mod tests {
     #[test]
     fn the_review_names_the_sha_it_stands_behind() {
         let parsed = parse_final_messages(&[
-            "report\n<!-- openab-findings\n{\"head_sha\":\"feedc0de\",\"findings\":[]}\n-->\n[[verdict:approve r=0 y=0 g=1]] [done]".into(),
+            "report\n<!-- openab-findings\n{\"head_sha\":\"0123456789ABCDEF0123456789ABCDEF01234567\",\"findings\":[]}\n-->\n[[verdict:approve r=0 y=0 g=1]] [done]".into(),
         ]);
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         let body = write(&plan, KIND_REVIEW)["body"].as_str().unwrap();
         assert!(
-            body.contains("Reviewed at feedc0de"),
+            body.contains("Reviewed at 0123456789abcdef0123456789abcdef01234567"),
             "review timeline entry must name the reviewed sha: {body}"
         );
     }
@@ -694,8 +1039,10 @@ mod tests {
     fn anything_blocking_becomes_a_request_changes_review() {
         // 🟡 alone blocks, and it blocks even when the chair wrote `approve` —
         // the counts already overrode the word in the parser.
-        let parsed =
-            parse_final_messages(&["report\n[[verdict:approve r=0 y=1 g=2]] [done]".into()]);
+        let parsed = valid_parsed(
+            "report\n[[verdict:approve r=0 y=1 g=2]] [done]",
+            "[[verdict:approve r=0 y=1 g=2]] [done]",
+        );
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
         assert_eq!(plan.decision, "request_changes");
         assert_eq!(write(&plan, KIND_STATUS)["state"], "failure");
@@ -774,7 +1121,10 @@ mod tests {
         let plan = plan_close(&target(), &parsed, None, "ses_ask", true);
         let body = write(&plan, KIND_COMMENT)["body"].as_str().unwrap();
         assert!(body.contains("Short answer here."));
-        assert!(!body.contains("[[verdict:"), "verdict trailer leaked: {body}");
+        assert!(
+            !body.contains("[[verdict:"),
+            "verdict trailer leaked: {body}"
+        );
         assert_eq!(kinds(&plan), [KIND_COMMENT]);
     }
 
@@ -819,7 +1169,7 @@ mod tests {
             "✅ `Running: octobroker-mcp call pull_request_read`\n",
             "Received rev-codex's report. Waiting for rev-claude.\n",
             "<!-- openab-findings\n",
-            "{\"head_sha\":\"96f66e1\",\"findings\":[{\"id\":\"F7\",\"severity\":\"green\",\"title\":\"skip\"}]}\n-->\n",
+            "{\"head_sha\":\"0123456789ABCDEF0123456789ABCDEF01234567\",\"findings\":[{\"id\":\"F7\",\"severity\":\"green\",\"title\":\"skip\"}]}\n-->\n",
             "[[verdict:approve r=0 y=0 g=2]] [done]"
         )
         .into()]);
@@ -849,16 +1199,19 @@ mod tests {
         let parsed = parse_final_messages(&[concat!(
             "report\n",
             "<!-- openab-findings\n",
-            "{\"head_sha\":\"reviewedsha\",\"findings\":[",
+            "{\"head_sha\":\"0123456789ABCDEF0123456789ABCDEF01234567\",\"findings\":[",
             "{\"id\":\"F1\",\"severity\":\"yellow\",\"title\":\"races\"}]}\n-->\n",
             "[[verdict:request_changes r=0 y=1 g=0]] [done]"
         )
         .into()]);
         let plan = plan_close(&target(), &parsed, None, "ses_t", false);
-        assert_eq!(plan.head_sha.as_deref(), Some("reviewedsha"));
+        assert_eq!(
+            plan.head_sha.as_deref(),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
         assert_eq!(
             write(&plan, KIND_STATUS)["sha"],
-            "openingsha",
+            "0123456789abcdef0123456789abcdef01234567",
             "the status goes to the commit GitHub told us about"
         );
         assert_eq!(plan.findings.len(), 1);
@@ -878,18 +1231,26 @@ mod tests {
         target.head_sha = None;
         let parsed = parse_final_messages(&["LGTM\n[[verdict:approve r=0 y=0 g=1]] [done]".into()]);
         let plan = plan_close(&target, &parsed, None, "ses_t", false);
-        assert_eq!(kinds(&plan), [KIND_COMMENT, KIND_REVIEW]);
+        assert_eq!(kinds(&plan), [KIND_COMMENT]);
+        assert_eq!(plan.decision, "sha_integrity_failed");
+        assert!(plan.writes[0].1["body"]
+            .as_str()
+            .unwrap()
+            .contains("missing_target"));
     }
 
     #[test]
     fn the_comment_drops_machine_tails_but_keeps_the_findings_block() {
         let parsed = parse_final_messages(&[concat!(
             "<!-- openab-council -->\n## Verdict\n\nprose here\n\n",
-            "<!-- openab-findings\n{\"findings\":[]}\n-->\n",
+            "<!-- openab-findings\n{\"head_sha\":\"0123456789ABCDEF0123456789ABCDEF01234567\",\"findings\":[]}\n-->\n",
             "[[verdict:approve r=0 y=0 g=0]] [done]"
         )
         .into()]);
-        let body = write(&plan_close(&target(), &parsed, None, "ses_t", false), KIND_COMMENT)["body"]
+        let body = write(
+            &plan_close(&target(), &parsed, None, "ses_t", false),
+            KIND_COMMENT,
+        )["body"]
             .as_str()
             .unwrap()
             .to_string();

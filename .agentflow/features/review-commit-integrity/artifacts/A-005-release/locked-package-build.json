@@ -1,0 +1,72 @@
+{
+  "commands": [
+    {
+      "argv": [
+        "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/venv/bin/python",
+        "-m",
+        "build",
+        "--wheel",
+        "--sdist",
+        "--no-isolation",
+        "--outdir",
+        "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/dist",
+        "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/image-context"
+      ],
+      "exit": 0,
+      "diagnostic": "l\nrunning install_lib\ncreating build/bdist.macosx-26.0-arm64/wheel\ncopying build/lib/review_model_adapters.py -> build/bdist.macosx-26.0-arm64/wheel/.\ncopying build/lib/review_model_evaluation.py -> build/bdist.macosx-26.0-arm64/wheel/.\ncopying build/lib/review_model_oci_executor.py -> build/bdist.macosx-26.0-arm64/wheel/.\ncopying build/lib/review_round_weekly_report.py -> build/bdist.macosx-26.0-arm64/wheel/.\nrunning install_egg_info\nrunning egg_info\nwriting scripts/ocp_review_eval.egg-info/PKG-INFO\nwriting dependency_links to scripts/ocp_review_eval.egg-info/dependency_links.txt\nwriting entry points to scripts/ocp_review_eval.egg-info/entry_points.txt\nwriting top-level names to scripts/ocp_review_eval.egg-info/top_level.txt\nreading manifest file 'scripts/ocp_review_eval.egg-info/SOURCES.txt'\nreading manifest template 'MANIFEST.in'\nadding license file 'LICENSE'\nwriting manifest file 'scripts/ocp_review_eval.egg-info/SOURCES.txt'\nCopying scripts/ocp_review_eval.egg-info to build/bdist.macosx-26.0-arm64/wheel/./ocp_review_eval-0.1.0-py3.14.egg-info\nrunning install_scripts\ncreating build/bdist.macosx-26.0-arm64/wheel/ocp_review_eval-0.1.0.dist-info/WHEEL\ncreating '/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/dist/.tmp-8n435uds/ocp_review_eval-0.1.0-py3-none-any.whl' and adding 'build/bdist.macosx-26.0-arm64/wheel' to it\nadding 'review_model_adapters.py'\nadding 'review_model_evaluation.py'\nadding 'review_model_oci_executor.py'\nadding 'review_round_weekly_report.py'\nadding 'ocp_review_eval-0.1.0.dist-info/licenses/LICENSE'\nadding 'ocp_review_eval-0.1.0.dist-info/METADATA'\nadding 'ocp_review_eval-0.1.0.dist-info/WHEEL'\nadding 'ocp_review_eval-0.1.0.dist-info/entry_points.txt'\nadding 'ocp_review_eval-0.1.0.dist-info/top_level.txt'\nadding 'ocp_review_eval-0.1.0.dist-info/RECORD'\nremoving build/bdist.macosx-26.0-arm64/wheel\nrunning egg_info\nwriting scripts/ocp_review_eval.egg-info/PKG-INFO\nwriting dependency_links to scripts/ocp_review_eval.egg-info/dependency_links.txt\nwriting entry points to scripts/ocp_review_eval.egg-info/entry_points.txt\nwriting top-level names to scripts/ocp_review_eval.egg-info/top_level.txt\nreading manifest file 'scripts/ocp_review_eval.egg-info/SOURCES.txt'\nreading manifest template 'MANIFEST.in'\nadding license file 'LICENSE'\nwriting manifest file 'scripts/ocp_review_eval.egg-info/SOURCES.txt'\nrunning sdist\nrunning egg_info\nwriting scripts/ocp_review_eval.egg-info/PKG-INFO\nwriting dependency_links to scripts/ocp_review_eval.egg-info/dependency_links.txt\nwriting entry points to scripts/ocp_review_eval.egg-info/entry_points.txt\nwriting top-level names to scripts/ocp_review_eval.egg-info/top_level.txt\nreading manifest file 'scripts/ocp_review_eval.egg-info/SOURCES.txt'\nreading manifest template 'MANIFEST.in'\nadding license file 'LICENSE'\nwriting manifest file 'scripts/ocp_review_eval.egg-info/SOURCES.txt'\nrunning check\ncreating ocp_review_eval-0.1.0\ncreating ocp_review_eval-0.1.0/scripts\ncreating ocp_review_eval-0.1.0/scripts/ocp_review_eval.egg-info\ncopying files to ocp_review_eval-0.1.0...\ncopying LICENSE -> ocp_review_eval-0.1.0\ncopying MANIFEST.in -> ocp_review_eval-0.1.0\ncopying pyproject.toml -> ocp_review_eval-0.1.0\ncopying scripts/review_model_adapters.py -> ocp_review_eval-0.1.0/scripts\ncopying scripts/review_model_evaluation.py -> ocp_review_eval-0.1.0/scripts\ncopying scripts/review_model_oci_executor.py -> ocp_review_eval-0.1.0/scripts\ncopying scripts/review_round_weekly_report.py -> ocp_review_eval-0.1.0/scripts\ncopying scripts/ocp_review_eval.egg-info/SOURCES.txt -> ocp_review_eval-0.1.0/scripts/ocp_review_eval.egg-info\nWriting ocp_review_eval-0.1.0/setup.cfg\nCreating tar archive\nremoving 'ocp_review_eval-0.1.0' (and everything under it)\nSuccessfully built ocp_review_eval-0.1.0-py3-none-any.whl and ocp_review_eval-0.1.0.tar.gz\n* Getting build dependencies for wheel...\n* Building wheel...\n* Getting build dependencies for sdist...\n* Building sdist...\nwarning: sdist: standard file not found: should have one of README, README.rst, README.txt, README.md\n\n"
+    },
+    {
+      "argv": [
+        "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/installed/bin/python",
+        "-m",
+        "pip",
+        "install",
+        "--no-index",
+        "--no-deps",
+        "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/dist/ocp_review_eval-0.1.0-py3-none-any.whl"
+      ],
+      "exit": 0,
+      "diagnostic": "Processing ./dist/ocp_review_eval-0.1.0-py3-none-any.whl\nInstalling collected packages: ocp-review-eval\nSuccessfully installed ocp-review-eval-0.1.0\n"
+    },
+    {
+      "argv": [
+        "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/installed/bin/ocp-review-eval",
+        "--help"
+      ],
+      "exit": 0,
+      "diagnostic": "usage: ocp-review-eval [-h] {run} ...\n\nRun immutable offline model evaluation\n\npositional arguments:\n  {run}\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    {
+      "argv": [
+        "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/installed/bin/ocp-review-weekly",
+        "--help"
+      ],
+      "exit": 0,
+      "diagnostic": "usage: ocp-review-weekly [-h] --bundle BUNDLE --week WEEK --as-of AS_OF\n                         --output OUTPUT [--evaluation-root EVALUATION_ROOT]\n\nRender the frozen offline review-round weekly report\n\noptions:\n  -h, --help            show this help message and exit\n  --bundle BUNDLE\n  --week WEEK\n  --as-of AS_OF\n  --output OUTPUT\n  --evaluation-root EVALUATION_ROOT\n"
+    }
+  ],
+  "wheel_files": [
+    "review_model_adapters.py",
+    "review_model_evaluation.py",
+    "review_model_oci_executor.py",
+    "review_round_weekly_report.py",
+    "ocp_review_eval-0.1.0.dist-info/licenses/LICENSE",
+    "ocp_review_eval-0.1.0.dist-info/METADATA",
+    "ocp_review_eval-0.1.0.dist-info/WHEEL",
+    "ocp_review_eval-0.1.0.dist-info/entry_points.txt",
+    "ocp_review_eval-0.1.0.dist-info/top_level.txt",
+    "ocp_review_eval-0.1.0.dist-info/RECORD"
+  ],
+  "sdist_files": [
+    "ocp_review_eval-0.1.0/LICENSE",
+    "ocp_review_eval-0.1.0/MANIFEST.in",
+    "ocp_review_eval-0.1.0/PKG-INFO",
+    "ocp_review_eval-0.1.0/pyproject.toml",
+    "ocp_review_eval-0.1.0/scripts/ocp_review_eval.egg-info/SOURCES.txt",
+    "ocp_review_eval-0.1.0/scripts/review_model_adapters.py",
+    "ocp_review_eval-0.1.0/scripts/review_model_evaluation.py",
+    "ocp_review_eval-0.1.0/scripts/review_model_oci_executor.py",
+    "ocp_review_eval-0.1.0/scripts/review_round_weekly_report.py",
+    "ocp_review_eval-0.1.0/setup.cfg"
+  ]
+}

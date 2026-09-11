@@ -1,0 +1,20 @@
+{
+  "citations": [
+    {
+      "end": 2,
+      "evidence_id": "E_SAMPLE",
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "end": 1,
+      "evidence_id": "E_CONTRACT",
+      "path": "README.md",
+      "start": 1
+    }
+  ],
+  "disagreement": "None. Both assessments independently reach the same conclusion (refute, false positive, not useful) with the same reading of the boolean expression and the same citations. The only difference is wording/detail depth, not substance; no unresolved conflict to preserve.",
+  "item_id": "F-1",
+  "reason": "The finding claims can_read grants private-document access to any nonempty requester. The frozen source contradicts this: line 2 of sample.py returns `public or (bool(requester) and requester == owner)`, where the truthiness test is conjoined with, not a substitute for, the ownership equality test. For a private document (public=False) and a non-owner requester, the expression evaluates to False, which matches the README rule that access is permitted only for public documents or a requester equal to owner.\n\nExecuted evidence corroborates and is source-bound with a working sensitivity control. The baseline run loads the frozen source directly (no re-typed logic) and probes the exact scenario asserted by the finding: can_read(\"mallory\",\"alice\",public=False) -> false, with contract sanity probes owner-private true, empty-requester-private false, public-anyone true; exit 0, claim_present=false. The counterexample run is a positive control that mutates only `requester == owner` to `requester is not None` (mutation applied=true) and, using the identical probe, reports claim_present=true, exit 0. Because the same probe fires on genuinely bypassed code but not on the shipped code, the negative baseline observation is attributable to the source under test rather than to hard-coding or echo. Controls passed; the execution classification \"unproven\" reflects that the alleged vulnerability was not reproduced, which is consistent with refutation rather than an indication of a failed control. The claim is therefore refuted on the supplied source: no access-control bypass exists.",
+  "verdict": "refuted"
+}

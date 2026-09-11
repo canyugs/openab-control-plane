@@ -1,0 +1,425 @@
+{
+  "findings": [
+    {
+      "author_model_identity": "unknown",
+      "claim": "An authenticated requester who is not the owner can read a private document because can_read accepts any nonempty requester. This violates the explicit README access rule.",
+      "classification": "executed_refuted",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "finding": {
+        "author_model_identity": "unknown",
+        "claim": "An authenticated requester who is not the owner can read a private document because can_read accepts any nonempty requester. This violates the explicit README access rule.",
+        "evidence_ids": [
+          "E_SAMPLE",
+          "E_CONTRACT"
+        ],
+        "finding_id": "F-1",
+        "location": {
+          "end_line": 2,
+          "path": "sample.py",
+          "start_line": 1
+        },
+        "severity": "high",
+        "title": "Private document access bypass"
+      },
+      "finding_id": "F-1",
+      "item_id": "F-1",
+      "judge_disagreement": false,
+      "judges": [
+        {
+          "assessment": {
+            "citations": [
+              {
+                "end": 2,
+                "evidence_id": "E_SAMPLE",
+                "path": "sample.py",
+                "start": 1
+              },
+              {
+                "end": 1,
+                "evidence_id": "E_CONTRACT",
+                "path": "README.md",
+                "start": 1
+              }
+            ],
+            "counterexample": "The finding asserts can_read grants private-document access to any nonempty requester, but line 2 of sample.py returns `public or (bool(requester) and requester == owner)`: the `bool(requester)` test is ANDed with, not substituted for, the ownership equality check, so a non-owner authenticated requester on a private document evaluates False. This matches the README rule that access is permitted only for public documents or a requester equal to owner.\n\nExecuted controls are source-bound and distinguish the claim from its negation. The baseline probe loads the frozen /source/sample.py via importlib (no re-typed logic) and calls the exact scenario named in the finding, can_read(\"mallory\",\"alice\",public=False) -> false; sanity probes in the same run show can_read(\"alice\",\"alice\",False)=true, can_read(\"\",\"alice\",False)=false, can_read(\"mallory\",\"alice\",True)=true, exit 0, claim_present=false. The counterexample is a positive control that reads the same source bytes, textually mutates only `requester == owner` into `requester is not None` (mutation.applied=true), execs the mutated module, and runs the identical probe: can_read(\"mallory\",\"alice\",public=False) -> true, claim_present=true, exit 0. Because the identical probe fires on genuinely bypassed code and does not fire on the shipped code, the observation is caused by the source under test rather than by hard-coding, printing, or argv echo. F-1 is therefore a false positive: no access-control bypass exists in the supplied code.",
+            "finding_id": "F-1",
+            "provenance": "model_assessment",
+            "severity": "none",
+            "usefulness": "not_useful",
+            "validation_verdict": "valid",
+            "verdict": "refute"
+          },
+          "failure_class": null,
+          "invocation_id": "judge_a-F-1",
+          "observed_model_id": "claude-opus-5",
+          "requested_model_id": "claude-opus-5",
+          "role": "judge_a",
+          "status": "success"
+        },
+        {
+          "assessment": {
+            "citations": [
+              {
+                "end": 2,
+                "evidence_id": "E_SAMPLE",
+                "path": "sample.py",
+                "start": 1
+              },
+              {
+                "end": 1,
+                "evidence_id": "E_CONTRACT",
+                "path": "README.md",
+                "start": 1
+              }
+            ],
+            "counterexample": "The claim states can_read accepts any nonempty requester for private documents, but the code on line 2 is `return public or (bool(requester) and requester == owner)`. The `and requester == owner` clause ensures that a non-owner is always denied. Calling can_read(\"mallory\", \"alice\", public=False) evaluates to `False or (True and False)` = False. The executed baseline confirms this: can_read(\"mallory\",\"alice\",public=False) returns False. The positive control demonstrates the probe is sensitive by mutating `requester == owner` to `requester is not None`, which then correctly detects the bypass. The finding misreads the boolean logic.",
+            "finding_id": "F-1",
+            "provenance": "model_assessment",
+            "severity": "false positive (no actual vulnerability)",
+            "usefulness": "not_useful",
+            "validation_verdict": "valid",
+            "verdict": "refute"
+          },
+          "failure_class": null,
+          "invocation_id": "judge_b-F-1",
+          "observed_model_id": "claude-opus-4-6",
+          "requested_model_id": "claude-opus-4-6",
+          "role": "judge_b",
+          "status": "success"
+        }
+      ],
+      "kind": "original",
+      "location": {
+        "end_line": 2,
+        "path": "sample.py",
+        "start_line": 1
+      },
+      "provenance": "model_assessment",
+      "scoreable": true,
+      "severity": "high",
+      "synthesis": {
+        "citations": [
+          {
+            "end": 2,
+            "evidence_id": "E_SAMPLE",
+            "path": "sample.py",
+            "start": 1
+          },
+          {
+            "end": 1,
+            "evidence_id": "E_CONTRACT",
+            "path": "README.md",
+            "start": 1
+          }
+        ],
+        "disagreement": "None. Both assessments independently reach the same conclusion (refute, false positive, not useful) with the same reading of the boolean expression and the same citations. The only difference is wording/detail depth, not substance; no unresolved conflict to preserve.",
+        "item_id": "F-1",
+        "provenance": "model_assessment",
+        "reason": "The finding claims can_read grants private-document access to any nonempty requester. The frozen source contradicts this: line 2 of sample.py returns `public or (bool(requester) and requester == owner)`, where the truthiness test is conjoined with, not a substitute for, the ownership equality test. For a private document (public=False) and a non-owner requester, the expression evaluates to False, which matches the README rule that access is permitted only for public documents or a requester equal to owner.\n\nExecuted evidence corroborates and is source-bound with a working sensitivity control. The baseline run loads the frozen source directly (no re-typed logic) and probes the exact scenario asserted by the finding: can_read(\"mallory\",\"alice\",public=False) -> false, with contract sanity probes owner-private true, empty-requester-private false, public-anyone true; exit 0, claim_present=false. The counterexample run is a positive control that mutates only `requester == owner` to `requester is not None` (mutation applied=true) and, using the identical probe, reports claim_present=true, exit 0. Because the same probe fires on genuinely bypassed code but not on the shipped code, the negative baseline observation is attributable to the source under test rather than to hard-coding or echo. Controls passed; the execution classification \"unproven\" reflects that the alleged vulnerability was not reproduced, which is consistent with refutation rather than an indication of a failed control. The claim is therefore refuted on the supplied source: no access-control bypass exists.",
+        "verdict": "refuted"
+      },
+      "title": "Private document access bypass",
+      "valid_judge_count": 2,
+      "validation": {
+        "claim_present": false,
+        "classification": "unproven",
+        "controller_source_binding": true,
+        "controls_passed": true,
+        "execution": {
+          "claim_present": false,
+          "classification": "unproven",
+          "controls_passed": true,
+          "generated_file_digests": [
+            {
+              "bytes": 1542,
+              "path": "generated/probe_baseline.py",
+              "sha256": "a8f11d5196a1c28243b40eee11173a76dde93fc19047dd4ed05fa7f6fa8de95f"
+            },
+            {
+              "bytes": 1652,
+              "path": "generated/probe_mutated_positive_control.py",
+              "sha256": "7ce037c1562db716f1f7fadebfe01a2aabb2b02174fd7c70d7176bb3e8b22489"
+            }
+          ],
+          "operator_checks": "not_run",
+          "plan": {
+            "claim_observed": "Executed against the supplied source at /source/sample.py, the claim is NOT reproduced. The baseline control imports sample.py directly (importlib, no re-typed logic) and probes the exact scenario named in the finding: an authenticated non-owner requester on a private document, can_read(\"mallory\", \"alice\", public=False). The real implementation returns False, because `public or (bool(requester) and requester == owner)` is gated by the `requester == owner` equality test, not merely by `bool(requester)`. Sanity probes in the same run confirm the README contract: owner-on-private is True, empty/unauthenticated requester on private is False, and public documents are readable by anyone. Baseline therefore prints claim_present=false. The counterexample is a positive control proving the probe can detect the alleged bypass: it reads the same /source/sample.py bytes, textually mutates only the ownership comparison `requester == owner` into `requester is not None`, execs the mutated module, and the identical probe then reports the non-owner private read as permitted, printing claim_present=true. Because the probe fires on genuinely bypassed code but not on the shipped code, F-1 is a false positive: can_read enforces requester == owner exactly as README.md requires.",
+            "files": [
+              {
+                "bytes": 1542,
+                "path": "generated/probe_baseline.py",
+                "sha256": "a8f11d5196a1c28243b40eee11173a76dde93fc19047dd4ed05fa7f6fa8de95f",
+                "utf8": "import importlib.util\nimport json\nimport sys\n\nSRC = \"/source/sample.py\"\n\n\ndef load_module(path, name):\n    spec = importlib.util.spec_from_file_location(name, path)\n    mod = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(mod)\n    return mod\n\n\ndef main():\n    mod = load_module(SRC, \"sample_under_test\")\n    can_read = getattr(mod, \"can_read\")\n\n    # The exact scenario asserted by finding F-1:\n    # an authenticated requester who is NOT the owner, private document.\n    non_owner_private = bool(can_read(\"mallory\", \"alice\", False))\n\n    # Contract sanity probes from README.md.\n    owner_private = bool(can_read(\"alice\", \"alice\", False))\n    anonymous_private = bool(can_read(\"\", \"alice\", False))\n    anyone_public = bool(can_read(\"mallory\", \"alice\", True))\n\n    claim_present = non_owner_private\n\n    out = {\n        \"claim_present\": claim_present,\n        \"control\": \"baseline_unmodified_source\",\n        \"source_path\": SRC,\n        \"probes\": {\n            \"can_read('mallory','alice',public=False)\": non_owner_private,\n            \"can_read('alice','alice',public=False)\": owner_private,\n            \"can_read('','alice',public=False)\": anonymous_private,\n            \"can_read('mallory','alice',public=True)\": anyone_public,\n        },\n        \"detail\": (\n            \"claim_present is true only if a non-owner authenticated requester \"\n            \"can read a private document\"\n        ),\n    }\n    json.dump(out, sys.stdout)\n    sys.stdout.write(\"\\n\")\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+              },
+              {
+                "bytes": 1652,
+                "path": "generated/probe_mutated_positive_control.py",
+                "sha256": "7ce037c1562db716f1f7fadebfe01a2aabb2b02174fd7c70d7176bb3e8b22489",
+                "utf8": "import json\nimport sys\nimport types\n\nSRC = \"/source/sample.py\"\n\nORIGINAL_GUARD = \"requester == owner\"\nBYPASSED_GUARD = \"requester is not None\"\n\n\ndef main():\n    with open(SRC, \"r\", encoding=\"utf-8\") as fh:\n        source_text = fh.read()\n\n    guard_found = ORIGINAL_GUARD in source_text\n    mutated_text = source_text.replace(ORIGINAL_GUARD, BYPASSED_GUARD, 1)\n    mutation_applied = guard_found and mutated_text != source_text\n\n    mod = types.ModuleType(\"sample_bypassed_variant\")\n    mod.__file__ = SRC\n    exec(compile(mutated_text, \"<sample_bypassed_variant>\", \"exec\"), mod.__dict__)\n    can_read = mod.__dict__[\"can_read\"]\n\n    # Same probe as the baseline control, run against the bypassed variant.\n    non_owner_private = bool(can_read(\"mallory\", \"alice\", False))\n    owner_private = bool(can_read(\"alice\", \"alice\", False))\n\n    claim_present = bool(mutation_applied and non_owner_private)\n\n    out = {\n        \"claim_present\": claim_present,\n        \"control\": \"positive_control_mutated_ownership_check\",\n        \"source_path\": SRC,\n        \"mutation\": {\n            \"applied\": mutation_applied,\n            \"from\": ORIGINAL_GUARD,\n            \"to\": BYPASSED_GUARD,\n        },\n        \"probes\": {\n            \"can_read('mallory','alice',public=False)\": non_owner_private,\n            \"can_read('alice','alice',public=False)\": owner_private,\n        },\n        \"detail\": (\n            \"demonstrates the probe reports claim_present=true when the \"\n            \"ownership equality check is genuinely absent\"\n        ),\n    }\n    json.dump(out, sys.stdout)\n    sys.stdout.write(\"\\n\")\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+              }
+            ],
+            "item_id": "F-1",
+            "runs": [
+              {
+                "argv": [
+                  "python3",
+                  "generated/probe_baseline.py"
+                ],
+                "cwd": "/work",
+                "evidence_ids": [
+                  "E_SAMPLE",
+                  "E_CONTRACT"
+                ],
+                "expect": {
+                  "exit": 0,
+                  "observation": {
+                    "claim_present": false
+                  }
+                },
+                "name": "baseline"
+              },
+              {
+                "argv": [
+                  "python3",
+                  "generated/probe_mutated_positive_control.py"
+                ],
+                "cwd": "/work",
+                "evidence_ids": [
+                  "E_SAMPLE",
+                  "E_CONTRACT"
+                ],
+                "expect": {
+                  "exit": 0,
+                  "observation": {
+                    "claim_present": true
+                  }
+                },
+                "name": "counterexample"
+              }
+            ]
+          },
+          "preflight": {
+            "daemon_probe": "ok",
+            "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+            "server_version": "29.7.2",
+            "status": "ready"
+          },
+          "reason": null,
+          "runs": [
+            {
+              "actual": {
+                "duration_ms": 54,
+                "exit": 0,
+                "name": "baseline",
+                "observation": {
+                  "claim_present": false,
+                  "control": "baseline_unmodified_source",
+                  "detail": "claim_present is true only if a non-owner authenticated requester can read a private document",
+                  "probes": {
+                    "can_read('','alice',public=False)": false,
+                    "can_read('alice','alice',public=False)": true,
+                    "can_read('mallory','alice',public=False)": false,
+                    "can_read('mallory','alice',public=True)": true
+                  },
+                  "source_path": "/source/sample.py"
+                },
+                "output_limit": false,
+                "stderr": "",
+                "stderr_b64": "",
+                "stderr_bytes": 0,
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stderr_truncated": false,
+                "stdout": "{\"claim_present\": false, \"control\": \"baseline_unmodified_source\", \"source_path\": \"/source/sample.py\", \"probes\": {\"can_read('mallory','alice',public=False)\": false, \"can_read('alice','alice',public=False)\": true, \"can_read('','alice',public=False)\": false, \"can_read('mallory','alice',public=True)\": true}, \"detail\": \"claim_present is true only if a non-owner authenticated requester can read a private document\"}\n",
+                "stdout_b64": "eyJjbGFpbV9wcmVzZW50IjogZmFsc2UsICJjb250cm9sIjogImJhc2VsaW5lX3VubW9kaWZpZWRfc291cmNlIiwgInNvdXJjZV9wYXRoIjogIi9zb3VyY2Uvc2FtcGxlLnB5IiwgInByb2JlcyI6IHsiY2FuX3JlYWQoJ21hbGxvcnknLCdhbGljZScscHVibGljPUZhbHNlKSI6IGZhbHNlLCAiY2FuX3JlYWQoJ2FsaWNlJywnYWxpY2UnLHB1YmxpYz1GYWxzZSkiOiB0cnVlLCAiY2FuX3JlYWQoJycsJ2FsaWNlJyxwdWJsaWM9RmFsc2UpIjogZmFsc2UsICJjYW5fcmVhZCgnbWFsbG9yeScsJ2FsaWNlJyxwdWJsaWM9VHJ1ZSkiOiB0cnVlfSwgImRldGFpbCI6ICJjbGFpbV9wcmVzZW50IGlzIHRydWUgb25seSBpZiBhIG5vbi1vd25lciBhdXRoZW50aWNhdGVkIHJlcXVlc3RlciBjYW4gcmVhZCBhIHByaXZhdGUgZG9jdW1lbnQifQo=",
+                "stdout_bytes": 413,
+                "stdout_sha256": "fc826688a221f86904dc2bd24af021f07f3ea0099d3f544e985a4b10079ced86",
+                "stdout_truncated": false,
+                "timeout": false
+              },
+              "argv": [
+                "docker",
+                "run",
+                "--rm",
+                "--init",
+                "--pull=never",
+                "-i",
+                "--name",
+                "openab-eval-44888617fd3d4b5fae7c",
+                "--network",
+                "none",
+                "--read-only",
+                "--tmpfs",
+                "/work:rw,nosuid,nodev,size=64m,mode=1777",
+                "--tmpfs",
+                "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+                "--mount",
+                "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-source-m3vx_iuv,dst=/source,readonly",
+                "--mount",
+                "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-o43uqw26/fixed-runner.py,dst=/runner.py,readonly",
+                "--user",
+                "65532:65532",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--pids-limit",
+                "128",
+                "--memory",
+                "512m",
+                "--cpus",
+                "1.0",
+                "--env",
+                "HOME=/tmp/home",
+                "--env",
+                "PATH=/usr/local/bin:/usr/bin:/bin",
+                "--env",
+                "LANG=C.UTF-8",
+                "--env",
+                "LC_ALL=C.UTF-8",
+                "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+                "python3",
+                "/runner.py"
+              ],
+              "container_name": "openab-eval-44888617fd3d4b5fae7c",
+              "expect": {
+                "exit": 0,
+                "observation": {
+                  "claim_present": false
+                }
+              },
+              "name": "baseline",
+              "output_limit": false,
+              "stderr": "",
+              "stderr_b64": "",
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_truncated": false,
+              "stdout": "{\"runs\":[{\"duration_ms\":54,\"exit\":0,\"name\":\"baseline\",\"observation\":{\"claim_present\":false,\"control\":\"baseline_unmodified_source\",\"detail\":\"claim_present is true only if a non-owner authenticated requester can read a private document\",\"probes\":{\"can_read('','alice',public=False)\":false,\"can_read('alice','alice',public=False)\":true,\"can_read('mallory','alice',public=False)\":false,\"can_read('mallory','alice',public=True)\":true},\"source_path\":\"/source/sample.py\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\\"claim_present\\\": false, \\\"control\\\": \\\"baseline_unmodified_source\\\", \\\"source_path\\\": \\\"/source/sample.py\\\", \\\"probes\\\": {\\\"can_read('mallory','alice',public=False)\\\": false, \\\"can_read('alice','alice',public=False)\\\": true, \\\"can_read('','alice',public=False)\\\": false, \\\"can_read('mallory','alice',public=True)\\\": true}, \\\"detail\\\": \\\"claim_present is true only if a non-owner authenticated requester can read a private document\\\"}\\n\",\"stdout_b64\":\"eyJjbGFpbV9wcmVzZW50IjogZmFsc2UsICJjb250cm9sIjogImJhc2VsaW5lX3VubW9kaWZpZWRfc291cmNlIiwgInNvdXJjZV9wYXRoIjogIi9zb3VyY2Uvc2FtcGxlLnB5IiwgInByb2JlcyI6IHsiY2FuX3JlYWQoJ21hbGxvcnknLCdhbGljZScscHVibGljPUZhbHNlKSI6IGZhbHNlLCAiY2FuX3JlYWQoJ2FsaWNlJywnYWxpY2UnLHB1YmxpYz1GYWxzZSkiOiB0cnVlLCAiY2FuX3JlYWQoJycsJ2FsaWNlJyxwdWJsaWM9RmFsc2UpIjogZmFsc2UsICJjYW5fcmVhZCgnbWFsbG9yeScsJ2FsaWNlJyxwdWJsaWM9VHJ1ZSkiOiB0cnVlfSwgImRldGFpbCI6ICJjbGFpbV9wcmVzZW50IGlzIHRydWUgb25seSBpZiBhIG5vbi1vd25lciBhdXRoZW50aWNhdGVkIHJlcXVlc3RlciBjYW4gcmVhZCBhIHByaXZhdGUgZG9jdW1lbnQifQo=\",\"stdout_bytes\":413,\"stdout_sha256\":\"fc826688a221f86904dc2bd24af021f07f3ea0099d3f544e985a4b10079ced86\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+              "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6NTQsImV4aXQiOjAsIm5hbWUiOiJiYXNlbGluZSIsIm9ic2VydmF0aW9uIjp7ImNsYWltX3ByZXNlbnQiOmZhbHNlLCJjb250cm9sIjoiYmFzZWxpbmVfdW5tb2RpZmllZF9zb3VyY2UiLCJkZXRhaWwiOiJjbGFpbV9wcmVzZW50IGlzIHRydWUgb25seSBpZiBhIG5vbi1vd25lciBhdXRoZW50aWNhdGVkIHJlcXVlc3RlciBjYW4gcmVhZCBhIHByaXZhdGUgZG9jdW1lbnQiLCJwcm9iZXMiOnsiY2FuX3JlYWQoJycsJ2FsaWNlJyxwdWJsaWM9RmFsc2UpIjpmYWxzZSwiY2FuX3JlYWQoJ2FsaWNlJywnYWxpY2UnLHB1YmxpYz1GYWxzZSkiOnRydWUsImNhbl9yZWFkKCdtYWxsb3J5JywnYWxpY2UnLHB1YmxpYz1GYWxzZSkiOmZhbHNlLCJjYW5fcmVhZCgnbWFsbG9yeScsJ2FsaWNlJyxwdWJsaWM9VHJ1ZSkiOnRydWV9LCJzb3VyY2VfcGF0aCI6Ii9zb3VyY2Uvc2FtcGxlLnB5In0sIm91dHB1dF9saW1pdCI6ZmFsc2UsInN0ZGVyciI6IiIsInN0ZGVycl9iNjQiOiIiLCJzdGRlcnJfYnl0ZXMiOjAsInN0ZGVycl9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1Iiwic3RkZXJyX3RydW5jYXRlZCI6ZmFsc2UsInN0ZG91dCI6IntcImNsYWltX3ByZXNlbnRcIjogZmFsc2UsIFwiY29udHJvbFwiOiBcImJhc2VsaW5lX3VubW9kaWZpZWRfc291cmNlXCIsIFwic291cmNlX3BhdGhcIjogXCIvc291cmNlL3NhbXBsZS5weVwiLCBcInByb2Jlc1wiOiB7XCJjYW5fcmVhZCgnbWFsbG9yeScsJ2FsaWNlJyxwdWJsaWM9RmFsc2UpXCI6IGZhbHNlLCBcImNhbl9yZWFkKCdhbGljZScsJ2FsaWNlJyxwdWJsaWM9RmFsc2UpXCI6IHRydWUsIFwiY2FuX3JlYWQoJycsJ2FsaWNlJyxwdWJsaWM9RmFsc2UpXCI6IGZhbHNlLCBcImNhbl9yZWFkKCdtYWxsb3J5JywnYWxpY2UnLHB1YmxpYz1UcnVlKVwiOiB0cnVlfSwgXCJkZXRhaWxcIjogXCJjbGFpbV9wcmVzZW50IGlzIHRydWUgb25seSBpZiBhIG5vbi1vd25lciBhdXRoZW50aWNhdGVkIHJlcXVlc3RlciBjYW4gcmVhZCBhIHByaXZhdGUgZG9jdW1lbnRcIn1cbiIsInN0ZG91dF9iNjQiOiJleUpqYkdGcGJWOXdjbVZ6Wlc1MElqb2dabUZzYzJVc0lDSmpiMjUwY205c0lqb2dJbUpoYzJWc2FXNWxYM1Z1Ylc5a2FXWnBaV1JmYzI5MWNtTmxJaXdnSW5OdmRYSmpaVjl3WVhSb0lqb2dJaTl6YjNWeVkyVXZjMkZ0Y0d4bExuQjVJaXdnSW5CeWIySmxjeUk2SUhzaVkyRnVYM0psWVdRb0oyMWhiR3h2Y25rbkxDZGhiR2xqWlNjc2NIVmliR2xqUFVaaGJITmxLU0k2SUdaaGJITmxMQ0FpWTJGdVgzSmxZV1FvSjJGc2FXTmxKeXduWVd4cFkyVW5MSEIxWW14cFl6MUdZV3h6WlNraU9pQjBjblZsTENBaVkyRnVYM0psWVdRb0p5Y3NKMkZzYVdObEp5eHdkV0pzYVdNOVJtRnNjMlVwSWpvZ1ptRnNjMlVzSUNKallXNWZjbVZoWkNnbmJXRnNiRzl5ZVNjc0oyRnNhV05sSnl4d2RXSnNhV005VkhKMVpTa2lPaUIwY25WbGZTd2dJbVJsZEdGcGJDSTZJQ0pqYkdGcGJWOXdjbVZ6Wlc1MElHbHpJSFJ5ZFdVZ2IyNXNlU0JwWmlCaElHNXZiaTF2ZDI1bGNpQmhkWFJvWlc1MGFXTmhkR1ZrSUhKbGNYVmxjM1JsY2lCallXNGdjbVZoWkNCaElIQnlhWFpoZEdVZ1pHOWpkVzFsYm5RaWZRbz0iLCJzdGRvdXRfYnl0ZXMiOjQxMywic3Rkb3V0X3NoYTI1NiI6ImZjODI2Njg4YTIyMWY4NjkwNGRjMmJkMjRhZjAyMWYwN2YzZWEwMDk5ZDNmNTQ0ZTk4NWE0YjEwMDc5Y2VkODYiLCJzdGRvdXRfdHJ1bmNhdGVkIjpmYWxzZSwidGltZW91dCI6ZmFsc2V9XX0K",
+              "stdout_bytes": 1803,
+              "stdout_sha256": "814ca4de67afe963be9abeb02db29a40ea83de772453293779407685f84d9e58",
+              "stdout_truncated": false,
+              "timeout": false,
+              "valid": true
+            },
+            {
+              "actual": {
+                "duration_ms": 63,
+                "exit": 0,
+                "name": "counterexample",
+                "observation": {
+                  "claim_present": true,
+                  "control": "positive_control_mutated_ownership_check",
+                  "detail": "demonstrates the probe reports claim_present=true when the ownership equality check is genuinely absent",
+                  "mutation": {
+                    "applied": true,
+                    "from": "requester == owner",
+                    "to": "requester is not None"
+                  },
+                  "probes": {
+                    "can_read('alice','alice',public=False)": true,
+                    "can_read('mallory','alice',public=False)": true
+                  },
+                  "source_path": "/source/sample.py"
+                },
+                "output_limit": false,
+                "stderr": "",
+                "stderr_b64": "",
+                "stderr_bytes": 0,
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stderr_truncated": false,
+                "stdout": "{\"claim_present\": true, \"control\": \"positive_control_mutated_ownership_check\", \"source_path\": \"/source/sample.py\", \"mutation\": {\"applied\": true, \"from\": \"requester == owner\", \"to\": \"requester is not None\"}, \"probes\": {\"can_read('mallory','alice',public=False)\": true, \"can_read('alice','alice',public=False)\": true}, \"detail\": \"demonstrates the probe reports claim_present=true when the ownership equality check is genuinely absent\"}\n",
+                "stdout_b64": "eyJjbGFpbV9wcmVzZW50IjogdHJ1ZSwgImNvbnRyb2wiOiAicG9zaXRpdmVfY29udHJvbF9tdXRhdGVkX293bmVyc2hpcF9jaGVjayIsICJzb3VyY2VfcGF0aCI6ICIvc291cmNlL3NhbXBsZS5weSIsICJtdXRhdGlvbiI6IHsiYXBwbGllZCI6IHRydWUsICJmcm9tIjogInJlcXVlc3RlciA9PSBvd25lciIsICJ0byI6ICJyZXF1ZXN0ZXIgaXMgbm90IE5vbmUifSwgInByb2JlcyI6IHsiY2FuX3JlYWQoJ21hbGxvcnknLCdhbGljZScscHVibGljPUZhbHNlKSI6IHRydWUsICJjYW5fcmVhZCgnYWxpY2UnLCdhbGljZScscHVibGljPUZhbHNlKSI6IHRydWV9LCAiZGV0YWlsIjogImRlbW9uc3RyYXRlcyB0aGUgcHJvYmUgcmVwb3J0cyBjbGFpbV9wcmVzZW50PXRydWUgd2hlbiB0aGUgb3duZXJzaGlwIGVxdWFsaXR5IGNoZWNrIGlzIGdlbnVpbmVseSBhYnNlbnQifQo=",
+                "stdout_bytes": 434,
+                "stdout_sha256": "90a569ccb174052d4c16706e725ddd0402fd4a0b6d33fed5a54cf62098b1b082",
+                "stdout_truncated": false,
+                "timeout": false
+              },
+              "argv": [
+                "docker",
+                "run",
+                "--rm",
+                "--init",
+                "--pull=never",
+                "-i",
+                "--name",
+                "openab-eval-da17050afd48427598c5",
+                "--network",
+                "none",
+                "--read-only",
+                "--tmpfs",
+                "/work:rw,nosuid,nodev,size=64m,mode=1777",
+                "--tmpfs",
+                "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+                "--mount",
+                "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-source-m3vx_iuv,dst=/source,readonly",
+                "--mount",
+                "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-o43uqw26/fixed-runner.py,dst=/runner.py,readonly",
+                "--user",
+                "65532:65532",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--pids-limit",
+                "128",
+                "--memory",
+                "512m",
+                "--cpus",
+                "1.0",
+                "--env",
+                "HOME=/tmp/home",
+                "--env",
+                "PATH=/usr/local/bin:/usr/bin:/bin",
+                "--env",
+                "LANG=C.UTF-8",
+                "--env",
+                "LC_ALL=C.UTF-8",
+                "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+                "python3",
+                "/runner.py"
+              ],
+              "container_name": "openab-eval-da17050afd48427598c5",
+              "expect": {
+                "exit": 0,
+                "observation": {
+                  "claim_present": true
+                }
+              },
+              "name": "counterexample",
+              "output_limit": false,
+              "stderr": "",
+              "stderr_b64": "",
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_truncated": false,
+              "stdout": "{\"runs\":[{\"duration_ms\":63,\"exit\":0,\"name\":\"counterexample\",\"observation\":{\"claim_present\":true,\"control\":\"positive_control_mutated_ownership_check\",\"detail\":\"demonstrates the probe reports claim_present=true when the ownership equality check is genuinely absent\",\"mutation\":{\"applied\":true,\"from\":\"requester == owner\",\"to\":\"requester is not None\"},\"probes\":{\"can_read('alice','alice',public=False)\":true,\"can_read('mallory','alice',public=False)\":true},\"source_path\":\"/source/sample.py\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\\"claim_present\\\": true, \\\"control\\\": \\\"positive_control_mutated_ownership_check\\\", \\\"source_path\\\": \\\"/source/sample.py\\\", \\\"mutation\\\": {\\\"applied\\\": true, \\\"from\\\": \\\"requester == owner\\\", \\\"to\\\": \\\"requester is not None\\\"}, \\\"probes\\\": {\\\"can_read('mallory','alice',public=False)\\\": true, \\\"can_read('alice','alice',public=False)\\\": true}, \\\"detail\\\": \\\"demonstrates the probe reports claim_present=true when the ownership equality check is genuinely absent\\\"}\\n\",\"stdout_b64\":\"eyJjbGFpbV9wcmVzZW50IjogdHJ1ZSwgImNvbnRyb2wiOiAicG9zaXRpdmVfY29udHJvbF9tdXRhdGVkX293bmVyc2hpcF9jaGVjayIsICJzb3VyY2VfcGF0aCI6ICIvc291cmNlL3NhbXBsZS5weSIsICJtdXRhdGlvbiI6IHsiYXBwbGllZCI6IHRydWUsICJmcm9tIjogInJlcXVlc3RlciA9PSBvd25lciIsICJ0byI6ICJyZXF1ZXN0ZXIgaXMgbm90IE5vbmUifSwgInByb2JlcyI6IHsiY2FuX3JlYWQoJ21hbGxvcnknLCdhbGljZScscHVibGljPUZhbHNlKSI6IHRydWUsICJjYW5fcmVhZCgnYWxpY2UnLCdhbGljZScscHVibGljPUZhbHNlKSI6IHRydWV9LCAiZGV0YWlsIjogImRlbW9uc3RyYXRlcyB0aGUgcHJvYmUgcmVwb3J0cyBjbGFpbV9wcmVzZW50PXRydWUgd2hlbiB0aGUgb3duZXJzaGlwIGVxdWFsaXR5IGNoZWNrIGlzIGdlbnVpbmVseSBhYnNlbnQifQo=\",\"stdout_bytes\":434,\"stdout_sha256\":\"90a569ccb174052d4c16706e725ddd0402fd4a0b6d33fed5a54cf62098b1b082\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+              "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6NjMsImV4aXQiOjAsIm5hbWUiOiJjb3VudGVyZXhhbXBsZSIsIm9ic2VydmF0aW9uIjp7ImNsYWltX3ByZXNlbnQiOnRydWUsImNvbnRyb2wiOiJwb3NpdGl2ZV9jb250cm9sX211dGF0ZWRfb3duZXJzaGlwX2NoZWNrIiwiZGV0YWlsIjoiZGVtb25zdHJhdGVzIHRoZSBwcm9iZSByZXBvcnRzIGNsYWltX3ByZXNlbnQ9dHJ1ZSB3aGVuIHRoZSBvd25lcnNoaXAgZXF1YWxpdHkgY2hlY2sgaXMgZ2VudWluZWx5IGFic2VudCIsIm11dGF0aW9uIjp7ImFwcGxpZWQiOnRydWUsImZyb20iOiJyZXF1ZXN0ZXIgPT0gb3duZXIiLCJ0byI6InJlcXVlc3RlciBpcyBub3QgTm9uZSJ9LCJwcm9iZXMiOnsiY2FuX3JlYWQoJ2FsaWNlJywnYWxpY2UnLHB1YmxpYz1GYWxzZSkiOnRydWUsImNhbl9yZWFkKCdtYWxsb3J5JywnYWxpY2UnLHB1YmxpYz1GYWxzZSkiOnRydWV9LCJzb3VyY2VfcGF0aCI6Ii9zb3VyY2Uvc2FtcGxlLnB5In0sIm91dHB1dF9saW1pdCI6ZmFsc2UsInN0ZGVyciI6IiIsInN0ZGVycl9iNjQiOiIiLCJzdGRlcnJfYnl0ZXMiOjAsInN0ZGVycl9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1Iiwic3RkZXJyX3RydW5jYXRlZCI6ZmFsc2UsInN0ZG91dCI6IntcImNsYWltX3ByZXNlbnRcIjogdHJ1ZSwgXCJjb250cm9sXCI6IFwicG9zaXRpdmVfY29udHJvbF9tdXRhdGVkX293bmVyc2hpcF9jaGVja1wiLCBcInNvdXJjZV9wYXRoXCI6IFwiL3NvdXJjZS9zYW1wbGUucHlcIiwgXCJtdXRhdGlvblwiOiB7XCJhcHBsaWVkXCI6IHRydWUsIFwiZnJvbVwiOiBcInJlcXVlc3RlciA9PSBvd25lclwiLCBcInRvXCI6IFwicmVxdWVzdGVyIGlzIG5vdCBOb25lXCJ9LCBcInByb2Jlc1wiOiB7XCJjYW5fcmVhZCgnbWFsbG9yeScsJ2FsaWNlJyxwdWJsaWM9RmFsc2UpXCI6IHRydWUsIFwiY2FuX3JlYWQoJ2FsaWNlJywnYWxpY2UnLHB1YmxpYz1GYWxzZSlcIjogdHJ1ZX0sIFwiZGV0YWlsXCI6IFwiZGVtb25zdHJhdGVzIHRoZSBwcm9iZSByZXBvcnRzIGNsYWltX3ByZXNlbnQ9dHJ1ZSB3aGVuIHRoZSBvd25lcnNoaXAgZXF1YWxpdHkgY2hlY2sgaXMgZ2VudWluZWx5IGFic2VudFwifVxuIiwic3Rkb3V0X2I2NCI6ImV5SmpiR0ZwYlY5d2NtVnpaVzUwSWpvZ2RISjFaU3dnSW1OdmJuUnliMndpT2lBaWNHOXphWFJwZG1WZlkyOXVkSEp2YkY5dGRYUmhkR1ZrWDI5M2JtVnljMmhwY0Y5amFHVmpheUlzSUNKemIzVnlZMlZmY0dGMGFDSTZJQ0l2YzI5MWNtTmxMM05oYlhCc1pTNXdlU0lzSUNKdGRYUmhkR2x2YmlJNklIc2lZWEJ3YkdsbFpDSTZJSFJ5ZFdVc0lDSm1jbTl0SWpvZ0luSmxjWFZsYzNSbGNpQTlQU0J2ZDI1bGNpSXNJQ0owYnlJNklDSnlaWEYxWlhOMFpYSWdhWE1nYm05MElFNXZibVVpZlN3Z0luQnliMkpsY3lJNklIc2lZMkZ1WDNKbFlXUW9KMjFoYkd4dmNua25MQ2RoYkdsalpTY3NjSFZpYkdsalBVWmhiSE5sS1NJNklIUnlkV1VzSUNKallXNWZjbVZoWkNnbllXeHBZMlVuTENkaGJHbGpaU2NzY0hWaWJHbGpQVVpoYkhObEtTSTZJSFJ5ZFdWOUxDQWlaR1YwWVdsc0lqb2dJbVJsYlc5dWMzUnlZWFJsY3lCMGFHVWdjSEp2WW1VZ2NtVndiM0owY3lCamJHRnBiVjl3Y21WelpXNTBQWFJ5ZFdVZ2QyaGxiaUIwYUdVZ2IzZHVaWEp6YUdsd0lHVnhkV0ZzYVhSNUlHTm9aV05ySUdseklHZGxiblZwYm1Wc2VTQmhZbk5sYm5RaWZRbz0iLCJzdGRvdXRfYnl0ZXMiOjQzNCwic3Rkb3V0X3NoYTI1NiI6IjkwYTU2OWNjYjE3NDA1MmQ0YzE2NzA2ZTcyNWRkZDA0MDJmZDRhMGI2ZDMzZmVkNWE1NGNmNjIwOThiMWIwODIiLCJzdGRvdXRfdHJ1bmNhdGVkIjpmYWxzZSwidGltZW91dCI6ZmFsc2V9XX0K",
+              "stdout_bytes": 1884,
+              "stdout_sha256": "8342e22424e709b76432faf564990774354958fc037d6de6d9619cbde918e586",
+              "stdout_truncated": false,
+              "timeout": false,
+              "valid": true
+            }
+          ],
+          "status": "success"
+        },
+        "execution_classification": "unproven",
+        "finding_sha256": "f240e25a360951eab2f012aa49f6205614beb9d71aafcba542fc291bdc97be21",
+        "generated_file_digests_sha256": "e9673b98fdd39155877456e2a49434c90ffe2f752dfdb2ad182036056e181fa2",
+        "invocation_id": "validation-F-1",
+        "item_id": "F-1",
+        "model_status": "success",
+        "plan_sha256": "ded4b1a988863834e13c59aa8eb91bf623a68cd12f9049039a161defc2a92c03",
+        "source_packet_sha256": "3390678cbafb0be96b9f8cdbc815b7627cbf9af816ae63208ebdd6bc92914bba",
+        "status": "success",
+        "validation_packet_sha256": "f01a7bd8e24a0ae197d7be4efe3f965eed4b1a3836756c346a9c35dde25f7d9d"
+      }
+    }
+  ],
+  "input_sha256": "c1bfb1a131dce9900c10075b3f94842065422b52ba7a8dcc4b226718d2270e83",
+  "schema_version": "review-model-findings/v1"
+}

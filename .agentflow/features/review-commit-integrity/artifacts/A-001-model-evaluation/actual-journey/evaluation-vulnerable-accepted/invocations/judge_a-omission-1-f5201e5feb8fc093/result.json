@@ -1,0 +1,204 @@
+{
+  "actual_cost_usd": "unknown",
+  "actual_metadata": {
+    "actual_cost_usd": "unknown",
+    "auxiliary_model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.010064,
+        "inputTokens": 9999,
+        "maxOutputTokens": 32000,
+        "outputTokens": 13,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      }
+    },
+    "cost_basis": [
+      "list"
+    ],
+    "duration_ms": 13041,
+    "estimated_cost_usd": 0.153425,
+    "init": {
+      "mcp_servers": [],
+      "plugins": [],
+      "skills": [],
+      "subtype": "init",
+      "tools": [
+        "StructuredOutput"
+      ]
+    },
+    "is_error": false,
+    "modelUsage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.010064,
+        "inputTokens": 9999,
+        "maxOutputTokens": 32000,
+        "outputTokens": 13,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 11840,
+        "cacheReadInputTokens": 1302,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costBasis": "list",
+        "costUSD": 0.14336100000000002,
+        "inputTokens": 2,
+        "maxOutputTokens": 64000,
+        "outputTokens": 972,
+        "provider": "firstParty",
+        "thinkingTokens": 318,
+        "webSearchRequests": 0
+      }
+    },
+    "model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.010064,
+        "inputTokens": 9999,
+        "maxOutputTokens": 32000,
+        "outputTokens": 13,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 11840,
+        "cacheReadInputTokens": 1302,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costBasis": "list",
+        "costUSD": 0.14336100000000002,
+        "inputTokens": 2,
+        "maxOutputTokens": 64000,
+        "outputTokens": 972,
+        "provider": "firstParty",
+        "thinkingTokens": 318,
+        "webSearchRequests": 0
+      }
+    },
+    "num_turns": 2,
+    "redacted_environment": {
+      "HOME": "/Users/can",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "PATH": "/Users/can/.n/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex-path:/Users/can/.codex/tmp/arg0/codex-arg0p190Uu:/Users/can/.grok/bin:/opt/homebrew/share/google-cloud-sdk/bin:/Users/can/.local/bin:/Users/can/.n/bin:/Users/can/.bun/bin:/Users/can/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.a",
+      "TMPDIR": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/"
+    },
+    "session_id": "545ebe3a-737a-4782-ac5e-9737e4fbcfe0",
+    "structured_output_attempt_count": 1,
+    "structured_output_attempts": [
+      {
+        "call": {
+          "caller": {
+            "type": "direct"
+          },
+          "id": "toolu_01Q9ExqooNPmsq8irRdU5A53",
+          "input": {
+            "citations": [
+              {
+                "end": 2,
+                "evidence_id": "E_SAMPLE",
+                "path": "sample.py",
+                "start": 1
+              },
+              {
+                "end": 1,
+                "evidence_id": "E_CONTRACT",
+                "path": "README.md",
+                "start": 1
+              }
+            ],
+            "counterexample": "Executed controls are source-bound and distinguish the claim from its negation. Baseline loaded the frozen sample.py via importlib from the read-only mounted source (no hard-coded behavior, no argv echo) and called the real can_read: cross_tenant_private_read=true, owner_private_read=true, public_read=true, anonymous_private_read=false, exit 0, claim_present=true. The counterexample read the same source text, confirmed patch_applied=true after substituting only the single returned expression `public or bool(requester)` with an owner-comparing expression, then ran the identical detector: cross_tenant_private_read flipped to false while owner_private_read and public_read remained true, giving claim_present=false, exit 0. The only difference between runs is the missing `requester == owner` comparison in sample.py lines 1-2, so the flip isolates that omission as the cause rather than any harness artifact. Concrete attack: can_read(\"alice\", \"bob\", False) returns True, granting an authenticated non-owner read access to bob's non-public document, contrary to the README contract that permits access only for public documents or an authenticated requester equal to owner.",
+            "finding_id": "omission-1-f5201e5feb8fc093",
+            "severity": "high",
+            "usefulness": "useful",
+            "validation_verdict": "valid",
+            "verdict": "support"
+          },
+          "name": "StructuredOutput",
+          "type": "tool_use"
+        },
+        "call_event_index": 7,
+        "id": "toolu_01Q9ExqooNPmsq8irRdU5A53",
+        "result": {
+          "content": "Structured output provided successfully",
+          "tool_use_id": "toolu_01Q9ExqooNPmsq8irRdU5A53",
+          "type": "tool_result"
+        },
+        "result_event_index": 8,
+        "status": "success",
+        "tool_use_result": "Structured output provided successfully"
+      }
+    ],
+    "subtype": "success",
+    "total_cost_usd": 0.153425,
+    "transport_observed_model_ids": [
+      "claude-opus-5"
+    ],
+    "type": "result",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 11840,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 11840,
+      "cache_read_input_tokens": 1302,
+      "inference_geo": "not_available",
+      "input_tokens": 2,
+      "iterations": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 11840,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 11840,
+          "cache_read_input_tokens": 1302,
+          "input_tokens": 2,
+          "output_tokens": 972,
+          "type": "message"
+        }
+      ],
+      "output_tokens": 972,
+      "output_tokens_details": {
+        "thinking_tokens": 318
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    }
+  },
+  "argv_sha256": "404fe9c214fa75a50fedb99ffa4662a849618e2cef520fcd9891fe0938c41c27",
+  "artifact_invocation_id": "judge_a-omission-1-f5201e5feb8fc093",
+  "attempts": 1,
+  "capture_status": "success",
+  "failure_class": null,
+  "final_sha256": "fcc942159016e2925b34066abfca136ce205259c371fc2be69e2d43dfada95c1",
+  "invocation_id": "judge_a-omission-1-f5201e5feb8fc093",
+  "observed_model_id": "claude-opus-5",
+  "packet_artifact_sha256": "34878d3e3fdcf2d8ef966b2d9b8e01b1ed5ecaf83566ce67bb78c99d6f81f4cf",
+  "packet_sha256": "dcc73f2d5f83cf7445886a0f033cf9d363359abcfc9d00bf9c124248bb4a4091",
+  "requested_model_id": "claude-opus-5",
+  "status": "success",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_sha256": "87b5edd92da706f5af54dcce29d520b0c0ee027862d403ed21284bc4614210f1"
+}

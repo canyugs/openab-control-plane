@@ -1,0 +1,6 @@
+{
+  "pty_exit": 0,
+  "weekly_json_sha256": "ed4ef8ec2e4e4165914c22527f7f427ad83dcb303d320acb058ab8d93a9f7048",
+  "baseline_byte_equal": true,
+  "distribution_inventory": "final-distribution-inventory.json"
+}

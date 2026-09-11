@@ -2153,6 +2153,8 @@ async fn dispatch_terminal(
             pr_number: target.pr_number,
             session_id: session_id.to_string(),
             head_sha: plan.head_sha.clone(),
+            verified_commit_id: plan.verified_commit_id.clone(),
+            integrity_disposition: plan.integrity_disposition.clone(),
             decision: plan.decision.clone(),
             red: plan.red,
             yellow: plan.yellow,
@@ -2262,6 +2264,7 @@ async fn drain_outbox_batch(
                 Err(error) => {
                     tracing::warn!(id = write.id, kind = write.kind, %error, "github write failed");
                     let retryable = write.attempts + 1 < WRITE_MAX_ATTEMPTS;
+                    let error_class = write_error_class(&error);
                     let (audit_kind, audit_outcome) = if retryable {
                         ("github.write.retry_scheduled", AuditOutcome::RetryScheduled)
                     } else {
@@ -2283,16 +2286,19 @@ async fn drain_outbox_batch(
                                 "operation": write.kind,
                                 "attempt": write.attempts,
                                 "retryable": retryable,
+                                "error_category": error_class,
                                 "provider": {
                                     "repository": write.payload["repo"].as_str(),
                                     "pr_number": write.payload["pr_number"].as_i64(),
                                     "head_sha": write.payload["sha"].as_str(),
+                                    "commit_id": write.payload["commit_id"].as_str(),
+                                    "event": write.payload["event"].as_str(),
                                 },
                             }),
                             Some(AuditError {
-                                class: "provider_write_failed".into(),
+                                class: error_class.into(),
                                 retryable,
-                                message: None,
+                                message: Some(error.to_string()),
                                 status: None,
                             }),
                         ),
@@ -2318,6 +2324,235 @@ async fn perform_write(
     perform_write_with_receipt(github, store, write)
         .await
         .map(|_| ())
+}
+
+fn write_error_class(error: &anyhow::Error) -> &'static str {
+    let message = error.to_string();
+    for (prefix, class) in [
+        (
+            "unproven_legacy_authority_intent",
+            "unproven_legacy_authority_intent",
+        ),
+        (
+            "unverified_round_authority_intent",
+            "unverified_round_authority_intent",
+        ),
+        ("authority_payload_", "authority_payload_invalid"),
+        ("authority_commit_mismatch", "authority_commit_mismatch"),
+        (
+            "authority_status_commit_mismatch",
+            "authority_status_commit_mismatch",
+        ),
+        (
+            "github_review_response_mismatch",
+            "github_review_response_mismatch",
+        ),
+        (
+            "github_review_reconciliation_conflict",
+            "github_review_reconciliation_conflict",
+        ),
+    ] {
+        if message.starts_with(prefix) {
+            return class;
+        }
+    }
+    "provider_write_failed"
+}
+
+async fn reject_authority_write(
+    store: &dyn ProductStore,
+    write: &store::PendingWrite,
+    category: &str,
+    message: &str,
+) -> anyhow::Result<()> {
+    let detail = json!({
+        "operation": write.kind.clone(),
+        "attempt": write.attempts,
+        "category": category,
+        "payload_commit_id": write.payload["commit_id"].as_str(),
+        "payload_sha": write.payload["sha"].as_str(),
+        "event": write.payload["event"].as_str(),
+    });
+    append_controller_audit(
+        store,
+        controller_audit_event(
+            format!(
+                "github.write.authority_rejected:{}:{}",
+                write.id, write.attempts
+            ),
+            "github.write.authority_rejected",
+            AuditOutcome::Failed,
+            now_unix(),
+            AuditCorrelation {
+                session_id: Some(write.session_id.clone()),
+                write_id: Some(write.id.to_string()),
+                ..Default::default()
+            },
+            detail,
+            Some(AuditError {
+                class: category.into(),
+                retryable: write.attempts + 1 < WRITE_MAX_ATTEMPTS,
+                message: Some(message.into()),
+                status: None,
+            }),
+        ),
+    )
+    .await?;
+    anyhow::bail!("{category}: {message}")
+}
+
+async fn enforce_authority_write(
+    store: &dyn ProductStore,
+    write: &store::PendingWrite,
+) -> anyhow::Result<()> {
+    let kind = write.kind.as_str();
+    let normal_review = kind == closing::KIND_REVIEW;
+    let decision_review = kind.starts_with(deciding::KIND_DECISION_REVIEW);
+    let normal_status = kind == closing::KIND_STATUS
+        && matches!(
+            write.payload["state"].as_str(),
+            Some("success") | Some("failure")
+        );
+    let decision_status = kind.starts_with(deciding::KIND_DECISION_STATUS)
+        && write.payload["state"].as_str() == Some("success");
+    if !normal_review && !decision_review && !normal_status && !decision_status {
+        return Ok(());
+    }
+
+    let proof = match store.review_round_integrity(&write.session_id).await {
+        Ok(proof) => proof,
+        Err(error) => {
+            return reject_authority_write(
+                store,
+                write,
+                "authority_payload_proof_lookup_failed",
+                &format!("round integrity proof lookup failed: {error}"),
+            )
+            .await
+        }
+    };
+    let Some(proof) = proof else {
+        return reject_authority_write(
+            store,
+            write,
+            "unproven_legacy_authority_intent",
+            "no explicit verified round proof exists",
+        )
+        .await;
+    };
+    if proof.integrity_disposition != "verified" {
+        let category = if proof.integrity_disposition == "legacy_unverified" {
+            "unproven_legacy_authority_intent"
+        } else {
+            "unverified_round_authority_intent"
+        };
+        return reject_authority_write(
+            store,
+            write,
+            category,
+            &format!(
+                "round integrity disposition is {}",
+                proof.integrity_disposition
+            ),
+        )
+        .await;
+    }
+
+    let commit_id = match write.payload["commit_id"]
+        .as_str()
+        .and_then(closing::canonical_commit_id)
+    {
+        Some(commit_id) => commit_id,
+        None => {
+            return reject_authority_write(
+                store,
+                write,
+                "authority_payload_missing_or_invalid_commit_id",
+                "authority payload carried no full canonical commit_id",
+            )
+            .await
+        }
+    };
+    if normal_status || decision_status {
+        let Some(sha) = write.payload["sha"]
+            .as_str()
+            .and_then(closing::canonical_commit_id)
+        else {
+            return reject_authority_write(
+                store,
+                write,
+                "authority_payload_invalid_sha",
+                "authority status carried no full canonical sha",
+            )
+            .await;
+        };
+        if sha != commit_id {
+            return reject_authority_write(
+                store,
+                write,
+                "authority_status_commit_mismatch",
+                "authority status sha and commit_id disagree",
+            )
+            .await;
+        }
+    }
+    if normal_review || decision_review {
+        let valid_event = matches!(
+            write.payload["event"].as_str(),
+            Some("APPROVE") | Some("REQUEST_CHANGES")
+        );
+        if !valid_event {
+            return reject_authority_write(
+                store,
+                write,
+                "authority_payload_invalid_event",
+                "authority review carried no supported event",
+            )
+            .await;
+        }
+        let marker = if decision_review {
+            let deciding_comment = kind.rsplit(':').next().unwrap_or_default();
+            deciding::decision_marker(&write.session_id, deciding_comment)
+        } else {
+            closing::round_marker(&write.session_id)
+        };
+        if !write.payload["body"]
+            .as_str()
+            .is_some_and(|body| body.contains(&marker))
+        {
+            return reject_authority_write(
+                store,
+                write,
+                "authority_payload_missing_marker",
+                "authority review body carried no controller-owned marker",
+            )
+            .await;
+        }
+    }
+
+    let Some(proof_commit_id) = proof
+        .verified_commit_id
+        .as_deref()
+        .and_then(closing::canonical_commit_id)
+    else {
+        return reject_authority_write(
+            store,
+            write,
+            "unverified_round_authority_intent",
+            "verified round proof carried no full canonical commit_id",
+        )
+        .await;
+    };
+    if proof_commit_id != commit_id {
+        return reject_authority_write(
+            store,
+            write,
+            "authority_commit_mismatch",
+            "authority payload commit_id differs from the verified round proof",
+        )
+        .await;
+    }
+    Ok(())
 }
 
 async fn perform_write_with_receipt(
@@ -2349,10 +2584,16 @@ async fn perform_write_with_receipt(
                     "attempt": write.attempts,
                     "reason": "claim_lease_expired_before_completion",
                     "request_sha256": request_sha256.clone(),
+                    "expected": {
+                        "event": payload["event"].as_str(),
+                        "commit_id": payload["commit_id"].as_str().or_else(|| payload["sha"].as_str()),
+                    },
                     "provider": {
                         "repository": payload["repo"].as_str(),
                         "pr_number": payload["pr_number"].as_i64(),
-                        "head_sha": payload["sha"].as_str(),
+                        "head_sha": payload["sha"].as_str().or_else(|| payload["commit_id"].as_str()),
+                        "commit_id": payload["commit_id"].as_str(),
+                        "event": payload["event"].as_str(),
                     },
                 }),
                 None,
@@ -2376,16 +2617,23 @@ async fn perform_write_with_receipt(
                 "operation": write.kind.clone(),
                 "attempt": write.attempts,
                 "request_sha256": request_sha256.clone(),
+                "expected": {
+                    "event": payload["event"].as_str(),
+                    "commit_id": payload["commit_id"].as_str().or_else(|| payload["sha"].as_str()),
+                },
                 "provider": {
                     "repository": payload["repo"].as_str(),
                     "pr_number": payload["pr_number"].as_i64(),
-                    "head_sha": payload["sha"].as_str(),
+                    "head_sha": payload["sha"].as_str().or_else(|| payload["commit_id"].as_str()),
+                    "commit_id": payload["commit_id"].as_str(),
+                    "event": payload["event"].as_str(),
                 },
             }),
             None,
         ),
     )
     .await?;
+    enforce_authority_write(store, write).await?;
     let repo = payload["repo"].as_str().unwrap_or_default();
     let receipt = match write.kind.as_str() {
         closing::KIND_COMMENT => {
@@ -2528,12 +2776,23 @@ async fn perform_write_with_receipt(
             } else {
                 closing::round_marker(&write.session_id)
             };
-            if let Some(review_id) = github.find_marked_review(repo, pr_number, &marker).await? {
+            let commit_id = payload["commit_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("review payload carried no commit_id"))?;
+            if let Some(receipt) = github
+                .find_marked_review(repo, pr_number, &marker, event, commit_id)
+                .await?
+            {
                 tracing::info!(
                     session_id = write.session_id,
                     "review already on the pull request; reconciled"
                 );
-                json!({"review_id": review_id, "reconciled": true})
+                json!({
+                    "review_id": receipt.id,
+                    "state": receipt.state,
+                    "commit_id": receipt.commit_id,
+                    "reconciled": true
+                })
             } else {
                 // The review timeline entry must say where its evidence lives: the
                 // comment write ran earlier in this same drain and recorded its
@@ -2548,8 +2807,15 @@ async fn perform_write_with_receipt(
                         ),
                     );
                 }
-                let review_id = github.submit_review(repo, pr_number, event, &body).await?;
-                json!({"review_id": review_id, "reconciled": false})
+                let receipt = github
+                    .submit_review(repo, pr_number, event, commit_id, &body)
+                    .await?;
+                json!({
+                    "review_id": receipt.id,
+                    "state": receipt.state,
+                    "commit_id": receipt.commit_id,
+                    "reconciled": false
+                })
             }
         }
         other => anyhow::bail!("unknown write kind {other}"),
@@ -2576,11 +2842,17 @@ async fn perform_write_with_receipt(
                 "operation": write.kind.clone(),
                 "attempt": write.attempts,
                 "request_sha256": request_sha256,
+                "expected": {
+                    "event": payload["event"].as_str(),
+                    "commit_id": payload["commit_id"].as_str().or_else(|| payload["sha"].as_str()),
+                },
                 "provider_receipt": receipt.clone(),
                 "provider": {
                     "repository": payload["repo"].as_str(),
                     "pr_number": payload["pr_number"].as_i64(),
-                    "head_sha": payload["sha"].as_str(),
+                    "head_sha": payload["sha"].as_str().or_else(|| payload["commit_id"].as_str()),
+                    "commit_id": payload["commit_id"].as_str(),
+                    "event": payload["event"].as_str(),
                 },
             }),
             None,
@@ -2855,7 +3127,13 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         .pull_head_sha(&command.repository, command.pr_number as i64)
         .await
     {
-        Ok(sha) => sha,
+        Ok(sha) => match closing::canonical_commit_id(&sha) {
+            Some(canonical) => canonical,
+            None => {
+                tracing::warn!(repo = %command.repository, head_sha = %sha, "finding command received an invalid live head");
+                return deciding::fault("Could not confirm this pull request's head revision.");
+            }
+        },
         Err(error) => {
             tracing::warn!(%error, repo = %command.repository, "head lookup failed for a finding command");
             return deciding::fault("Could not confirm this pull request's head revision.");
@@ -3034,6 +3312,29 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
             );
         }
     };
+    let approval_authorized = match store.review_round_integrity(&decided.session_id).await {
+        Ok(Some(proof)) if proof.integrity_disposition == "verified" => proof
+            .verified_commit_id
+            .as_deref()
+            .and_then(closing::canonical_commit_id)
+            .is_some_and(|commit_id| commit_id == head_sha),
+        Ok(Some(proof)) => {
+            tracing::info!(
+                session_id = %decided.session_id,
+                disposition = %proof.integrity_disposition,
+                "withholding decision approval from an unverified round"
+            );
+            false
+        }
+        Ok(None) => {
+            tracing::info!(session_id = %decided.session_id, "withholding decision approval without a round proof");
+            false
+        }
+        Err(error) => {
+            tracing::warn!(%error, session_id = %decided.session_id, "round proof lookup failed; withholding decision approval");
+            false
+        }
+    };
     // A waive moves the finding to a visible `Waived` section on the round's
     // own verdict comment (ADR 038 point 4) — read the live body, upsert the
     // section, PATCH it back. Every step degrades to "reply carries the news"
@@ -3085,6 +3386,7 @@ async fn apply_finding_command(state: &Arc<AppState>, command: &planner::Finding
         &head_sha,
         &after_rows,
         was_blocking,
+        approval_authorized,
         verdict_comment,
         &decided.session_id,
         command.comment_id,
@@ -3371,6 +3673,11 @@ fn response(status: StatusCode, value: Value) -> Response {
 
 #[cfg(test)]
 mod tests {
+    const COMMIT_ID: &str = "0123456789abcdef0123456789abcdef01234567";
+    const OTHER_COMMIT_ID: &str = "fedcba9876543210fedcba9876543210fedcba98";
+    const COMMIT_FINGERPRINT: &str = "sha:0123456789abcdef0123456789abcdef01234567";
+    const OTHER_COMMIT_FINGERPRINT: &str = "sha:fedcba9876543210fedcba9876543210fedcba98";
+
     #[tokio::test]
     async fn a_renamed_app_is_answered_to_under_both_names() {
         // Live case 2026-08-07: the dev App was renamed to `openab-council`
@@ -3494,7 +3801,7 @@ mod tests {
                 },
                 "repository": "example/repo",
                 "pr_number": 7,
-                "head_sha": "deadbeef"
+                "head_sha": "0123456789abcdef0123456789abcdef01234567"
             }),
             None,
         );
@@ -3502,7 +3809,10 @@ mod tests {
         let target = event.target.unwrap();
         assert_eq!(target.kind, "github_pull_request");
         assert_eq!(target.reference.as_deref(), Some("example/repo#7"));
-        assert_eq!(target.revision.as_deref(), Some("deadbeef"));
+        assert_eq!(
+            target.revision.as_deref(),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
     }
 
     struct RecordingActionClient {
@@ -3534,17 +3844,18 @@ mod tests {
                 if fail {
                     return Err(ocp::ActionFailure::Unavailable);
                 }
-                let result = if action.trigger_fingerprint.as_deref() == Some("sha:def456") {
-                    ControllerActionResult::Superseded {
-                        session_id: "ses_2".into(),
-                        old_id: "ses_1".into(),
-                    }
-                } else {
-                    ControllerActionResult::SessionOpened {
-                        session_id: "ses_1".into(),
-                        deduped: false,
-                    }
-                };
+                let result =
+                    if action.trigger_fingerprint.as_deref() == Some(OTHER_COMMIT_FINGERPRINT) {
+                        ControllerActionResult::Superseded {
+                            session_id: "ses_2".into(),
+                            old_id: "ses_1".into(),
+                        }
+                    } else {
+                        ControllerActionResult::SessionOpened {
+                            session_id: "ses_1".into(),
+                            deduped: false,
+                        }
+                    };
                 Ok(ActionResultEnvelope {
                     version: controller_protocol::CURRENT_VERSION,
                     action_id,
@@ -3623,6 +3934,102 @@ mod tests {
         assert!(state.github.is_some(), "write client must exist");
         let readiness = state.readiness();
         assert_eq!(readiness.status, "ready", "external mode must reach ready");
+    }
+
+    #[tokio::test]
+    async fn legacy_authority_writes_are_parked_before_provider_send() {
+        let concrete_store = Arc::new(SqliteStore::memory().unwrap());
+        let store: Arc<dyn ProductStore> = concrete_store.clone();
+        let mut config = Config::from_values(|_| None);
+        config.mode = OperatingMode::ExternalCanary;
+        config.enable_writes = true;
+        config.canary_repository = Some("example/repo".into());
+        config.github_api_base = "http://127.0.0.1:1".into();
+        config.github_app = config::GitHubAppConfig {
+            app_id: Some("1".into()),
+            installation_id: Some("2".into()),
+            private_key: Some("unused".into()),
+        };
+        let github = Arc::new(
+            github::GitHubClient::from_config(&config).expect("writes enabled builds a client"),
+        );
+        github.seed_test_token("ghs_test");
+
+        let writes = vec![
+            (
+                "legacy_review",
+                closing::KIND_REVIEW,
+                json!({
+                    "repo": "example/repo",
+                    "pr_number": 7,
+                    "event": "APPROVE",
+                    "body": format!("legacy\n\n{}", closing::round_marker("legacy_review"))
+                }),
+            ),
+            (
+                "legacy_success",
+                closing::KIND_STATUS,
+                json!({
+                    "repo": "example/repo",
+                    "sha": COMMIT_ID,
+                    "state": "success",
+                    "context": closing::STATUS_CONTEXT,
+                    "description": "legacy"
+                }),
+            ),
+            (
+                "legacy_failure",
+                closing::KIND_STATUS,
+                json!({
+                    "repo": "example/repo",
+                    "sha": COMMIT_ID,
+                    "state": "failure",
+                    "context": closing::STATUS_CONTEXT,
+                    "description": "legacy"
+                }),
+            ),
+        ];
+        for (session_id, kind, payload) in &writes {
+            concrete_store
+                .record_review_round(&store::ReviewRound {
+                    repo: "example/repo".into(),
+                    pr_number: 7,
+                    session_id: (*session_id).into(),
+                    head_sha: Some(COMMIT_ID.into()),
+                    verified_commit_id: None,
+                    integrity_disposition: "legacy_unverified".into(),
+                    decision: "approve".into(),
+                    red: 0,
+                    yellow: 0,
+                    green: 1,
+                })
+                .unwrap();
+            concrete_store
+                .enqueue_write(session_id, kind, payload)
+                .unwrap();
+        }
+
+        for _ in 0..WRITE_MAX_ATTEMPTS {
+            assert_eq!(drain_outbox_batch(&store, &github).await, writes.len());
+        }
+        assert_eq!(concrete_store.pending_writes(10).unwrap().len(), 0);
+        let rejected = concrete_store
+            .audit_events(&AuditEventQuery {
+                kind: Some("github.write.authority_rejected".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            rejected.events.len(),
+            writes.len() * WRITE_MAX_ATTEMPTS as usize
+        );
+        assert!(rejected.events.iter().all(|event| {
+            event
+                .event
+                .error
+                .as_ref()
+                .is_some_and(|error| error.class == "unproven_legacy_authority_intent")
+        }));
     }
 
     fn signed_request(delivery: &str, body: &'static str) -> Request<Body> {
@@ -3729,7 +4136,7 @@ mod tests {
                 "ses_read_1",
                 "example/repo",
                 7,
-                Some("deadbeef"),
+                Some(COMMIT_ID),
                 &[
                     store::ReviewFinding {
                         stable_id: "F1".into(),
@@ -3820,7 +4227,7 @@ mod tests {
         let f1 = rows.iter().find(|r| r["title"] == "first").unwrap();
         assert_eq!(f1["repo"], "example/repo");
         assert_eq!(f1["pr_number"], 7);
-        assert_eq!(f1["head_sha"], "deadbeef");
+        assert_eq!(f1["head_sha"], COMMIT_ID);
         assert_eq!(f1["session_id"], "ses_read_1");
         assert_eq!(f1["stable_id"], "F1");
         assert_eq!(f1["severity"], "red");
@@ -3910,7 +4317,7 @@ mod tests {
         // The chair's block: one waived finding naming the own-repo waiver and
         // one naming the foreign repo's — the second must bump nothing.
         let body = format!(
-            "report\n<!-- openab-findings\n{{\"findings\":[\
+            "report\n<!-- openab-findings\n{{\"head_sha\":\"{COMMIT_ID}\",\"findings\":[\
              {{\"id\":\"F1\",\"severity\":\"yellow\",\"status\":\"waived\",\
               \"title\":\"waived one\",\"waiver_id\":\"{}\"}},\
              {{\"id\":\"F2\",\"severity\":\"yellow\",\"status\":\"waived\",\
@@ -3926,7 +4333,7 @@ mod tests {
         let target = store::SessionTarget {
             repo: "example/repo".into(),
             pr_number: 7,
-            head_sha: None,
+            head_sha: Some(COMMIT_ID.into()),
             reason: None,
             required_valid_reviewers: Some(2),
         };
@@ -3998,7 +4405,7 @@ mod tests {
                 "ses_authored",
                 "example/repo",
                 9,
-                Some("headsha"),
+                Some(COMMIT_ID),
                 &[store::ReviewFinding {
                     stable_id: "F1".into(),
                     severity: "red".into(),
@@ -4017,7 +4424,7 @@ mod tests {
                 "example/repo",
                 9,
                 "F1",
-                "headsha",
+                COMMIT_ID,
                 "yuaanlin",
                 "we accept this for eval traffic",
                 now_unix() + 83 * 86_400,
@@ -4136,7 +4543,7 @@ mod tests {
             )
             .route(
                 "/repos/:o/:n/pulls/7",
-                axum_get(|| async { Json(json!({"head": {"sha": "deadbeef"}})) }),
+                axum_get(|| async { Json(json!({"head": {"sha": COMMIT_ID}})) }),
             )
             .route(
                 "/repos/:o/:n/issues/comments/:id",
@@ -4189,6 +4596,8 @@ mod tests {
                             Json(json!([{
                                 "id": 901,
                                 "body": format!("blocked\n\n{marker}"),
+                                "state": "CHANGES_REQUESTED",
+                                "commit_id": COMMIT_ID,
                                 "user": {"login": "fixture-council[bot]"}
                             }]))
                         }
@@ -4200,7 +4609,11 @@ mod tests {
                         let gh = gh.clone();
                         async move {
                             gh.reviews.lock().unwrap().push(body);
-                            Json(json!({"id": 2000, "state": "APPROVED"}))
+                            Json(json!({
+                                "id": 2000,
+                                "state": "APPROVED",
+                                "commit_id": COMMIT_ID
+                            }))
                         }
                     }
                 }),
@@ -4235,7 +4648,9 @@ mod tests {
                 repo: "example/repo".into(),
                 pr_number: 7,
                 session_id: "ses_w".into(),
-                head_sha: Some("deadbeef".into()),
+                head_sha: Some(COMMIT_ID.into()),
+                verified_commit_id: Some(COMMIT_ID.into()),
+                integrity_disposition: "verified".into(),
                 decision: "request_changes".into(),
                 red: 1,
                 yellow: 0,
@@ -4249,7 +4664,7 @@ mod tests {
                 "ses_w",
                 "example/repo",
                 7,
-                Some("deadbeef"),
+                Some(COMMIT_ID),
                 &[
                     store::ReviewFinding {
                         stable_id: "F1".into(),
@@ -4375,7 +4790,7 @@ mod tests {
             )
             .route(
                 "/repos/:o/:n/pulls/7",
-                axum_get(|| async { Json(json!({"head": {"sha": "deadbeef"}})) }),
+                axum_get(|| async { Json(json!({"head": {"sha": COMMIT_ID}})) }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -4407,7 +4822,7 @@ mod tests {
                 "ses_w",
                 "example/repo",
                 7,
-                Some("deadbeef"),
+                Some(COMMIT_ID),
                 &[store::ReviewFinding {
                     stable_id: "F1".into(),
                     severity: "red".into(),
@@ -4426,7 +4841,7 @@ mod tests {
                 "example/repo",
                 7,
                 "F1",
-                "deadbeef",
+                COMMIT_ID,
                 "author1",
                 "accepted",
                 now_unix() + 86_400,
@@ -4866,14 +5281,7 @@ mod tests {
         .unwrap();
         let store = SqliteStore::memory().unwrap();
         store
-            .record_session_target(
-                "ses_1",
-                "example/repo",
-                7,
-                Some("openingsha"),
-                None,
-                Some(2),
-            )
+            .record_session_target("ses_1", "example/repo", 7, Some(COMMIT_ID), None, Some(2))
             .unwrap();
         let state = Arc::new(AppState::with_components(
             config,
@@ -4954,14 +5362,7 @@ mod tests {
         .unwrap();
         let store = SqliteStore::memory().unwrap();
         store
-            .record_session_target(
-                "ses_1",
-                "example/repo",
-                7,
-                Some("openingsha"),
-                None,
-                Some(2),
-            )
+            .record_session_target("ses_1", "example/repo", 7, Some(COMMIT_ID), None, Some(2))
             .unwrap();
         let state = Arc::new(AppState::with_components(
             config,
@@ -4984,7 +5385,9 @@ mod tests {
                 "required_valid_reviewers": 2,
                 "valid_reviewers": 2,
                 "final_messages": [
-                    "## Verdict\n\nprose\n<!-- openab-findings\n{\"head_sha\":\"reviewedsha\",\"findings\":[{\"id\":\"F1\",\"severity\":\"yellow\",\"title\":\"races on close\"}]}\n-->\n[[verdict:request_changes r=0 y=1 g=2]] [done]"
+                    format!(
+                        "## Verdict\n\nprose\n<!-- openab-findings\n{{\"head_sha\":\"{COMMIT_ID}\",\"findings\":[{{\"id\":\"F1\",\"severity\":\"yellow\",\"title\":\"races on close\"}}]}}\n-->\n[[verdict:request_changes r=0 y=1 g=2]] [done]"
+                    )
                 ]
             }
         })
@@ -5005,8 +5408,8 @@ mod tests {
                 .unwrap();
         assert_eq!(value["closed"], true);
 
-        // The round landed with the verdict the chair's counts imply, and with
-        // the sha the council actually read rather than the opening one.
+        // The round landed with the verdict the chair's counts imply, and the
+        // authority payloads carry the verified opened target.
         let pending = store.pending_writes(10).await.unwrap();
         assert_eq!(
             pending.iter().map(|w| w.kind.as_str()).collect::<Vec<_>>(),
@@ -5014,12 +5417,25 @@ mod tests {
         );
         let status = pending.iter().find(|w| w.kind == "status").unwrap();
         assert_eq!(
-            status.payload["sha"], "openingsha",
+            status.payload["sha"], COMMIT_ID,
             "the status is pinned to the webhook sha, not the chair's claim"
         );
         assert_eq!(status.payload["state"], "failure");
         let review = pending.iter().find(|w| w.kind == "review").unwrap();
         assert_eq!(review.payload["event"], "REQUEST_CHANGES");
+        assert_eq!(review.payload["commit_id"], COMMIT_ID);
+        assert_eq!(status.payload["commit_id"], COMMIT_ID);
+        assert_eq!(
+            store
+                .review_round_integrity("ses_1")
+                .await
+                .unwrap()
+                .unwrap(),
+            store::ReviewRoundIntegrity {
+                verified_commit_id: Some(COMMIT_ID.into()),
+                integrity_disposition: "verified".into(),
+            }
+        );
 
         // Nothing was sent: no write client in this configuration. That is the
         // pre-cutover posture — the controller knows what it would post.
@@ -5333,7 +5749,7 @@ mod tests {
                     "author_association": "CONTRIBUTOR",
                     "number": 7,
                     "draft": false,
-                    "head": {"sha": "abc123"},
+                    "head": {"sha": COMMIT_ID},
                     "labels": [],
                     "user": {"login": login}
                 }
@@ -5397,7 +5813,7 @@ mod tests {
                     "author_association": "NONE",
                     "number": 9,
                     "draft": false,
-                    "head": {"sha": "def456"},
+                    "head": {"sha": OTHER_COMMIT_ID},
                     "labels": [],
                     "user": {"login": login}
                 }
@@ -5498,7 +5914,13 @@ mod tests {
                                 .iter()
                                 .rev()
                                 .map(|(id, body, login)| {
-                                    json!({"id": id, "body": body, "user": {"login": login}})
+                                    json!({
+                                        "id": id,
+                                        "body": body,
+                                        "state": "CHANGES_REQUESTED",
+                                        "commit_id": COMMIT_ID,
+                                        "user": {"login": login}
+                                    })
                                 })
                                 .collect();
                             Json(Value::Array(list))
@@ -5517,7 +5939,11 @@ mod tests {
                                 body["body"].as_str().unwrap_or_default().into(),
                                 "fixture-council[bot]".into(),
                             ));
-                            Json(json!({"id": id, "state": "CHANGES_REQUESTED"}))
+                            Json(json!({
+                                "id": id,
+                                "state": "CHANGES_REQUESTED",
+                                "commit_id": body["commit_id"]
+                            }))
                         }
                     }
                 }),
@@ -5543,6 +5969,20 @@ mod tests {
             github::GitHubClient::from_config(&config).expect("writes enabled builds a client");
         client.seed_test_token("ghs_test");
         let store = SqliteStore::memory().unwrap();
+        store
+            .record_review_round(&store::ReviewRound {
+                repo: "example/repo".into(),
+                pr_number: 7,
+                session_id: "ses_1".into(),
+                head_sha: Some(COMMIT_ID.into()),
+                verified_commit_id: Some(COMMIT_ID.into()),
+                integrity_disposition: "verified".into(),
+                decision: "request_changes".into(),
+                red: 1,
+                yellow: 0,
+                green: 0,
+            })
+            .unwrap();
 
         // The round's writes, as dispatch would queue them.
         let marker = closing::round_marker("ses_1");
@@ -5581,6 +6021,7 @@ mod tests {
                 "ses_1",
                 closing::KIND_REVIEW,
                 &json!({"repo": "example/repo", "pr_number": 7, "event": "REQUEST_CHANGES",
+                        "commit_id": COMMIT_ID,
                         "body": format!("blocked\n\n{marker}")}),
             )
             .unwrap();
@@ -5620,8 +6061,8 @@ mod tests {
         // And the adopted comment id is now the round's anchor.
         assert_eq!(
             store.last_comment_id("example/repo", 7).unwrap(),
-            None,
-            "no round row in this test; anchor write is a no-op"
+            Some(1001),
+            "the verified round stores OUR adopted comment as its anchor"
         );
     }
 
@@ -5688,7 +6129,11 @@ mod tests {
                         async move {
                             let event = body["event"].as_str().unwrap_or_default().to_string();
                             seen.lock().unwrap().push(format!("review:{event}"));
-                            Json(json!({"id": 77, "state": "CHANGES_REQUESTED"}))
+                            Json(json!({
+                                "id": 77,
+                                "state": "CHANGES_REQUESTED",
+                                "commit_id": body["commit_id"]
+                            }))
                         }
                     }
                 }),
@@ -5715,14 +6160,7 @@ mod tests {
         .unwrap();
         let store = SqliteStore::memory().unwrap();
         store
-            .record_session_target(
-                "ses_1",
-                "example/repo",
-                7,
-                Some("openingsha"),
-                None,
-                Some(2),
-            )
+            .record_session_target("ses_1", "example/repo", 7, Some(COMMIT_ID), None, Some(2))
             .unwrap();
         let state = Arc::new(AppState::with_components(
             config,
@@ -5748,7 +6186,9 @@ mod tests {
                 "reason": "normal",
                 "required_valid_reviewers": 2,
                 "valid_reviewers": 2,
-                "final_messages": ["<!-- openab-council -->\n## Verdict\n\nblocked\n[[verdict:request_changes r=1 y=0 g=0]] [done]"]
+                "final_messages": [format!(
+                    "<!-- openab-council -->\n## Verdict\n\nblocked\n<!-- openab-findings\n{{\"head_sha\":\"{COMMIT_ID}\",\"findings\":[]}}\n-->\n[[verdict:request_changes r=1 y=0 g=0]] [done]"
+                )]
             }
         })
         .to_string();
@@ -5776,10 +6216,10 @@ mod tests {
         );
         assert_eq!(
             *seen.lock().unwrap(),
-            [
-                "comment:<!-- openab-council -->",
-                "status:openingsha:failure",
-                "review:REQUEST_CHANGES"
+            vec![
+                "comment:<!-- openab-council -->".to_string(),
+                format!("status:{COMMIT_ID}:failure"),
+                "review:REQUEST_CHANGES".to_string()
             ]
         );
         // The comment id came back from GitHub and is now the upsert anchor
@@ -5805,7 +6245,7 @@ mod tests {
                 "ses_short",
                 "example/repo",
                 7,
-                Some("openingsha"),
+                Some(COMMIT_ID),
                 None,
                 Some(2),
             )
@@ -5873,7 +6313,14 @@ mod tests {
         .unwrap();
         let store = SqliteStore::memory().unwrap();
         store
-            .record_session_target("ses_ours", "example/repo", 7, Some("sha"), None, Some(2))
+            .record_session_target(
+                "ses_ours",
+                "example/repo",
+                7,
+                Some(COMMIT_ID),
+                None,
+                Some(2),
+            )
             .unwrap();
         let state = Arc::new(AppState::with_components(
             config,
@@ -5944,7 +6391,7 @@ mod tests {
                 "ses_ask",
                 "example/repo",
                 7,
-                Some("sha"),
+                Some(COMMIT_ID),
                 Some("ask"),
                 Some(0),
             )
@@ -6168,7 +6615,7 @@ mod tests {
 
         let mut synchronize: Value = serde_json::from_str(BODY).unwrap();
         synchronize["action"] = json!("synchronize");
-        synchronize["pull_request"]["head"]["sha"] = json!("def456");
+        synchronize["pull_request"]["head"]["sha"] = json!(OTHER_COMMIT_ID);
         let superseded = app
             .oneshot(signed_owned_request(
                 "canary-delivery-2",
@@ -6187,7 +6634,7 @@ mod tests {
         assert_eq!(calls[0].0, "github-delivery-canary-delivery-1");
         assert_eq!(
             calls[1].1.trigger_fingerprint.as_deref(),
-            Some("sha:def456")
+            Some(OTHER_COMMIT_FINGERPRINT)
         );
     }
 
@@ -6207,7 +6654,7 @@ mod tests {
             )
             .route(
                 "/repos/:o/:n/pulls/:num",
-                axum_get(|| async { Json(json!({"head": {"sha": "abc999"}})) }),
+                axum_get(|| async { Json(json!({"head": {"sha": COMMIT_ID}})) }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -6289,7 +6736,7 @@ mod tests {
             assert_eq!(calls.len(), 3);
             assert_eq!(
                 calls[0].1.trigger_fingerprint.as_deref(),
-                Some("sha:abc999"),
+                Some(COMMIT_FINGERPRINT),
                 "plain /review resolves to the current head sha"
             );
             assert_eq!(
@@ -6299,7 +6746,7 @@ mod tests {
             );
             assert_eq!(
                 calls[2].1.trigger_fingerprint.as_deref(),
-                Some("sha:abc999"),
+                Some(COMMIT_FINGERPRINT),
                 "a bare mention review also resolves to the head sha"
             );
         }

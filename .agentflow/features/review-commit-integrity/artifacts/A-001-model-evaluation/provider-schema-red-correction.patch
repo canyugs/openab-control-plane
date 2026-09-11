@@ -1,0 +1,20 @@
+diff --git a/tests/test_review_model_evaluation.py b/tests/test_review_model_evaluation.py
+index 4545410..133943a 100644
+--- a/tests/test_review_model_evaluation.py
++++ b/tests/test_review_model_evaluation.py
+@@ -342,6 +342,15 @@ class ModelEvaluationBehaviorTests(unittest.TestCase)
+             self.assertEqual(set(schema["required"]), set(required))
+             self.assertEqual(set(schema["properties"]), set(required))
+ 
++        for schema in (
++            module.JUDGE_SCHEMA,
++            module.SYNTHESIS_SCHEMA,
++            module.DISCOVERY_SCHEMA,
++            module.VALIDATION_SCHEMA,
++        ):
++            for composition in ("oneOf", "allOf", "anyOf"):
++                self.assertNotIn(composition, schema)
++
+         citation_required = {"path", "start", "end", "evidence_id"}
+         for schema in (module.JUDGE_SCHEMA, module.SYNTHESIS_SCHEMA):
+             citations = schema["properties"]["citations"]

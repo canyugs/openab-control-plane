@@ -1,0 +1,54 @@
+[
+  {
+    "chunk_id": "941f0d",
+    "wall_time_seconds": 1.003268875,
+    "session_id": 54814,
+    "original_token_count": 49,
+    "output": "\r\nThe default interactive shell is now zsh.\r\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\r\nFor more details, please visit https://support.apple.com/kb/HT208050.\r\nbash-3.2$ "
+  },
+  {
+    "input": "python3 -c 'import os; print(\"REAL_PTY\", os.isatty(0), os.ttyname(0))'\npython3 /tmp/ocp-linux-evaluation-run.py\n",
+    "chunk_id": "41d19a",
+    "wall_time_seconds": 1.001891417,
+    "session_id": 54814,
+    "original_token_count": 96,
+    "output": "python3 -c 'import os; print(\"REAL_PTY\", os.isatty(0), os.ttyname(0\r<t os; print(\"REAL_PTY\", os.isatty(0), os.ttyname(0)                         \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b)'\r\nREAL_PTY True /dev/ttys004\r\nbash-3.2$ python3 /tmp/ocp-linux-evaluation-run.py\r\nFRESH_LINUX_EVALUATION /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/evaluation\r\n"
+  },
+  {
+    "chunk_id": "772247",
+    "wall_time_seconds": 5.001987,
+    "session_id": 54814,
+    "original_token_count": 0,
+    "output": ""
+  },
+  {
+    "chunk_id": "de2f7d",
+    "wall_time_seconds": 5.002449042,
+    "session_id": 54814,
+    "original_token_count": 53,
+    "output": "{\"state\": \"complete\", \"summary\": \"/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/evaluation/summary.json\"}\r\n\r\nEVALUATION_EXIT 0\r\nEVALUATION_STATE complete\r\nbash-3.2$ "
+  },
+  {
+    "input": "printf 'DRIVER_EXIT=%s\\n' \"$?\"\npython3 /tmp/ocp-linux-runtime-readback.py\n",
+    "chunk_id": "d2811b",
+    "wall_time_seconds": 1.001761916,
+    "session_id": 54814,
+    "original_token_count": 33,
+    "output": "printf 'DRIVER_EXIT=%s\\n' \"$?\"\r\nDRIVER_EXIT=0\r\nbash-3.2$ python3 /tmp/ocp-linux-runtime-readback.py\r\nCOMPLETE_REPLAY_WITHOUT_AUTH\r\n"
+  },
+  {
+    "chunk_id": "d9c03d",
+    "wall_time_seconds": 5.002731125,
+    "session_id": 54814,
+    "original_token_count": 212,
+    "output": "{\"state\": \"complete\", \"summary\": \"/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/evaluation/summary.json\"}\r\n\r\nREPLAY_EXIT 0\r\n{\"json\": \"/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/weekly/review-round-weekly-2026-W37-snapshot-20260909T001000Z-ab9d8019d18f.json\", \"markdown\": \"/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-linux-auth-evaluation-4bl4lzvu/weekly/review-round-weekly-2026-W37-snapshot-20260909T001000Z-ab9d8019d18f.md\", \"report_id\": \"ab9d8019d18f515826cc1cfeb2c927a5f6a0a269f29aadb43b9b20465c6f0476\"}\r\n\r\nWEEKLY_EXIT 0\r\nTraceback (most recent call last):\r\n  File \"/tmp/ocp-linux-runtime-readback.py\", line 37, in <module>\r\n    assert not list(scratch.iterdir())\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\nAssertionError\r\nbash-3.2$ "
+  },
+  {
+    "input": "printf 'READBACK_HELPER_INITIAL_EXIT=%s\\n' \"$?\"\nexit 0\n",
+    "chunk_id": "63a825",
+    "wall_time_seconds": 0.000002792,
+    "exit_code": 0,
+    "original_token_count": 27,
+    "output": "printf 'READBACK_HELPER_INITIAL_EXIT=%s\\n' \"$?\"\r\nREADBACK_HELPER_INITIAL_EXIT=1\r\nbash-3.2$ exit 0\r\nexit\r\n"
+  }
+]

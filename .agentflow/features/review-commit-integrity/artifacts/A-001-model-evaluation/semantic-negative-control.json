@@ -1,0 +1,140 @@
+{
+  "execution": {
+    "plan": {
+      "item_id": "F-1",
+      "files": [
+        {
+          "path": "generated/check.py",
+          "utf8": "# /source/sample.py\nimport json,sys\nprint(json.dumps({\"claim_present\": sys.argv[1] == \"yes\"}))\n"
+        }
+      ],
+      "runs": [
+        {
+          "name": "baseline",
+          "argv": [
+            "python3",
+            "generated/check.py",
+            "yes"
+          ],
+          "cwd": "/work",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "claim_present": true
+            }
+          },
+          "evidence_ids": [
+            "E_SAMPLE"
+          ]
+        },
+        {
+          "name": "counterexample",
+          "argv": [
+            "python3",
+            "generated/check.py",
+            "no"
+          ],
+          "cwd": "/work",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "claim_present": false
+            }
+          },
+          "evidence_ids": [
+            "E_SAMPLE"
+          ]
+        }
+      ],
+      "claim_observed": "The access-control claim is present."
+    },
+    "observed": {
+      "runs": [
+        {
+          "duration_ms": 157,
+          "exit": 0,
+          "name": "baseline",
+          "observation": {
+            "claim_present": true
+          },
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_sha256": "ae5dc91aae07aef5855a96862cd70f5e977eb49e65659b8abb709d80dd5c5aa9",
+          "timeout": false
+        },
+        {
+          "duration_ms": 73,
+          "exit": 0,
+          "name": "counterexample",
+          "observation": {
+            "claim_present": false
+          },
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_sha256": "3b3042e8df22533eb9b6f18936c177fd30a7c5deb8728e2f76b5357b66f7e587",
+          "timeout": false
+        }
+      ]
+    }
+  },
+  "assessments": [
+    {
+      "model": "claude-opus-5",
+      "tools": [
+        "StructuredOutput"
+      ],
+      "structured_output": {
+        "finding_id": "F-1",
+        "verdict": "support",
+        "severity": "high",
+        "usefulness": "useful",
+        "citations": [
+          {
+            "path": "sample.py",
+            "start_line": 1,
+            "end_line": 2,
+            "evidence_id": "E_SAMPLE",
+            "quote": "def can_read(requester, owner, public=False):\n    return public or bool(requester)",
+            "note": "owner parameter is never compared to requester; any truthy requester passes."
+          },
+          {
+            "path": "README.md",
+            "start_line": 1,
+            "end_line": 1,
+            "evidence_id": "E_CONTRACT",
+            "quote": "can_read permits access only for public documents or an authenticated requester equal to owner.",
+            "note": "Explicit contract that the implementation violates."
+          },
+          {
+            "path": "generated/check.py",
+            "start_line": 1,
+            "end_line": 3,
+            "evidence_id": "E_SAMPLE",
+            "quote": "# /source/sample.py\nimport json,sys\nprint(json.dumps({\"claim_present\": sys.argv[1] == \"yes\"}))",
+            "note": "Harness only echoes argv; it never imports or invokes can_read, so it does not exercise the cited source."
+          }
+        ],
+        "counterexample": "The generated runs do not test the code. `generated/check.py` references `sample.py` only inside a comment; it imports nothing from it and calls no function under test. Its output is `{\"claim_present\": sys.argv[1] == \"yes\"}`, so the baseline run (argv \"yes\" -> true) and the counterexample run (argv \"no\" -> false) are decided solely by the command-line argument. Substituting a fully correct implementation, e.g. `def can_read(requester, owner, public=False): return public or (bool(requester) and requester == owner)`, would produce byte-identical stdout for both runs, so the harness cannot distinguish a vulnerable build from a fixed one and contributes no evidence. A valid test would import can_read and assert `can_read(\"mallory\", \"alice\", public=False) is False`; the current code returns True, which is the actual bypass. The finding itself is confirmed by direct comparison of E_SAMPLE against E_CONTRACT, independent of the invalid harness.",
+        "validation_verdict": "invalid"
+      },
+      "raw_directory": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-semantic-probe-qotmcr8z"
+    },
+    {
+      "model": "claude-opus-4-6",
+      "tools": [
+        "StructuredOutput"
+      ],
+      "structured_output": {
+        "finding_id": "F-1",
+        "verdict": "support",
+        "severity": "high",
+        "usefulness": "useful",
+        "citations": [
+          "E_SAMPLE: sample.py lines 1-2 \u2014 `return public or bool(requester)` ignores `owner` entirely",
+          "E_CONTRACT: README.md \u2014 'can_read permits access only for public documents or an authenticated requester equal to owner'"
+        ],
+        "counterexample": "The generated test (generated/check.py) never imports or invokes `can_read` from sample.py. It is a self-contained script that prints a predetermined JSON value based on a CLI argument (`sys.argv[1] == \"yes\"`). It does not exercise the cited source code and cannot distinguish a buggy implementation from a correct one. A meaningful test would call `can_read(\"alice\", \"bob\", public=False)` and assert the result is `True` (demonstrating the bug) versus the expected `False` (per the README contract).",
+        "validation_verdict": "invalid"
+      },
+      "raw_directory": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-semantic-probe-d95luyr3"
+    }
+  ]
+}

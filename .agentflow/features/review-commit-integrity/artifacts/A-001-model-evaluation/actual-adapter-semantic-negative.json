@@ -1,0 +1,367 @@
+{
+  "root": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-adapter-semantic-live-pjoottjg",
+  "results": [
+    {
+      "role": "judge_a",
+      "status": "success",
+      "transport": {
+        "requested_model_id": "claude-opus-5",
+        "observed_model_id": "claude-opus-5",
+        "actual_metadata": {
+          "usage": {
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 4421,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 905,
+            "output_tokens_details": {
+              "thinking_tokens": 223
+            },
+            "server_tool_use": {
+              "web_search_requests": 0,
+              "web_fetch_requests": 0
+            },
+            "service_tier": "standard",
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 4421,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "inference_geo": "not_available",
+            "iterations": [
+              {
+                "input_tokens": 2,
+                "output_tokens": 905,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 4421,
+                "cache_creation": {
+                  "ephemeral_5m_input_tokens": 0,
+                  "ephemeral_1h_input_tokens": 4421
+                },
+                "type": "message"
+              }
+            ],
+            "speed": "standard"
+          },
+          "duration_ms": 12249,
+          "modelUsage": {
+            "claude-haiku-4-5-20251001": {
+              "inputTokens": 2838,
+              "outputTokens": 15,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.002913,
+              "contextWindow": 200000,
+              "maxOutputTokens": 32000,
+              "thinkingTokens": 0,
+              "canonicalModel": "claude-haiku-4-5",
+              "provider": "firstParty",
+              "costBasis": "list"
+            },
+            "claude-opus-5": {
+              "inputTokens": 2,
+              "outputTokens": 905,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 4421,
+              "webSearchRequests": 0,
+              "costUSD": 0.066845,
+              "contextWindow": 1000000,
+              "maxOutputTokens": 64000,
+              "thinkingTokens": 223,
+              "canonicalModel": "claude-opus-5",
+              "provider": "firstParty",
+              "costBasis": "list"
+            }
+          },
+          "is_error": false,
+          "type": "result",
+          "total_cost_usd": 0.069758,
+          "subtype": "success",
+          "session_id": "020c8e2e-6416-446d-94d7-6b5b3d93f77e",
+          "transport_observed_model_ids": [
+            "claude-opus-5"
+          ],
+          "init": {
+            "subtype": "init",
+            "tools": [
+              "StructuredOutput"
+            ],
+            "plugins": [],
+            "skills": [],
+            "mcp_servers": []
+          },
+          "model_usage": {
+            "claude-haiku-4-5-20251001": {
+              "inputTokens": 2838,
+              "outputTokens": 15,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.002913,
+              "contextWindow": 200000,
+              "maxOutputTokens": 32000,
+              "thinkingTokens": 0,
+              "canonicalModel": "claude-haiku-4-5",
+              "provider": "firstParty",
+              "costBasis": "list"
+            },
+            "claude-opus-5": {
+              "inputTokens": 2,
+              "outputTokens": 905,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 4421,
+              "webSearchRequests": 0,
+              "costUSD": 0.066845,
+              "contextWindow": 1000000,
+              "maxOutputTokens": 64000,
+              "thinkingTokens": 223,
+              "canonicalModel": "claude-opus-5",
+              "provider": "firstParty",
+              "costBasis": "list"
+            }
+          },
+          "auxiliary_model_usage": {
+            "claude-haiku-4-5-20251001": {
+              "inputTokens": 2838,
+              "outputTokens": 15,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.002913,
+              "contextWindow": 200000,
+              "maxOutputTokens": 32000,
+              "thinkingTokens": 0,
+              "canonicalModel": "claude-haiku-4-5",
+              "provider": "firstParty",
+              "costBasis": "list"
+            }
+          },
+          "estimated_cost_usd": 0.069758,
+          "cost_basis": [
+            "list"
+          ],
+          "actual_cost_usd": "unknown",
+          "redacted_environment": {
+            "HOME": "/Users/can",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PATH": "/Users/can/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/pkg/env/global/bin:/Library/Apple/usr/bin:/Users/can/.n/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwi",
+            "TMPDIR": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/"
+          }
+        },
+        "returncode": 0,
+        "attempts": 1,
+        "transport_status": "success",
+        "stdout_sha256": "4c1eeed9777734989818f30311a325975bd7bb6def277369f4428315e9d6934a",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "usage_status": "known",
+        "cost_status": "estimate",
+        "estimated_cost_usd": 0.069758,
+        "actual_cost_usd": "unknown"
+      },
+      "assessment": {
+        "finding_id": "F-1",
+        "verdict": "support",
+        "severity": "high",
+        "usefulness": "useful",
+        "citations": [
+          {
+            "path": "sample.py",
+            "start": 1,
+            "end": 2,
+            "evidence_id": "E_SAMPLE"
+          },
+          {
+            "path": "README.md",
+            "start": 1,
+            "end": 1,
+            "evidence_id": "E_CONTRACT"
+          }
+        ],
+        "counterexample": "Frozen source supports the claim on its face: can_read(requester, owner, public=False) returns `public or bool(requester)`, which never compares requester to owner. Calling can_read(\"mallory\", \"alice\", public=False) yields True, granting a non-owner authenticated requester read access to a private document, contrary to the README rule that access is permitted only for public documents or a requester equal to owner.\n\nThe executed validation, however, does not test that source. The only generated file is generated/check.py, whose body is `# /source/sample.py` plus `print(json.dumps({\"claim_present\": sys.argv[1] == \"yes\"}))`. It never imports or reads sample.py; the sample.py reference exists solely as a comment. Baseline passes argv \"yes\" and counterexample passes argv \"no\", so claim_present is a pure echo of the command line. Both runs would produce identical exits and observations if can_read were rewritten to the correct `public or (bool(requester) and requester == owner)`, or if sample.py were deleted entirely. The controls therefore distinguish nothing about the claim versus its negation: the harness is a print-only, argv-echo shim with no source binding, so the executed distinction is invalid even though the underlying finding is correct by inspection of the supplied frozen source.",
+        "validation_verdict": "invalid",
+        "provenance": "model_assessment"
+      }
+    },
+    {
+      "role": "judge_b",
+      "status": "success",
+      "transport": {
+        "requested_model_id": "claude-opus-4-6",
+        "observed_model_id": "claude-opus-4-6",
+        "actual_metadata": {
+          "usage": {
+            "input_tokens": 3500,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 1338,
+            "output_tokens_details": {
+              "thinking_tokens": 621
+            },
+            "server_tool_use": {
+              "web_search_requests": 0,
+              "web_fetch_requests": 0
+            },
+            "service_tier": "standard",
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 0,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "inference_geo": "not_available",
+            "iterations": [
+              {
+                "input_tokens": 3500,
+                "output_tokens": 1338,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_creation": {
+                  "ephemeral_5m_input_tokens": 0,
+                  "ephemeral_1h_input_tokens": 0
+                },
+                "type": "message"
+              }
+            ],
+            "speed": "standard"
+          },
+          "duration_ms": 26784,
+          "modelUsage": {
+            "claude-haiku-4-5-20251001": {
+              "inputTokens": 2838,
+              "outputTokens": 15,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.002913,
+              "contextWindow": 200000,
+              "maxOutputTokens": 32000,
+              "thinkingTokens": 0,
+              "canonicalModel": "claude-haiku-4-5",
+              "provider": "firstParty",
+              "costBasis": "list"
+            },
+            "claude-opus-4-6": {
+              "inputTokens": 3500,
+              "outputTokens": 1338,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.05095,
+              "contextWindow": 200000,
+              "maxOutputTokens": 64000,
+              "thinkingTokens": 621,
+              "canonicalModel": "claude-opus-4-6",
+              "provider": "firstParty",
+              "costBasis": "list"
+            }
+          },
+          "is_error": false,
+          "type": "result",
+          "total_cost_usd": 0.053863,
+          "subtype": "success",
+          "session_id": "914b2a4c-b779-48eb-9f8e-c778c47ea73a",
+          "transport_observed_model_ids": [
+            "claude-opus-4-6"
+          ],
+          "init": {
+            "subtype": "init",
+            "tools": [
+              "StructuredOutput"
+            ],
+            "plugins": [],
+            "skills": [],
+            "mcp_servers": []
+          },
+          "model_usage": {
+            "claude-haiku-4-5-20251001": {
+              "inputTokens": 2838,
+              "outputTokens": 15,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.002913,
+              "contextWindow": 200000,
+              "maxOutputTokens": 32000,
+              "thinkingTokens": 0,
+              "canonicalModel": "claude-haiku-4-5",
+              "provider": "firstParty",
+              "costBasis": "list"
+            },
+            "claude-opus-4-6": {
+              "inputTokens": 3500,
+              "outputTokens": 1338,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.05095,
+              "contextWindow": 200000,
+              "maxOutputTokens": 64000,
+              "thinkingTokens": 621,
+              "canonicalModel": "claude-opus-4-6",
+              "provider": "firstParty",
+              "costBasis": "list"
+            }
+          },
+          "auxiliary_model_usage": {
+            "claude-haiku-4-5-20251001": {
+              "inputTokens": 2838,
+              "outputTokens": 15,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0,
+              "webSearchRequests": 0,
+              "costUSD": 0.002913,
+              "contextWindow": 200000,
+              "maxOutputTokens": 32000,
+              "thinkingTokens": 0,
+              "canonicalModel": "claude-haiku-4-5",
+              "provider": "firstParty",
+              "costBasis": "list"
+            }
+          },
+          "estimated_cost_usd": 0.053863,
+          "cost_basis": [
+            "list"
+          ],
+          "actual_cost_usd": "unknown",
+          "redacted_environment": {
+            "HOME": "/Users/can",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PATH": "/Users/can/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/pkg/env/global/bin:/Library/Apple/usr/bin:/Users/can/.n/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwi",
+            "TMPDIR": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/"
+          }
+        },
+        "returncode": 0,
+        "attempts": 1,
+        "transport_status": "success",
+        "stdout_sha256": "a50b5fdf2563e1c8743ae3ec4abfdbb536b78385e4fabc15ea3b2145f30c87e6",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "usage_status": "known",
+        "cost_status": "estimate",
+        "estimated_cost_usd": 0.053863,
+        "actual_cost_usd": "unknown"
+      },
+      "assessment": {
+        "finding_id": "F-1",
+        "verdict": "support",
+        "severity": "high",
+        "usefulness": "useful",
+        "citations": [
+          {
+            "path": "sample.py",
+            "start": 1,
+            "end": 2,
+            "evidence_id": "E_SAMPLE"
+          },
+          {
+            "path": "README.md",
+            "start": 1,
+            "end": 1,
+            "evidence_id": "E_CONTRACT"
+          }
+        ],
+        "counterexample": "The validation harness is an argv-echo script that never imports or calls can_read from sample.py. It outputs {\"claim_present\": true} or {\"claim_present\": false} based solely on whether sys.argv[1] == \"yes\", completely independent of the source code under test. A correct harness would import can_read, call it with a requester different from owner and public=False, and check whether it incorrectly returns True (baseline demonstrating the bug) vs. a patched version that checks requester == owner returning False (counterexample).",
+        "validation_verdict": "invalid",
+        "provenance": "model_assessment"
+      }
+    }
+  ]
+}

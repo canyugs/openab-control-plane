@@ -1,0 +1,77 @@
+diff --git a/tests/test_review_model_adapters_auth.py b/tests/test_review_model_adapters_auth.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_review_model_adapters_auth.py
+@@ -0,0 +1,72 @@
++import importlib.util
++import json
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def load_module():
++    path = ROOT / "scripts/review_model_adapters.py"
++    spec = importlib.util.spec_from_file_location("review_model_adapters_auth", path)
++    if spec is None or spec.loader is None:
++        return None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules["review_model_adapters_auth"] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++class ReviewModelAdaptersAuthTests(unittest.TestCase):
++    def test_safe_environment_and_run_direct_propagate_user_only(self):
++        module = load_module()
++        self.assertIsNotNone(module, "the review model adapter must exist")
++
++        source = {
++            "PATH": "/usr/bin:/bin",
++            "USER": "host-runtime-user",
++            "NODE_OPTIONS": "--require=/tmp/untrusted.js",
++            "PYTHONPATH": "/tmp/untrusted",
++            "LD_PRELOAD": "/tmp/untrusted.dylib",
++            "DYLD_INSERT_LIBRARIES": "/tmp/untrusted.dylib",
++            "LOGIN": "must-not-pass",
++            "PROJECT_SETTING": "must-not-pass",
++        }
++        self.assertEqual(module.safe_environment(source), {"PATH": "/usr/bin:/bin", "USER": "host-runtime-user"})
++
++        child_code = (
++            "import json, os; "
++            "keys = ['USER', 'NODE_OPTIONS', 'PYTHONPATH', 'LD_PRELOAD', "
++            "'DYLD_INSERT_LIBRARIES', 'LOGIN', 'PROJECT_SETTING']; "
++            "print(json.dumps({key: os.environ.get(key) for key in keys}, sort_keys=True))"
++        )
++        with tempfile.TemporaryDirectory() as temp:
++            capture = module.run_direct(
++                [sys.executable, "-c", child_code],
++                b"",
++                Path(temp),
++                source,
++                5,
++                4096,
++            )
++
++        self.assertEqual(capture.returncode, 0)
++        self.assertEqual(
++            json.loads(capture.stdout.decode("utf-8")),
++            {
++                "USER": "host-runtime-user",
++                "NODE_OPTIONS": None,
++                "PYTHONPATH": None,
++                "LD_PRELOAD": None,
++                "DYLD_INSERT_LIBRARIES": None,
++                "LOGIN": None,
++                "PROJECT_SETTING": None,
++            },
++        )
++
++
++if __name__ == "__main__":
++    unittest.main()

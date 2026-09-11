@@ -1,0 +1,16 @@
+{
+  "clone": "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/agentflow-external-runner-1Z5PiL/clone",
+  "files": [
+    "crates/github-pr-controller/src/closing.rs",
+    "crates/github-pr-controller/src/github.rs",
+    "crates/github-pr-controller/src/lib.rs",
+    "crates/github-pr-controller/src/deciding.rs",
+    "crates/github-pr-controller/src/store.rs",
+    "crates/github-pr-controller/src/store/sqlite.rs",
+    "crates/github-pr-controller/src/store/postgres.rs"
+  ],
+  "patch_sha256": "e51abbe87bf16f1ba9a8466e4915ae6d6b0a7767d9e917a0e93857cfe71b1fbc",
+  "report_raw_sha256": "7353f26ecf25e88cc990a30f6f6d9791a73a6cf7d9593d143bd5549d2508dfbc",
+  "report_corrected_sha256": "c49ac43fff3fe3d1ae923e10ec14bb16f71ccac82404ebf23f837932b87d27fd",
+  "record_correction": "Moved existing timestamp to first line only; substantive report unchanged. Worker runtime tests blocked by sandbox; host will independently verify."
+}

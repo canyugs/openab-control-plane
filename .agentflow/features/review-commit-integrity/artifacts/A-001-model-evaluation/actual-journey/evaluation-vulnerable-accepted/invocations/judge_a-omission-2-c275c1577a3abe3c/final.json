@@ -1,0 +1,22 @@
+{
+  "citations": [
+    {
+      "end": 5,
+      "evidence_id": "E_SAMPLE",
+      "path": "sample.py",
+      "start": 4
+    },
+    {
+      "end": 1,
+      "evidence_id": "E_CONTRACT",
+      "path": "README.md",
+      "start": 1
+    }
+  ],
+  "counterexample": "Frozen source (sample.py lines 4-5) defines checkout_total as a bare `return price * quantity` with no guard, while the contract (README.md line 1) requires rejecting negative quantity with ValueError. The executed controls are source-bound and discriminating: the baseline probe read the real source file at runtime (reported source_bytes 149, matching the frozen sample.py size), executed it, and called checkout_total(250, -3), which returned -750 (exit 0, claim_present true) instead of raising. The counterexample applied the identical probe to the same source text with only the contract guard inserted (patch_applied true); there the same call raised ValueError('quantity must not be negative') and claim_present was false (exit 0). Since the only difference between runs is the presence of the negative-quantity check, the harness is not print-only, hard-coded, argv-echoing, or always-true: its outcome flips with source behavior. The negation of the claim (\"checkout_total validates quantity\") is directly falsified by the baseline return value of -750.",
+  "finding_id": "omission-2-c275c1577a3abe3c",
+  "severity": "medium",
+  "usefulness": "useful",
+  "validation_verdict": "valid",
+  "verdict": "support"
+}

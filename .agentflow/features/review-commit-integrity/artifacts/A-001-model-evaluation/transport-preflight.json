@@ -1,0 +1,142 @@
+[
+  {
+    "requested_model": "claude-opus-5",
+    "tools": [
+      "StructuredOutput"
+    ],
+    "plugins": [],
+    "skills": [],
+    "mcp_servers": [],
+    "structured_output": {
+      "ok": true
+    },
+    "is_error": false,
+    "model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "inputTokens": 900,
+        "outputTokens": 11,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.000955,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000,
+        "thinkingTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "provider": "firstParty",
+        "costBasis": "list"
+      },
+      "claude-opus-5": {
+        "inputTokens": 2,
+        "outputTokens": 64,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 952,
+        "webSearchRequests": 0,
+        "costUSD": 0.011130000000000001,
+        "contextWindow": 1000000,
+        "maxOutputTokens": 64000,
+        "thinkingTokens": 0,
+        "canonicalModel": "claude-opus-5",
+        "provider": "firstParty",
+        "costBasis": "list"
+      }
+    },
+    "argv": [
+      "claude",
+      "--print",
+      "--safe-mode",
+      "--restricted",
+      "--disable-slash-commands",
+      "--no-session-persistence",
+      "--output-format",
+      "json",
+      "--json-schema",
+      "{\"type\": \"object\", \"properties\": {\"ok\": {\"type\": \"boolean\"}}, \"required\": [\"ok\"], \"additionalProperties\": false}",
+      "--model",
+      "claude-opus-5",
+      "--permission-mode",
+      "dontAsk",
+      "--permission-prompts",
+      "none",
+      "--tools",
+      "",
+      "--strict-mcp-config",
+      "--setting-sources",
+      "",
+      "--system-prompt",
+      "Return the requested JSON only. You have no tools.",
+      "-"
+    ],
+    "raw_artifact_directory": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-model-probe-dxqxxf22"
+  },
+  {
+    "requested_model": "claude-opus-4-6",
+    "tools": [
+      "StructuredOutput"
+    ],
+    "plugins": [],
+    "skills": [],
+    "mcp_servers": [],
+    "structured_output": {
+      "ok": true
+    },
+    "is_error": false,
+    "model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "inputTokens": 910,
+        "outputTokens": 11,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.000965,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000,
+        "thinkingTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "provider": "firstParty",
+        "costBasis": "list"
+      },
+      "claude-opus-4-6": {
+        "inputTokens": 982,
+        "outputTokens": 81,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.006935,
+        "contextWindow": 200000,
+        "maxOutputTokens": 64000,
+        "thinkingTokens": 24,
+        "canonicalModel": "claude-opus-4-6",
+        "provider": "firstParty",
+        "costBasis": "list"
+      }
+    },
+    "argv": [
+      "claude",
+      "--print",
+      "--safe-mode",
+      "--restricted",
+      "--disable-slash-commands",
+      "--no-session-persistence",
+      "--output-format",
+      "json",
+      "--json-schema",
+      "{\"type\": \"object\", \"properties\": {\"ok\": {\"type\": \"boolean\"}}, \"required\": [\"ok\"], \"additionalProperties\": false}",
+      "--model",
+      "claude-opus-4-6",
+      "--permission-mode",
+      "dontAsk",
+      "--permission-prompts",
+      "none",
+      "--tools",
+      "",
+      "--strict-mcp-config",
+      "--setting-sources",
+      "",
+      "--system-prompt",
+      "Return the requested JSON only. You have no tools.",
+      "-"
+    ],
+    "raw_artifact_directory": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-model-probe-d3jtavaz"
+  }
+]

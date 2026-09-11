@@ -1,0 +1,18 @@
+{
+  "lock_sha256": "458f32b239892800691cc607cb0c069a54e06d75f8bd90d41cbc4c6df978e8e0",
+  "argv": [
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-validation-qna7shwe/venv/bin/python",
+    "-m",
+    "pip",
+    "install",
+    "--no-index",
+    "--find-links",
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-lock-qwo250xh",
+    "--require-hashes",
+    "--only-binary=:all:",
+    "-r",
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/agentflow-external-runner-yyYsG1/clone/packaging/evaluation/build-requirements.lock"
+  ],
+  "exit": 0,
+  "diagnostic": "Looking in links: /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-lock-qwo250xh\nProcessing /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-lock-qwo250xh/setuptools-84.0.0-py3-none-any.whl (from -r /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/agentflow-external-runner-yyYsG1/clone/packaging/evaluation/build-requirements.lock (line 2))\nProcessing /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-lock-qwo250xh/pyproject_hooks-1.2.0-py3-none-any.whl (from -r /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/agentflow-external-runner-yyYsG1/clone/packaging/evaluation/build-requirements.lock (line 4))\nProcessing /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-lock-qwo250xh/packaging-26.3-py3-none-any.whl (from -r /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/agentflow-external-runner-yyYsG1/clone/packaging/evaluation/build-requirements.lock (line 6))\nProcessing /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-release-lock-qwo250xh/build-1.6.0-py3-none-any.whl (from -r /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/agentflow-external-runner-yyYsG1/clone/packaging/evaluation/build-requirements.lock (line 8))\nInstalling collected packages: setuptools, pyproject-hooks, packaging, build\n\nSuccessfully installed build-1.6.0 packaging-26.3 pyproject-hooks-1.2.0 setuptools-84.0.0\n"
+}

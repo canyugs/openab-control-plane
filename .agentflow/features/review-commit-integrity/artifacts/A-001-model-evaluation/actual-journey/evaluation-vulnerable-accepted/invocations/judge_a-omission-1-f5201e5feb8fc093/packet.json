@@ -1,0 +1,554 @@
+{
+  "packet": {
+    "evidence": {
+      "E_CONTRACT": {
+        "allowed_ranges": [
+          {
+            "end": 1,
+            "path": "README.md",
+            "start": 1
+          }
+        ],
+        "evidence_id": "E_CONTRACT",
+        "sha256": "2e42fa4d4b8ea27e4d8ceedfcebd64a5f017a58a5c2ecad3458d47b3ec6ccc40",
+        "utf8": "Synthetic acceptance repository. can_read permits access only for public documents or an authenticated requester equal to owner. checkout_total must reject negative quantity with ValueError. All prices are integer minor units.\n"
+      },
+      "E_SAMPLE": {
+        "allowed_ranges": [
+          {
+            "end": 5,
+            "path": "sample.py",
+            "start": 1
+          }
+        ],
+        "evidence_id": "E_SAMPLE",
+        "sha256": "2342f9789ab39e3c357137e2d2a11fb0747cdb0526c1d05086940da66dd2f09e",
+        "utf8": "def can_read(requester, owner, public=False):\n    return public or bool(requester)\n\ndef checkout_total(price, quantity):\n    return price * quantity\n"
+      }
+    },
+    "finding": {
+      "author_model_identity": "unknown",
+      "claim": "Broken access control: can_read returns True for any truthy requester without comparing requester to owner, so any authenticated requester can read a non-public document owned by someone else. The stated contract permits access only for public documents or an authenticated requester equal to owner; the owner parameter is never used in the returned expression.",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "finding_id": "omission-1-f5201e5feb8fc093",
+      "location": {
+        "end_line": 2,
+        "path": "sample.py",
+        "start_line": 1
+      },
+      "severity": "unknown",
+      "title": "candidate"
+    },
+    "invocation_id": "judge_a-omission-1-f5201e5feb8fc093",
+    "role": "judge_a",
+    "rules": [
+      "return exactly the schema fields; finding_id must match the supplied finding",
+      "each citation is exactly {path,start,end,evidence_id} and cites only a supplied frozen-source range covered by that evidence_id",
+      "support/refute assessments require at least one citation; insufficient_evidence may return an empty citations array",
+      "never cite generated files or /source paths, and never emit citation strings or quote/note fields",
+      "assess whether executed baseline and counterexample controls meaningfully distinguish the claim from its negation",
+      "do not execute commands, use tools, or rely on a manual test prerequisite",
+      "return JSON only"
+    ],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "citations": {
+          "description": "Each citation must use an exact supplied source path/range and supplied evidence_id; never cite generated files or /source paths. The transport may return an empty array for insufficient_evidence; the controller requires at least one citation for support or refute.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "end": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "evidence_id": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "path": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "pattern": "^(?!/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*\\/$).+$",
+                "type": "string"
+              },
+              "start": {
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path",
+              "start",
+              "end",
+              "evidence_id"
+            ],
+            "type": "object"
+          },
+          "maxItems": 32,
+          "type": "array"
+        },
+        "counterexample": {
+          "maxLength": 16384,
+          "type": "string"
+        },
+        "finding_id": {
+          "description": "Return the supplied finding_id exactly; do not invent or rename it.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "severity": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "usefulness": {
+          "enum": [
+            "useful",
+            "not_useful",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "validation_verdict": {
+          "enum": [
+            "valid",
+            "invalid",
+            "unproven"
+          ],
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "support",
+            "refute",
+            "insufficient_evidence"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "finding_id",
+        "verdict",
+        "severity",
+        "usefulness",
+        "citations",
+        "counterexample",
+        "validation_verdict"
+      ],
+      "type": "object"
+    },
+    "source_packet": {
+      "archive_sha256": "db965f928456801d858082f1bd79424eac6211efad9d523b4a8cc0e89b314725",
+      "complete": true,
+      "diff": {
+        "bytes": 279,
+        "encoding": "utf8",
+        "sha256": "142fe6ac27caaaf029fe36c1c6095aaf411d7f41485626f2c9bb4285d33f5e2b",
+        "utf8": "diff --git a/sample.py b/sample.py\nnew file mode 100644\nindex 0000000..e83472f\n--- /dev/null\n+++ b/sample.py\n@@ -0,0 +1,5 @@\n+def can_read(requester, owner, public=False):\n+    return public or bool(requester)\n+\n+def checkout_total(price, quantity):\n+    return price * quantity\n"
+      },
+      "diff_sha256": "142fe6ac27caaaf029fe36c1c6095aaf411d7f41485626f2c9bb4285d33f5e2b",
+      "files": [
+        {
+          "bytes": 227,
+          "path": "README.md",
+          "sha256": "2e42fa4d4b8ea27e4d8ceedfcebd64a5f017a58a5c2ecad3458d47b3ec6ccc40",
+          "utf8": "Synthetic acceptance repository. can_read permits access only for public documents or an authenticated requester equal to owner. checkout_total must reject negative quantity with ValueError. All prices are integer minor units.\n"
+        },
+        {
+          "bytes": 149,
+          "path": "sample.py",
+          "sha256": "2342f9789ab39e3c357137e2d2a11fb0747cdb0526c1d05086940da66dd2f09e",
+          "utf8": "def can_read(requester, owner, public=False):\n    return public or bool(requester)\n\ndef checkout_total(price, quantity):\n    return price * quantity\n"
+        }
+      ],
+      "included_regular_file_count": 2,
+      "omissions": [],
+      "packet_sha256": "ade31a8092b0a242f1dc0a83f9fd32943354e0036fdc24dbc519bd127f2186e8",
+      "revision": "52e3039afd1aa96baddcaf934967b974315d3c34",
+      "schema_version": "model-source-packet/v1",
+      "tracked_regular_file_count": 2
+    },
+    "validation": {
+      "claim_present": true,
+      "classification": "unproven",
+      "controller_source_binding": true,
+      "controls_passed": true,
+      "execution": {
+        "claim_present": true,
+        "classification": "unproven",
+        "controls_passed": true,
+        "generated_file_digests": [
+          {
+            "bytes": 1056,
+            "path": "generated/probe_source.py",
+            "sha256": "39e2f1a581fbd6776c7b919e2049ea576bc10e1271c4f507545614b9cbeda45f"
+          },
+          {
+            "bytes": 1178,
+            "path": "generated/probe_patched.py",
+            "sha256": "c24671a3518efce3d10b96887a51743d6937dcc0d594f5558551418227fc0ee3"
+          }
+        ],
+        "operator_checks": "not_run",
+        "plan": {
+          "claim_observed": "Baseline imports /source/sample.py directly and calls can_read: can_read(\"alice\",\"bob\",False) returns True, i.e. an authenticated non-owner is granted read on a non-public document, while can_read(\"bob\",\"bob\",False) and can_read(None,\"bob\",True) are True and can_read(None,\"bob\",False) is False — the owner parameter never constrains the result, so the detector reports claim_present true. The counterexample reads the same source text, substitutes the single returned expression `public or bool(requester)` with an owner-comparing expression, executes the patched module, and runs the identical detector: cross-tenant private read becomes False while owner and public reads remain True, so claim_present is false. The difference between the two runs isolates the missing requester == owner comparison in sample.py lines 1-2 as the cause of the broken access control.",
+          "files": [
+            {
+              "bytes": 1056,
+              "path": "generated/probe_source.py",
+              "sha256": "39e2f1a581fbd6776c7b919e2049ea576bc10e1271c4f507545614b9cbeda45f",
+              "utf8": "import importlib.util\nimport json\n\nSRC = \"/source/sample.py\"\n\nspec = importlib.util.spec_from_file_location(\"sample_under_test\", SRC)\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\n\n# Contract (README): access only for public documents, or an authenticated\n# requester equal to owner.\ncross_tenant = bool(mod.can_read(\"alice\", \"bob\", False))\nowner_access = bool(mod.can_read(\"bob\", \"bob\", False))\npublic_access = bool(mod.can_read(None, \"bob\", True))\nanonymous_private = bool(mod.can_read(None, \"bob\", False))\n\n# Broken access control is present when a non-owner authenticated requester is\n# granted read on a non-public document while the legitimate cases still hold.\nclaim_present = cross_tenant and owner_access and public_access and not anonymous_private\n\nprint(json.dumps({\n    \"target\": SRC,\n    \"cross_tenant_private_read\": cross_tenant,\n    \"owner_private_read\": owner_access,\n    \"public_read\": public_access,\n    \"anonymous_private_read\": anonymous_private,\n    \"claim_present\": bool(claim_present),\n}, sort_keys=True))\n"
+            },
+            {
+              "bytes": 1178,
+              "path": "generated/probe_patched.py",
+              "sha256": "c24671a3518efce3d10b96887a51743d6937dcc0d594f5558551418227fc0ee3",
+              "utf8": "import json\n\nSRC = \"/source/sample.py\"\n\nwith open(SRC, \"r\", encoding=\"utf-8\") as fh:\n    text = fh.read()\n\nVULN = \"    return public or bool(requester)\"\nFIX = \"    return bool(public) or (bool(requester) and requester == owner)\"\n\npatch_applied = VULN in text\npatched_text = text.replace(VULN, FIX, 1) if patch_applied else text\n\nns = {\"__name__\": \"sample_patched\"}\nexec(compile(patched_text, \"sample_patched.py\", \"exec\"), ns)\ncan_read = ns[\"can_read\"]\n\ncross_tenant = bool(can_read(\"alice\", \"bob\", False))\nowner_access = bool(can_read(\"bob\", \"bob\", False))\npublic_access = bool(can_read(None, \"bob\", True))\nanonymous_private = bool(can_read(None, \"bob\", False))\n\n# Same detector as the baseline probe, applied to the owner-comparing variant\n# built from the very same source text.\nclaim_present = cross_tenant and owner_access and public_access and not anonymous_private\n\nprint(json.dumps({\n    \"target\": SRC,\n    \"patch_applied\": patch_applied,\n    \"cross_tenant_private_read\": cross_tenant,\n    \"owner_private_read\": owner_access,\n    \"public_read\": public_access,\n    \"anonymous_private_read\": anonymous_private,\n    \"claim_present\": bool(claim_present),\n}, sort_keys=True))\n"
+            }
+          ],
+          "item_id": "omission-1-f5201e5feb8fc093",
+          "runs": [
+            {
+              "argv": [
+                "python3",
+                "generated/probe_source.py"
+              ],
+              "cwd": "/work",
+              "evidence_ids": [
+                "E_SAMPLE",
+                "E_CONTRACT"
+              ],
+              "expect": {
+                "exit": 0,
+                "observation": {
+                  "claim_present": true
+                }
+              },
+              "name": "baseline"
+            },
+            {
+              "argv": [
+                "python3",
+                "generated/probe_patched.py"
+              ],
+              "cwd": "/work",
+              "evidence_ids": [
+                "E_SAMPLE",
+                "E_CONTRACT"
+              ],
+              "expect": {
+                "exit": 0,
+                "observation": {
+                  "claim_present": false
+                }
+              },
+              "name": "counterexample"
+            }
+          ]
+        },
+        "preflight": {
+          "daemon_probe": "ok",
+          "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+          "server_version": "29.7.2",
+          "status": "ready"
+        },
+        "reason": null,
+        "runs": [
+          {
+            "actual": {
+              "duration_ms": 57,
+              "exit": 0,
+              "name": "baseline",
+              "observation": {
+                "anonymous_private_read": false,
+                "claim_present": true,
+                "cross_tenant_private_read": true,
+                "owner_private_read": true,
+                "public_read": true,
+                "target": "/source/sample.py"
+              },
+              "output_limit": false,
+              "stderr": "",
+              "stderr_b64": "",
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_truncated": false,
+              "stdout": "{\"anonymous_private_read\": false, \"claim_present\": true, \"cross_tenant_private_read\": true, \"owner_private_read\": true, \"public_read\": true, \"target\": \"/source/sample.py\"}\n",
+              "stdout_b64": "eyJhbm9ueW1vdXNfcHJpdmF0ZV9yZWFkIjogZmFsc2UsICJjbGFpbV9wcmVzZW50IjogdHJ1ZSwgImNyb3NzX3RlbmFudF9wcml2YXRlX3JlYWQiOiB0cnVlLCAib3duZXJfcHJpdmF0ZV9yZWFkIjogdHJ1ZSwgInB1YmxpY19yZWFkIjogdHJ1ZSwgInRhcmdldCI6ICIvc291cmNlL3NhbXBsZS5weSJ9Cg==",
+              "stdout_bytes": 172,
+              "stdout_sha256": "a4bf135dce48e7845168a12e546465166e8692083e072d799eaa1a808eb80661",
+              "stdout_truncated": false,
+              "timeout": false
+            },
+            "argv": [
+              "docker",
+              "run",
+              "--rm",
+              "--init",
+              "--pull=never",
+              "-i",
+              "--name",
+              "openab-eval-d5fd172b86ef49af8709",
+              "--network",
+              "none",
+              "--read-only",
+              "--tmpfs",
+              "/work:rw,nosuid,nodev,size=64m,mode=1777",
+              "--tmpfs",
+              "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+              "--mount",
+              "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-source-nboi4nz4,dst=/source,readonly",
+              "--mount",
+              "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-dplv6olm/fixed-runner.py,dst=/runner.py,readonly",
+              "--user",
+              "65532:65532",
+              "--cap-drop",
+              "ALL",
+              "--security-opt",
+              "no-new-privileges",
+              "--pids-limit",
+              "128",
+              "--memory",
+              "512m",
+              "--cpus",
+              "1.0",
+              "--env",
+              "HOME=/tmp/home",
+              "--env",
+              "PATH=/usr/local/bin:/usr/bin:/bin",
+              "--env",
+              "LANG=C.UTF-8",
+              "--env",
+              "LC_ALL=C.UTF-8",
+              "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+              "python3",
+              "/runner.py"
+            ],
+            "container_name": "openab-eval-d5fd172b86ef49af8709",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": true
+              }
+            },
+            "name": "baseline",
+            "output_limit": false,
+            "stderr": "",
+            "stderr_b64": "",
+            "stderr_bytes": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderr_truncated": false,
+            "stdout": "{\"runs\":[{\"duration_ms\":57,\"exit\":0,\"name\":\"baseline\",\"observation\":{\"anonymous_private_read\":false,\"claim_present\":true,\"cross_tenant_private_read\":true,\"owner_private_read\":true,\"public_read\":true,\"target\":\"/source/sample.py\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\\"anonymous_private_read\\\": false, \\\"claim_present\\\": true, \\\"cross_tenant_private_read\\\": true, \\\"owner_private_read\\\": true, \\\"public_read\\\": true, \\\"target\\\": \\\"/source/sample.py\\\"}\\n\",\"stdout_b64\":\"eyJhbm9ueW1vdXNfcHJpdmF0ZV9yZWFkIjogZmFsc2UsICJjbGFpbV9wcmVzZW50IjogdHJ1ZSwgImNyb3NzX3RlbmFudF9wcml2YXRlX3JlYWQiOiB0cnVlLCAib3duZXJfcHJpdmF0ZV9yZWFkIjogdHJ1ZSwgInB1YmxpY19yZWFkIjogdHJ1ZSwgInRhcmdldCI6ICIvc291cmNlL3NhbXBsZS5weSJ9Cg==\",\"stdout_bytes\":172,\"stdout_sha256\":\"a4bf135dce48e7845168a12e546465166e8692083e072d799eaa1a808eb80661\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+            "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6NTcsImV4aXQiOjAsIm5hbWUiOiJiYXNlbGluZSIsIm9ic2VydmF0aW9uIjp7ImFub255bW91c19wcml2YXRlX3JlYWQiOmZhbHNlLCJjbGFpbV9wcmVzZW50Ijp0cnVlLCJjcm9zc190ZW5hbnRfcHJpdmF0ZV9yZWFkIjp0cnVlLCJvd25lcl9wcml2YXRlX3JlYWQiOnRydWUsInB1YmxpY19yZWFkIjp0cnVlLCJ0YXJnZXQiOiIvc291cmNlL3NhbXBsZS5weSJ9LCJvdXRwdXRfbGltaXQiOmZhbHNlLCJzdGRlcnIiOiIiLCJzdGRlcnJfYjY0IjoiIiwic3RkZXJyX2J5dGVzIjowLCJzdGRlcnJfc2hhMjU2IjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsInN0ZGVycl90cnVuY2F0ZWQiOmZhbHNlLCJzdGRvdXQiOiJ7XCJhbm9ueW1vdXNfcHJpdmF0ZV9yZWFkXCI6IGZhbHNlLCBcImNsYWltX3ByZXNlbnRcIjogdHJ1ZSwgXCJjcm9zc190ZW5hbnRfcHJpdmF0ZV9yZWFkXCI6IHRydWUsIFwib3duZXJfcHJpdmF0ZV9yZWFkXCI6IHRydWUsIFwicHVibGljX3JlYWRcIjogdHJ1ZSwgXCJ0YXJnZXRcIjogXCIvc291cmNlL3NhbXBsZS5weVwifVxuIiwic3Rkb3V0X2I2NCI6ImV5SmhibTl1ZVcxdmRYTmZjSEpwZG1GMFpWOXlaV0ZrSWpvZ1ptRnNjMlVzSUNKamJHRnBiVjl3Y21WelpXNTBJam9nZEhKMVpTd2dJbU55YjNOelgzUmxibUZ1ZEY5d2NtbDJZWFJsWDNKbFlXUWlPaUIwY25WbExDQWliM2R1WlhKZmNISnBkbUYwWlY5eVpXRmtJam9nZEhKMVpTd2dJbkIxWW14cFkxOXlaV0ZrSWpvZ2RISjFaU3dnSW5SaGNtZGxkQ0k2SUNJdmMyOTFjbU5sTDNOaGJYQnNaUzV3ZVNKOUNnPT0iLCJzdGRvdXRfYnl0ZXMiOjE3Miwic3Rkb3V0X3NoYTI1NiI6ImE0YmYxMzVkY2U0OGU3ODQ1MTY4YTEyZTU0NjQ2NTE2NmU4NjkyMDgzZTA3MmQ3OTllYWExYTgwOGViODA2NjEiLCJzdGRvdXRfdHJ1bmNhdGVkIjpmYWxzZSwidGltZW91dCI6ZmFsc2V9XX0K",
+            "stdout_bytes": 996,
+            "stdout_sha256": "4ad8a3a74ffe22760df534181cbdbdc5e32adfc3fca1375b5ac5ad001d4a6c36",
+            "stdout_truncated": false,
+            "timeout": false,
+            "valid": true
+          },
+          {
+            "actual": {
+              "duration_ms": 56,
+              "exit": 0,
+              "name": "counterexample",
+              "observation": {
+                "anonymous_private_read": false,
+                "claim_present": false,
+                "cross_tenant_private_read": false,
+                "owner_private_read": true,
+                "patch_applied": true,
+                "public_read": true,
+                "target": "/source/sample.py"
+              },
+              "output_limit": false,
+              "stderr": "",
+              "stderr_b64": "",
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_truncated": false,
+              "stdout": "{\"anonymous_private_read\": false, \"claim_present\": false, \"cross_tenant_private_read\": false, \"owner_private_read\": true, \"patch_applied\": true, \"public_read\": true, \"target\": \"/source/sample.py\"}\n",
+              "stdout_b64": "eyJhbm9ueW1vdXNfcHJpdmF0ZV9yZWFkIjogZmFsc2UsICJjbGFpbV9wcmVzZW50IjogZmFsc2UsICJjcm9zc190ZW5hbnRfcHJpdmF0ZV9yZWFkIjogZmFsc2UsICJvd25lcl9wcml2YXRlX3JlYWQiOiB0cnVlLCAicGF0Y2hfYXBwbGllZCI6IHRydWUsICJwdWJsaWNfcmVhZCI6IHRydWUsICJ0YXJnZXQiOiAiL3NvdXJjZS9zYW1wbGUucHkifQo=",
+              "stdout_bytes": 197,
+              "stdout_sha256": "a95e3303a48b7daf916cff3e3aa6103afd7d25e604298072ff742ed15b323142",
+              "stdout_truncated": false,
+              "timeout": false
+            },
+            "argv": [
+              "docker",
+              "run",
+              "--rm",
+              "--init",
+              "--pull=never",
+              "-i",
+              "--name",
+              "openab-eval-397e24c338dd4262a400",
+              "--network",
+              "none",
+              "--read-only",
+              "--tmpfs",
+              "/work:rw,nosuid,nodev,size=64m,mode=1777",
+              "--tmpfs",
+              "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+              "--mount",
+              "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-source-nboi4nz4,dst=/source,readonly",
+              "--mount",
+              "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-dplv6olm/fixed-runner.py,dst=/runner.py,readonly",
+              "--user",
+              "65532:65532",
+              "--cap-drop",
+              "ALL",
+              "--security-opt",
+              "no-new-privileges",
+              "--pids-limit",
+              "128",
+              "--memory",
+              "512m",
+              "--cpus",
+              "1.0",
+              "--env",
+              "HOME=/tmp/home",
+              "--env",
+              "PATH=/usr/local/bin:/usr/bin:/bin",
+              "--env",
+              "LANG=C.UTF-8",
+              "--env",
+              "LC_ALL=C.UTF-8",
+              "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+              "python3",
+              "/runner.py"
+            ],
+            "container_name": "openab-eval-397e24c338dd4262a400",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": false
+              }
+            },
+            "name": "counterexample",
+            "output_limit": false,
+            "stderr": "",
+            "stderr_b64": "",
+            "stderr_bytes": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderr_truncated": false,
+            "stdout": "{\"runs\":[{\"duration_ms\":56,\"exit\":0,\"name\":\"counterexample\",\"observation\":{\"anonymous_private_read\":false,\"claim_present\":false,\"cross_tenant_private_read\":false,\"owner_private_read\":true,\"patch_applied\":true,\"public_read\":true,\"target\":\"/source/sample.py\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\\"anonymous_private_read\\\": false, \\\"claim_present\\\": false, \\\"cross_tenant_private_read\\\": false, \\\"owner_private_read\\\": true, \\\"patch_applied\\\": true, \\\"public_read\\\": true, \\\"target\\\": \\\"/source/sample.py\\\"}\\n\",\"stdout_b64\":\"eyJhbm9ueW1vdXNfcHJpdmF0ZV9yZWFkIjogZmFsc2UsICJjbGFpbV9wcmVzZW50IjogZmFsc2UsICJjcm9zc190ZW5hbnRfcHJpdmF0ZV9yZWFkIjogZmFsc2UsICJvd25lcl9wcml2YXRlX3JlYWQiOiB0cnVlLCAicGF0Y2hfYXBwbGllZCI6IHRydWUsICJwdWJsaWNfcmVhZCI6IHRydWUsICJ0YXJnZXQiOiAiL3NvdXJjZS9zYW1wbGUucHkifQo=\",\"stdout_bytes\":197,\"stdout_sha256\":\"a95e3303a48b7daf916cff3e3aa6103afd7d25e604298072ff742ed15b323142\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+            "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6NTYsImV4aXQiOjAsIm5hbWUiOiJjb3VudGVyZXhhbXBsZSIsIm9ic2VydmF0aW9uIjp7ImFub255bW91c19wcml2YXRlX3JlYWQiOmZhbHNlLCJjbGFpbV9wcmVzZW50IjpmYWxzZSwiY3Jvc3NfdGVuYW50X3ByaXZhdGVfcmVhZCI6ZmFsc2UsIm93bmVyX3ByaXZhdGVfcmVhZCI6dHJ1ZSwicGF0Y2hfYXBwbGllZCI6dHJ1ZSwicHVibGljX3JlYWQiOnRydWUsInRhcmdldCI6Ii9zb3VyY2Uvc2FtcGxlLnB5In0sIm91dHB1dF9saW1pdCI6ZmFsc2UsInN0ZGVyciI6IiIsInN0ZGVycl9iNjQiOiIiLCJzdGRlcnJfYnl0ZXMiOjAsInN0ZGVycl9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1Iiwic3RkZXJyX3RydW5jYXRlZCI6ZmFsc2UsInN0ZG91dCI6IntcImFub255bW91c19wcml2YXRlX3JlYWRcIjogZmFsc2UsIFwiY2xhaW1fcHJlc2VudFwiOiBmYWxzZSwgXCJjcm9zc190ZW5hbnRfcHJpdmF0ZV9yZWFkXCI6IGZhbHNlLCBcIm93bmVyX3ByaXZhdGVfcmVhZFwiOiB0cnVlLCBcInBhdGNoX2FwcGxpZWRcIjogdHJ1ZSwgXCJwdWJsaWNfcmVhZFwiOiB0cnVlLCBcInRhcmdldFwiOiBcIi9zb3VyY2Uvc2FtcGxlLnB5XCJ9XG4iLCJzdGRvdXRfYjY0IjoiZXlKaGJtOXVlVzF2ZFhOZmNISnBkbUYwWlY5eVpXRmtJam9nWm1Gc2MyVXNJQ0pqYkdGcGJWOXdjbVZ6Wlc1MElqb2dabUZzYzJVc0lDSmpjbTl6YzE5MFpXNWhiblJmY0hKcGRtRjBaVjl5WldGa0lqb2dabUZzYzJVc0lDSnZkMjVsY2w5d2NtbDJZWFJsWDNKbFlXUWlPaUIwY25WbExDQWljR0YwWTJoZllYQndiR2xsWkNJNklIUnlkV1VzSUNKd2RXSnNhV05mY21WaFpDSTZJSFJ5ZFdVc0lDSjBZWEpuWlhRaU9pQWlMM052ZFhKalpTOXpZVzF3YkdVdWNIa2lmUW89Iiwic3Rkb3V0X2J5dGVzIjoxOTcsInN0ZG91dF9zaGEyNTYiOiJhOTVlMzMwM2E0OGI3ZGFmOTE2Y2ZmM2UzYWE2MTAzYWZkN2QyNWU2MDQyOTgwNzJmZjc0MmVkMTViMzIzMTQyIiwic3Rkb3V0X3RydW5jYXRlZCI6ZmFsc2UsInRpbWVvdXQiOmZhbHNlfV19Cg==",
+            "stdout_bytes": 1084,
+            "stdout_sha256": "6815fcf9693a11302126eb787c79b0b53c93c98d052540f55a0a888ab671dd8e",
+            "stdout_truncated": false,
+            "timeout": false,
+            "valid": true
+          }
+        ],
+        "status": "success"
+      },
+      "execution_classification": "unproven",
+      "finding_sha256": "eacf2275e67cf2aac7258a868ee1463799ee6366e806b1e958dbdcee10394055",
+      "generated_file_digests_sha256": "65fdb3ac85e7053b5abf4801a76b08d4f11a9a57b7e327046c98c93ebe59cd48",
+      "invocation_id": "validation-omission-1-f5201e5feb8fc093",
+      "item_id": "omission-1-f5201e5feb8fc093",
+      "model_status": "success",
+      "plan_sha256": "1fb031d3ab5d6cdf0ed1f3fb956095101ba0e7474b546683ffe17c22fc6f303f",
+      "source_packet_sha256": "ade31a8092b0a242f1dc0a83f9fd32943354e0036fdc24dbc519bd127f2186e8",
+      "status": "success",
+      "validation_packet_sha256": "753e9306aceda66cf6c26942cf0c16846bfbd05bbf3b51f9681db39279c16239"
+    }
+  },
+  "packet_sha256": "dcc73f2d5f83cf7445886a0f033cf9d363359abcfc9d00bf9c124248bb4a4091",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "citations": {
+        "description": "Each citation must use an exact supplied source path/range and supplied evidence_id; never cite generated files or /source paths. The transport may return an empty array for insufficient_evidence; the controller requires at least one citation for support or refute.",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "end": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "evidence_id": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            "path": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*\\/$).+$",
+              "type": "string"
+            },
+            "start": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "start",
+            "end",
+            "evidence_id"
+          ],
+          "type": "object"
+        },
+        "maxItems": 32,
+        "type": "array"
+      },
+      "counterexample": {
+        "maxLength": 16384,
+        "type": "string"
+      },
+      "finding_id": {
+        "description": "Return the supplied finding_id exactly; do not invent or rename it.",
+        "maxLength": 512,
+        "minLength": 1,
+        "type": "string"
+      },
+      "severity": {
+        "maxLength": 128,
+        "minLength": 1,
+        "type": "string"
+      },
+      "usefulness": {
+        "enum": [
+          "useful",
+          "not_useful",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "validation_verdict": {
+        "enum": [
+          "valid",
+          "invalid",
+          "unproven"
+        ],
+        "type": "string"
+      },
+      "verdict": {
+        "enum": [
+          "support",
+          "refute",
+          "insufficient_evidence"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "finding_id",
+      "verdict",
+      "severity",
+      "usefulness",
+      "citations",
+      "counterexample",
+      "validation_verdict"
+    ],
+    "type": "object"
+  }
+}

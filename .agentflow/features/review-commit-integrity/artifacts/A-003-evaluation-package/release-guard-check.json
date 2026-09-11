@@ -1,0 +1,25 @@
+{
+  "syntax": "PASS",
+  "cases": [
+    {
+      "tag": "evaluation-v0.1.0",
+      "exit": 0,
+      "output": ""
+    },
+    {
+      "tag": "v0.1.0",
+      "exit": 1,
+      "output": "tag 'v0.1.0' is not evaluation-vX.Y.Z\n"
+    },
+    {
+      "tag": "evaluation-v0.1.1",
+      "exit": 1,
+      "output": "package version 0.1.0 does not match tag 0.1.1\n"
+    },
+    {
+      "tag": "evaluation-v0.1.0-extra",
+      "exit": 1,
+      "output": "tag 'evaluation-v0.1.0-extra' is not evaluation-vX.Y.Z\n"
+    }
+  ]
+}

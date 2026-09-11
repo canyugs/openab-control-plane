@@ -1,0 +1,38 @@
+[
+  {
+    "argv": [
+      "python3",
+      "-m",
+      "venv",
+      "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/ci-build-venv"
+    ],
+    "exit": 0,
+    "output": ""
+  },
+  {
+    "argv": [
+      "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/ci-build-venv/bin/python",
+      "-m",
+      "pip",
+      "install",
+      "--disable-pip-version-check",
+      "build"
+    ],
+    "exit": 0,
+    "output": "Collecting build\n  Using cached build-1.6.0-py3-none-any.whl.metadata (5.6 kB)\nCollecting packaging>=24.0 (from build)\n  Using cached packaging-26.3-py3-none-any.whl.metadata (3.5 kB)\nCollecting pyproject_hooks (from build)\n  Using cached pyproject_hooks-1.2.0-py3-none-any.whl.metadata (1.3 kB)\nUsing cached build-1.6.0-py3-none-any.whl (31 kB)\nUsing cached packaging-26.3-py3-none-any.whl (129 kB)\nUsing cached pyproject_hooks-1.2.0-py3-none-any.whl (10 kB)\nInstalling collected packages: pyproject_hooks, packaging, build\n\nSuccessfully installed build-1.6.0 packaging-26.3 pyproject_hooks-1.2.0\n"
+  },
+  {
+    "argv": [
+      "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/ci-build-venv/bin/python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-p",
+      "test_evaluation_package.py"
+    ],
+    "exit": 1,
+    "output": "F....\n======================================================================\nFAIL: test_fresh_wheel_installs_outside_checkout_and_exposes_entrypoints (test_evaluation_package.EvaluationPackageTests.test_fresh_wheel_installs_outside_checkout_and_exposes_entrypoints)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/Users/can/Documents/zeabur/ocp-review-commit-integrity/tests/test_evaluation_package.py\", line 135, in test_fresh_wheel_installs_outside_checkout_and_exposes_entrypoints\n    self.assertEqual(built.returncode, 0, built.stdout + built.stderr)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 1 != 0 : \nTraceback (most recent call last):\n  File \"/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/ci-build-venv/lib/python3.14/site-packages/pyproject_hooks/_impl.py\", line 402, in _call_hook\n    raise BackendUnavailable(\n    ...<4 lines>...\n    )\npyproject_hooks._impl.BackendUnavailable: Cannot import 'setuptools.build_meta'\n\n* Getting build dependencies for wheel...\nTIP pass --env-dir and --sdist-extract-dir to keep the build environment and sources, then see https://build.pypa.io/en/stable/how-to/troubleshooting.html#debug-a-failed-build for help debugging a failed build\nERROR Backend 'setuptools.build_meta' is not available.\n\n\n----------------------------------------------------------------------\nRan 5 tests in 0.255s\n\nFAILED (failures=1)\n"
+  }
+]

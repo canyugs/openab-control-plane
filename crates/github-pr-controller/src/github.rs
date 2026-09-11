@@ -19,6 +19,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::{Config, OperatingMode};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewReceipt {
+    pub id: i64,
+    pub state: String,
+    pub commit_id: String,
+}
+
 /// Re-mint this long before GitHub's stated expiry so a drain never starts a
 /// call with a token about to die. Installation tokens live an hour.
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
@@ -211,24 +218,47 @@ impl GitHubClient {
         repo: &str,
         pr_number: i64,
         event: ReviewEvent,
+        commit_id: &str,
         body: &str,
-    ) -> Result<i64> {
+    ) -> Result<ReviewReceipt> {
         self.check_repository(repo)?;
+        let commit_id = crate::closing::canonical_commit_id(commit_id)
+            .context("review commit_id is not a full ASCII hex object id")?;
         let response = self
             .send(
                 reqwest::Method::POST,
                 &format!("repos/{repo}/pulls/{pr_number}/reviews"),
-                Some(json!({ "event": event.as_str(), "body": body })),
+                Some(json!({ "event": event.as_str(), "body": body, "commit_id": commit_id })),
             )
             .await?;
         let state = response["state"].as_str().unwrap_or_default();
         if state != event.expected_state() {
             bail!(
-                "review submitted as {state:?}, expected {:?}",
+                "github_review_response_mismatch: review submitted as {state:?}, expected {:?}",
                 event.expected_state()
             );
         }
-        response["id"].as_i64().context("review carried no id")
+        let returned_commit_id = response["commit_id"]
+            .as_str()
+            .and_then(crate::closing::canonical_commit_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "github_review_response_mismatch: review response carried no valid commit_id"
+                )
+            })?;
+        if returned_commit_id != commit_id {
+            bail!(
+                "github_review_response_mismatch: review returned commit_id {returned_commit_id:?}, expected {commit_id:?}"
+            );
+        }
+        let id = response["id"].as_i64().ok_or_else(|| {
+            anyhow::anyhow!("github_review_response_mismatch: review response carried no id")
+        })?;
+        Ok(ReviewReceipt {
+            id,
+            state: state.to_string(),
+            commit_id: returned_commit_id,
+        })
     }
 
     /// Find our own earlier comment carrying `marker` on an issue. The
@@ -407,10 +437,31 @@ impl GitHubClient {
         repo: &str,
         pr_number: i64,
         marker: &str,
-    ) -> Result<Option<i64>> {
+        event: ReviewEvent,
+        expected_commit_id: &str,
+    ) -> Result<Option<ReviewReceipt>> {
         self.check_repository(repo)?;
-        self.find_marked(&format!("repos/{repo}/pulls/{pr_number}/reviews"), marker)
-            .await
+        let expected_commit_id = crate::closing::canonical_commit_id(expected_commit_id)
+            .context("review reconciliation commit_id is not a full ASCII hex object id")?;
+        let path = format!("repos/{repo}/pulls/{pr_number}/reviews");
+        for page in 1..=RECONCILE_MAX_PAGES {
+            let entries = self
+                .send(
+                    reqwest::Method::GET,
+                    &format!("{path}?per_page=100&page={page}"),
+                    None,
+                )
+                .await?;
+            if let Some(receipt) =
+                self.scan_for_our_review(&entries, marker, event, &expected_commit_id)?
+            {
+                return Ok(Some(receipt));
+            }
+            if entries.as_array().map(Vec::len).unwrap_or(0) < 100 {
+                return Ok(None);
+            }
+        }
+        bail!("reconcile scanned {RECONCILE_MAX_PAGES} pages of {path} without exhausting it")
     }
 
     /// Scan a listing endpoint page by page until the marker is found or the
@@ -457,6 +508,56 @@ impl GitHubClient {
             }
             entry["id"].as_i64()
         })
+    }
+
+    fn scan_for_our_review(
+        &self,
+        entries: &Value,
+        marker: &str,
+        event: ReviewEvent,
+        expected_commit_id: &str,
+    ) -> Result<Option<ReviewReceipt>> {
+        let Some(entries) = entries.as_array() else {
+            return Ok(None);
+        };
+        for entry in entries {
+            let marked = entry["body"]
+                .as_str()
+                .is_some_and(|body| body.contains(marker));
+            if !marked || !self.is_ours(entry) {
+                continue;
+            }
+            let id = entry["id"].as_i64().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "github_review_reconciliation_conflict: owned marked review carried no id"
+                )
+            })?;
+            let state = entry["state"].as_str().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "github_review_reconciliation_conflict: owned marked review carried no state"
+                )
+            })?;
+            let commit_id = entry["commit_id"]
+                .as_str()
+                .and_then(crate::closing::canonical_commit_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "github_review_reconciliation_conflict: owned marked review carried no valid commit_id"
+                    )
+                })?;
+            if state != event.expected_state() || commit_id != expected_commit_id {
+                bail!(
+                    "github_review_reconciliation_conflict: owned marked review identity was state {state:?}, commit_id {commit_id:?}; expected state {:?}, commit_id {expected_commit_id:?}",
+                    event.expected_state()
+                );
+            }
+            return Ok(Some(ReviewReceipt {
+                id,
+                state: state.to_string(),
+                commit_id,
+            }));
+        }
+        Ok(None)
     }
 
     fn is_ours(&self, entry: &Value) -> bool {
@@ -659,20 +760,31 @@ mod tests {
     // so the JWT exchange is the one leg proven at the P7 canary rather than
     // here — everything downstream of the token is covered below.
     const NOT_A_PEM: &str = "test-placeholder-not-a-key";
+    const COMMIT_ID: &str = "0123456789abcdef0123456789abcdef01234567";
+    const OTHER_COMMIT_ID: &str = "fedcba9876543210fedcba9876543210fedcba98";
 
     #[derive(Clone)]
     struct Recorder {
         tx: mpsc::UnboundedSender<(String, Value)>,
         review_state: Arc<Mutex<String>>,
+        review_commit_id: Arc<Mutex<Option<Value>>>,
     }
 
     /// A GitHub-shaped server on localhost. Real HTTP, real JSON, so the client
     /// is exercised end to end rather than against a mock of itself.
     async fn fake_github(review_state: &str) -> (String, mpsc::UnboundedReceiver<(String, Value)>) {
+        fake_github_with_review_response(review_state, None).await
+    }
+
+    async fn fake_github_with_review_response(
+        review_state: &str,
+        review_commit_id: Option<Value>,
+    ) -> (String, mpsc::UnboundedReceiver<(String, Value)>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let recorder = Recorder {
             tx,
             review_state: Arc::new(Mutex::new(review_state.to_string())),
+            review_commit_id: Arc::new(Mutex::new(review_commit_id)),
         };
         let app = Router::new()
             .route(
@@ -728,7 +840,7 @@ mod tests {
             .route(
                 "/repos/:owner/:name/pulls/:number",
                 axum::routing::get(|| async {
-                    Json(json!({"head": {"sha": "livehead0000000000000000000000000000dead"}}))
+                    Json(json!({"head": {"sha": "0123456789abcdef0123456789abcdef01234567"}}))
                 }),
             )
             .route(
@@ -736,8 +848,14 @@ mod tests {
                 post(
                     |State(r): State<Recorder>, Json(body): Json<Value>| async move {
                         let state = r.review_state.lock().unwrap().clone();
-                        let _ = r.tx.send(("review".into(), body));
-                        Json(json!({"id": 77, "state": state}))
+                        let _ = r.tx.send(("review".into(), body.clone()));
+                        let commit_id = r
+                            .review_commit_id
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .unwrap_or_else(|| body["commit_id"].clone());
+                        Json(json!({"id": 77, "state": state, "commit_id": commit_id}))
                     },
                 ),
             )
@@ -798,7 +916,7 @@ mod tests {
         let (base, _rx) = fake_github("APPROVED").await;
         let client = client(&base);
         let sha = client.pull_head_sha("example/repo", 7).await.unwrap();
-        assert_eq!(sha, "livehead0000000000000000000000000000dead");
+        assert_eq!(sha, "0123456789abcdef0123456789abcdef01234567");
         assert!(
             client.pull_head_sha("other/repo", 7).await.is_err(),
             "reads honour the canary binding too"
@@ -874,7 +992,7 @@ mod tests {
         client
             .set_status(
                 "example/repo",
-                "deadbeef",
+                COMMIT_ID,
                 StatusState::Success,
                 "openab/council",
                 "approve r=0 y=0 g=3",
@@ -883,10 +1001,20 @@ mod tests {
             .unwrap();
         assert_eq!(
             client
-                .submit_review("example/repo", 7, ReviewEvent::Approve, "LGTM")
+                .submit_review(
+                    "example/repo",
+                    7,
+                    ReviewEvent::Approve,
+                    "0123456789abcdef0123456789abcdef01234567",
+                    "LGTM",
+                )
                 .await
                 .unwrap(),
-            77
+            ReviewReceipt {
+                id: 77,
+                state: "APPROVED".into(),
+                commit_id: "0123456789abcdef0123456789abcdef01234567".into(),
+            }
         );
 
         let (kind, body) = rx.recv().await.unwrap();
@@ -898,12 +1026,99 @@ mod tests {
         assert_eq!(kind, "update_comment:4242");
         assert_eq!(body["body"], "round 2 verdict");
         let (kind, body) = rx.recv().await.unwrap();
-        assert_eq!(kind, "status:deadbeef");
+        assert_eq!(kind, format!("status:{COMMIT_ID}"));
         assert_eq!(body["state"], "success");
         assert_eq!(body["context"], "openab/council");
         let (kind, body) = rx.recv().await.unwrap();
         assert_eq!(kind, "review");
         assert_eq!(body["event"], "APPROVE");
+        assert_eq!(body["commit_id"], COMMIT_ID);
+    }
+
+    #[tokio::test]
+    async fn a_review_response_must_echo_the_requested_commit() {
+        for returned_commit_id in [Value::Null, json!(OTHER_COMMIT_ID)] {
+            let (base, _rx) =
+                fake_github_with_review_response("APPROVED", Some(returned_commit_id)).await;
+            let error = client(&base)
+                .submit_review("example/repo", 7, ReviewEvent::Approve, COMMIT_ID, "LGTM")
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.starts_with("github_review_response_mismatch:"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn review_reconciliation_requires_owned_matching_identity() {
+        let client = client("http://127.0.0.1:1");
+        let marker = "<!-- openab-round:ses_1 -->";
+        let matching = json!([{
+            "id": 77,
+            "body": format!("report\n\n{marker}"),
+            "state": "APPROVED",
+            "commit_id": COMMIT_ID,
+            "performed_via_github_app": {"id": 4235962},
+            "user": {"login": "fixture-council[bot]"}
+        }]);
+        assert_eq!(
+            client
+                .scan_for_our_review(&matching, marker, ReviewEvent::Approve, COMMIT_ID)
+                .unwrap(),
+            Some(ReviewReceipt {
+                id: 77,
+                state: "APPROVED".into(),
+                commit_id: COMMIT_ID.into(),
+            })
+        );
+
+        let foreign = json!([{
+            "id": 78,
+            "body": format!("decoy\n\n{marker}"),
+            "state": "APPROVED",
+            "commit_id": COMMIT_ID,
+            "user": {"login": "attacker"}
+        }]);
+        assert!(client
+            .scan_for_our_review(&foreign, marker, ReviewEvent::Approve, COMMIT_ID)
+            .unwrap()
+            .is_none());
+
+        for entry in [
+            json!({
+                "id": 79,
+                "body": format!("wrong state\n\n{marker}"),
+                "state": "CHANGES_REQUESTED",
+                "commit_id": COMMIT_ID,
+                "performed_via_github_app": {"id": 4235962},
+                "user": {"login": "fixture-council[bot]"}
+            }),
+            json!({
+                "id": 80,
+                "body": format!("wrong commit\n\n{marker}"),
+                "state": "APPROVED",
+                "commit_id": OTHER_COMMIT_ID,
+                "performed_via_github_app": {"id": 4235962},
+                "user": {"login": "fixture-council[bot]"}
+            }),
+        ] {
+            let error = client
+                .scan_for_our_review(
+                    &Value::Array(vec![entry]),
+                    marker,
+                    ReviewEvent::Approve,
+                    COMMIT_ID,
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.starts_with("github_review_reconciliation_conflict:"),
+                "{error}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -931,7 +1146,13 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             client
-                .submit_review("other/repo", 7, ReviewEvent::Approve, "LGTM")
+                .submit_review(
+                    "other/repo",
+                    7,
+                    ReviewEvent::Approve,
+                    "0123456789abcdef0123456789abcdef01234567",
+                    "LGTM",
+                )
                 .await
                 .unwrap_err()
                 .to_string(),
@@ -952,7 +1173,13 @@ mod tests {
         // unblocked when it is not.
         let (base, _rx) = fake_github("COMMENTED").await;
         let error = client(&base)
-            .submit_review("example/repo", 7, ReviewEvent::Approve, "LGTM")
+            .submit_review(
+                "example/repo",
+                7,
+                ReviewEvent::Approve,
+                "0123456789abcdef0123456789abcdef01234567",
+                "LGTM",
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -960,7 +1187,13 @@ mod tests {
 
         let (base, _rx) = fake_github("APPROVED").await;
         let error = client(&base)
-            .submit_review("example/repo", 7, ReviewEvent::RequestChanges, "blocked")
+            .submit_review(
+                "example/repo",
+                7,
+                ReviewEvent::RequestChanges,
+                "0123456789abcdef0123456789abcdef01234567",
+                "blocked",
+            )
             .await
             .unwrap_err()
             .to_string();

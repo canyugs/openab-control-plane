@@ -1,0 +1,585 @@
+{
+  "packet": {
+    "evidence": {
+      "E_CONTRACT": {
+        "allowed_ranges": [
+          {
+            "end": 1,
+            "path": "README.md",
+            "start": 1
+          }
+        ],
+        "evidence_id": "E_CONTRACT",
+        "sha256": "2e42fa4d4b8ea27e4d8ceedfcebd64a5f017a58a5c2ecad3458d47b3ec6ccc40",
+        "utf8": "Synthetic acceptance repository. can_read permits access only for public documents or an authenticated requester equal to owner. checkout_total must reject negative quantity with ValueError. All prices are integer minor units.\n"
+      },
+      "E_SAMPLE": {
+        "allowed_ranges": [
+          {
+            "end": 5,
+            "path": "sample.py",
+            "start": 1
+          }
+        ],
+        "evidence_id": "E_SAMPLE",
+        "sha256": "2342f9789ab39e3c357137e2d2a11fb0747cdb0526c1d05086940da66dd2f09e",
+        "utf8": "def can_read(requester, owner, public=False):\n    return public or bool(requester)\n\ndef checkout_total(price, quantity):\n    return price * quantity\n"
+      }
+    },
+    "executed_evidence": {
+      "claim_present": true,
+      "classification": "unproven",
+      "controller_source_binding": false,
+      "controls_passed": true,
+      "execution": {
+        "claim_present": true,
+        "classification": "unproven",
+        "controls_passed": true,
+        "generated_file_digests": [
+          {
+            "bytes": 1383,
+            "path": "generated/probe_common.py",
+            "sha256": "5fb3292d2b2341c2274ed8d8f58bda1d71df0a6b1532224379cf0fcb8de97a65"
+          },
+          {
+            "bytes": 915,
+            "path": "generated/baseline_probe.py",
+            "sha256": "5984dc11a999b5cf6b2f8607fd5c60b01139edf9747283aa9881d5c438f21e83"
+          },
+          {
+            "bytes": 1530,
+            "path": "generated/counterexample_probe.py",
+            "sha256": "43f1ad3b320dc8baf266e5544300942e6cde24d322a3bc01e908aa4d5005029e"
+          }
+        ],
+        "operator_checks": "not_run",
+        "plan": {
+          "claim_observed": "The baseline probe reads and executes the real /source/sample.py and calls checkout_total(250, -3); the call returns -750 instead of raising ValueError, so claim_present is true: checkout_total performs no negative-quantity validation and violates the README contract (E_CONTRACT) requiring ValueError for negative quantity, matching sample.py lines 4-5 (E_SAMPLE). The counterexample applies the identical probe to the same source text with only the contract guard inserted before the multiplication; there checkout_total(250, -3) raises ValueError and claim_present is false, showing the probe detects the missing validation rather than always reporting the defect.",
+          "files": [
+            {
+              "bytes": 1383,
+              "path": "generated/probe_common.py",
+              "sha256": "5fb3292d2b2341c2274ed8d8f58bda1d71df0a6b1532224379cf0fcb8de97a65",
+              "utf8": "\"\"\"Shared probe helpers for the checkout_total negative-quantity contract.\n\nThe contract (README.md) states: checkout_total must reject negative quantity\nwith ValueError. The probe therefore calls checkout_total with a negative\nquantity and reports whether the omission (no validation) is observable.\n\"\"\"\n\nimport types\n\nSOURCE_PATH = \"/source/sample.py\"\n\n\ndef read_source(path=SOURCE_PATH):\n    with open(path, \"r\", encoding=\"utf-8\") as handle:\n        return handle.read()\n\n\ndef load_module(name, source_text):\n    module = types.ModuleType(name)\n    module.__dict__[\"__file__\"] = name\n    exec(compile(source_text, name, \"exec\"), module.__dict__)\n    return module\n\n\ndef evaluate(module):\n    \"\"\"Return (claim_present, detail).\n\n    claim_present is True when checkout_total accepts a negative quantity and\n    returns a product instead of raising ValueError.\n    \"\"\"\n    fn = getattr(module, \"checkout_total\", None)\n    if fn is None:\n        return False, {\"outcome\": \"missing_function\"}\n    try:\n        value = fn(250, -3)\n    except ValueError as exc:\n        return False, {\"outcome\": \"raised_ValueError\", \"message\": str(exc)}\n    except Exception as exc:\n        return False, {\n            \"outcome\": \"raised_other\",\n            \"exception_type\": type(exc).__name__,\n            \"message\": str(exc),\n        }\n    return True, {\"outcome\": \"returned_value\", \"value\": value}\n"
+            },
+            {
+              "bytes": 915,
+              "path": "generated/baseline_probe.py",
+              "sha256": "5984dc11a999b5cf6b2f8607fd5c60b01139edf9747283aa9881d5c438f21e83",
+              "utf8": "\"\"\"Baseline: exercise the unmodified source at /source/sample.py.\n\nExpectation: checkout_total(250, -3) returns -750 rather than raising\nValueError, so the omission claim is present.\n\"\"\"\n\nimport json\nimport os\nimport sys\n\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n\nimport probe_common\n\n\ndef main():\n    source_text = probe_common.read_source()\n    module = probe_common.load_module(\"sample_under_test\", source_text)\n    claim_present, detail = probe_common.evaluate(module)\n    report = {\n        \"run\": \"baseline\",\n        \"source_path\": probe_common.SOURCE_PATH,\n        \"source_bytes\": len(source_text.encode(\"utf-8\")),\n        \"variant\": \"unmodified_source\",\n        \"probe\": \"checkout_total(250, -3)\",\n        \"detail\": detail,\n        \"claim_present\": bool(claim_present),\n    }\n    print(json.dumps(report, sort_keys=True))\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+            },
+            {
+              "bytes": 1530,
+              "path": "generated/counterexample_probe.py",
+              "sha256": "43f1ad3b320dc8baf266e5544300942e6cde24d322a3bc01e908aa4d5005029e",
+              "utf8": "\"\"\"Counterexample: same probe against a contract-compliant variant.\n\nThe variant is derived from the real /source/sample.py text by inserting the\nnegative-quantity guard the contract requires. If the identical probe reports\nclaim_present False here, the probe discriminates between a validating and a\nnon-validating checkout_total, and is not merely always-True.\n\"\"\"\n\nimport json\nimport os\nimport sys\n\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n\nimport probe_common\n\nTARGET = \"def checkout_total(price, quantity):\\n    return price * quantity\"\nPATCHED = (\n    \"def checkout_total(price, quantity):\\n\"\n    \"    if quantity < 0:\\n\"\n    \"        raise ValueError('quantity must not be negative')\\n\"\n    \"    return price * quantity\"\n)\n\n\ndef main():\n    source_text = probe_common.read_source()\n    patched_text = source_text.replace(TARGET, PATCHED, 1)\n    patch_applied = patched_text != source_text\n    module = probe_common.load_module(\"sample_patched\", patched_text)\n    claim_present, detail = probe_common.evaluate(module)\n    report = {\n        \"run\": \"counterexample\",\n        \"source_path\": probe_common.SOURCE_PATH,\n        \"source_bytes\": len(source_text.encode(\"utf-8\")),\n        \"variant\": \"source_with_contract_guard_inserted\",\n        \"patch_applied\": patch_applied,\n        \"probe\": \"checkout_total(250, -3)\",\n        \"detail\": detail,\n        \"claim_present\": bool(claim_present),\n    }\n    print(json.dumps(report, sort_keys=True))\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+            }
+          ],
+          "item_id": "omission-2-c275c1577a3abe3c",
+          "runs": [
+            {
+              "argv": [
+                "python3",
+                "generated/baseline_probe.py"
+              ],
+              "cwd": "/work",
+              "evidence_ids": [
+                "E_SAMPLE",
+                "E_CONTRACT"
+              ],
+              "expect": {
+                "exit": 0,
+                "observation": {
+                  "claim_present": true
+                }
+              },
+              "name": "baseline"
+            },
+            {
+              "argv": [
+                "python3",
+                "generated/counterexample_probe.py"
+              ],
+              "cwd": "/work",
+              "evidence_ids": [
+                "E_SAMPLE",
+                "E_CONTRACT"
+              ],
+              "expect": {
+                "exit": 0,
+                "observation": {
+                  "claim_present": false
+                }
+              },
+              "name": "counterexample"
+            }
+          ]
+        },
+        "preflight": {
+          "daemon_probe": "ok",
+          "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+          "server_version": "29.7.2",
+          "status": "ready"
+        },
+        "reason": null,
+        "runs": [
+          {
+            "actual": {
+              "duration_ms": 53,
+              "exit": 0,
+              "name": "baseline",
+              "observation": {
+                "claim_present": true,
+                "detail": {
+                  "outcome": "returned_value",
+                  "value": -750
+                },
+                "probe": "checkout_total(250, -3)",
+                "run": "baseline",
+                "source_bytes": 149,
+                "source_path": "/source/sample.py",
+                "variant": "unmodified_source"
+              },
+              "output_limit": false,
+              "stderr": "",
+              "stderr_b64": "",
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_truncated": false,
+              "stdout": "{\"claim_present\": true, \"detail\": {\"outcome\": \"returned_value\", \"value\": -750}, \"probe\": \"checkout_total(250, -3)\", \"run\": \"baseline\", \"source_bytes\": 149, \"source_path\": \"/source/sample.py\", \"variant\": \"unmodified_source\"}\n",
+              "stdout_b64": "eyJjbGFpbV9wcmVzZW50IjogdHJ1ZSwgImRldGFpbCI6IHsib3V0Y29tZSI6ICJyZXR1cm5lZF92YWx1ZSIsICJ2YWx1ZSI6IC03NTB9LCAicHJvYmUiOiAiY2hlY2tvdXRfdG90YWwoMjUwLCAtMykiLCAicnVuIjogImJhc2VsaW5lIiwgInNvdXJjZV9ieXRlcyI6IDE0OSwgInNvdXJjZV9wYXRoIjogIi9zb3VyY2Uvc2FtcGxlLnB5IiwgInZhcmlhbnQiOiAidW5tb2RpZmllZF9zb3VyY2UifQo=",
+              "stdout_bytes": 224,
+              "stdout_sha256": "42322642d25635818dcaee6b882c76b182b68b4650fd649331fdadad0d894d75",
+              "stdout_truncated": false,
+              "timeout": false
+            },
+            "argv": [
+              "docker",
+              "run",
+              "--rm",
+              "--init",
+              "--pull=never",
+              "-i",
+              "--name",
+              "openab-eval-694166f87cb8487bb09f",
+              "--network",
+              "none",
+              "--read-only",
+              "--tmpfs",
+              "/work:rw,nosuid,nodev,size=64m,mode=1777",
+              "--tmpfs",
+              "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+              "--mount",
+              "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-source-nboi4nz4,dst=/source,readonly",
+              "--mount",
+              "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-34atq1eu/fixed-runner.py,dst=/runner.py,readonly",
+              "--user",
+              "65532:65532",
+              "--cap-drop",
+              "ALL",
+              "--security-opt",
+              "no-new-privileges",
+              "--pids-limit",
+              "128",
+              "--memory",
+              "512m",
+              "--cpus",
+              "1.0",
+              "--env",
+              "HOME=/tmp/home",
+              "--env",
+              "PATH=/usr/local/bin:/usr/bin:/bin",
+              "--env",
+              "LANG=C.UTF-8",
+              "--env",
+              "LC_ALL=C.UTF-8",
+              "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+              "python3",
+              "/runner.py"
+            ],
+            "container_name": "openab-eval-694166f87cb8487bb09f",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": true
+              }
+            },
+            "name": "baseline",
+            "output_limit": false,
+            "stderr": "",
+            "stderr_b64": "",
+            "stderr_bytes": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderr_truncated": false,
+            "stdout": "{\"runs\":[{\"duration_ms\":53,\"exit\":0,\"name\":\"baseline\",\"observation\":{\"claim_present\":true,\"detail\":{\"outcome\":\"returned_value\",\"value\":-750},\"probe\":\"checkout_total(250, -3)\",\"run\":\"baseline\",\"source_bytes\":149,\"source_path\":\"/source/sample.py\",\"variant\":\"unmodified_source\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\\"claim_present\\\": true, \\\"detail\\\": {\\\"outcome\\\": \\\"returned_value\\\", \\\"value\\\": -750}, \\\"probe\\\": \\\"checkout_total(250, -3)\\\", \\\"run\\\": \\\"baseline\\\", \\\"source_bytes\\\": 149, \\\"source_path\\\": \\\"/source/sample.py\\\", \\\"variant\\\": \\\"unmodified_source\\\"}\\n\",\"stdout_b64\":\"eyJjbGFpbV9wcmVzZW50IjogdHJ1ZSwgImRldGFpbCI6IHsib3V0Y29tZSI6ICJyZXR1cm5lZF92YWx1ZSIsICJ2YWx1ZSI6IC03NTB9LCAicHJvYmUiOiAiY2hlY2tvdXRfdG90YWwoMjUwLCAtMykiLCAicnVuIjogImJhc2VsaW5lIiwgInNvdXJjZV9ieXRlcyI6IDE0OSwgInNvdXJjZV9wYXRoIjogIi9zb3VyY2Uvc2FtcGxlLnB5IiwgInZhcmlhbnQiOiAidW5tb2RpZmllZF9zb3VyY2UifQo=\",\"stdout_bytes\":224,\"stdout_sha256\":\"42322642d25635818dcaee6b882c76b182b68b4650fd649331fdadad0d894d75\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+            "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6NTMsImV4aXQiOjAsIm5hbWUiOiJiYXNlbGluZSIsIm9ic2VydmF0aW9uIjp7ImNsYWltX3ByZXNlbnQiOnRydWUsImRldGFpbCI6eyJvdXRjb21lIjoicmV0dXJuZWRfdmFsdWUiLCJ2YWx1ZSI6LTc1MH0sInByb2JlIjoiY2hlY2tvdXRfdG90YWwoMjUwLCAtMykiLCJydW4iOiJiYXNlbGluZSIsInNvdXJjZV9ieXRlcyI6MTQ5LCJzb3VyY2VfcGF0aCI6Ii9zb3VyY2Uvc2FtcGxlLnB5IiwidmFyaWFudCI6InVubW9kaWZpZWRfc291cmNlIn0sIm91dHB1dF9saW1pdCI6ZmFsc2UsInN0ZGVyciI6IiIsInN0ZGVycl9iNjQiOiIiLCJzdGRlcnJfYnl0ZXMiOjAsInN0ZGVycl9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1Iiwic3RkZXJyX3RydW5jYXRlZCI6ZmFsc2UsInN0ZG91dCI6IntcImNsYWltX3ByZXNlbnRcIjogdHJ1ZSwgXCJkZXRhaWxcIjoge1wib3V0Y29tZVwiOiBcInJldHVybmVkX3ZhbHVlXCIsIFwidmFsdWVcIjogLTc1MH0sIFwicHJvYmVcIjogXCJjaGVja291dF90b3RhbCgyNTAsIC0zKVwiLCBcInJ1blwiOiBcImJhc2VsaW5lXCIsIFwic291cmNlX2J5dGVzXCI6IDE0OSwgXCJzb3VyY2VfcGF0aFwiOiBcIi9zb3VyY2Uvc2FtcGxlLnB5XCIsIFwidmFyaWFudFwiOiBcInVubW9kaWZpZWRfc291cmNlXCJ9XG4iLCJzdGRvdXRfYjY0IjoiZXlKamJHRnBiVjl3Y21WelpXNTBJam9nZEhKMVpTd2dJbVJsZEdGcGJDSTZJSHNpYjNWMFkyOXRaU0k2SUNKeVpYUjFjbTVsWkY5MllXeDFaU0lzSUNKMllXeDFaU0k2SUMwM05UQjlMQ0FpY0hKdlltVWlPaUFpWTJobFkydHZkWFJmZEc5MFlXd29NalV3TENBdE15a2lMQ0FpY25WdUlqb2dJbUpoYzJWc2FXNWxJaXdnSW5OdmRYSmpaVjlpZVhSbGN5STZJREUwT1N3Z0luTnZkWEpqWlY5d1lYUm9Jam9nSWk5emIzVnlZMlV2YzJGdGNHeGxMbkI1SWl3Z0luWmhjbWxoYm5RaU9pQWlkVzV0YjJScFptbGxaRjl6YjNWeVkyVWlmUW89Iiwic3Rkb3V0X2J5dGVzIjoyMjQsInN0ZG91dF9zaGEyNTYiOiI0MjMyMjY0MmQyNTYzNTgxOGRjYWVlNmI4ODJjNzZiMTgyYjY4YjQ2NTBmZDY0OTMzMWZkYWRhZDBkODk0ZDc1Iiwic3Rkb3V0X3RydW5jYXRlZCI6ZmFsc2UsInRpbWVvdXQiOmZhbHNlfV19Cg==",
+            "stdout_bytes": 1177,
+            "stdout_sha256": "a0d9a20fe26540875ba4155f78f7feca412d6be33b80344e24988d16c193fc27",
+            "stdout_truncated": false,
+            "timeout": false,
+            "valid": true
+          },
+          {
+            "actual": {
+              "duration_ms": 51,
+              "exit": 0,
+              "name": "counterexample",
+              "observation": {
+                "claim_present": false,
+                "detail": {
+                  "message": "quantity must not be negative",
+                  "outcome": "raised_ValueError"
+                },
+                "patch_applied": true,
+                "probe": "checkout_total(250, -3)",
+                "run": "counterexample",
+                "source_bytes": 149,
+                "source_path": "/source/sample.py",
+                "variant": "source_with_contract_guard_inserted"
+              },
+              "output_limit": false,
+              "stderr": "",
+              "stderr_b64": "",
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_truncated": false,
+              "stdout": "{\"claim_present\": false, \"detail\": {\"message\": \"quantity must not be negative\", \"outcome\": \"raised_ValueError\"}, \"patch_applied\": true, \"probe\": \"checkout_total(250, -3)\", \"run\": \"counterexample\", \"source_bytes\": 149, \"source_path\": \"/source/sample.py\", \"variant\": \"source_with_contract_guard_inserted\"}\n",
+              "stdout_b64": "eyJjbGFpbV9wcmVzZW50IjogZmFsc2UsICJkZXRhaWwiOiB7Im1lc3NhZ2UiOiAicXVhbnRpdHkgbXVzdCBub3QgYmUgbmVnYXRpdmUiLCAib3V0Y29tZSI6ICJyYWlzZWRfVmFsdWVFcnJvciJ9LCAicGF0Y2hfYXBwbGllZCI6IHRydWUsICJwcm9iZSI6ICJjaGVja291dF90b3RhbCgyNTAsIC0zKSIsICJydW4iOiAiY291bnRlcmV4YW1wbGUiLCAic291cmNlX2J5dGVzIjogMTQ5LCAic291cmNlX3BhdGgiOiAiL3NvdXJjZS9zYW1wbGUucHkiLCAidmFyaWFudCI6ICJzb3VyY2Vfd2l0aF9jb250cmFjdF9ndWFyZF9pbnNlcnRlZCJ9Cg==",
+              "stdout_bytes": 304,
+              "stdout_sha256": "c25589aa5782f319d789b7e37bcb4cbb00655d82cc5cd5accd2945865ba31bab",
+              "stdout_truncated": false,
+              "timeout": false
+            },
+            "argv": [
+              "docker",
+              "run",
+              "--rm",
+              "--init",
+              "--pull=never",
+              "-i",
+              "--name",
+              "openab-eval-28a6b35bda6c4922922d",
+              "--network",
+              "none",
+              "--read-only",
+              "--tmpfs",
+              "/work:rw,nosuid,nodev,size=64m,mode=1777",
+              "--tmpfs",
+              "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+              "--mount",
+              "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-source-nboi4nz4,dst=/source,readonly",
+              "--mount",
+              "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-34atq1eu/fixed-runner.py,dst=/runner.py,readonly",
+              "--user",
+              "65532:65532",
+              "--cap-drop",
+              "ALL",
+              "--security-opt",
+              "no-new-privileges",
+              "--pids-limit",
+              "128",
+              "--memory",
+              "512m",
+              "--cpus",
+              "1.0",
+              "--env",
+              "HOME=/tmp/home",
+              "--env",
+              "PATH=/usr/local/bin:/usr/bin:/bin",
+              "--env",
+              "LANG=C.UTF-8",
+              "--env",
+              "LC_ALL=C.UTF-8",
+              "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+              "python3",
+              "/runner.py"
+            ],
+            "container_name": "openab-eval-28a6b35bda6c4922922d",
+            "expect": {
+              "exit": 0,
+              "observation": {
+                "claim_present": false
+              }
+            },
+            "name": "counterexample",
+            "output_limit": false,
+            "stderr": "",
+            "stderr_b64": "",
+            "stderr_bytes": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderr_truncated": false,
+            "stdout": "{\"runs\":[{\"duration_ms\":51,\"exit\":0,\"name\":\"counterexample\",\"observation\":{\"claim_present\":false,\"detail\":{\"message\":\"quantity must not be negative\",\"outcome\":\"raised_ValueError\"},\"patch_applied\":true,\"probe\":\"checkout_total(250, -3)\",\"run\":\"counterexample\",\"source_bytes\":149,\"source_path\":\"/source/sample.py\",\"variant\":\"source_with_contract_guard_inserted\"},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\\"claim_present\\\": false, \\\"detail\\\": {\\\"message\\\": \\\"quantity must not be negative\\\", \\\"outcome\\\": \\\"raised_ValueError\\\"}, \\\"patch_applied\\\": true, \\\"probe\\\": \\\"checkout_total(250, -3)\\\", \\\"run\\\": \\\"counterexample\\\", \\\"source_bytes\\\": 149, \\\"source_path\\\": \\\"/source/sample.py\\\", \\\"variant\\\": \\\"source_with_contract_guard_inserted\\\"}\\n\",\"stdout_b64\":\"eyJjbGFpbV9wcmVzZW50IjogZmFsc2UsICJkZXRhaWwiOiB7Im1lc3NhZ2UiOiAicXVhbnRpdHkgbXVzdCBub3QgYmUgbmVnYXRpdmUiLCAib3V0Y29tZSI6ICJyYWlzZWRfVmFsdWVFcnJvciJ9LCAicGF0Y2hfYXBwbGllZCI6IHRydWUsICJwcm9iZSI6ICJjaGVja291dF90b3RhbCgyNTAsIC0zKSIsICJydW4iOiAiY291bnRlcmV4YW1wbGUiLCAic291cmNlX2J5dGVzIjogMTQ5LCAic291cmNlX3BhdGgiOiAiL3NvdXJjZS9zYW1wbGUucHkiLCAidmFyaWFudCI6ICJzb3VyY2Vfd2l0aF9jb250cmFjdF9ndWFyZF9pbnNlcnRlZCJ9Cg==\",\"stdout_bytes\":304,\"stdout_sha256\":\"c25589aa5782f319d789b7e37bcb4cbb00655d82cc5cd5accd2945865ba31bab\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+            "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6NTEsImV4aXQiOjAsIm5hbWUiOiJjb3VudGVyZXhhbXBsZSIsIm9ic2VydmF0aW9uIjp7ImNsYWltX3ByZXNlbnQiOmZhbHNlLCJkZXRhaWwiOnsibWVzc2FnZSI6InF1YW50aXR5IG11c3Qgbm90IGJlIG5lZ2F0aXZlIiwib3V0Y29tZSI6InJhaXNlZF9WYWx1ZUVycm9yIn0sInBhdGNoX2FwcGxpZWQiOnRydWUsInByb2JlIjoiY2hlY2tvdXRfdG90YWwoMjUwLCAtMykiLCJydW4iOiJjb3VudGVyZXhhbXBsZSIsInNvdXJjZV9ieXRlcyI6MTQ5LCJzb3VyY2VfcGF0aCI6Ii9zb3VyY2Uvc2FtcGxlLnB5IiwidmFyaWFudCI6InNvdXJjZV93aXRoX2NvbnRyYWN0X2d1YXJkX2luc2VydGVkIn0sIm91dHB1dF9saW1pdCI6ZmFsc2UsInN0ZGVyciI6IiIsInN0ZGVycl9iNjQiOiIiLCJzdGRlcnJfYnl0ZXMiOjAsInN0ZGVycl9zaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1Iiwic3RkZXJyX3RydW5jYXRlZCI6ZmFsc2UsInN0ZG91dCI6IntcImNsYWltX3ByZXNlbnRcIjogZmFsc2UsIFwiZGV0YWlsXCI6IHtcIm1lc3NhZ2VcIjogXCJxdWFudGl0eSBtdXN0IG5vdCBiZSBuZWdhdGl2ZVwiLCBcIm91dGNvbWVcIjogXCJyYWlzZWRfVmFsdWVFcnJvclwifSwgXCJwYXRjaF9hcHBsaWVkXCI6IHRydWUsIFwicHJvYmVcIjogXCJjaGVja291dF90b3RhbCgyNTAsIC0zKVwiLCBcInJ1blwiOiBcImNvdW50ZXJleGFtcGxlXCIsIFwic291cmNlX2J5dGVzXCI6IDE0OSwgXCJzb3VyY2VfcGF0aFwiOiBcIi9zb3VyY2Uvc2FtcGxlLnB5XCIsIFwidmFyaWFudFwiOiBcInNvdXJjZV93aXRoX2NvbnRyYWN0X2d1YXJkX2luc2VydGVkXCJ9XG4iLCJzdGRvdXRfYjY0IjoiZXlKamJHRnBiVjl3Y21WelpXNTBJam9nWm1Gc2MyVXNJQ0prWlhSaGFXd2lPaUI3SW0xbGMzTmhaMlVpT2lBaWNYVmhiblJwZEhrZ2JYVnpkQ0J1YjNRZ1ltVWdibVZuWVhScGRtVWlMQ0FpYjNWMFkyOXRaU0k2SUNKeVlXbHpaV1JmVm1Gc2RXVkZjbkp2Y2lKOUxDQWljR0YwWTJoZllYQndiR2xsWkNJNklIUnlkV1VzSUNKd2NtOWlaU0k2SUNKamFHVmphMjkxZEY5MGIzUmhiQ2d5TlRBc0lDMHpLU0lzSUNKeWRXNGlPaUFpWTI5MWJuUmxjbVY0WVcxd2JHVWlMQ0FpYzI5MWNtTmxYMko1ZEdWeklqb2dNVFE1TENBaWMyOTFjbU5sWDNCaGRHZ2lPaUFpTDNOdmRYSmpaUzl6WVcxd2JHVXVjSGtpTENBaWRtRnlhV0Z1ZENJNklDSnpiM1Z5WTJWZmQybDBhRjlqYjI1MGNtRmpkRjluZFdGeVpGOXBibk5sY25SbFpDSjlDZz09Iiwic3Rkb3V0X2J5dGVzIjozMDQsInN0ZG91dF9zaGEyNTYiOiJjMjU1ODlhYTU3ODJmMzE5ZDc4OWI3ZTM3YmNiNGNiYjAwNjU1ZDgyY2M1Y2Q1YWNjZDI5NDU4NjViYTMxYmFiIiwic3Rkb3V0X3RydW5jYXRlZCI6ZmFsc2UsInRpbWVvdXQiOmZhbHNlfV19Cg==",
+            "stdout_bytes": 1453,
+            "stdout_sha256": "660620443cb0c5482e62362f6a2de72eb034112686d9d50848951777bbe0b19d",
+            "stdout_truncated": false,
+            "timeout": false,
+            "valid": true
+          }
+        ],
+        "status": "success"
+      },
+      "execution_classification": "unproven",
+      "finding_sha256": "d837b1786c45d26bfae8e28279b0b22094421713290108a7214106246b8fd71e",
+      "generated_file_digests_sha256": "2407429d6489fa6d852b737c3223836e267aaeefdd28be724070b4352935f07e",
+      "invocation_id": "validation-omission-2-c275c1577a3abe3c",
+      "item_id": "omission-2-c275c1577a3abe3c",
+      "model_status": "success",
+      "plan_sha256": "c9720d538d22625544d25d16ae0b5a3732167276d9aa4ed83c8edfd7f9629259",
+      "source_packet_sha256": "ade31a8092b0a242f1dc0a83f9fd32943354e0036fdc24dbc519bd127f2186e8",
+      "status": "success",
+      "validation_packet_sha256": "1a3340ffce5f9a8ceaa2fd79295776d7db59825e6d8468e156e6cfa27d9d4c0d"
+    },
+    "finding": {
+      "author_model_identity": "unknown",
+      "claim": "checkout_total does not validate quantity: it directly returns price * quantity with no negative-quantity check, so a negative quantity yields a negative total instead of raising ValueError as the contract requires.",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "finding_id": "omission-2-c275c1577a3abe3c",
+      "location": {
+        "end_line": 5,
+        "path": "sample.py",
+        "start_line": 4
+      },
+      "severity": "unknown",
+      "title": "candidate"
+    },
+    "invocation_id": "synthesis-omission-2-c275c1577a3abe3c",
+    "judgments": [
+      {
+        "assessment": {
+          "citations": [
+            {
+              "end": 5,
+              "evidence_id": "E_SAMPLE",
+              "path": "sample.py",
+              "start": 4
+            },
+            {
+              "end": 1,
+              "evidence_id": "E_CONTRACT",
+              "path": "README.md",
+              "start": 1
+            }
+          ],
+          "counterexample": "Frozen source (sample.py lines 4-5) defines checkout_total as a bare `return price * quantity` with no guard, while the contract (README.md line 1) requires rejecting negative quantity with ValueError. The executed controls are source-bound and discriminating: the baseline probe read the real source file at runtime (reported source_bytes 149, matching the frozen sample.py size), executed it, and called checkout_total(250, -3), which returned -750 (exit 0, claim_present true) instead of raising. The counterexample applied the identical probe to the same source text with only the contract guard inserted (patch_applied true); there the same call raised ValueError('quantity must not be negative') and claim_present was false (exit 0). Since the only difference between runs is the presence of the negative-quantity check, the harness is not print-only, hard-coded, argv-echoing, or always-true: its outcome flips with source behavior. The negation of the claim (\"checkout_total validates quantity\") is directly falsified by the baseline return value of -750.",
+          "finding_id": "omission-2-c275c1577a3abe3c",
+          "provenance": "model_assessment",
+          "severity": "medium",
+          "usefulness": "useful",
+          "validation_verdict": "valid",
+          "verdict": "support"
+        },
+        "label": "judge_1"
+      },
+      {
+        "assessment": {
+          "citations": [
+            {
+              "end": 5,
+              "evidence_id": "E_SAMPLE",
+              "path": "sample.py",
+              "start": 4
+            },
+            {
+              "end": 1,
+              "evidence_id": "E_CONTRACT",
+              "path": "README.md",
+              "start": 1
+            }
+          ],
+          "counterexample": "",
+          "finding_id": "omission-2-c275c1577a3abe3c",
+          "provenance": "model_assessment",
+          "severity": "high",
+          "usefulness": "useful",
+          "validation_verdict": "valid",
+          "verdict": "support"
+        },
+        "label": "judge_2"
+      }
+    ],
+    "role": "synthesis",
+    "rules": [
+      "return exactly the schema fields and preserve the supplied item_id",
+      "preserve disagreement; unknown is allowed; do not invent evidence or promote failed controls",
+      "each citation is exactly {path,start,end,evidence_id} and cites only a supplied frozen-source range covered by that evidence_id",
+      "supported/refuted results require at least one citation; unknown may return an empty citations array",
+      "never cite generated files or /source paths, and return no citation strings"
+    ],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "citations": {
+          "description": "Cite only exact supplied source paths/ranges and supplied evidence_id values; generated files are not citation sources. The transport may return an empty array for unknown; the controller requires at least one citation for supported or refuted.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "end": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "evidence_id": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "path": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "pattern": "^(?!/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*\\/$).+$",
+                "type": "string"
+              },
+              "start": {
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path",
+              "start",
+              "end",
+              "evidence_id"
+            ],
+            "type": "object"
+          },
+          "maxItems": 32,
+          "type": "array"
+        },
+        "disagreement": {
+          "maxLength": 16384,
+          "type": "string"
+        },
+        "item_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 16384,
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "supported",
+            "refuted",
+            "unknown"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "verdict",
+        "citations",
+        "disagreement",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "source_packet": {
+      "archive_sha256": "db965f928456801d858082f1bd79424eac6211efad9d523b4a8cc0e89b314725",
+      "complete": true,
+      "diff": {
+        "bytes": 279,
+        "encoding": "utf8",
+        "sha256": "142fe6ac27caaaf029fe36c1c6095aaf411d7f41485626f2c9bb4285d33f5e2b",
+        "utf8": "diff --git a/sample.py b/sample.py\nnew file mode 100644\nindex 0000000..e83472f\n--- /dev/null\n+++ b/sample.py\n@@ -0,0 +1,5 @@\n+def can_read(requester, owner, public=False):\n+    return public or bool(requester)\n+\n+def checkout_total(price, quantity):\n+    return price * quantity\n"
+      },
+      "diff_sha256": "142fe6ac27caaaf029fe36c1c6095aaf411d7f41485626f2c9bb4285d33f5e2b",
+      "files": [
+        {
+          "bytes": 227,
+          "path": "README.md",
+          "sha256": "2e42fa4d4b8ea27e4d8ceedfcebd64a5f017a58a5c2ecad3458d47b3ec6ccc40",
+          "utf8": "Synthetic acceptance repository. can_read permits access only for public documents or an authenticated requester equal to owner. checkout_total must reject negative quantity with ValueError. All prices are integer minor units.\n"
+        },
+        {
+          "bytes": 149,
+          "path": "sample.py",
+          "sha256": "2342f9789ab39e3c357137e2d2a11fb0747cdb0526c1d05086940da66dd2f09e",
+          "utf8": "def can_read(requester, owner, public=False):\n    return public or bool(requester)\n\ndef checkout_total(price, quantity):\n    return price * quantity\n"
+        }
+      ],
+      "included_regular_file_count": 2,
+      "omissions": [],
+      "packet_sha256": "ade31a8092b0a242f1dc0a83f9fd32943354e0036fdc24dbc519bd127f2186e8",
+      "revision": "52e3039afd1aa96baddcaf934967b974315d3c34",
+      "schema_version": "model-source-packet/v1",
+      "tracked_regular_file_count": 2
+    }
+  },
+  "packet_sha256": "2e094650405fe35e757dc5292a694e84a11bc39537af1dddde7348beda59e3fb",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "citations": {
+        "description": "Cite only exact supplied source paths/ranges and supplied evidence_id values; generated files are not citation sources. The transport may return an empty array for unknown; the controller requires at least one citation for supported or refuted.",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "end": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "evidence_id": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            "path": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*\\/$).+$",
+              "type": "string"
+            },
+            "start": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "start",
+            "end",
+            "evidence_id"
+          ],
+          "type": "object"
+        },
+        "maxItems": 32,
+        "type": "array"
+      },
+      "disagreement": {
+        "maxLength": 16384,
+        "type": "string"
+      },
+      "item_id": {
+        "maxLength": 512,
+        "minLength": 1,
+        "type": "string"
+      },
+      "reason": {
+        "maxLength": 16384,
+        "type": "string"
+      },
+      "verdict": {
+        "enum": [
+          "supported",
+          "refuted",
+          "unknown"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "item_id",
+      "verdict",
+      "citations",
+      "disagreement",
+      "reason"
+    ],
+    "type": "object"
+  }
+}

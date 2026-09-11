@@ -1,0 +1,28 @@
+{
+  "argv": [
+    "docker",
+    "run",
+    "--rm",
+    "--platform",
+    "linux/amd64",
+    "--user",
+    "501:20",
+    "--group-add",
+    "0",
+    "--mount",
+    "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/repo,dst=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/repo,readonly",
+    "--mount",
+    "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/launcher-scratch,dst=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/launcher-scratch",
+    "--env",
+    "TMPDIR=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-package-validation-pjckyg4w/launcher-scratch",
+    "--env",
+    "HOME=/tmp/ocp-review-eval-home",
+    "--entrypoint",
+    "python",
+    "ocp-review-eval:0.1.0-test",
+    "-c",
+    "import pathlib,os,subprocess,json; p=pathlib.Path('/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/repo'); print(json.dumps({\"uid\":os.getuid(),\"gid\":os.getgid(),\"repo_owner\":p.stat().st_uid,\"git_owner\":(p/\".git\").stat().st_uid})); r=subprocess.run([\"git\",\"-C\",str(p),\"status\",\"--porcelain=v1\"],text=True,capture_output=True); print(json.dumps({\"exit\":r.returncode,\"stdout\":r.stdout,\"stderr\":r.stderr}))"
+  ],
+  "exit": 0,
+  "output": "{\"uid\": 501, \"gid\": 20, \"repo_owner\": 0, \"git_owner\": 501}\n{\"exit\": 128, \"stdout\": \"\", \"stderr\": \"fatal: detected dubious ownership in repository at '/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/repo'\\nTo add an exception for this directory, call:\\n\\n\\tgit config --global --add safe.directory /private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/repo\\n\"}\n"
+}

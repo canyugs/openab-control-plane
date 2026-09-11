@@ -1,0 +1,22 @@
+{
+  "citations": [
+    {
+      "end": 2,
+      "evidence_id": "E_SAMPLE",
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "end": 1,
+      "evidence_id": "E_CONTRACT",
+      "path": "README.md",
+      "start": 1
+    }
+  ],
+  "counterexample": "The frozen source guard is `return public or (bool(requester) and requester == owner)`, which conjoins the non-empty-requester test with an equality-to-owner test, so an authenticated non-owner cannot read a private document. Executed controls confirm this against the real source rather than a stub: the baseline probe loaded /source/sample.py via importlib and called can_read(\"mallory\",\"alice\",False), can_read(\"bob\",\"alice\",False), can_read(\"authenticated_user\",\"owner_account\",False), all returning False (claim_present=false, exit 0), while sanity controls behaved per the README (owner_private=true, anonymous_public=true, anonymous_private=false). The counterexample run read the same source text, applied a single-token mutation of the equality clause (`requester == owner` -> `True`) to construct exactly the bypass shape the finding alleges, and the identical probe then returned True for all three authenticated non-owner cases (claim_present=true, exit 0). The two runs differ only in that source-derived mutation, so the harness is source-bound and demonstrably able to detect the alleged bypass when it exists; it did not fire on the shipped revision. The claim is therefore refuted, and the executed baseline/counterexample pair meaningfully distinguishes the claim from its negation.",
+  "finding_id": "F-1",
+  "severity": "none",
+  "usefulness": "not_useful",
+  "validation_verdict": "valid",
+  "verdict": "refute"
+}

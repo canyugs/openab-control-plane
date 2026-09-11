@@ -1,0 +1,206 @@
+{
+  "actual_cost_usd": "unknown",
+  "actual_metadata": {
+    "actual_cost_usd": "unknown",
+    "auxiliary_model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.0022730000000000003,
+        "inputTokens": 2203,
+        "maxOutputTokens": 32000,
+        "outputTokens": 14,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      }
+    },
+    "cost_basis": [
+      "list"
+    ],
+    "duration_ms": 5963,
+    "estimated_cost_usd": 0.035269999999999996,
+    "init": {
+      "mcp_servers": [],
+      "plugins": [],
+      "skills": [],
+      "subtype": "init",
+      "tools": [
+        "StructuredOutput"
+      ]
+    },
+    "is_error": false,
+    "modelUsage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.0022730000000000003,
+        "inputTokens": 2203,
+        "maxOutputTokens": 32000,
+        "outputTokens": 14,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 2245,
+        "cacheReadInputTokens": 1074,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costBasis": "list",
+        "costUSD": 0.032997,
+        "inputTokens": 2,
+        "maxOutputTokens": 64000,
+        "outputTokens": 400,
+        "provider": "firstParty",
+        "thinkingTokens": 52,
+        "webSearchRequests": 0
+      }
+    },
+    "model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costBasis": "list",
+        "costUSD": 0.0022730000000000003,
+        "inputTokens": 2203,
+        "maxOutputTokens": 32000,
+        "outputTokens": 14,
+        "provider": "firstParty",
+        "thinkingTokens": 0,
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 2245,
+        "cacheReadInputTokens": 1074,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costBasis": "list",
+        "costUSD": 0.032997,
+        "inputTokens": 2,
+        "maxOutputTokens": 64000,
+        "outputTokens": 400,
+        "provider": "firstParty",
+        "thinkingTokens": 52,
+        "webSearchRequests": 0
+      }
+    },
+    "num_turns": 2,
+    "redacted_environment": {
+      "HOME": "/Users/can",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "PATH": "/Users/can/.n/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex-path:/Users/can/.codex/tmp/arg0/codex-arg0p190Uu:/Users/can/.grok/bin:/opt/homebrew/share/google-cloud-sdk/bin:/Users/can/.local/bin:/Users/can/.n/bin:/Users/can/.bun/bin:/Users/can/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.a",
+      "TMPDIR": "/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/"
+    },
+    "session_id": "b749b8cc-aedf-4c92-a4a4-55d6438406d1",
+    "structured_output_attempt_count": 1,
+    "structured_output_attempts": [
+      {
+        "call": {
+          "caller": {
+            "type": "direct"
+          },
+          "id": "toolu_014JezBeJFUNaWMu6KdHafDB",
+          "input": {
+            "candidates": [
+              {
+                "claim": "Broken access control: can_read returns True for any truthy requester without comparing requester to owner, so any authenticated requester can read a non-public document owned by someone else. The stated contract permits access only for public documents or an authenticated requester equal to owner; the owner parameter is never used in the returned expression.",
+                "end": 2,
+                "evidence_ids": [
+                  "E_SAMPLE",
+                  "E_CONTRACT"
+                ],
+                "path": "sample.py",
+                "start": 1
+              },
+              {
+                "claim": "checkout_total does not validate quantity: it directly returns price * quantity with no negative-quantity check, so a negative quantity yields a negative total instead of raising ValueError as the contract requires.",
+                "end": 5,
+                "evidence_ids": [
+                  "E_SAMPLE",
+                  "E_CONTRACT"
+                ],
+                "path": "sample.py",
+                "start": 4
+              }
+            ]
+          },
+          "name": "StructuredOutput",
+          "type": "tool_use"
+        },
+        "call_event_index": 6,
+        "id": "toolu_014JezBeJFUNaWMu6KdHafDB",
+        "result": {
+          "content": "Structured output provided successfully",
+          "tool_use_id": "toolu_014JezBeJFUNaWMu6KdHafDB",
+          "type": "tool_result"
+        },
+        "result_event_index": 7,
+        "status": "success",
+        "tool_use_result": "Structured output provided successfully"
+      }
+    ],
+    "subtype": "success",
+    "total_cost_usd": 0.035269999999999996,
+    "transport_observed_model_ids": [
+      "claude-opus-5"
+    ],
+    "type": "result",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 2245,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 2245,
+      "cache_read_input_tokens": 1074,
+      "inference_geo": "not_available",
+      "input_tokens": 2,
+      "iterations": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 2245,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 2245,
+          "cache_read_input_tokens": 1074,
+          "input_tokens": 2,
+          "output_tokens": 400,
+          "type": "message"
+        }
+      ],
+      "output_tokens": 400,
+      "output_tokens_details": {
+        "thinking_tokens": 52
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    }
+  },
+  "argv_sha256": "0cc3c58b498bc3c65316bd99269a74fdc94e5ab92133cfafae69a0f223b336d2",
+  "artifact_invocation_id": "discovery",
+  "attempts": 1,
+  "capture_status": "success",
+  "failure_class": null,
+  "final_sha256": "e15bef3d98b10c0454be776bf07a0554270879016e4cebca8b8214d80f5bdeca",
+  "invocation_id": "discovery",
+  "observed_model_id": "claude-opus-5",
+  "packet_artifact_sha256": "e8667f0ca17f74b560e9ffd7a933d636542f9bbb3e4ce66919314c635ca2ca6b",
+  "packet_sha256": "d0323b1f2898b884fe6fc811dc7dcbc75efba0dbae9a3728ec5fe22fa64db1b7",
+  "requested_model_id": "claude-opus-5",
+  "status": "success",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_sha256": "61a14638571a147ed839a34877b86c94b20e6cc7f19466235195d60f1318dac7"
+}

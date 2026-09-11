@@ -1,0 +1,247 @@
+{
+  "status": "success",
+  "classification": "unproven",
+  "controls_passed": true,
+  "claim_present": true,
+  "reason": null,
+  "preflight": {
+    "status": "ready",
+    "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+    "daemon_probe": "ok",
+    "server_version": "29.7.2"
+  },
+  "plan": {
+    "item_id": "F-1",
+    "files": [
+      {
+        "path": "generated/check.py",
+        "utf8": "import sys,json\nsys.path.insert(0,\"/source\")\nfrom sample import can_read\nwho=sys.argv[1]\nprint(json.dumps({\"claim_present\": bool(can_read(who,\"owner\",False) and who != \"owner\")}))\n",
+        "sha256": "53723906693461c7734ca15deeeb08a459ba03672a366e23fcb980a21d0ea0e9",
+        "bytes": 180
+      }
+    ],
+    "runs": [
+      {
+        "name": "baseline",
+        "argv": [
+          "python3",
+          "generated/check.py",
+          "attacker"
+        ],
+        "cwd": "/work",
+        "expect": {
+          "exit": 0,
+          "observation": {
+            "claim_present": true
+          }
+        },
+        "evidence_ids": [
+          "E_SAMPLE"
+        ]
+      },
+      {
+        "name": "counterexample",
+        "argv": [
+          "python3",
+          "generated/check.py",
+          "owner"
+        ],
+        "cwd": "/work",
+        "expect": {
+          "exit": 0,
+          "observation": {
+            "claim_present": false
+          }
+        },
+        "evidence_ids": [
+          "E_SAMPLE"
+        ]
+      }
+    ],
+    "claim_observed": "An authenticated nonowner can read the private document; owner is the authorization control."
+  },
+  "generated_file_digests": [
+    {
+      "path": "generated/check.py",
+      "sha256": "53723906693461c7734ca15deeeb08a459ba03672a366e23fcb980a21d0ea0e9",
+      "bytes": 180
+    }
+  ],
+  "runs": [
+    {
+      "name": "baseline",
+      "expect": {
+        "exit": 0,
+        "observation": {
+          "claim_present": true
+        }
+      },
+      "valid": true,
+      "actual": {
+        "duration_ms": 211,
+        "exit": 0,
+        "name": "baseline",
+        "observation": {
+          "claim_present": true
+        },
+        "output_limit": false,
+        "stderr": "",
+        "stderr_b64": "",
+        "stderr_bytes": 0,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_truncated": false,
+        "stdout": "{\"claim_present\": true}\n",
+        "stdout_b64": "eyJjbGFpbV9wcmVzZW50IjogdHJ1ZX0K",
+        "stdout_bytes": 24,
+        "stdout_sha256": "ae5dc91aae07aef5855a96862cd70f5e977eb49e65659b8abb709d80dd5c5aa9",
+        "stdout_truncated": false,
+        "timeout": false
+      },
+      "stdout": "{\"runs\":[{\"duration_ms\":211,\"exit\":0,\"name\":\"baseline\",\"observation\":{\"claim_present\":true},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\\"claim_present\\\": true}\\n\",\"stdout_b64\":\"eyJjbGFpbV9wcmVzZW50IjogdHJ1ZX0K\",\"stdout_bytes\":24,\"stdout_sha256\":\"ae5dc91aae07aef5855a96862cd70f5e977eb49e65659b8abb709d80dd5c5aa9\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+      "stderr": "",
+      "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6MjExLCJleGl0IjowLCJuYW1lIjoiYmFzZWxpbmUiLCJvYnNlcnZhdGlvbiI6eyJjbGFpbV9wcmVzZW50Ijp0cnVlfSwib3V0cHV0X2xpbWl0IjpmYWxzZSwic3RkZXJyIjoiIiwic3RkZXJyX2I2NCI6IiIsInN0ZGVycl9ieXRlcyI6MCwic3RkZXJyX3NoYTI1NiI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJzdGRlcnJfdHJ1bmNhdGVkIjpmYWxzZSwic3Rkb3V0Ijoie1wiY2xhaW1fcHJlc2VudFwiOiB0cnVlfVxuIiwic3Rkb3V0X2I2NCI6ImV5SmpiR0ZwYlY5d2NtVnpaVzUwSWpvZ2RISjFaWDBLIiwic3Rkb3V0X2J5dGVzIjoyNCwic3Rkb3V0X3NoYTI1NiI6ImFlNWRjOTFhYWUwN2FlZjU4NTVhOTY4NjJjZDcwZjVlOTc3ZWI0OWU2NTY1OWI4YWJiNzA5ZDgwZGQ1YzVhYTkiLCJzdGRvdXRfdHJ1bmNhdGVkIjpmYWxzZSwidGltZW91dCI6ZmFsc2V9XX0K",
+      "stderr_b64": "",
+      "stdout_sha256": "e1191b9f4de3f5045fdb4737299989d2496ec0b788f25f0b099c1eb8dfd71f69",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_bytes": 498,
+      "stderr_bytes": 0,
+      "stdout_truncated": false,
+      "stderr_truncated": false,
+      "timeout": false,
+      "output_limit": false,
+      "container_name": "openab-eval-d0c8b8a18a284297bd53",
+      "argv": [
+        "docker",
+        "run",
+        "--rm",
+        "--init",
+        "--pull=never",
+        "-i",
+        "--name",
+        "openab-eval-d0c8b8a18a284297bd53",
+        "--network",
+        "none",
+        "--read-only",
+        "--tmpfs",
+        "/work:rw,nosuid,nodev,size=64m,mode=1777",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+        "--mount",
+        "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/corrected-oci-source,dst=/source,readonly",
+        "--mount",
+        "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-_tpnlcx_/fixed-runner.py,dst=/runner.py,readonly",
+        "--user",
+        "65532:65532",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "128",
+        "--memory",
+        "512m",
+        "--cpus",
+        "1.0",
+        "--env",
+        "HOME=/tmp/home",
+        "--env",
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+        "--env",
+        "LANG=C.UTF-8",
+        "--env",
+        "LC_ALL=C.UTF-8",
+        "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+        "python3",
+        "/runner.py"
+      ]
+    },
+    {
+      "name": "counterexample",
+      "expect": {
+        "exit": 0,
+        "observation": {
+          "claim_present": false
+        }
+      },
+      "valid": true,
+      "actual": {
+        "duration_ms": 84,
+        "exit": 0,
+        "name": "counterexample",
+        "observation": {
+          "claim_present": false
+        },
+        "output_limit": false,
+        "stderr": "",
+        "stderr_b64": "",
+        "stderr_bytes": 0,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_truncated": false,
+        "stdout": "{\"claim_present\": false}\n",
+        "stdout_b64": "eyJjbGFpbV9wcmVzZW50IjogZmFsc2V9Cg==",
+        "stdout_bytes": 25,
+        "stdout_sha256": "3b3042e8df22533eb9b6f18936c177fd30a7c5deb8728e2f76b5357b66f7e587",
+        "stdout_truncated": false,
+        "timeout": false
+      },
+      "stdout": "{\"runs\":[{\"duration_ms\":84,\"exit\":0,\"name\":\"counterexample\",\"observation\":{\"claim_present\":false},\"output_limit\":false,\"stderr\":\"\",\"stderr_b64\":\"\",\"stderr_bytes\":0,\"stderr_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"stderr_truncated\":false,\"stdout\":\"{\\\"claim_present\\\": false}\\n\",\"stdout_b64\":\"eyJjbGFpbV9wcmVzZW50IjogZmFsc2V9Cg==\",\"stdout_bytes\":25,\"stdout_sha256\":\"3b3042e8df22533eb9b6f18936c177fd30a7c5deb8728e2f76b5357b66f7e587\",\"stdout_truncated\":false,\"timeout\":false}]}\n",
+      "stderr": "",
+      "stdout_b64": "eyJydW5zIjpbeyJkdXJhdGlvbl9tcyI6ODQsImV4aXQiOjAsIm5hbWUiOiJjb3VudGVyZXhhbXBsZSIsIm9ic2VydmF0aW9uIjp7ImNsYWltX3ByZXNlbnQiOmZhbHNlfSwib3V0cHV0X2xpbWl0IjpmYWxzZSwic3RkZXJyIjoiIiwic3RkZXJyX2I2NCI6IiIsInN0ZGVycl9ieXRlcyI6MCwic3RkZXJyX3NoYTI1NiI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJzdGRlcnJfdHJ1bmNhdGVkIjpmYWxzZSwic3Rkb3V0Ijoie1wiY2xhaW1fcHJlc2VudFwiOiBmYWxzZX1cbiIsInN0ZG91dF9iNjQiOiJleUpqYkdGcGJWOXdjbVZ6Wlc1MElqb2dabUZzYzJWOUNnPT0iLCJzdGRvdXRfYnl0ZXMiOjI1LCJzdGRvdXRfc2hhMjU2IjoiM2IzMDQyZThkZjIyNTMzZWI5YjZmMTg5MzZjMTc3ZmQzMGE3YzVkZWI4NzI4ZTJmNzZiNTM1N2I2NmY3ZTU4NyIsInN0ZG91dF90cnVuY2F0ZWQiOmZhbHNlLCJ0aW1lb3V0IjpmYWxzZX1dfQo=",
+      "stderr_b64": "",
+      "stdout_sha256": "e040d2149bb71bf8368d4306a00f6ab88a214184298ce3c65323589581c2cc44",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_bytes": 509,
+      "stderr_bytes": 0,
+      "stdout_truncated": false,
+      "stderr_truncated": false,
+      "timeout": false,
+      "output_limit": false,
+      "container_name": "openab-eval-b90797bb9165418ca9e0",
+      "argv": [
+        "docker",
+        "run",
+        "--rm",
+        "--init",
+        "--pull=never",
+        "-i",
+        "--name",
+        "openab-eval-b90797bb9165418ca9e0",
+        "--network",
+        "none",
+        "--read-only",
+        "--tmpfs",
+        "/work:rw,nosuid,nodev,size=64m,mode=1777",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+        "--mount",
+        "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/corrected-oci-source,dst=/source,readonly",
+        "--mount",
+        "type=bind,src=/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/openab-eval-runner-_tpnlcx_/fixed-runner.py,dst=/runner.py,readonly",
+        "--user",
+        "65532:65532",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "128",
+        "--memory",
+        "512m",
+        "--cpus",
+        "1.0",
+        "--env",
+        "HOME=/tmp/home",
+        "--env",
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+        "--env",
+        "LANG=C.UTF-8",
+        "--env",
+        "LC_ALL=C.UTF-8",
+        "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+        "python3",
+        "/runner.py"
+      ]
+    }
+  ],
+  "operator_checks": "not_run"
+}

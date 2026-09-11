@@ -1,0 +1,1872 @@
+diff --git a/scripts/review_model_oci_executor.py b/scripts/review_model_oci_executor.py
+index bcfae19..b13a9e7 100644
+--- a/scripts/review_model_oci_executor.py
++++ b/scripts/review_model_oci_executor.py
+@@ -1,22 +1,27 @@
+ #!/usr/bin/env python3
+ """Validate and execute generated reproduction controls inside disposable OCI.
+ 
+-The host controller validates plans and retains their bytes for audit.  It
+-never writes model-generated files into the repository or invokes generated
+-shell text.  A fixed runner is mounted read-only into a non-root, networkless
+-container and receives the validated plan on stdin.
++The controller validates model-produced plans but never materializes generated
++files on the host.  A trusted fixed runner writes the plan inside a fresh,
++non-root, networkless container.  The executor reports mechanical observations
++only; semantic claim assessment belongs to the independent controller stages.
+ """
+ 
+ from __future__ import annotations
+ 
++import base64
+ import hashlib
+ import json
++import math
+ import os
+ import re
++import selectors
+ import shutil
++import signal
+ import subprocess
+ import tempfile
+ import textwrap
++import time
+ import uuid
+ from pathlib import Path, PurePosixPath
+ from typing import Any, Callable, Mapping, Optional, Sequence
+@@ -30,7 +35,8 @@ DEFAULT_TIMEOUT_SECONDS = 30
+ DEFAULT_MEMORY = "512m"
+ DEFAULT_PIDS_LIMIT = "128"
+ DEFAULT_CPUS = "1.0"
+-DEFAULT_IMAGE = "python:3.12-slim@sha256:" + "0" * 64
++DEFAULT_TMPFS_SIZE = "64m"
++DEFAULT_IMAGE = "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+ 
+ 
+ class OCIError(RuntimeError):
+@@ -41,6 +47,24 @@ class OCIEnvironmentBlocked(OCIError):
+     """The requested isolated execution environment is unavailable."""
+ 
+ 
++class _BoundedBytes(bytes):
++    """Bytes retained up to a limit with metadata about the full observation."""
++
++    def __new__(
++        cls,
++        value: bytes,
++        *,
++        overflow: bool = False,
++        digest: Optional[str] = None,
++        observed_bytes: Optional[int] = None,
++    ) -> "_BoundedBytes":
++        result = super().__new__(cls, value)
++        result.overflow = bool(overflow)
++        result.digest = digest or sha256_bytes(value)
++        result.observed_bytes = len(value) if observed_bytes is None else int(observed_bytes)
++        return result
++
++
+ _SHELL_NAMES = {
+     "sh",
+     "bash",
+@@ -50,7 +74,7 @@ _SHELL_NAMES = {
+     "csh",
+     "tcsh",
+     "ksh",
+-    " ash",
++    "ash",
+     "cmd",
+     "cmd.exe",
+     "powershell",
+@@ -58,8 +82,10 @@ _SHELL_NAMES = {
+     "pwsh",
+     "pwsh.exe",
+ }
+-_SHELL_META = re.compile(r"[;&|$`()<>\n\r]")
++_SHELL_META = re.compile(r"[;&|$`()<>{}\[\]\n\r]")
++_SHELL_FLAGS = {"-c", "--command", "-Command", "/c", "/C", "-e", "--eval", "--exec"}
+ _FORBIDDEN_ASSERT = re.compile(r"\bassert\s+(?:false|False|FALSE)\b|AssertionError")
++_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+ 
+ 
+ def canonical_json(value: Any) -> str:
+@@ -79,11 +105,38 @@ def validate_pinned_image(image: str) -> str:
+ 
+ 
+ def _bounded_string(value: Any, name: str, maximum: int = 4096) -> str:
+-    if not isinstance(value, str) or not value or len(value.encode("utf-8")) > maximum or "\x00" in value:
++    if not isinstance(value, str) or not value or "\x00" in value:
+         raise OCIError(f"{name} must be a bounded non-empty string")
++    try:
++        size = len(value.encode("utf-8"))
++    except UnicodeEncodeError as exc:
++        raise OCIError(f"{name} must be valid UTF-8") from exc
++    if size > maximum:
++        raise OCIError(f"{name} exceeds the size bound")
++    return value
++
++
++def _bounded_text(value: Any, name: str, maximum: int = 4096) -> str:
++    if not isinstance(value, str) or "\x00" in value:
++        raise OCIError(f"{name} must be bounded UTF-8 text")
++    try:
++        size = len(value.encode("utf-8"))
++    except UnicodeEncodeError as exc:
++        raise OCIError(f"{name} must be valid UTF-8") from exc
++    if size > maximum:
++        raise OCIError(f"{name} exceeds the size bound")
+     return value
+ 
+ 
++def _utf8_bytes(value: Any, name: str) -> bytes:
++    if not isinstance(value, str) or "\x00" in value:
++        raise OCIError(f"{name} must be NUL-free UTF-8 text")
++    try:
++        return value.encode("utf-8")
++    except UnicodeEncodeError as exc:
++        raise OCIError(f"{name} must be valid UTF-8") from exc
++
++
+ def _safe_generated_path(value: Any) -> str:
+     path = _bounded_string(value, "generated file path", 512)
+     if "\\" in path or path.startswith("/"):
+@@ -91,7 +144,7 @@ def _safe_generated_path(value: Any) -> str:
+     parsed = PurePosixPath(path)
+     if not path.startswith("generated/") or parsed.is_absolute() or ".." in parsed.parts:
+         raise OCIError("generated paths must remain below generated/")
+-    if str(parsed) != path or path.endswith("/"):
++    if str(parsed) != path or path.endswith("/") or "." in parsed.parts:
+         raise OCIError("generated path is not normalized")
+     return path
+ 
+@@ -99,10 +152,14 @@ def _safe_generated_path(value: Any) -> str:
+ def _validate_scalar_tree(value: Any, depth: int = 0) -> Any:
+     if depth > 8:
+         raise OCIError("observation is too deeply nested")
+-    if value is None or isinstance(value, (bool, int, float, str)):
+-        if isinstance(value, str) and len(value.encode("utf-8")) > 16 * 1024:
++    if value is None or isinstance(value, (bool, int, str)):
++        if isinstance(value, str) and len(_utf8_bytes(value, "observation string")) > 16 * 1024:
+             raise OCIError("observation string is too large")
+         return value
++    if isinstance(value, float):
++        if not math.isfinite(value):
++            raise OCIError("observation numbers must be finite")
++        return value
+     if isinstance(value, list):
+         if len(value) > 128:
+             raise OCIError("observation array is too large")
+@@ -110,9 +167,9 @@ def _validate_scalar_tree(value: Any, depth: int = 0) -> Any:
+     if isinstance(value, Mapping):
+         if len(value) > 128:
+             raise OCIError("observation object is too large")
+-        result = {}
++        result: dict[str, Any] = {}
+         for key, item in value.items():
+-            if not isinstance(key, str) or len(key) > 256:
++            if not isinstance(key, str) or len(key) > 256 or "\x00" in key:
+                 raise OCIError("observation keys must be bounded strings")
+             result[key] = _validate_scalar_tree(item, depth + 1)
+         return result
+@@ -125,10 +182,10 @@ def _validate_literal_argv(argv: Any) -> list[str]:
+     result: list[str] = []
+     for part in argv:
+         value = _bounded_string(part, "run argv element", 2048)
+-        if _SHELL_META.search(value) or value in {"-c", "--command", "-Command", "/c", "/C"}:
+-            raise OCIError("shell syntax and command interpreters are not allowed")
+-        if Path(value).name.lower() in _SHELL_NAMES:
+-            raise OCIError("shell interpreters are not allowed")
++        if any(ord(character) < 32 for character in value) or _SHELL_META.search(value):
++            raise OCIError("shell syntax is not allowed")
++        if value in _SHELL_FLAGS or Path(value).name.lower() in _SHELL_NAMES:
++            raise OCIError("shell interpreters and command strings are not allowed")
+         result.append(value)
+     return result
+ 
+@@ -150,8 +207,8 @@ def validate_generated_plan(plan: Mapping[str, Any], evidence_ids: set[str]) ->
+     if set(plan) != required:
+         raise OCIError("generated validation plan has an unexpected or missing field")
+     item_id = _bounded_string(plan["item_id"], "item_id", 512)
+-    if not isinstance(plan["claim_observed"], str) or len(plan["claim_observed"].encode("utf-8")) > 16 * 1024:
+-        raise OCIError("claim_observed must be bounded UTF-8 text")
++    claim_observed = _bounded_text(plan["claim_observed"], "claim_observed", 16 * 1024)
++
+     files = plan["files"]
+     if not isinstance(files, list) or len(files) > 128:
+         raise OCIError("files must be a bounded array")
+@@ -165,24 +222,25 @@ def validate_generated_plan(plan: Mapping[str, Any], evidence_ids: set[str]) ->
+         if path in seen_paths:
+             raise OCIError("duplicate generated file path")
+         seen_paths.add(path)
+-        content = file["utf8"]
+-        if not isinstance(content, str) or "\x00" in content:
+-            raise OCIError("generated file must be NUL-free UTF-8")
+-        data = content.encode("utf-8")
++        data = _utf8_bytes(file["utf8"], "generated file")
+         if len(data) > MAX_GENERATED_FILE_BYTES:
+             raise OCIError("generated file exceeds the size bound")
+-        if _FORBIDDEN_ASSERT.search(content):
++        if _FORBIDDEN_ASSERT.search(file["utf8"]):
+             raise OCIError("assert-false/crash harnesses are not demonstrations")
+         total += len(data)
+         if total > MAX_GENERATED_TOTAL_BYTES:
+             raise OCIError("generated files exceed the total size bound")
+-        normalized_files.append({"path": path, "utf8": content, "sha256": sha256_bytes(data), "bytes": len(data)})
++        normalized_files.append(
++            {"path": path, "utf8": file["utf8"], "sha256": sha256_bytes(data), "bytes": len(data)}
++        )
++
+     runs = plan["runs"]
+     if not isinstance(runs, list) or len(runs) != MAX_RUNS:
+         raise OCIError("exactly baseline and counterexample runs are required")
+     normalized_runs: list[dict[str, Any]] = []
+     seen_names: set[str] = set()
+     seen_argv: set[str] = set()
++    expected_claims: dict[str, bool] = {}
+     for run in runs:
+         if not isinstance(run, Mapping) or set(run) != {"name", "argv", "cwd", "expect", "evidence_ids"}:
+             raise OCIError("runs have an unsupported schema")
+@@ -200,13 +258,14 @@ def validate_generated_plan(plan: Mapping[str, Any], evidence_ids: set[str]) ->
+         expect = run["expect"]
+         if not isinstance(expect, Mapping) or set(expect) != {"exit", "observation"}:
+             raise OCIError("run expectation must contain exit and structured observation")
+-        if isinstance(expect["exit"], bool) or not isinstance(expect["exit"], int):
+-            raise OCIError("expected exit must be an integer")
++        if isinstance(expect["exit"], bool) or not isinstance(expect["exit"], int) or expect["exit"] != 0:
++            raise OCIError("both control expectations must require exit 0")
+         observation = _validate_scalar_tree(expect["observation"])
+-        if not isinstance(observation, Mapping):
+-            raise OCIError("expected observation must be an object")
++        if not isinstance(observation, Mapping) or not isinstance(observation.get("claim_present"), bool):
++            raise OCIError("expected observation must contain a boolean claim_present")
++        expected_claims[name] = observation["claim_present"]
+         refs = run["evidence_ids"]
+-        if not isinstance(refs, list) or any(not isinstance(ref, str) for ref in refs):
++        if not isinstance(refs, list) or any(not isinstance(ref, str) or not ref for ref in refs):
+             raise OCIError("run evidence_ids must be a string array")
+         if not set(refs).issubset(evidence_ids):
+             raise OCIError("run cites undeclared evidence")
+@@ -215,13 +274,43 @@ def validate_generated_plan(plan: Mapping[str, Any], evidence_ids: set[str]) ->
+                 "name": name,
+                 "argv": argv,
+                 "cwd": "/work",
+-                "expect": {"exit": expect["exit"], "observation": observation},
++                "expect": {"exit": 0, "observation": observation},
+                 "evidence_ids": list(dict.fromkeys(refs)),
+             }
+         )
+     if seen_names != {"baseline", "counterexample"}:
+         raise OCIError("both baseline and counterexample are required")
+-    return {"item_id": item_id, "files": normalized_files, "runs": normalized_runs, "claim_observed": plan["claim_observed"]}
++    if expected_claims["baseline"] == expected_claims["counterexample"]:
++        raise OCIError("baseline and counterexample claim_present expectations must differ")
++    return {"item_id": item_id, "files": normalized_files, "runs": normalized_runs, "claim_observed": claim_observed}
++
++
++def _safe_mount_path(path: Path, name: str) -> Path:
++    path = Path(path)
++    if not path.is_absolute() or path.is_symlink():
++        raise OCIError(f"{name} mount must be an absolute non-symlink path")
++    _reject_symlink_components(path)
++    return path
++
++
++def _reject_symlink_components(path: Path) -> None:
++    path = Path(path)
++    if not path.is_absolute():
++        path = Path.cwd() / path
++    existing = path
++    while not existing.exists() and not existing.is_symlink() and existing.parent != existing:
++        existing = existing.parent
++    if existing.is_symlink():
++        raise OCIError("path contains a symlink component")
++    try:
++        remainder = path.relative_to(existing).parts
++    except ValueError as exc:
++        raise OCIError("path has an invalid component") from exc
++    current = existing
++    for part in remainder:
++        current /= part
++        if current.is_symlink():
++            raise OCIError("path contains a symlink component")
+ 
+ 
+ def build_docker_run_argv(
+@@ -236,26 +325,31 @@ def build_docker_run_argv(
+     cpus: str = DEFAULT_CPUS,
+ ) -> list[str]:
+     validate_pinned_image(image)
+-    source = Path(source_dir).resolve()
+-    runner = Path(runner_path).resolve()
++    source = _safe_mount_path(Path(source_dir), "OCI source")
++    runner = _safe_mount_path(Path(runner_path), "fixed runner")
+     if not source.is_dir() or not runner.is_file():
+         raise OCIError("OCI source and fixed runner mounts must exist")
+     _bounded_string(container_name, "container name", 128)
++    _bounded_string(docker_executable, "docker executable", 4096)
++    _bounded_string(memory, "memory limit", 64)
++    _bounded_string(pids_limit, "pids limit", 64)
++    _bounded_string(cpus, "CPU limit", 64)
+     return [
+         docker_executable,
+         "run",
+         "--rm",
+         "--init",
+         "--pull=never",
++        "-i",
+         "--name",
+         container_name,
+         "--network",
+         "none",
+         "--read-only",
+         "--tmpfs",
+-        "/work:rw,nosuid,nodev",
++        f"/work:rw,nosuid,nodev,size={DEFAULT_TMPFS_SIZE},mode=1777",
+         "--tmpfs",
+-        "/tmp:rw,nosuid,nodev",
++        f"/tmp:rw,nosuid,nodev,size={DEFAULT_TMPFS_SIZE},mode=1777",
+         "--mount",
+         f"type=bind,src={source},dst=/source,readonly",
+         "--mount",
+@@ -276,108 +370,481 @@ def build_docker_run_argv(
+         "HOME=/tmp/home",
+         "--env",
+         "PATH=/usr/local/bin:/usr/bin:/bin",
++        "--env",
++        "LANG=C.UTF-8",
++        "--env",
++        "LC_ALL=C.UTF-8",
+         image,
+         "python3",
+         "/runner.py",
+     ]
+ 
+ 
++def _kill_process_tree(process: subprocess.Popen[bytes]) -> None:
++    try:
++        if os.name == "posix":
++            os.killpg(process.pid, signal.SIGKILL)
++        else:
++            process.kill()
++    except (OSError, ProcessLookupError):
++        try:
++            process.kill()
++        except (OSError, ProcessLookupError):
++            pass
++
++
++def _bounded_process_bytes(
++    value: bytes,
++    maximum: int,
++    *,
++    overflow: Optional[bool] = None,
++    digest: Optional[str] = None,
++    observed_bytes: Optional[int] = None,
++) -> _BoundedBytes:
++    raw = bytes(value or b"")
++    return _BoundedBytes(
++        raw[:maximum],
++        overflow=(len(raw) > maximum if overflow is None else overflow),
++        digest=digest or sha256_bytes(raw),
++        observed_bytes=len(raw) if observed_bytes is None else observed_bytes,
++    )
++
++
++def _default_process_runner(
++    argv: Sequence[str], payload: bytes, cwd: Path, timeout: float, max_output: int
++) -> tuple[int, bytes, bytes, bool]:
++    """Run a boundary process with streaming, bounded output and tree cleanup."""
++
++    maximum = max(1, int(max_output))
++    environment = {
++        "PATH": os.environ.get("PATH", ""),
++        "LANG": "C",
++        "LC_ALL": "C",
++    }
++    try:
++        process = subprocess.Popen(
++            list(argv),
++            stdin=subprocess.PIPE,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.PIPE,
++            cwd=str(cwd),
++            shell=False,
++            env=environment,
++            start_new_session=(os.name == "posix"),
++        )
++    except OSError as exc:
++        error = str(exc).encode("utf-8", "replace")
++        return -1, b"", _bounded_process_bytes(error, maximum), False
++
++    try:
++        if process.stdin is not None:
++            try:
++                process.stdin.write(bytes(payload))
++                process.stdin.close()
++            except (BrokenPipeError, OSError):
++                try:
++                    process.stdin.close()
++                except OSError:
++                    pass
++
++        selector = selectors.DefaultSelector()
++        streams: dict[int, tuple[str, Any]] = {}
++        for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
++            if stream is not None:
++                selector.register(stream, selectors.EVENT_READ, name)
++                streams[stream.fileno()] = (name, stream)
++
++        buffers = {"stdout": bytearray(), "stderr": bytearray()}
++        digests = {"stdout": hashlib.sha256(), "stderr": hashlib.sha256()}
++        observed = {"stdout": 0, "stderr": 0}
++        overflow = {"stdout": False, "stderr": False}
++        timed_out = False
++        killed = False
++        drain_deadline: Optional[float] = None
++        deadline = time.monotonic() + max(0.001, float(timeout))
++
++        def terminate(reason: str) -> None:
++            nonlocal killed, timed_out
++            if reason == "timeout":
++                timed_out = True
++            if not killed:
++                killed = True
++                _kill_process_tree(process)
++
++        while selector.get_map():
++            now = time.monotonic()
++            if not killed and now >= deadline:
++                terminate("timeout")
++                drain_deadline = now + 2.0
++            if killed:
++                remaining = max(0.0, (drain_deadline or now) - now)
++                if remaining == 0.0:
++                    for key in list(selector.get_map().values()):
++                        selector.unregister(key.fileobj)
++                    break
++            else:
++                remaining = max(0.0, deadline - now)
++            events = selector.select(remaining)
++            if not events:
++                if not killed:
++                    terminate("timeout")
++                    drain_deadline = time.monotonic() + 2.0
++                continue
++            for key, _ in events:
++                stream_name = key.data
++                stream = key.fileobj
++                try:
++                    data = os.read(stream.fileno(), 64 * 1024)
++                except (BlockingIOError, OSError):
++                    data = b""
++                if not data:
++                    try:
++                        selector.unregister(stream)
++                    except KeyError:
++                        pass
++                    continue
++                observed[stream_name] += len(data)
++                digests[stream_name].update(data)
++                available = maximum - len(buffers[stream_name])
++                if available > 0:
++                    buffers[stream_name].extend(data[:available])
++                if observed[stream_name] > maximum:
++                    overflow[stream_name] = True
++                    if not killed:
++                        terminate("output")
++                        drain_deadline = time.monotonic() + 2.0
++
++        try:
++            process.wait(timeout=2.0)
++        except subprocess.TimeoutExpired:
++            _kill_process_tree(process)
++            try:
++                process.wait(timeout=2.0)
++            except subprocess.TimeoutExpired:
++                pass
++        try:
++            selector.close()
++        except Exception:
++            pass
++        code = process.returncode if process.returncode is not None else -1
++        stdout = _BoundedBytes(
++            bytes(buffers["stdout"]),
++            overflow=overflow["stdout"],
++            digest=digests["stdout"].hexdigest(),
++            observed_bytes=observed["stdout"],
++        )
++        stderr = _BoundedBytes(
++            bytes(buffers["stderr"]),
++            overflow=overflow["stderr"],
++            digest=digests["stderr"].hexdigest(),
++            observed_bytes=observed["stderr"],
++        )
++        return code, stdout, stderr, timed_out
++    finally:
++        for stream in (process.stdin, process.stdout, process.stderr):
++            if stream is not None:
++                try:
++                    stream.close()
++                except OSError:
++                    pass
++
++
+ def fixed_runner_source() -> str:
+-    """Return the only code allowed to write generated content in the OCI."""
++    """Return the trusted runner; generated bytes enter only through stdin."""
+ 
+     return textwrap.dedent(
+         r'''
++        import base64
+         import hashlib
+         import json
+         import os
++        import selectors
++        import signal
+         import subprocess
+         import sys
+         import time
+-        from pathlib import Path
++        from pathlib import Path, PurePosixPath
+ 
+         MAX_OUTPUT = 1024 * 1024
++        RUN_TIMEOUT = 30.0
+         plan = json.load(sys.stdin)
+         work = Path("/work")
+-        for item in plan["files"]:
+-            path = Path(item["path"])
+-            if path.is_absolute() or ".." in path.parts or not str(path).startswith("generated/"):
+-                raise SystemExit("unsafe generated path")
+-            target = work / path
+-            target.parent.mkdir(parents=True, exist_ok=True)
+-            target.write_text(item["utf8"], encoding="utf-8", newline="")
++        Path("/tmp/home").mkdir(mode=0o700, exist_ok=True)
+ 
+-        def run_one(spec):
+-            started = time.monotonic()
+-            proc = subprocess.Popen(
+-                spec["argv"], cwd="/work", stdin=subprocess.DEVNULL,
+-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
+-                env={"HOME": "/tmp/home", "PATH": "/usr/local/bin:/usr/bin:/bin"},
+-            )
++        def kill_tree(process):
+             try:
+-                out, err = proc.communicate(timeout=30)
++                os.killpg(process.pid, signal.SIGKILL)
++            except (AttributeError, OSError, ProcessLookupError):
++                try:
++                    process.kill()
++                except (OSError, ProcessLookupError):
++                    pass
++
++        def stream_process(process):
++            selector = selectors.DefaultSelector()
++            buffers = {"stdout": bytearray(), "stderr": bytearray()}
++            digests = {"stdout": hashlib.sha256(), "stderr": hashlib.sha256()}
++            sizes = {"stdout": 0, "stderr": 0}
++            overflow = {"stdout": False, "stderr": False}
++            for label, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
++                selector.register(stream, selectors.EVENT_READ, label)
++            killed = False
++            timed_out = False
++            deadline = time.monotonic() + RUN_TIMEOUT
++            drain_deadline = None
++            while selector.get_map():
++                now = time.monotonic()
++                if not killed and now >= deadline:
++                    timed_out = True
++                    killed = True
++                    kill_tree(process)
++                    drain_deadline = now + 2.0
++                if killed:
++                    remaining = max(0.0, (drain_deadline or now) - now)
++                    if remaining == 0.0:
++                        break
++                else:
++                    remaining = max(0.0, deadline - now)
++                events = selector.select(remaining)
++                if not events:
++                    if not killed:
++                        timed_out = True
++                        killed = True
++                        kill_tree(process)
++                        drain_deadline = time.monotonic() + 2.0
++                    continue
++                for key, _ in events:
++                    label = key.data
++                    try:
++                        data = os.read(key.fileobj.fileno(), 64 * 1024)
++                    except (BlockingIOError, OSError):
++                        data = b""
++                    if not data:
++                        try:
++                            selector.unregister(key.fileobj)
++                        except KeyError:
++                            pass
++                        continue
++                    sizes[label] += len(data)
++                    digests[label].update(data)
++                    remaining_capacity = MAX_OUTPUT - len(buffers[label])
++                    if remaining_capacity > 0:
++                        buffers[label].extend(data[:remaining_capacity])
++                    if sizes[label] > MAX_OUTPUT:
++                        overflow[label] = True
++                        if not killed:
++                            killed = True
++                            kill_tree(process)
++                            drain_deadline = time.monotonic() + 2.0
++            try:
++                process.wait(timeout=2.0)
+             except subprocess.TimeoutExpired:
+-                proc.kill()
+-                out, err = proc.communicate()
+-                return {"name": spec["name"], "exit": None, "timeout": True,
+-                        "stdout_sha256": hashlib.sha256(out[:MAX_OUTPUT]).hexdigest(),
+-                        "stderr_sha256": hashlib.sha256(err[:MAX_OUTPUT]).hexdigest(),
+-                        "observation": {"timeout": True}}
+-            out = out[:MAX_OUTPUT]
+-            err = err[:MAX_OUTPUT]
++                kill_tree(process)
++                try:
++                    process.wait(timeout=2.0)
++                except subprocess.TimeoutExpired:
++                    pass
++            selector.close()
++            return (
++                bytes(buffers["stdout"]),
++                bytes(buffers["stderr"]),
++                digests["stdout"].hexdigest(),
++                digests["stderr"].hexdigest(),
++                sizes["stdout"],
++                sizes["stderr"],
++                overflow["stdout"] or overflow["stderr"],
++                timed_out,
++            )
++
++        def run_one(spec):
++            started = time.monotonic()
+             try:
+-                parsed = json.loads(out.decode("utf-8"))
+-                observation = parsed if isinstance(parsed, dict) else {"json": parsed}
+-            except Exception:
+-                observation = {
+-                    "stdout_sha256": hashlib.sha256(out).hexdigest(),
+-                    "stderr_sha256": hashlib.sha256(err).hexdigest(),
+-                    "stdout": out.decode("utf-8", "replace")[:8192],
+-                    "stderr": err.decode("utf-8", "replace")[:8192],
++                process = subprocess.Popen(
++                    spec["argv"],
++                    cwd="/work",
++                    stdin=subprocess.DEVNULL,
++                    stdout=subprocess.PIPE,
++                    stderr=subprocess.PIPE,
++                    shell=False,
++                    env={"HOME": "/tmp/home", "PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"},
++                    start_new_session=True,
++                )
++            except OSError as exc:
++                error = str(exc).encode("utf-8", "replace")[:MAX_OUTPUT]
++                return {
++                    "name": spec["name"], "exit": None, "timeout": False, "output_limit": False,
++                    "duration_ms": 0, "observation": {"runner_error": True},
++                    "stdout": "", "stderr": error.decode("utf-8", "replace"),
++                    "stdout_b64": "", "stderr_b64": base64.b64encode(error).decode("ascii"),
++                    "stdout_sha256": hashlib.sha256(b"").hexdigest(),
++                    "stderr_sha256": hashlib.sha256(error).hexdigest(),
++                    "stdout_bytes": 0, "stderr_bytes": len(error),
++                    "stdout_truncated": False, "stderr_truncated": False,
+                 }
+-            return {"name": spec["name"], "exit": proc.returncode,
+-                    "timeout": False, "duration_ms": int((time.monotonic() - started) * 1000),
+-                    "stdout_sha256": hashlib.sha256(out).hexdigest(),
+-                    "stderr_sha256": hashlib.sha256(err).hexdigest(),
+-                    "observation": observation}
++            out, err, out_digest, err_digest, out_size, err_size, output_limit, timed_out = stream_process(process)
++            if timed_out or output_limit:
++                observation = {"claim_present": None, "timeout": timed_out, "output_limit": output_limit}
++            else:
++                try:
++                    parsed = json.loads(out.decode("utf-8"))
++                    observation = parsed if isinstance(parsed, dict) else {"json": parsed}
++                except (UnicodeDecodeError, json.JSONDecodeError):
++                    observation = {"structured_output": False}
++            return {
++                "name": spec["name"],
++                "exit": None if timed_out or output_limit else process.returncode,
++                "timeout": timed_out,
++                "output_limit": output_limit,
++                "duration_ms": int((time.monotonic() - started) * 1000),
++                "observation": observation,
++                "stdout": out.decode("utf-8", "replace"),
++                "stderr": err.decode("utf-8", "replace"),
++                "stdout_b64": base64.b64encode(out).decode("ascii"),
++                "stderr_b64": base64.b64encode(err).decode("ascii"),
++                "stdout_sha256": out_digest,
++                "stderr_sha256": err_digest,
++                "stdout_bytes": out_size,
++                "stderr_bytes": err_size,
++                "stdout_truncated": out_size > MAX_OUTPUT,
++                "stderr_truncated": err_size > MAX_OUTPUT,
++            }
++
++        for item in plan["files"]:
++            path = PurePosixPath(item["path"])
++            if path.is_absolute() or ".." in path.parts or "." in path.parts or not str(path).startswith("generated/"):
++                raise SystemExit("unsafe generated path")
++            target = work / path
++            target.parent.mkdir(parents=True, exist_ok=True)
++            if target.exists() or target.is_symlink():
++                raise SystemExit("generated path collision")
++            target.write_text(item["utf8"], encoding="utf-8", newline="")
+ 
+         results = [run_one(spec) for spec in plan["runs"]]
+-        print(json.dumps({"runs": results}, sort_keys=True, separators=(",", ":")))
++        print(json.dumps({"runs": results}, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+         ''').lstrip()
+ 
+ 
+ def _write_fixed_runner(directory: Path) -> Path:
+-    path = directory / "fixed-runner.py"
++    path = Path(directory) / "fixed-runner.py"
+     path.write_text(fixed_runner_source(), encoding="utf-8", newline="")
+     path.chmod(0o444)
+     return path
+ 
+ 
+-def _default_process_runner(
+-    argv: Sequence[str], payload: bytes, cwd: Path, timeout: float, max_output: int
+-) -> tuple[int, bytes, bytes, bool]:
+-    try:
+-        completed = subprocess.run(
+-            list(argv),
+-            input=payload,
+-            stdout=subprocess.PIPE,
+-            stderr=subprocess.PIPE,
+-            cwd=str(cwd),
+-            timeout=timeout,
+-            check=False,
+-            shell=False,
+-            env={"PATH": os.environ.get("PATH", "")},
+-        )
+-        return completed.returncode, completed.stdout[:max_output], completed.stderr[:max_output], False
+-    except subprocess.TimeoutExpired as exc:
+-        return -1, (exc.stdout or b"")[:max_output], (exc.stderr or b"")[:max_output], True
+-    except OSError as exc:
+-        return -1, b"", str(exc).encode("utf-8", "replace"), False
++def _is_default_runner(runner: Callable[..., Any]) -> bool:
++    return runner is _default_process_runner
++
++
++def _decode_capture(value: Any, maximum: int) -> tuple[bytes, bool, Optional[str], Optional[int]]:
++    raw = bytes(value or b"") if not isinstance(value, str) else value.encode("utf-8", "replace")
++    return (
++        raw[:maximum],
++        bool(getattr(value, "overflow", False)) or len(raw) > maximum,
++        getattr(value, "digest", None) or sha256_bytes(raw),
++        getattr(value, "observed_bytes", None) or len(raw),
++    )
++
++
++def _capture_fields(stdout: Any, stderr: Any, maximum: int, *, timed_out: bool = False) -> dict[str, Any]:
++    out, out_overflow, out_digest, out_observed = _decode_capture(stdout, maximum)
++    err, err_overflow, err_digest, err_observed = _decode_capture(stderr, maximum)
++    return {
++        "stdout": out.decode("utf-8", "replace"),
++        "stderr": err.decode("utf-8", "replace"),
++        "stdout_b64": base64.b64encode(out).decode("ascii"),
++        "stderr_b64": base64.b64encode(err).decode("ascii"),
++        "stdout_sha256": out_digest or sha256_bytes(out),
++        "stderr_sha256": err_digest or sha256_bytes(err),
++        "stdout_bytes": len(out) if out_observed is None else int(out_observed),
++        "stderr_bytes": len(err) if err_observed is None else int(err_observed),
++        "stdout_truncated": out_overflow,
++        "stderr_truncated": err_overflow,
++        "timeout": bool(timed_out),
++    }
+ 
+ 
+ def _observation_matches(expected: Mapping[str, Any], actual: Any) -> bool:
+     return isinstance(actual, Mapping) and _is_subset(expected, actual)
+ 
+ 
++def _expected_run_record(expected: Mapping[str, Any]) -> dict[str, Any]:
++    return {
++        "name": expected["name"],
++        "expect": expected["expect"],
++        "valid": False,
++        "actual": None,
++        "stdout": "",
++        "stderr": "",
++        "stdout_b64": "",
++        "stderr_b64": "",
++        "stdout_sha256": sha256_bytes(b""),
++        "stderr_sha256": sha256_bytes(b""),
++        "stdout_bytes": 0,
++        "stderr_bytes": 0,
++        "stdout_truncated": False,
++        "stderr_truncated": False,
++        "timeout": False,
++        "output_limit": False,
++    }
++
++
++def _actual_bytes(value: Mapping[str, Any], key: str, maximum: int) -> tuple[bytes, bool]:
++    encoded_key = f"{key}_b64"
++    if isinstance(value.get(encoded_key), str):
++        try:
++            raw = base64.b64decode(value[encoded_key], validate=True)
++        except (ValueError, TypeError):
++            raise OCIError(f"runner {encoded_key} is invalid")
++    elif isinstance(value.get(key), str):
++        raw = value[key].encode("utf-8", "replace")
++    else:
++        raw = b""
++    return raw[:maximum], len(raw) > maximum
++
++
++def _normalize_actual(actual: Any, expected_name: str, maximum: int) -> dict[str, Any]:
++    if not isinstance(actual, Mapping):
++        raise OCIError("runner control result is not an object")
++    if actual.get("name") != expected_name:
++        raise OCIError("runner control result name does not match plan")
++    exit_code = actual.get("exit")
++    if isinstance(exit_code, bool) or (exit_code is not None and not isinstance(exit_code, int)):
++        raise OCIError("runner control exit is invalid")
++    observation = actual.get("observation")
++    observation = _validate_scalar_tree(observation)
++    if not isinstance(observation, Mapping) or not isinstance(observation.get("claim_present"), bool):
++        raise OCIError("runner control observation lacks boolean claim_present")
++    out, out_overflow = _actual_bytes(actual, "stdout", maximum)
++    err, err_overflow = _actual_bytes(actual, "stderr", maximum)
++    for key, raw in (("stdout_bytes", out), ("stderr_bytes", err)):
++        observed_bytes = actual.get(key, len(raw))
++        if isinstance(observed_bytes, bool) or not isinstance(observed_bytes, int) or observed_bytes < len(raw):
++            raise OCIError(f"runner {key} is invalid")
++    for key in ("stdout_sha256", "stderr_sha256"):
++        if key in actual and (not isinstance(actual[key], str) or not _SHA256.fullmatch(actual[key])):
++            raise OCIError(f"runner {key} is invalid")
++    normalized = dict(actual)
++    normalized["name"] = expected_name
++    normalized["observation"] = observation
++    normalized["stdout"] = out.decode("utf-8", "replace")
++    normalized["stderr"] = err.decode("utf-8", "replace")
++    normalized["stdout_b64"] = base64.b64encode(out).decode("ascii")
++    normalized["stderr_b64"] = base64.b64encode(err).decode("ascii")
++    normalized["stdout_sha256"] = (
++        actual.get("stdout_sha256") if isinstance(actual.get("stdout_sha256"), str) else sha256_bytes(out)
++    )
++    normalized["stderr_sha256"] = (
++        actual.get("stderr_sha256") if isinstance(actual.get("stderr_sha256"), str) else sha256_bytes(err)
++    )
++    normalized["stdout_bytes"] = actual.get("stdout_bytes", len(out))
++    normalized["stderr_bytes"] = actual.get("stderr_bytes", len(err))
++    normalized["stdout_truncated"] = bool(actual.get("stdout_truncated", False)) or out_overflow
++    normalized["stderr_truncated"] = bool(actual.get("stderr_truncated", False)) or err_overflow
++    normalized["timeout"] = bool(actual.get("timeout", False))
++    normalized["output_limit"] = bool(actual.get("output_limit", False)) or out_overflow or err_overflow
++    return normalized
++
++
+ class OCIExecutor:
+     def __init__(
+         self,
+@@ -397,7 +864,11 @@ class OCIExecutor:
+         self.probe_daemon = probe_daemon
+ 
+     def _cleanup_container(self, container_name: str) -> None:
+-        if self.process_runner is not _default_process_runner:
++        """Remove only the exact container owned by this executor attempt."""
++
++        if not container_name.startswith("openab-eval-"):
++            return
++        if not _is_default_runner(self.process_runner):
+             return
+         if shutil.which(self.docker_executable) is None:
+             return
+@@ -419,53 +890,73 @@ class OCIExecutor:
+             image = validate_pinned_image(self.image)
+         except OCIError as exc:
+             return {"status": "environment_blocked", "reason": str(exc)}
+-        if self.process_runner is _default_process_runner and shutil.which(self.docker_executable) is None:
++        if _is_default_runner(self.process_runner) and shutil.which(self.docker_executable) is None:
+             return {"status": "environment_blocked", "reason": "docker_executable_not_found", "image": image}
+         if not self.probe_daemon:
+             return {"status": "ready", "image": image, "daemon_probe": "disabled"}
+-        code, stdout, stderr, timed_out = self.process_runner(
+-            [self.docker_executable, "version", "--format", "{{.Server.Version}}"],
+-            b"",
+-            Path(tempfile.gettempdir()),
+-            min(self.timeout_seconds, 10),
+-            64 * 1024,
+-        )
++        try:
++            code, stdout, stderr, timed_out = self.process_runner(
++                [self.docker_executable, "version", "--format", "{{.Server.Version}}"],
++                b"",
++                Path(tempfile.gettempdir()),
++                min(self.timeout_seconds, 10),
++                64 * 1024,
++            )
++        except Exception as exc:
++            return {"status": "environment_blocked", "reason": "docker_probe_failed", "image": image, "error": type(exc).__name__}
++        capture = _capture_fields(stdout, stderr, 64 * 1024, timed_out=timed_out)
+         if timed_out or code != 0:
+             return {
+                 "status": "environment_blocked",
+                 "reason": "docker_daemon_unavailable",
+                 "image": image,
+-                "stderr_sha256": sha256_bytes(stderr),
++                "stderr_sha256": capture["stderr_sha256"],
++                "stderr": capture["stderr"],
+             }
+-        return {"status": "ready", "image": image, "daemon_probe": "ok", "server_version": stdout.decode("utf-8", "replace").strip()[:128]}
++        return {
++            "status": "ready",
++            "image": image,
++            "daemon_probe": "ok",
++            "server_version": capture["stdout"].strip()[:128],
++        }
+ 
+-    def execute(
++    def _blocked_result(self, normalized: Mapping[str, Any], preflight: Mapping[str, Any]) -> dict[str, Any]:
++        runs = [_expected_run_record(run) for run in normalized["runs"]]
++        for run in runs:
++            run["reason"] = preflight.get("reason", "environment_blocked")
++        return {
++            "status": "environment_blocked",
++            "classification": "environment_blocked",
++            "controls_passed": False,
++            "claim_present": None,
++            "reason": preflight.get("reason", "environment_blocked"),
++            "preflight": dict(preflight),
++            "plan": dict(normalized),
++            "runs": runs,
++            "operator_checks": "not_run",
++        }
++
++    def _control_payload(self, normalized: Mapping[str, Any], expected: Mapping[str, Any]) -> bytes:
++        return canonical_json(
++            {
++                "item_id": normalized["item_id"],
++                "files": normalized["files"],
++                "runs": [expected],
++                "claim_observed": normalized["claim_observed"],
++            }
++        ).encode("utf-8")
++
++    def _run_one_control(
+         self,
+-        plan: Mapping[str, Any],
++        normalized: Mapping[str, Any],
++        expected: Mapping[str, Any],
+         source_dir: Path,
+-        *,
+-        evidence_ids: set[str],
+-        item_dir: Optional[Path] = None,
+-        operator_checks: Optional[Sequence[Mapping[str, Any]]] = None,
++        runner_path: Path,
++        process_cwd: Path,
+     ) -> dict[str, Any]:
+-        normalized = validate_generated_plan(plan, evidence_ids)
+-        preflight = self.preflight()
+-        if preflight.get("status") != "ready":
+-            return {
+-                "status": "environment_blocked",
+-                "classification": "environment_blocked",
+-                "preflight": preflight,
+-                "plan": normalized,
+-            }
+-        source_dir = Path(source_dir).resolve()
+-        if not source_dir.is_dir():
+-            raise OCIError("source directory does not exist")
+-        work_parent = Path(item_dir) if item_dir is not None else Path(tempfile.mkdtemp(prefix="openab-eval-oci-"))
+-        work_parent.mkdir(parents=True, exist_ok=True)
+-        runner_parent = Path(tempfile.mkdtemp(prefix="openab-eval-runner-"))
++        record = _expected_run_record(expected)
+         container_name = "openab-eval-" + uuid.uuid4().hex[:20]
+         try:
+-            runner_path = _write_fixed_runner(runner_parent)
+             argv = build_docker_run_argv(
+                 self.image,
+                 source_dir,
+@@ -473,129 +964,281 @@ class OCIExecutor:
+                 container_name,
+                 docker_executable=self.docker_executable,
+             )
+-            payload = canonical_json(normalized).encode("utf-8")
+-            code, stdout, stderr, timed_out = self.process_runner(
+-                argv, payload, work_parent, self.timeout_seconds, self.max_output_bytes
+-            )
+-            if timed_out:
+-                self._cleanup_container(container_name)
+-                return {"status": "unproven", "classification": "unproven", "reason": "container_timeout", "argv": argv}
+-            if code != 0:
+-                self._cleanup_container(container_name)
+-                # Docker daemon/image/permission failures are environment
+-                # blockers; a process that did start but failed is unproven.
+-                text = stderr.decode("utf-8", "replace").lower()
+-                blocked_markers = ("cannot connect to the docker daemon", "is the docker daemon running", "no such image", "permission denied")
+-                classification = "environment_blocked" if any(marker in text for marker in blocked_markers) else "unproven"
+-                return {
+-                    "status": classification,
+-                    "classification": classification,
+-                    "reason": "container_failed",
+-                    "stderr_sha256": sha256_bytes(stderr),
+-                    "argv": argv,
+-                }
++        except OCIError as exc:
++            record["reason"] = type(exc).__name__
++            return record
++
++        record["container_name"] = container_name
++        record["argv"] = argv
++        payload = self._control_payload(normalized, expected)
++        process_error: Optional[Exception] = None
++        code = -1
++        stdout: bytes = b""
++        stderr: bytes = b""
++        timed_out = False
++        try:
++            returned = self.process_runner(argv, payload, process_cwd, self.timeout_seconds, self.max_output_bytes)
+             try:
+-                observed = json.loads(stdout.decode("utf-8"))
+-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+-                self._cleanup_container(container_name)
+-                return {"status": "unproven", "classification": "unproven", "reason": "invalid_runner_output", "argv": argv}
+-            actual_runs = observed.get("runs") if isinstance(observed, Mapping) else None
+-            if not isinstance(actual_runs, list) or len(actual_runs) != 2:
+-                return {"status": "unproven", "classification": "unproven", "reason": "incomplete_runner_output", "argv": argv}
+-            by_name = {item.get("name"): item for item in actual_runs if isinstance(item, Mapping)}
+-            if set(by_name) != {"baseline", "counterexample"}:
+-                return {"status": "unproven", "classification": "unproven", "reason": "missing_control_result", "argv": argv}
+-            checks: list[dict[str, Any]] = []
+-            for expected in normalized["runs"]:
+-                actual = by_name[expected["name"]]
+-                valid = (
++                code, stdout, stderr, timed_out = returned
++            except (TypeError, ValueError) as exc:
++                raise OCIError("process runner returned an invalid result") from exc
++        except Exception as exc:
++            process_error = exc
++
++        captures = _capture_fields(stdout, stderr, max(1, int(self.max_output_bytes)), timed_out=timed_out)
++        record.update(captures)
++        output_limit = captures["stdout_truncated"] or captures["stderr_truncated"]
++        record["output_limit"] = output_limit
++        record["timeout"] = bool(timed_out)
++
++        succeeded = False
++        try:
++            if process_error is not None:
++                record["reason"] = "process_runner_failed"
++            elif timed_out:
++                record["reason"] = "container_timeout"
++            elif output_limit:
++                record["reason"] = "output_limit"
++            elif code != 0:
++                lowered_stderr = record["stderr"].lower()
++                if any(
++                    marker in lowered_stderr
++                    for marker in (
++                        "cannot connect to the docker daemon",
++                        "is the docker daemon running",
++                        "no such image",
++                        "permission denied",
++                    )
++                ):
++                    record["reason"] = "environment_blocked"
++                else:
++                    record["reason"] = "container_failed"
++            else:
++                parsed = json.loads(bytes(stdout).decode("utf-8"))
++                observed_runs = parsed.get("runs") if isinstance(parsed, Mapping) else None
++                if not isinstance(observed_runs, list):
++                    raise OCIError("runner output has no runs array")
++                matching = [item for item in observed_runs if isinstance(item, Mapping) and item.get("name") == expected["name"]]
++                if len(matching) != 1:
++                    raise OCIError("runner output has no unique requested control")
++                actual = _normalize_actual(matching[0], expected["name"], MAX_OUTPUT_BYTES)
++                record["actual"] = actual
++                record["valid"] = (
+                     actual.get("exit") == expected["expect"]["exit"]
+                     and actual.get("exit") == 0
+                     and not actual.get("timeout", False)
++                    and not actual.get("output_limit", False)
++                    and not actual.get("stdout_truncated", False)
++                    and not actual.get("stderr_truncated", False)
+                     and _observation_matches(expected["expect"]["observation"], actual.get("observation"))
++                    and actual["observation"].get("claim_present") == expected["expect"]["observation"]["claim_present"]
+                 )
+-                checks.append({"name": expected["name"], "valid": valid, "actual": dict(actual)})
+-            all_valid = all(check["valid"] for check in checks)
+-            distinct = canonical_json(by_name["baseline"].get("observation")) != canonical_json(by_name["counterexample"].get("observation"))
+-            if not all_valid or not distinct:
+-                classification = "unproven"
+-            else:
+-                baseline_obs = by_name["baseline"].get("observation")
+-                if isinstance(baseline_obs, Mapping) and baseline_obs.get("claim_present") is False:
+-                    classification = "executed_refuted"
++                if not record["valid"]:
++                    record["reason"] = "control_expectation_mismatch"
+                 else:
+-                    classification = "executed_reproduced"
+-            result = {
+-                "status": "success" if classification.startswith("executed_") else "unproven",
+-                "classification": classification,
+-                "argv": argv,
+-                "preflight": preflight,
+-                "plan": normalized,
+-                "generated_file_digests": [{"path": item["path"], "sha256": item["sha256"], "bytes": item["bytes"]} for item in normalized["files"]],
+-                "runs": checks,
+-                "stdout_sha256": sha256_bytes(stdout),
+-                "stderr_sha256": sha256_bytes(stderr),
+-                "operator_checks": "not_run" if not operator_checks else "deferred_until_identical_validation",
+-            }
+-            if operator_checks and classification.startswith("executed_"):
+-                additional = []
+-                for index, check in enumerate(operator_checks):
+-                    check_dir = work_parent / f"operator-check-{index + 1}"
+-                    try:
+-                        additional.append(
+-                            self.execute(
+-                                check,
+-                                source_dir,
+-                                evidence_ids=evidence_ids,
+-                                item_dir=check_dir,
+-                                operator_checks=None,
++                    succeeded = True
++        except (UnicodeDecodeError, json.JSONDecodeError, OCIError, TypeError, ValueError) as exc:
++            record["reason"] = "invalid_runner_output" if not isinstance(exc, OCIError) else str(exc)
++        finally:
++            if not succeeded:
++                self._cleanup_container(container_name)
++        return record
++
++    def _execute_normalized(
++        self,
++        normalized: Mapping[str, Any],
++        source_dir: Path,
++        preflight: Mapping[str, Any],
++        runner_path: Path,
++        process_cwd: Path,
++    ) -> dict[str, Any]:
++        records = [
++            self._run_one_control(normalized, expected, source_dir, runner_path, process_cwd)
++            for expected in normalized["runs"]
++        ]
++        baseline = next(record for record in records if record["name"] == "baseline")
++        counterexample = next(record for record in records if record["name"] == "counterexample")
++        baseline_claim = None
++        for record in records:
++            actual = record.get("actual")
++            if record["name"] == "baseline" and isinstance(actual, Mapping):
++                observation = actual.get("observation")
++                if isinstance(observation, Mapping) and isinstance(observation.get("claim_present"), bool):
++                    baseline_claim = observation["claim_present"]
++        controls_passed = bool(
++            baseline["valid"]
++            and counterexample["valid"]
++            and isinstance(baseline.get("actual"), Mapping)
++            and isinstance(counterexample.get("actual"), Mapping)
++            and baseline["actual"]["observation"].get("claim_present")
++            != counterexample["actual"]["observation"].get("claim_present")
++        )
++        reasons = [record.get("reason") for record in records if record.get("reason")]
++        reason = "controls_failed" if not controls_passed else None
++        if any(record.get("reason") == "environment_blocked" for record in records):
++            reason = "environment_blocked"
++        for preferred in ("output_limit", "container_timeout", "environment_blocked", "container_failed", "process_runner_failed"):
++            if preferred in reasons:
++                reason = preferred
++                break
++        status = "environment_blocked" if reason == "environment_blocked" else ("success" if controls_passed else "unproven")
++        return {
++            "status": status,
++            "classification": "environment_blocked" if status == "environment_blocked" else "unproven",
++            "controls_passed": controls_passed,
++            "claim_present": baseline_claim,
++            "reason": reason,
++            "preflight": dict(preflight),
++            "plan": dict(normalized),
++            "generated_file_digests": [
++                {"path": item["path"], "sha256": item["sha256"], "bytes": item["bytes"]}
++                for item in normalized["files"]
++            ],
++            "runs": records,
++            "operator_checks": "not_run",
++        }
++
++    def execute(
++        self,
++        plan: Mapping[str, Any],
++        source_dir: Path,
++        *,
++        evidence_ids: set[str],
++        item_dir: Optional[Path] = None,
++        operator_checks: Optional[Sequence[Mapping[str, Any]]] = None,
++    ) -> dict[str, Any]:
++        normalized = validate_generated_plan(plan, evidence_ids)
++        source_dir = Path(source_dir)
++        if source_dir.is_symlink() or not source_dir.is_dir():
++            raise OCIError("source directory must be an existing non-symlink directory")
++        _reject_symlink_components(source_dir)
++        self._reject_symlinks_under(source_dir)
++        preflight = self.preflight()
++        if preflight.get("status") != "ready":
++            return self._blocked_result(normalized, preflight)
++
++        runner_parent = Path(tempfile.mkdtemp(prefix="openab-eval-runner-"))
++        process_cwd = Path(tempfile.mkdtemp(prefix="openab-eval-process-"))
++        try:
++            runner_path = _write_fixed_runner(runner_parent)
++            result = self._execute_normalized(normalized, source_dir, preflight, runner_path, process_cwd)
++            if operator_checks:
++                if result["controls_passed"]:
++                    operator_results = []
++                    for check in operator_checks:
++                        try:
++                            check_normalized = validate_generated_plan(check, evidence_ids)
++                            operator_results.append(
++                                self._execute_normalized(check_normalized, source_dir, preflight, runner_path, process_cwd)
+                             )
+-                        )
+-                    except OCIError as exc:
+-                        additional.append({"status": "unproven", "classification": "unproven", "reason": type(exc).__name__})
+-                result["operator_checks"] = additional
++                        except OCIError as exc:
++                            operator_results.append(
++                                {
++                                    "status": "unproven",
++                                    "classification": "unproven",
++                                    "controls_passed": False,
++                                    "claim_present": None,
++                                    "reason": type(exc).__name__,
++                                }
++                            )
++                    result["operator_checks"] = operator_results
++                else:
++                    result["operator_checks"] = "deferred_until_identical_validation"
+             return result
+         finally:
+-            # --rm is the normal cleanup.  The host work directory contains
+-            # only the fixed runner and is removed by its TemporaryDirectory
+-            # owner when the caller did not provide an audit directory.
+-            if item_dir is None:
+-                shutil.rmtree(work_parent, ignore_errors=True)
+             shutil.rmtree(runner_parent, ignore_errors=True)
++            shutil.rmtree(process_cwd, ignore_errors=True)
++
++    @staticmethod
++    def _reject_symlinks_under(root: Path) -> None:
++        for current, directories, files in os.walk(root, followlinks=False):
++            for name in list(directories) + list(files):
++                path = Path(current) / name
++                if path.is_symlink():
++                    raise OCIError("source directory contains a symlink")
++
++
++def _safe_source_path(value: Any) -> str:
++    path = _bounded_string(value, "source path", 1024)
++    if "\\" in path or path.startswith("/"):
++        raise OCIError("source path is unsafe")
++    parsed = PurePosixPath(path)
++    if ".." in parsed.parts or "." in parsed.parts or str(parsed) != path or path.endswith("/"):
++        raise OCIError("source path traversal or normalization")
++    return path
++
++
++def _ensure_directory_without_symlinks(path: Path) -> None:
++    path = Path(path)
++    if path.is_symlink():
++        raise OCIError("source destination is a symlink")
++    try:
++        path.mkdir(parents=True, exist_ok=True)
++    except OSError as exc:
++        raise OCIError("source destination is not a directory") from exc
++    if path.is_symlink() or not path.is_dir():
++        raise OCIError("source destination is not a directory")
++
++
++def _ensure_parent_without_symlinks(root: Path, relative_path: str) -> Path:
++    current = root
++    parts = PurePosixPath(relative_path).parts[:-1]
++    for part in parts:
++        current = current / part
++        if current.exists() or current.is_symlink():
++            if current.is_symlink() or not current.is_dir():
++                raise OCIError("source path contains a symlink or non-directory")
++        else:
++            current.mkdir()
++    return current
+ 
+ 
+ def materialize_source_tree(source_packet: Mapping[str, Any], destination: Path) -> None:
+-    """Materialize controller-owned source bytes for a read-only OCI mount."""
++    """Materialize verified controller-owned bytes without following links."""
+ 
++    if not isinstance(source_packet, Mapping) or not isinstance(source_packet.get("files"), list):
++        raise OCIError("source packet files are invalid")
+     destination = Path(destination)
+-    destination.mkdir(parents=True, exist_ok=True)
+-    for item in source_packet.get("files", []):
++    _reject_symlink_components(destination)
++    _ensure_directory_without_symlinks(destination)
++    entries: list[tuple[str, bytes, str]] = []
++    seen: set[str] = set()
++    for item in source_packet["files"]:
+         if not isinstance(item, Mapping):
+             raise OCIError("source packet file entry is invalid")
+         path = _safe_source_path(item.get("path"))
+-        target = destination / path
+-        target.parent.mkdir(parents=True, exist_ok=True)
+-        if target.exists() or target.is_symlink():
+-            raise OCIError("duplicate source packet path")
+-        if "utf8" in item:
+-            data = item["utf8"].encode("utf-8")
+-        elif "base64" in item:
+-            import base64
+-
+-            data = base64.b64decode(item["base64"], validate=True)
++        if path in seen:
++            raise OCIError("source packet path has a digest conflict")
++        seen.add(path)
++        has_utf8 = "utf8" in item
++        has_base64 = "base64" in item
++        if has_utf8 == has_base64:
++            raise OCIError("source packet file must contain exactly one byte encoding")
++        if has_utf8:
++            data = _utf8_bytes(item["utf8"], "source packet UTF-8 bytes")
+         else:
+-            raise OCIError("source packet file has no bytes")
+-        if sha256_bytes(data) != item.get("sha256"):
++            if not isinstance(item["base64"], str):
++                raise OCIError("source packet base64 bytes are invalid")
++            try:
++                data = base64.b64decode(item["base64"], validate=True)
++            except (ValueError, TypeError) as exc:
++                raise OCIError("source packet base64 bytes are invalid") from exc
++        digest = item.get("sha256")
++        if not isinstance(digest, str) or not _SHA256.fullmatch(digest) or sha256_bytes(data) != digest:
+             raise OCIError("source packet file digest mismatch")
+-        target.write_bytes(data)
+-        target.chmod(0o444)
+-
++        entries.append((path, data, digest))
+ 
+-def _safe_source_path(value: Any) -> str:
+-    path = _bounded_string(value, "source path", 1024)
+-    if "\\" in path or path.startswith("/"):
+-        raise OCIError("source path is unsafe")
+-    parsed = PurePosixPath(path)
+-    if ".." in parsed.parts or str(parsed) != path:
+-        raise OCIError("source path traversal")
+-    return path
++    for path, data, _ in entries:
++        parent = _ensure_parent_without_symlinks(destination, path)
++        target = parent / PurePosixPath(path).name
++        if target.exists() or target.is_symlink():
++            raise OCIError("source packet path already exists")
++        try:
++            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
++            nofollow = getattr(os, "O_NOFOLLOW", 0)
++            descriptor = os.open(str(target), flags | nofollow, 0o444)
++            with os.fdopen(descriptor, "wb") as handle:
++                handle.write(data)
++        except FileExistsError as exc:
++            raise OCIError("source packet path already exists") from exc
++        target.chmod(0o444)
+diff --git a/tests/test_review_model_oci_executor.py b/tests/test_review_model_oci_executor.py
+index 8bf251c..9d86692 100644
+--- a/tests/test_review_model_oci_executor.py
++++ b/tests/test_review_model_oci_executor.py
+@@ -1,4 +1,7 @@
++import base64
+ import importlib.util
++import inspect
++import json
+ import sys
+ import tempfile
+ import unittest
+@@ -6,6 +9,7 @@ from pathlib import Path
+ 
+ 
+ ROOT = Path(__file__).resolve().parents[1]
++IMAGE = "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+ 
+ 
+ def load_module():
+@@ -22,8 +26,77 @@ def load_module():
+     return module
+ 
+ 
++def plan_with_claims(module, *, files=None, baseline=True, counterexample=False):
++    return {
++        "item_id": "F-1",
++        "files": files if files is not None else [{"path": "generated/check.py", "utf8": "print('fixture')"}],
++        "runs": [
++            {
++                "name": "baseline",
++                "argv": ["python3", "/work/generated/check.py", "baseline"],
++                "cwd": "/work",
++                "expect": {"exit": 0, "observation": {"claim_present": baseline}},
++                "evidence_ids": ["E1"],
++            },
++            {
++                "name": "counterexample",
++                "argv": ["python3", "/work/generated/check.py", "safe"],
++                "cwd": "/work",
++                "expect": {"exit": 0, "observation": {"claim_present": counterexample}},
++                "evidence_ids": ["E1"],
++            },
++        ],
++        "claim_observed": "claim",
++    }
++
++
++class FakeDocker:
++    def __init__(self, module, *, mode="success", metadata_diff=False, output_size=None):
++        self.module = module
++        self.mode = mode
++        self.metadata_diff = metadata_diff
++        self.output_size = output_size
++        self.calls = []
++
++    def __call__(self, argv, payload, cwd, timeout, max_output):
++        self.calls.append(
++            {
++                "argv": list(argv),
++                "payload": bytes(payload),
++                "cwd": Path(cwd),
++                "timeout": timeout,
++                "max_output": max_output,
++            }
++        )
++        if self.mode == "timeout":
++            return 124, b"partial stdout", b"partial stderr", True
++        if self.mode == "overflow":
++            size = self.output_size or max_output + 1
++            return 0, b"x" * size, b"e" * size, False
++        if self.mode == "failure":
++            return 1, b"runner output", b"runner failed", False
++        request = json.loads(payload.decode("utf-8"))
++        requested_run = request["runs"][0]["name"]
++        claim = requested_run == "baseline"
++        observation = {"claim_present": claim}
++        if self.metadata_diff:
++            observation["metadata"] = requested_run
++        actual = {
++            "name": requested_run,
++            "exit": 0,
++            "timeout": False,
++            "duration_ms": 1,
++            "observation": observation,
++            "stdout": f"raw-{requested_run}",
++            "stderr": f"err-{requested_run}",
++            "stdout_b64": base64.b64encode(f"raw-{requested_run}".encode()).decode(),
++            "stderr_b64": base64.b64encode(f"err-{requested_run}".encode()).decode(),
++        }
++        return 0, json.dumps({"runs": [actual]}).encode("utf-8"), b"docker stderr", False
++
++
+ class OciExecutorBehaviorTests(unittest.TestCase):
+-    def test_docker_argv_has_isolation_and_no_host_shell(self):
++    def test_docker_argv_has_stdin_and_literal_isolation_boundary(self):
+         module = load_module()
+         self.assertIsNotNone(module, "the OCI executor must exist")
+         with tempfile.TemporaryDirectory() as temp:
+@@ -32,95 +105,324 @@ class OciExecutorBehaviorTests(unittest.TestCase):
+             runner = Path(temp) / "runner.py"
+             runner.write_text("pass", encoding="utf-8")
+             argv = module.build_docker_run_argv(
+-                image="python:3.12-slim@sha256:" + "a" * 64,
++                image=IMAGE,
+                 source_dir=source,
+                 runner_path=runner,
+                 container_name="eval-item-1",
+             )
++        self.assertIn("-i", argv)
+         self.assertIn("--network", argv)
+-        self.assertIn("none", argv)
++        self.assertEqual(argv[argv.index("--network") + 1], "none")
+         self.assertIn("--read-only", argv)
+         self.assertIn("--cap-drop", argv)
+         self.assertIn("ALL", argv)
+         self.assertIn("no-new-privileges", " ".join(argv))
+-        self.assertNotIn("sh", [part.lower() for part in argv])
+-
+-    def test_plan_requires_two_literal_controls_and_rejects_assertion_harnesses(self):
+-        module = load_module()
+-        base = {
+-            "item_id": "F-1",
+-            "files": [{"path": "generated/check.py", "utf8": "print('x')"}],
+-            "runs": [
+-                {"name": "baseline", "argv": ["python3", "/work/generated/check.py"], "cwd": "/work", "expect": {"exit": 0, "observation": {"x": 1}}, "evidence_ids": ["E1"]},
+-                {"name": "counterexample", "argv": ["python3", "/work/generated/check.py", "safe"], "cwd": "/work", "expect": {"exit": 0, "observation": {"x": 2}}, "evidence_ids": ["E1"]},
+-            ],
+-            "claim_observed": "claim",
+-        }
++        self.assertIn("--pull=never", argv)
++        self.assertTrue(any(value.startswith("/work:rw,") and "size=" in value for value in argv))
++        self.assertTrue(any(value.startswith("/tmp:rw,") and "size=" in value for value in argv))
++        mounts = [value for value in argv if value.startswith("type=bind,")]
++        self.assertEqual(len(mounts), 2)
++        self.assertTrue(all(value.endswith(",readonly") for value in mounts))
++        self.assertIn("65532:65532", argv)
++        self.assertNotIn("--env-file", argv)
++        self.assertNotIn("/var/run/docker.sock", " ".join(argv))
++        self.assertNotIn("host", [part.lower() for part in argv])
++
++    def test_default_image_is_the_frozen_digest(self):
++        module = load_module()
++        self.assertEqual(module.DEFAULT_IMAGE, IMAGE)
++
++    def test_plan_requires_structured_distinct_claim_controls(self):
++        module = load_module()
++        base = plan_with_claims(module)
+         normalized = module.validate_generated_plan(base, {"E1"})
+-        self.assertEqual(normalized["files"][0]["path"], "generated/check.py")
+-        bad = dict(base)
+-        bad["files"] = [{"path": "generated/check.py", "utf8": "assert False"}]
+-        with self.assertRaises(Exception):
+-            module.validate_generated_plan(bad, {"E1"})
+-        bad = dict(base)
+-        bad["runs"] = [dict(base["runs"][0], argv=["sh", "-c", "echo unsafe"]), base["runs"][1]]
+-        with self.assertRaises(Exception):
+-            module.validate_generated_plan(bad, {"E1"})
+-
+-    def test_executor_records_observed_baseline_control_and_is_environment_blockable(self):
+-        module = load_module()
+-        plan = {
+-            "item_id": "F-1",
+-            "files": [],
+-            "runs": [
+-                {"name": "baseline", "argv": ["python3", "baseline"], "cwd": "/work", "expect": {"exit": 0, "observation": {"claim_present": True}}, "evidence_ids": ["E1"]},
+-                {"name": "counterexample", "argv": ["python3", "counterexample"], "cwd": "/work", "expect": {"exit": 0, "observation": {"claim_present": False}}, "evidence_ids": ["E1"]},
+-            ],
+-            "claim_observed": "claim",
+-        }
++        self.assertEqual(normalized["runs"][0]["expect"]["observation"]["claim_present"], True)
++
++        for invalid in (
++            {
++                **base,
++                "runs": [
++                    {**base["runs"][0], "expect": {"exit": 0, "observation": {"metadata": "only"}}},
++                    base["runs"][1],
++                ],
++            },
++            plan_with_claims(module, baseline=True, counterexample=True),
++            {
++                **base,
++                "runs": [{**base["runs"][0], "expect": {"exit": 1, "observation": {"claim_present": True}}}, base["runs"][1]],
++            },
++        ):
++            with self.assertRaises(module.OCIError):
++                module.validate_generated_plan(invalid, {"E1"})
+ 
+-        def fake_process(argv, payload, cwd, timeout, max_output):
+-            return 0, b'{"runs":[{"name":"baseline","exit":0,"observation":{"claim_present":true}},{"name":"counterexample","exit":0,"observation":{"claim_present":false}}]}', b"", False
++    def test_plan_rejects_paths_shells_assertion_harnesses_and_undeclared_evidence(self):
++        module = load_module()
++        base = plan_with_claims(module)
++        invalid_plans = [
++            {**base, "files": [{"path": "generated/../escape.py", "utf8": "pass"}]},
++            {**base, "files": [{"path": "generated/check.py", "utf8": "assert False"}]},
++            {
++                **base,
++                "runs": [{**base["runs"][0], "argv": ["sh", "-c", "echo unsafe"]}, base["runs"][1]],
++            },
++            {
++                **base,
++                "runs": [{**base["runs"][0], "evidence_ids": ["not-declared"]}, base["runs"][1]],
++            },
++        ]
++        for invalid in invalid_plans:
++            with self.assertRaises(module.OCIError):
++                module.validate_generated_plan(invalid, {"E1"})
+ 
++    def test_fake_controls_pass_mechanical_checks_but_never_semantically_promote(self):
++        module = load_module()
++        fake = FakeDocker(module, metadata_diff=True)
++        executor = module.OCIExecutor(IMAGE, process_runner=fake, probe_daemon=False)
++        plan = plan_with_claims(module)
+         with tempfile.TemporaryDirectory() as temp:
+             source = Path(temp) / "source"
+             source.mkdir()
+-            item = Path(temp) / "item"
+-            result = module.OCIExecutor(
+-                "fixture@sha256:" + "a" * 64,
+-                process_runner=fake_process,
+-                probe_daemon=False,
+-            ).execute(plan, source, evidence_ids={"E1"}, item_dir=item)
+-            self.assertEqual(result["classification"], "executed_reproduced")
+-            self.assertEqual(len(result["runs"]), 2)
+-            command = result["argv"]
+-            self.assertIn("--network", command)
+-            self.assertIn("none", command)
+-            self.assertIn("--read-only", command)
+-            self.assertIn("--user", command)
+-            self.assertIn("65532:65532", command)
+-            self.assertNotIn("--env-file", command)
+-            self.assertNotIn("/var/run/docker.sock", " ".join(command))
+-
+-        blocked = module.OCIExecutor(
+-            "fixture@sha256:" + "a" * 64,
+-            process_runner=lambda *args: (1, b"", b"Cannot connect to the Docker daemon", False),
+-        ).preflight()
+-        self.assertEqual(blocked["status"], "environment_blocked")
++            result = executor.execute(plan, source, evidence_ids={"E1"})
+ 
+-    def test_generated_paths_and_shell_forms_are_rejected(self):
++        self.assertTrue(result["controls_passed"])
++        self.assertEqual(result["classification"], "unproven")
++        self.assertEqual(result["status"], "success")
++        self.assertIs(result["claim_present"], True)
++        self.assertEqual([run["name"] for run in result["runs"]], ["baseline", "counterexample"])
++        self.assertEqual(result["runs"][0]["actual"]["stdout"], "raw-baseline")
++        self.assertEqual(result["runs"][0]["actual"]["stderr"], "err-baseline")
++        self.assertEqual(len(fake.calls), 2)
++        self.assertTrue(all("-i" in call["argv"] for call in fake.calls))
++
++    def test_metadata_or_constant_difference_does_not_pass_controls(self):
+         module = load_module()
+-        self.assertIsNotNone(module, "the OCI executor must exist")
+-        with self.assertRaises(Exception):
+-            module.validate_generated_plan(
+-                {
+-                    "item_id": "F-1",
+-                    "files": [{"path": "generated/../escape.py", "utf8": "pass"}],
+-                    "runs": [],
+-                    "claim_observed": "x",
+-                },
+-                evidence_ids=set(),
++
++        def same_claim_runner(argv, payload, cwd, timeout, max_output):
++            request = json.loads(payload.decode("utf-8"))
++            name = request["runs"][0]["name"]
++            actual = {
++                "name": name,
++                "exit": 0,
++                "timeout": False,
++                "observation": {"claim_present": True, "constant": name},
++                "stdout": name,
++                "stderr": "",
++            }
++            return 0, json.dumps({"runs": [actual]}).encode(), b"", False
++
++        executor = module.OCIExecutor(IMAGE, process_runner=same_claim_runner, probe_daemon=False)
++        with tempfile.TemporaryDirectory() as temp:
++            source = Path(temp) / "source"
++            source.mkdir()
++            result = executor.execute(plan_with_claims(module), source, evidence_ids={"E1"})
++        self.assertFalse(result["controls_passed"])
++        self.assertEqual(result["classification"], "unproven")
++        self.assertIs(result["claim_present"], True)
++
++    def test_nonzero_exit_and_unstructured_output_cannot_pass(self):
++        module = load_module()
++
++        def bad_runner(argv, payload, cwd, timeout, max_output):
++            request = json.loads(payload.decode("utf-8"))
++            name = request["runs"][0]["name"]
++            actual = {
++                "name": name,
++                "exit": 7 if name == "baseline" else 0,
++                "timeout": False,
++                "observation": {"claim_present": name == "baseline"},
++            }
++            return 0, json.dumps({"runs": [actual]}).encode(), b"", False
++
++        executor = module.OCIExecutor(IMAGE, process_runner=bad_runner, probe_daemon=False)
++        with tempfile.TemporaryDirectory() as temp:
++            source = Path(temp) / "source"
++            source.mkdir()
++            result = executor.execute(plan_with_claims(module), source, evidence_ids={"E1"})
++        self.assertFalse(result["controls_passed"])
++        self.assertEqual(result["classification"], "unproven")
++
++    def test_timeout_cleans_each_owned_named_container_and_keeps_failure_evidence(self):
++        module = load_module()
++        fake = FakeDocker(module, mode="timeout")
++        executor = module.OCIExecutor(IMAGE, process_runner=fake, probe_daemon=False)
++        cleaned = []
++        executor._cleanup_container = cleaned.append
++        with tempfile.TemporaryDirectory() as temp:
++            source = Path(temp) / "source"
++            source.mkdir()
++            result = executor.execute(plan_with_claims(module), source, evidence_ids={"E1"})
++
++        names = [call["argv"][call["argv"].index("--name") + 1] for call in fake.calls]
++        self.assertEqual(cleaned, names)
++        self.assertEqual(len(set(cleaned)), 2)
++        self.assertFalse(result["controls_passed"])
++        self.assertEqual(result["classification"], "unproven")
++        self.assertEqual(len(result["runs"]), 2)
++        self.assertTrue(all(run["timeout"] for run in result["runs"]))
++        self.assertIn("stdout", result["runs"][0])
++        self.assertIn("stderr", result["runs"][0])
++
++    def test_stdout_overflow_is_bounded_before_result_accumulation(self):
++        module = load_module()
++        fake = FakeDocker(module, mode="overflow", output_size=1024)
++        executor = module.OCIExecutor(
++            IMAGE,
++            process_runner=fake,
++            probe_daemon=False,
++            max_output_bytes=32,
++        )
++        with tempfile.TemporaryDirectory() as temp:
++            source = Path(temp) / "source"
++            source.mkdir()
++            result = executor.execute(plan_with_claims(module), source, evidence_ids={"E1"})
++
++        self.assertFalse(result["controls_passed"])
++        self.assertEqual(result["reason"], "output_limit")
++        self.assertTrue(all(run["stdout_truncated"] for run in result["runs"]))
++        self.assertTrue(all(len(run["stdout"].encode()) <= 32 for run in result["runs"]))
++        self.assertTrue(all(len(run["stderr"].encode()) <= 32 for run in result["runs"]))
++
++    def test_each_control_gets_a_fresh_container_and_payload(self):
++        module = load_module()
++        fake = FakeDocker(module)
++        executor = module.OCIExecutor(IMAGE, process_runner=fake, probe_daemon=False)
++        with tempfile.TemporaryDirectory() as temp:
++            source = Path(temp) / "source"
++            source.mkdir()
++            item_dir = Path(temp) / "audit-item"
++            executor.execute(
++                plan_with_claims(module, files=[{"path": "generated/check.py", "utf8": "print('x')"}]),
++                source,
++                evidence_ids={"E1"},
++                item_dir=item_dir,
+             )
++            host_generated = (item_dir / "generated").exists()
++
++        self.assertEqual(len(fake.calls), 2)
++        payloads = [json.loads(call["payload"].decode()) for call in fake.calls]
++        self.assertEqual([payload["runs"][0]["name"] for payload in payloads], ["baseline", "counterexample"])
++        names = [call["argv"][call["argv"].index("--name") + 1] for call in fake.calls]
++        self.assertEqual(len(set(names)), 2)
++        self.assertTrue(all(len(payload["runs"]) == 1 for payload in payloads))
++        self.assertFalse(host_generated)
++
++    def test_optional_operator_checks_use_the_same_boundary_and_are_not_prerequisites(self):
++        module = load_module()
++        fake = FakeDocker(module)
++        executor = module.OCIExecutor(IMAGE, process_runner=fake, probe_daemon=False)
++        primary = plan_with_claims(module)
++        with tempfile.TemporaryDirectory() as temp:
++            source = Path(temp) / "source"
++            source.mkdir()
++            result = executor.execute(primary, source, evidence_ids={"E1"}, operator_checks=[primary])
++        self.assertTrue(result["controls_passed"])
++        self.assertEqual(len(result["operator_checks"]), 1)
++        self.assertTrue(result["operator_checks"][0]["controls_passed"])
++        self.assertEqual(len(fake.calls), 4)
++
++        failing_fake = FakeDocker(module, mode="failure")
++        failing_executor = module.OCIExecutor(IMAGE, process_runner=failing_fake, probe_daemon=False)
++        with tempfile.TemporaryDirectory() as temp:
++            source = Path(temp) / "source"
++            source.mkdir()
++            failed = failing_executor.execute(primary, source, evidence_ids={"E1"}, operator_checks=[primary])
++        self.assertFalse(failed["controls_passed"])
++        self.assertEqual(failed["operator_checks"], "deferred_until_identical_validation")
++        self.assertEqual(len(failing_fake.calls), 2)
++
++    def test_failure_returns_plan_runs_and_raw_captures(self):
++        module = load_module()
++        fake = FakeDocker(module, mode="failure")
++        executor = module.OCIExecutor(IMAGE, process_runner=fake, probe_daemon=False)
++        with tempfile.TemporaryDirectory() as temp:
++            source = Path(temp) / "source"
++            source.mkdir()
++            result = executor.execute(plan_with_claims(module), source, evidence_ids={"E1"})
++
++        self.assertIn("plan", result)
++        self.assertEqual(len(result["runs"]), 2)
++        self.assertEqual(result["runs"][0]["stdout"], "runner output")
++        self.assertEqual(result["runs"][0]["stderr"], "runner failed")
++        self.assertFalse(result["controls_passed"])
++
++    def test_source_materialization_rejects_symlink_components_and_digest_conflicts(self):
++        module = load_module()
++        with tempfile.TemporaryDirectory() as temp:
++            root = Path(temp)
++            destination = root / "destination"
++            destination.mkdir()
++            outside = root / "outside"
++            outside.mkdir()
++            (destination / "linked").symlink_to(outside, target_is_directory=True)
++            data = b"print('safe')\n"
++            packet = {"files": [{"path": "linked/check.py", "utf8": data.decode(), "sha256": module.sha256_bytes(data)}]}
++            with self.assertRaises(module.OCIError):
++                module.materialize_source_tree(packet, destination)
++
++            destination_link = root / "destination-link"
++            destination_link.symlink_to(outside, target_is_directory=True)
++            with self.assertRaises(module.OCIError):
++                module.materialize_source_tree(packet, destination_link / "nested")
++
++            conflict = {
++                "files": [
++                    {"path": "app.py", "utf8": "one", "sha256": module.sha256_bytes(b"one")},
++                    {"path": "app.py", "utf8": "two", "sha256": module.sha256_bytes(b"two")},
++                ]
++            }
++            with self.assertRaises(module.OCIError):
++                module.materialize_source_tree(conflict, root / "conflict")
++
++    def test_source_materialization_accepts_verified_utf8_and_base64_without_host_generated_files(self):
++        module = load_module()
++        with tempfile.TemporaryDirectory() as temp:
++            root = Path(temp)
++            destination = root / "source"
++            data = "π\n".encode("utf-8")
++            encoded = base64.b64encode(b"binary-safe").decode()
++            packet = {
++                "files": [
++                    {"path": "utf8/app.py", "utf8": data.decode(), "sha256": module.sha256_bytes(data)},
++                    {"path": "data.bin", "base64": encoded, "sha256": module.sha256_bytes(b"binary-safe")},
++                ]
++            }
++            module.materialize_source_tree(packet, destination)
++            self.assertEqual((destination / "utf8/app.py").read_bytes(), data)
++            self.assertEqual((destination / "data.bin").read_bytes(), b"binary-safe")
++            self.assertEqual((destination / "utf8/app.py").stat().st_mode & 0o222, 0)
++
++    def test_fixed_runner_and_process_boundary_do_not_use_unbounded_communicate(self):
++        module = load_module()
++        self.assertNotIn("communicate(", inspect.getsource(module._default_process_runner))
++        self.assertNotIn("communicate(", module.fixed_runner_source())
++        self.assertIn("start_new_session", inspect.getsource(module._default_process_runner))
++        self.assertIn("shell=False", module.fixed_runner_source())
++
++    def test_environment_block_is_detailed_and_never_semantically_promoted(self):
++        module = load_module()
++        executor = module.OCIExecutor(
++            IMAGE,
++            process_runner=FakeDocker(module, mode="failure"),
++            probe_daemon=False,
++        )
++        with tempfile.TemporaryDirectory() as temp:
++            source = Path(temp) / "source"
++            source.mkdir()
++            result = executor.execute(plan_with_claims(module), source, evidence_ids={"E1"})
++        self.assertEqual(result["classification"], "unproven")
++        self.assertIn("plan", result)
++        self.assertEqual(len(result["runs"]), 2)
++
++        def daemon_runner(argv, payload, cwd, timeout, max_output):
++            return 1, b"", b"Cannot connect to the Docker daemon", False
++
++        blocked_executor = module.OCIExecutor(IMAGE, process_runner=daemon_runner, probe_daemon=False)
++        with tempfile.TemporaryDirectory() as temp:
++            source = Path(temp) / "source"
++            source.mkdir()
++            blocked = blocked_executor.execute(plan_with_claims(module), source, evidence_ids={"E1"})
++        self.assertEqual(blocked["status"], "environment_blocked")
++        self.assertEqual(blocked["classification"], "environment_blocked")
+ 
+ 
+ if __name__ == "__main__":

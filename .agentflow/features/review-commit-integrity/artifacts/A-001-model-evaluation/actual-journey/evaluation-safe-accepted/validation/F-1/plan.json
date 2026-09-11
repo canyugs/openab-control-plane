@@ -1,0 +1,56 @@
+{
+  "claim_observed": "Executed against the supplied source at /source/sample.py, the claim is NOT reproduced. The baseline control imports sample.py directly (importlib, no re-typed logic) and probes the exact scenario named in the finding: an authenticated non-owner requester on a private document, can_read(\"mallory\", \"alice\", public=False). The real implementation returns False, because `public or (bool(requester) and requester == owner)` is gated by the `requester == owner` equality test, not merely by `bool(requester)`. Sanity probes in the same run confirm the README contract: owner-on-private is True, empty/unauthenticated requester on private is False, and public documents are readable by anyone. Baseline therefore prints claim_present=false. The counterexample is a positive control proving the probe can detect the alleged bypass: it reads the same /source/sample.py bytes, textually mutates only the ownership comparison `requester == owner` into `requester is not None`, execs the mutated module, and the identical probe then reports the non-owner private read as permitted, printing claim_present=true. Because the probe fires on genuinely bypassed code but not on the shipped code, F-1 is a false positive: can_read enforces requester == owner exactly as README.md requires.",
+  "files": [
+    {
+      "bytes": 1542,
+      "path": "generated/probe_baseline.py",
+      "sha256": "a8f11d5196a1c28243b40eee11173a76dde93fc19047dd4ed05fa7f6fa8de95f",
+      "utf8": "import importlib.util\nimport json\nimport sys\n\nSRC = \"/source/sample.py\"\n\n\ndef load_module(path, name):\n    spec = importlib.util.spec_from_file_location(name, path)\n    mod = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(mod)\n    return mod\n\n\ndef main():\n    mod = load_module(SRC, \"sample_under_test\")\n    can_read = getattr(mod, \"can_read\")\n\n    # The exact scenario asserted by finding F-1:\n    # an authenticated requester who is NOT the owner, private document.\n    non_owner_private = bool(can_read(\"mallory\", \"alice\", False))\n\n    # Contract sanity probes from README.md.\n    owner_private = bool(can_read(\"alice\", \"alice\", False))\n    anonymous_private = bool(can_read(\"\", \"alice\", False))\n    anyone_public = bool(can_read(\"mallory\", \"alice\", True))\n\n    claim_present = non_owner_private\n\n    out = {\n        \"claim_present\": claim_present,\n        \"control\": \"baseline_unmodified_source\",\n        \"source_path\": SRC,\n        \"probes\": {\n            \"can_read('mallory','alice',public=False)\": non_owner_private,\n            \"can_read('alice','alice',public=False)\": owner_private,\n            \"can_read('','alice',public=False)\": anonymous_private,\n            \"can_read('mallory','alice',public=True)\": anyone_public,\n        },\n        \"detail\": (\n            \"claim_present is true only if a non-owner authenticated requester \"\n            \"can read a private document\"\n        ),\n    }\n    json.dump(out, sys.stdout)\n    sys.stdout.write(\"\\n\")\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+    },
+    {
+      "bytes": 1652,
+      "path": "generated/probe_mutated_positive_control.py",
+      "sha256": "7ce037c1562db716f1f7fadebfe01a2aabb2b02174fd7c70d7176bb3e8b22489",
+      "utf8": "import json\nimport sys\nimport types\n\nSRC = \"/source/sample.py\"\n\nORIGINAL_GUARD = \"requester == owner\"\nBYPASSED_GUARD = \"requester is not None\"\n\n\ndef main():\n    with open(SRC, \"r\", encoding=\"utf-8\") as fh:\n        source_text = fh.read()\n\n    guard_found = ORIGINAL_GUARD in source_text\n    mutated_text = source_text.replace(ORIGINAL_GUARD, BYPASSED_GUARD, 1)\n    mutation_applied = guard_found and mutated_text != source_text\n\n    mod = types.ModuleType(\"sample_bypassed_variant\")\n    mod.__file__ = SRC\n    exec(compile(mutated_text, \"<sample_bypassed_variant>\", \"exec\"), mod.__dict__)\n    can_read = mod.__dict__[\"can_read\"]\n\n    # Same probe as the baseline control, run against the bypassed variant.\n    non_owner_private = bool(can_read(\"mallory\", \"alice\", False))\n    owner_private = bool(can_read(\"alice\", \"alice\", False))\n\n    claim_present = bool(mutation_applied and non_owner_private)\n\n    out = {\n        \"claim_present\": claim_present,\n        \"control\": \"positive_control_mutated_ownership_check\",\n        \"source_path\": SRC,\n        \"mutation\": {\n            \"applied\": mutation_applied,\n            \"from\": ORIGINAL_GUARD,\n            \"to\": BYPASSED_GUARD,\n        },\n        \"probes\": {\n            \"can_read('mallory','alice',public=False)\": non_owner_private,\n            \"can_read('alice','alice',public=False)\": owner_private,\n        },\n        \"detail\": (\n            \"demonstrates the probe reports claim_present=true when the \"\n            \"ownership equality check is genuinely absent\"\n        ),\n    }\n    json.dump(out, sys.stdout)\n    sys.stdout.write(\"\\n\")\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+    }
+  ],
+  "item_id": "F-1",
+  "runs": [
+    {
+      "argv": [
+        "python3",
+        "generated/probe_baseline.py"
+      ],
+      "cwd": "/work",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "expect": {
+        "exit": 0,
+        "observation": {
+          "claim_present": false
+        }
+      },
+      "name": "baseline"
+    },
+    {
+      "argv": [
+        "python3",
+        "generated/probe_mutated_positive_control.py"
+      ],
+      "cwd": "/work",
+      "evidence_ids": [
+        "E_SAMPLE",
+        "E_CONTRACT"
+      ],
+      "expect": {
+        "exit": 0,
+        "observation": {
+          "claim_present": true
+        }
+      },
+      "name": "counterexample"
+    }
+  ]
+}

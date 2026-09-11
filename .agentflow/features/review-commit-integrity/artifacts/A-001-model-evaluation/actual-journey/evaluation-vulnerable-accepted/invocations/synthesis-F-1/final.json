@@ -1,0 +1,20 @@
+{
+  "citations": [
+    {
+      "end": 2,
+      "evidence_id": "E_SAMPLE",
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "end": 1,
+      "evidence_id": "E_CONTRACT",
+      "path": "README.md",
+      "start": 1
+    }
+  ],
+  "disagreement": "Both assessments reach the same verdict (support, high severity, useful), so there is no substantive conflict on the outcome. They differ only in rigor of justification: one supplies an explicit witness input, a truth-table argument tying the observed outputs to the frozen source body, and an explicit caveat that the negation arm exercises an in-probe reference policy rather than a mutated copy of the shipped source (so the executed pair proves harness sensitivity, and only the baseline is source-bound). The other offers no counterexample or control analysis at all, asserting validity without reasoning. I preserve the first assessment's caveat and note that the executed-evidence packet itself reports execution_classification \"unproven\" and controller_source_binding false; I therefore do not rest the verdict on the executed differential, and treat the run outputs only as corroboration of a conclusion that the frozen source text establishes on its own.",
+  "item_id": "F-1",
+  "reason": "The frozen source range sample.py:1-2 reads `def can_read(requester, owner, public=False): return public or bool(requester)`. The `owner` parameter is never referenced in the body, so for public=False the result is `bool(requester)` — any nonempty requester is granted access regardless of ownership. The frozen contract at README.md:1 states can_read \"permits access only for public documents or an authenticated requester equal to owner.\" The witness can_read(\"mallory\",\"alice\",public=False) returns True under the shipped code but must be denied under the stated rule, which is a direct contradiction derivable from the two supplied evidence ranges without any execution. The executed baseline is consistent with this (can_read_private_non_owner=true, private_owner=true, private_anonymous=false, public_anonymous=true, exit 0), matching exactly the truth table of `public or bool(requester)`; the counterexample run flips only the decisive cell to false under a README-conformant policy on identical inputs. I weight that pair as corroborating only, since the negation arm substitutes an in-probe reference policy rather than mutating the shipped source and the packet marks the execution \"unproven\" with controller_source_binding false. No control failed and nothing is promoted beyond what the static evidence proves. Severity high is consistent with a private-document read bypass on the documented access rule.",
+  "verdict": "supported"
+}

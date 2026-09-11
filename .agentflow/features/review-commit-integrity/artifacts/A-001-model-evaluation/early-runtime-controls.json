@@ -1,0 +1,277 @@
+{
+  "early-executor-result.json": {
+    "status": "unproven",
+    "classification": "unproven",
+    "reason": "container_failed",
+    "stderr_sha256": "76adce5041776dcd9859a459ea0c64b34d8d6031cf2eb1aaa94f12fd5be51e9e",
+    "argv": [
+      "docker",
+      "run",
+      "--rm",
+      "--init",
+      "--pull=never",
+      "--name",
+      "openab-eval-5481c31b7eb040ca8c0c",
+      "--network",
+      "none",
+      "--read-only",
+      "--tmpfs",
+      "/work:rw,nosuid,nodev",
+      "--tmpfs",
+      "/tmp:rw,nosuid,nodev",
+      "--mount",
+      "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/transport-source,dst=/source,readonly",
+      "--mount",
+      "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/early-executor/fixed-runner.py,dst=/runner.py,readonly",
+      "--user",
+      "65532:65532",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--pids-limit",
+      "128",
+      "--memory",
+      "512m",
+      "--cpus",
+      "1.0",
+      "--env",
+      "HOME=/tmp/home",
+      "--env",
+      "PATH=/usr/local/bin:/usr/bin:/bin",
+      "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+      "python3",
+      "/runner.py"
+    ]
+  },
+  "early-executor-stdin-result.json": {
+    "status": "success",
+    "classification": "executed_reproduced",
+    "argv": [
+      "docker",
+      "run",
+      "--rm",
+      "--init",
+      "--pull=never",
+      "--name",
+      "openab-eval-f3fc6324dd4147b3badb",
+      "--network",
+      "none",
+      "--read-only",
+      "--tmpfs",
+      "/work:rw,nosuid,nodev",
+      "--tmpfs",
+      "/tmp:rw,nosuid,nodev",
+      "--mount",
+      "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/transport-source,dst=/source,readonly",
+      "--mount",
+      "type=bind,src=/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-evaluation-live-i4bgehnf/early-executor-stdin/fixed-runner.py,dst=/runner.py,readonly",
+      "--user",
+      "65532:65532",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--pids-limit",
+      "128",
+      "--memory",
+      "512m",
+      "--cpus",
+      "1.0",
+      "--env",
+      "HOME=/tmp/home",
+      "--env",
+      "PATH=/usr/local/bin:/usr/bin:/bin",
+      "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+      "python3",
+      "/runner.py"
+    ],
+    "preflight": {
+      "status": "ready",
+      "image": "python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+      "daemon_probe": "ok",
+      "server_version": "29.7.2"
+    },
+    "plan": {
+      "item_id": "probe",
+      "files": [
+        {
+          "path": "generated/check.py",
+          "utf8": "import json,sys\nprint(json.dumps({\"value\": sys.argv[1]}))\n",
+          "sha256": "17a78da831e82f5c4e2200dc7f6e298b20760f532d291d615a167030b1ac5d16",
+          "bytes": 58
+        }
+      ],
+      "runs": [
+        {
+          "name": "baseline",
+          "argv": [
+            "python3",
+            "generated/check.py",
+            "baseline"
+          ],
+          "cwd": "/work",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "value": "baseline"
+            }
+          },
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "name": "counterexample",
+          "argv": [
+            "python3",
+            "generated/check.py",
+            "counterexample"
+          ],
+          "cwd": "/work",
+          "expect": {
+            "exit": 0,
+            "observation": {
+              "value": "counterexample"
+            }
+          },
+          "evidence_ids": [
+            "E1"
+          ]
+        }
+      ],
+      "claim_observed": "Synthetic constant output, does not invoke source."
+    },
+    "generated_file_digests": [
+      {
+        "path": "generated/check.py",
+        "sha256": "17a78da831e82f5c4e2200dc7f6e298b20760f532d291d615a167030b1ac5d16",
+        "bytes": 58
+      }
+    ],
+    "runs": [
+      {
+        "name": "baseline",
+        "valid": true,
+        "actual": {
+          "duration_ms": 60,
+          "exit": 0,
+          "name": "baseline",
+          "observation": {
+            "value": "baseline"
+          },
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_sha256": "ba74bb79f4d0ff2043eeed70210017d719ef28fb5d50ec7a3e6890d528a110a7",
+          "timeout": false
+        }
+      },
+      {
+        "name": "counterexample",
+        "valid": true,
+        "actual": {
+          "duration_ms": 66,
+          "exit": 0,
+          "name": "counterexample",
+          "observation": {
+            "value": "counterexample"
+          },
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_sha256": "28381e42a35cc6c443dccdc9c7ba386a5e470442f5c435c83da0c0b801a29d80",
+          "timeout": false
+        }
+      }
+    ],
+    "stdout_sha256": "a62c23e7ad508e0f637e9ca4e2134557f097522ab2c4468b0bf36d81ec7d1f04",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "operator_checks": "not_run"
+  },
+  "early-weekly-result.json": {
+    "expected": "reliable",
+    "actual": {
+      "category": "pending_or_unknown",
+      "tombstone_visible": false,
+      "timeout_evidence": false,
+      "latency": {
+        "status": "unknown",
+        "duration_ms": null,
+        "qualification": "unavailable"
+      }
+    },
+    "writes": [
+      {
+        "id": 1,
+        "session_id": "s",
+        "kind": "comment",
+        "payload_json": "{\"repo\":\"o/r\",\"pr_number\":1,\"comment_id\":12,\"body\":\"synthetic\"}"
+      },
+      {
+        "id": 2,
+        "session_id": "s",
+        "kind": "status",
+        "payload_json": "{\"repo\":\"o/r\",\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"commit_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"state\":\"success\",\"context\":\"openab/review-council\"}"
+      },
+      {
+        "id": 3,
+        "session_id": "s",
+        "kind": "review",
+        "payload_json": "{\"repo\":\"o/r\",\"pr_number\":1,\"commit_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"event\":\"APPROVE\",\"body\":\"synthetic\"}"
+      }
+    ],
+    "audit": [
+      {
+        "kind": "github.write.succeeded",
+        "outcome": "succeeded",
+        "occurred_at": 1001,
+        "correlation": {
+          "session_id": "s",
+          "write_id": "1"
+        },
+        "detail": {
+          "operation": "comment",
+          "request_sha256": "389001f3d5928e75539160196b1f28f5876ee74a118ac859923e3816d6f9bca1",
+          "provider_receipt": {
+            "comment_id": 12,
+            "reconciled": false
+          }
+        }
+      },
+      {
+        "kind": "github.write.succeeded",
+        "outcome": "succeeded",
+        "occurred_at": 1002,
+        "correlation": {
+          "session_id": "s",
+          "write_id": "2"
+        },
+        "detail": {
+          "operation": "status",
+          "request_sha256": "ccda92cd3e158daa602e5620f50ba9a3d2dd1ce2103b9a0a3fcef8df13b12848",
+          "provider_receipt": {
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "context": "openab/review-council",
+            "state": "success"
+          }
+        }
+      },
+      {
+        "kind": "github.write.succeeded",
+        "outcome": "succeeded",
+        "occurred_at": 1003,
+        "correlation": {
+          "session_id": "s",
+          "write_id": "3"
+        },
+        "detail": {
+          "operation": "review",
+          "request_sha256": "d81b1aa842b7aa32fa0481e0991eac4a47aa70d81e6de7135dcc1c8a4b67c810",
+          "provider_receipt": {
+            "review_id": 13,
+            "state": "APPROVED",
+            "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reconciled": false
+          }
+        }
+      }
+    ]
+  }
+}

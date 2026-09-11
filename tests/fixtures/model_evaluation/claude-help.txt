@@ -1,0 +1,2 @@
+--print --bare --no-session-persistence --output-format --json-schema --model
+--permission-mode --permission-prompts --tools --strict-mcp-config --system-prompt

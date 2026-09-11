@@ -1,0 +1,129 @@
+[
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--check"
+    ],
+    "exit_code": 1,
+    "seconds": 0.44,
+    "summaries": [],
+    "postgres_configured": true,
+    "postgres_skip_observed": false,
+    "output_tail": "Diff in /Users/can/Documents/zeabur/ocp-review-commit-integrity/src/state.rs:643:\n     fn store_heartbeat_freshness_drives_readyz_signal() {\n         let state = AppState::new(Arc::new(SqliteStore::memory().unwrap()));\n         // Fresh state: heartbeat is current, so /readyz would report ready.\n\u001b[31m-        assert!(state.store_stalled_secs() <= 2, \"fresh state is not stalled\");\n\u001b(B\u001b[m\u001b[32m+        assert!(\n\u001b(B\u001b[m\u001b[32m+            state.store_stalled_secs() <= 2,\n\u001b(B\u001b[m\u001b[32m+            \"fresh state is not stalled\"\n\u001b(B\u001b[m\u001b[32m+        );\n\u001b(B\u001b[m         // Simulate a wedge: no watchdog bump for 300s.\n         state.last_store_ok_ms.store(\n             (crate::store::now_ms() as u64).saturating_sub(300_000),\nDiff in /Users/can/Documents/zeabur/ocp-review-commit-integrity/src/store/postgres.rs:4123:\n         let o = connect_options(None, None);\n         assert!(o.contains(\"-c statement_timeout=15000\"), \"{o}\");\n         assert!(o.contains(\"-c lock_timeout=5000\"), \"{o}\");\n\u001b[31m-        assert!(o.contains(\"-c idle_in_transaction_session_timeout=30000\"), \"{o}\");\n\u001b(B\u001b[m\u001b[32m+        assert!(\n\u001b(B\u001b[m\u001b[32m+            o.contains(\"-c idle_in_transaction_session_timeout=30000\"),\n\u001b(B\u001b[m\u001b[32m+            \"{o}\"\n\u001b(B\u001b[m\u001b[32m+        );\n\u001b(B\u001b[m         assert!(!o.contains(\"search_path\"), \"{o}\");\n \n         // search_path is appended; timeouts survive.\nDiff in /Users/can/Documents/zeabur/ocp-review-commit-integrity/tests/second_consumer.rs:416:\n     let deadline = tokio::time::Instant::now() + Duration::from_secs(6);\n     loop {\n         let session = get_session(base, session_id).await;\n\u001b[31m-        if session[\"messages\"]\n\u001b(B\u001b[m\u001b[31m-            .as_array()\n\u001b(B\u001b[m\u001b[31m-            .is_some_and(|messages| {\n\u001b(B\u001b[m\u001b[31m-                messages\n\u001b(B\u001b[m\u001b[31m-                    .iter()\n\u001b(B\u001b[m\u001b[31m-                    .any(|m| m[\"content\"].as_str() == Some(content))\n\u001b(B\u001b[m\u001b[31m-            })\n\u001b(B\u001b[m\u001b[31m-        {\n\u001b(B\u001b[m\u001b[32m+        if session[\"messages\"].as_array().is_some_and(|messages| {\n\u001b(B\u001b[m\u001b[32m+            messages\n\u001b(B\u001b[m\u001b[32m+                .iter()\n\u001b(B\u001b[m\u001b[32m+                .any(|m| m[\"content\"].as_str() == Some(content))\n\u001b(B\u001b[m\u001b[32m+        }) {\n\u001b(B\u001b[m             return session;\n         }\n         assert!(\n"
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--package",
+      "github-pr-controller",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 0.13,
+    "summaries": [],
+    "postgres_configured": true,
+    "postgres_skip_observed": false,
+    "output_tail": ""
+  },
+  {
+    "command": [
+      "cargo",
+      "build"
+    ],
+    "exit_code": 0,
+    "seconds": 0.31,
+    "summaries": [],
+    "postgres_configured": true,
+    "postgres_skip_observed": false,
+    "output_tail": "    Finished `dev` profile [unoptimized] target(s) in 0.28s\n"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "github-pr-controller",
+      "--lib",
+      "reviewed_sha",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "seconds": 5.56,
+    "summaries": [
+      "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 159 filtered out; finished in 0.00s"
+    ],
+    "postgres_configured": true,
+    "postgres_skip_observed": false,
+    "output_tail": "   Compiling github-pr-controller v0.1.0 (/Users/can/Documents/zeabur/ocp-review-commit-integrity/crates/github-pr-controller)\n    Finished `test` profile [unoptimized] target(s) in 5.14s\n     Running unittests src/lib.rs (/tmp/ocp-integrity-target/debug/deps/github_pr_controller-f3930830f6373fab)\n\nrunning 8 tests\ntest closing::tests::mismatched_reviewed_sha_cannot_approve ... ok\ntest closing::tests::matching_full_reviewed_sha_remains_authoritative ... ok\ntest closing::tests::malformed_reviewed_sha_cannot_approve ... ok\ntest closing::tests::empty_reviewed_sha_cannot_authorize_either_verdict ... ok\ntest closing::tests::malformed_reviewed_sha_cannot_request_changes ... ok\ntest closing::tests::missing_reviewed_sha_cannot_approve ... ok\ntest closing::tests::missing_reviewed_sha_cannot_request_changes ... ok\ntest closing::tests::mismatched_reviewed_sha_cannot_request_changes ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 159 filtered out; finished in 0.00s\n\n"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "github-pr-controller"
+    ],
+    "exit_code": 0,
+    "seconds": 5.4,
+    "summaries": [
+      "test result: ok. 167 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s",
+      "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    ],
+    "postgres_configured": true,
+    "postgres_skip_observed": false,
+    "output_tail": "rded_reviewer_minimum ... ok\ntest tests::delivery_and_event_headers_are_bounded ... ok\ntest tests::audit_failure_release_reopens_delivery_for_retry ... ok\ntest tests::external_canary_outage_retries_same_action_id_without_embedded_fallback ... ok\ntest tests::external_canary_acts_once_per_delivery_and_supersedes_by_fingerprint ... ok\ntest tests::canary_readiness_needs_the_write_switch_alongside_credentials ... ok\ntest tests::external_canary_rejects_an_unowned_repository_before_action_dispatch ... ok\ntest tests::external_mode_actually_wires_up_and_reaches_ready ... ok\ntest tests::findings_read_is_signed_filtered_and_shaped_like_the_kernel_route ... ok\ntest store::postgres::tests::retryable_delivery_is_immediately_readmitted_with_the_same_body ... ok\ntest tests::in_progress_duplicate_returns_retryable_status ... ok\ntest tests::provider_audit_context_normalizes_actor_and_pull_request_target ... ok\ntest tests::readiness_does_not_disclose_product_store_errors ... ok\ntest tests::plan_only_readiness_rejects_github_write_credentials ... ok\ntest tests::open_dispatch_appends_active_waivers_to_the_chair_alone ... ok\ntest tests::readiness_reports_disabled_external_clients ... ok\ntest tests::legacy_authority_writes_are_parked_before_provider_send ... ok\ntest store::postgres::tests::rounds_number_per_pull_request_and_redelivery_is_a_no_op ... ok\ntest tests::rejects_invalid_hmac_before_touching_store ... ok\ntest tests::signed_fixture_produces_a_plan_and_dedupes_delivery ... ok\ntest tests::signed_runtime_events_are_deduped_and_visible_as_aggregates_only ... ok\ntest tests::the_waiver_report_serves_the_two_clocked_judgements ... ok\ntest tests::reopening_a_waived_finding_revokes_its_waiver ... ok\ntest tests::signed_shadow_comparison_records_exact_fixture_parity ... ok\ntest tests::stranded_outbox_writes_drain_through_the_sweep_entry_point ... ok\ntest verdict::tests::a_block_split_across_two_messages_still_parses ... ok\ntest verdict::tests::arrow_inside_title_does_not_truncate_block ... ok\ntest verdict::tests::counts_decide_the_verdict ... ok\ntest verdict::tests::empty_findings_list_is_valid ... ok\ntest verdict::tests::halves_fail_independently ... ok\ntest verdict::tests::last_block_wins ... ok\ntest verdict::tests::malformed_rejects_whole_block ... ok\ntest verdict::tests::parses_full_block ... ok\ntest verdict::tests::the_trailer_comes_from_the_closing_message_only ... ok\ntest verdict::tests::unfenced_lines_drops_fenced_segments_fail_closed ... ok\ntest verdict::tests::verdict_trailer_parsing ... ok\ntest tests::waived_findings_reach_the_plan_and_bump_repo_scoped_counters ... ok\ntest tests::waiver_crud_requires_the_v2_write_signature ... ok\ntest tests::terminal_events_we_do_not_own_or_cannot_act_on_are_left_alone ... ok\ntest store::postgres::tests::runtime_event_receipts_dedupe_and_expose_canary_state ... ok\ntest tests::with_writes_enabled_the_outbox_drains_to_real_requests ... ok\ntest store::postgres::tests::session_targets_are_immutable_and_round_proof_is_explicit ... ok\ntest store::postgres::tests::shadow_summary_counts_and_dedupes ... ok\ntest store::postgres::tests::the_comment_anchor_carries_to_the_next_round ... ok\ntest store::postgres::tests::migrations_are_idempotent_across_reopens ... ok\n\ntest result: ok. 167 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s\n\n     Running unittests src/main.rs (/tmp/ocp-integrity-target/debug/deps/github_pr_controller-981da27f3b5a0f2e)\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n     Running tests/boundary.rs (/tmp/ocp-integrity-target/debug/deps/boundary-841c34c05dde92b0)\n\nrunning 3 tests\ntest ocp_default_build_does_not_select_the_controller ... ok\ntest independent_image_does_not_copy_ocp_sources ... ok\ntest controller_has_no_ocp_runtime_or_configuration_dependency ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n   Doc-tests github_pr_controller\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+  },
+  {
+    "command": [
+      "cargo",
+      "test"
+    ],
+    "exit_code": 0,
+    "seconds": 23.55,
+    "summaries": [
+      "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 280 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.70s",
+      "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s",
+      "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.09s",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.02s",
+      "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    ],
+    "postgres_configured": true,
+    "postgres_skip_observed": false,
+    "output_tail": "get/debug/deps/openabctl-94df19a56897f442)\n\nrunning 2 tests\ntest tests::parses_investigation_selectors ... ok\ntest tests::signs_the_exact_query_target_shape ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n     Running tests/bot_config_freeze.rs (/tmp/ocp-integrity-target/debug/deps/bot_config_freeze-e37d25e8c3608280)\n\nrunning 1 test\ntest bot_config_response_body_matches_golden_snapshots ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s\n\n     Running tests/gateway_contract.rs (/tmp/ocp-integrity-target/debug/deps/gateway_contract-e7f2830ef0c8ccc4)\n\nrunning 3 tests\ntest response_shape_matches_bot_expectations ... ok\ntest event_serialization_satisfies_bot_deserializer ... ok\ntest bot_reply_fixtures_deserialize ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n     Running tests/pod_config_sync.rs (/tmp/ocp-integrity-target/debug/deps/pod_config_sync-b7bac487b92d4c09)\n\nrunning 6 tests\ntest both_configs_fetch_gh_token_from_the_plane ... ok\ntest pod_config_names_no_agent_and_carries_no_secret ... ok\ntest pod_config_pins_match_the_bot_config_golden ... ok\ntest pod_config_is_anchored_once_and_reviewer_aliased ... ok\ntest templates_do_not_fetch_bot_config ... ok\ntest templates_carry_current_pod_configs ... ok\n\ntest result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n     Running tests/second_consumer.rs (/tmp/ocp-integrity-target/debug/deps/second_consumer-5d286c1c3ec6645c)\n\nrunning 3 tests\ntest forum_shaped_second_consumer_flow_uses_only_north_surface_and_defaults ... ok\ntest chunked_answer_result_is_identified_at_close_and_joinable ... ok\ntest watchdog_timeout_is_legible_on_the_north_surface_alone ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s\n\n     Running tests/seed_roster.rs (/tmp/ocp-integrity-target/debug/deps/seed_roster-deea85a91435b85a)\n\nrunning 1 test\ntest seed_roster_is_first_boot_only ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n     Running tests/spike.rs (/tmp/ocp-integrity-target/debug/deps/spike-d6f8b62965d75a26)\n\nrunning 18 tests\ntest bot_inventory_discover_and_patch_metadata ... ok\ntest dynamic_replace_api_updates_session_and_standing_roster ... ok\ntest post_sessions_accepts_triage_council_mode ... ok\ntest post_sessions_dedupes_active_trigger_ref ... ok\ntest post_sessions_rejects_quorum_over_capacity ... ok\ntest post_sessions_rejects_unregistered_roster_bot ... ok\ntest bot_inventory_connected_filter_reads_connection_stack ... ok\ntest delete_bot_endpoint_guards ... ok\ntest chair_recruits_through_admission_gate ... ok\ntest council_closes_on_text_done_signal ... ok\ntest council_3_bots ... ok\ntest council_5_bots ... ok\ntest chair_done_before_quorum_waits_for_watchdog ... ok\ntest pipeline_three_stages_closes_in_order ... ok\ntest solo_single_bot_closes ... ok\ntest single_bot_parity_thread_react_streaming ... ok\ntest silent_peer_is_disconnected_by_ping_deadline ... ok\ntest live_peer_stays_connected ... ok\n\ntest result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.09s\n\n     Running tests/wire_shapes.rs (/tmp/ocp-integrity-target/debug/deps/wire_shapes-5d51f2a3d5ba3c64)\n\nrunning 1 test\ntest frozen_v1_wire_shapes_match_goldens ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s\n\n     Running tests/world_demo.rs (/tmp/ocp-integrity-target/debug/deps/world_demo-4e7ac33fbdc3c152)\n\nrunning 1 test\ntest two_bot_delegate_open_terminal_unlock_end_to_end ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.02s\n\n   Doc-tests controller_protocol\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n   Doc-tests openab_control_plane\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--package",
+      "github-pr-controller",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 3.58,
+    "summaries": [],
+    "postgres_configured": true,
+    "postgres_skip_observed": false,
+    "output_tail": "    Checking github-pr-controller v0.1.0 (/Users/can/Documents/zeabur/ocp-review-commit-integrity/crates/github-pr-controller)\n    Finished `dev` profile [unoptimized] target(s) in 3.52s\n"
+  }
+]

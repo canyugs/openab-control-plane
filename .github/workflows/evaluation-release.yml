@@ -1,0 +1,127 @@
+name: evaluation release
+
+# This lane is deliberately separate from release.yml, whose v* trigger is
+# reserved for the Rust/OCP images.
+on:
+  push:
+    tags:
+      - "evaluation-v*.*.*"
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    env:
+      EVALUATION_IMAGE: ghcr.io/canyugs/ocp-review-eval
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate evaluation tag and package version
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^evaluation-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "tag '$GITHUB_REF_NAME' is not evaluation-vX.Y.Z" >&2
+            exit 1
+          }
+          EVALUATION_VERSION="${GITHUB_REF_NAME#evaluation-v}"
+          PACKAGE_VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          [[ "$PACKAGE_VERSION" == "$EVALUATION_VERSION" ]] || {
+            echo "package version $PACKAGE_VERSION does not match tag $EVALUATION_VERSION" >&2
+            exit 1
+          }
+          echo "EVALUATION_VERSION=$EVALUATION_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install the isolated wheel builder
+        run: |
+          set -euo pipefail
+          BUILD_VENV="$RUNNER_TEMP/ocp-review-eval-build-venv"
+          python3 -m venv "$BUILD_VENV"
+          "$BUILD_VENV/bin/python" -m pip install \
+            --disable-pip-version-check \
+            --require-hashes \
+            --only-binary=:all: \
+            --requirement packaging/evaluation/build-requirements.lock
+          echo "EVALUATION_BUILD_PYTHON=$BUILD_VENV/bin/python" >> "$GITHUB_ENV"
+
+      - name: Build wheel and sdist
+        run: |
+          "$EVALUATION_BUILD_PYTHON" -m build --wheel --sdist --no-isolation --outdir dist
+
+      - name: Check bounded distribution contents
+        run: |
+          "$EVALUATION_BUILD_PYTHON" - <<'PY'
+          import tarfile
+          from pathlib import Path
+
+          expected = {
+              "review_model_evaluation.py",
+              "review_model_adapters.py",
+              "review_model_oci_executor.py",
+              "review_round_weekly_report.py",
+              "LICENSE",
+          }
+          archives = list(Path("dist").glob("ocp_review_eval-*.tar.gz"))
+          if len(archives) != 1:
+              raise SystemExit(f"expected one sdist, found {archives!r}")
+          with tarfile.open(archives[0], "r:gz") as archive:
+              names = {Path(member.name).name for member in archive.getmembers() if member.isfile()}
+          missing = expected - names
+          if missing:
+              raise SystemExit(f"sdist is missing {sorted(missing)!r}")
+          if any(name.endswith((".db", ".json", ".ndjson")) for name in names):
+              raise SystemExit("sdist contains a captured record")
+          PY
+
+      - name: Run the full relevant Python suite
+        run: |
+          "$EVALUATION_BUILD_PYTHON" -m unittest discover --start-directory tests --pattern 'test_*.py'
+
+      - name: Smoke-test a fresh wheel outside the checkout
+        run: |
+          set -euo pipefail
+          SMOKE_ROOT="$(mktemp -d)"
+          trap 'rm -rf "$SMOKE_ROOT"' EXIT
+          "$EVALUATION_BUILD_PYTHON" -m venv "$SMOKE_ROOT/venv"
+          EVALUATION_WHEEL="$(find dist -maxdepth 1 -type f -name "ocp_review_eval-${EVALUATION_VERSION}-*.whl" -print -quit)"
+          [[ -n "$EVALUATION_WHEEL" ]] || { echo "wheel is missing" >&2; exit 1; }
+          "$SMOKE_ROOT/venv/bin/python" -m pip install --no-index --no-deps "$EVALUATION_WHEEL"
+          (
+            cd "$SMOKE_ROOT"
+            env -u PYTHONPATH "$SMOKE_ROOT/venv/bin/ocp-review-eval" --help
+            env -u PYTHONPATH "$SMOKE_ROOT/venv/bin/ocp-review-weekly" --help
+            env -u PYTHONPATH "$SMOKE_ROOT/venv/bin/python" -c 'import review_model_evaluation, review_model_adapters, review_model_oci_executor, review_round_weekly_report'
+          )
+
+      - name: Build the amd64 evaluation image
+        run: docker build --platform linux/amd64 --file Dockerfile.evaluation --tag "$EVALUATION_IMAGE:$EVALUATION_VERSION" .
+
+      - name: Smoke-test both image entrypoints
+        run: |
+          docker run --rm --platform linux/amd64 "$EVALUATION_IMAGE:$EVALUATION_VERSION" --help
+          docker run --rm --network none --platform linux/amd64 \
+            --entrypoint ocp-review-weekly "$EVALUATION_IMAGE:$EVALUATION_VERSION" --help
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the versioned image
+        run: docker push "$EVALUATION_IMAGE:$EVALUATION_VERSION"
+
+      - name: Publish wheel and sdist as release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "ocp-review-eval $EVALUATION_VERSION" \
+            --notes "Standalone ocp-review-eval $EVALUATION_VERSION; linux/amd64 image only." \
+            --latest=false \
+            dist/*

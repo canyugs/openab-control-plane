@@ -1,0 +1,22 @@
+{
+  "citations": [
+    {
+      "end": 2,
+      "evidence_id": "E_SAMPLE",
+      "path": "sample.py",
+      "start": 1
+    },
+    {
+      "end": 1,
+      "evidence_id": "E_CONTRACT",
+      "path": "README.md",
+      "start": 1
+    }
+  ],
+  "counterexample": "The claim states can_read accepts any nonempty requester for private documents, but the code on line 2 is `return public or (bool(requester) and requester == owner)`. The `and requester == owner` clause ensures that a non-owner is always denied. Calling can_read(\"mallory\", \"alice\", public=False) evaluates to `False or (True and False)` = False. The executed baseline confirms this: can_read(\"mallory\",\"alice\",public=False) returns False. The positive control demonstrates the probe is sensitive by mutating `requester == owner` to `requester is not None`, which then correctly detects the bypass. The finding misreads the boolean logic.",
+  "finding_id": "F-1",
+  "severity": "false positive (no actual vulnerability)",
+  "usefulness": "not_useful",
+  "validation_verdict": "valid",
+  "verdict": "refute"
+}

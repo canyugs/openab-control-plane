@@ -208,6 +208,10 @@ const MIGRATIONS: &[&str] = &[
     // 10 — SEI-958: the GitHub writer independently remembers the reviewer
     // evidence it required at open. Pre-migration NULL rows fail closed.
     "ALTER TABLE session_targets ADD COLUMN required_valid_reviewers INTEGER;",
+    // 11 — review-commit integrity proof. Existing rounds retain their
+    // historical head_sha but cannot authorize a new provider write.
+    "ALTER TABLE review_rounds ADD COLUMN verified_commit_id TEXT;
+     ALTER TABLE review_rounds ADD COLUMN integrity_disposition TEXT NOT NULL DEFAULT 'legacy_unverified';",
 ];
 
 pub struct SqliteStore {
@@ -531,8 +535,8 @@ impl SqliteStore {
         )
     }
 
-    /// Remember what a session we just opened is about. Idempotent: a
-    /// redelivered webhook that re-opens the same session must not conflict.
+    /// Remember what a session we just opened is about. A redelivery is
+    /// accepted only when every immutable target field is byte-for-byte equal.
     pub fn record_session_target(
         &self,
         session_id: &str,
@@ -541,20 +545,48 @@ impl SqliteStore {
         head_sha: Option<&str>,
         reason: Option<&str>,
         required_valid_reviewers: Option<i64>,
-    ) -> rusqlite::Result<()> {
-        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
-        connection.execute(
-            "INSERT INTO session_targets
+    ) -> StoreResult<()> {
+        let mut connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO session_targets
                (session_id, repo, pr_number, head_sha, reason, required_valid_reviewers, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(session_id) DO UPDATE SET
-               repo = excluded.repo,
-               pr_number = excluded.pr_number,
-               head_sha = COALESCE(excluded.head_sha, session_targets.head_sha),
-               reason = COALESCE(excluded.reason, session_targets.reason),
-               required_valid_reviewers = COALESCE(excluded.required_valid_reviewers, session_targets.required_valid_reviewers)",
-            params![session_id, repo, pr_number, head_sha, reason, required_valid_reviewers, now_unix()],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                session_id,
+                repo,
+                pr_number,
+                head_sha,
+                reason,
+                required_valid_reviewers,
+                now_unix()
+            ],
         )?;
+        let existing = transaction.query_row(
+            "SELECT repo, pr_number, head_sha, reason, required_valid_reviewers
+               FROM session_targets WHERE session_id = ?1",
+            [session_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                ))
+            },
+        )?;
+        let same = existing.0 == repo
+            && existing.1 == pr_number
+            && existing.2.as_deref() == head_sha
+            && existing.3.as_deref() == reason
+            && existing.4 == required_valid_reviewers;
+        if !same {
+            return Err(StoreError::Conflict(format!(
+                "session target {session_id} does not match its immutable admission"
+            )));
+        }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -607,15 +639,18 @@ impl SqliteStore {
                 )?;
                 transaction.execute(
                     "INSERT INTO review_rounds
-                       (repo, pr_number, round, session_id, head_sha, decision,
+                       (repo, pr_number, round, session_id, head_sha,
+                        verified_commit_id, integrity_disposition, decision,
                         red, yellow, green, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                     params![
                         round.repo,
                         round.pr_number,
                         number,
                         round.session_id,
                         round.head_sha,
+                        round.verified_commit_id,
+                        round.integrity_disposition,
                         round.decision,
                         round.red,
                         round.yellow,
@@ -632,6 +667,27 @@ impl SqliteStore {
         };
         transaction.commit()?;
         Ok(recorded)
+    }
+
+    pub fn review_round_integrity(
+        &self,
+        session_id: &str,
+    ) -> StoreResult<Option<super::ReviewRoundIntegrity>> {
+        let connection = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        connection
+            .query_row(
+                "SELECT verified_commit_id, integrity_disposition
+                   FROM review_rounds WHERE session_id = ?1",
+                [session_id],
+                |row| {
+                    Ok(super::ReviewRoundIntegrity {
+                        verified_commit_id: row.get(0)?,
+                        integrity_disposition: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     /// The comment id to PATCH on the next round of the same pull request.
@@ -1439,6 +1495,13 @@ impl ProductStore for SqliteStore {
         Ok(SqliteStore::record_review_round(self, round)?)
     }
 
+    async fn review_round_integrity(
+        &self,
+        session_id: &str,
+    ) -> StoreResult<Option<super::ReviewRoundIntegrity>> {
+        SqliteStore::review_round_integrity(self, session_id)
+    }
+
     async fn last_comment_id(&self, repo: &str, pr_number: i64) -> StoreResult<Option<i64>> {
         Ok(SqliteStore::last_comment_id(self, repo, pr_number)?)
     }
@@ -1775,7 +1838,8 @@ mod tests {
         // that reused the round's kinds were silently dropped — the author was
         // told the pull request had been unblocked while nothing on it moved.
         let store = SqliteStore::memory().unwrap();
-        let round = json!({"repo": "zeabur/backend", "sha": "f9caff5d"});
+        let round =
+            json!({"repo": "zeabur/backend", "sha": "0123456789abcdef0123456789abcdef01234567"});
         assert!(store
             .enqueue_write("ses_1", crate::closing::KIND_STATUS, &round)
             .unwrap());
@@ -2405,7 +2469,9 @@ mod tests {
             repo: "example/repo".into(),
             pr_number: 7,
             session_id: session.into(),
-            head_sha: Some("deadbeef".into()),
+            head_sha: Some("0123456789abcdef0123456789abcdef01234567".into()),
+            verified_commit_id: None,
+            integrity_disposition: "legacy_unverified".into(),
             decision: decision.into(),
             red: 0,
             yellow: 0,
@@ -2435,9 +2501,88 @@ mod tests {
             .unwrap();
         assert_eq!(tables, 3);
 
+        let legacy_round: (Option<String>, String) = connection
+            .query_row(
+                "INSERT INTO review_rounds
+                   (repo, pr_number, round, session_id, head_sha, decision,
+                    red, yellow, green, created_at)
+                 VALUES ('example/repo', 7, 1, 'legacy', '0123456789abcdef0123456789abcdef01234567',
+                         'approve', 0, 0, 1, 1)
+                 RETURNING verified_commit_id, integrity_disposition",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            legacy_round,
+            (None, "legacy_unverified".into()),
+            "migrated rows must not acquire authority proof"
+        );
+
         // Re-running is a no-op, not a re-apply.
         migrate(&connection).unwrap();
         assert_eq!(version, MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn session_targets_are_immutable_and_round_proof_is_explicit() {
+        let store = SqliteStore::memory().unwrap();
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        store
+            .record_session_target("ses_target", "example/repo", 7, Some(sha), None, Some(2))
+            .unwrap();
+        store
+            .record_session_target("ses_target", "example/repo", 7, Some(sha), None, Some(2))
+            .unwrap();
+
+        for (repo, pr_number, head_sha, reason, required) in [
+            ("other/repo", 7, Some(sha), None, Some(2)),
+            ("example/repo", 8, Some(sha), None, Some(2)),
+            (
+                "example/repo",
+                7,
+                Some("fedcba9876543210fedcba9876543210fedcba98"),
+                None,
+                Some(2),
+            ),
+            ("example/repo", 7, Some(sha), Some("ask"), Some(2)),
+            ("example/repo", 7, Some(sha), None, Some(3)),
+        ] {
+            assert!(matches!(
+                store.record_session_target(
+                    "ses_target",
+                    repo,
+                    pr_number,
+                    head_sha,
+                    reason,
+                    required,
+                ),
+                Err(StoreError::Conflict(_))
+            ));
+        }
+
+        store
+            .record_review_round(&round("ses_legacy", "approve"))
+            .unwrap();
+        assert_eq!(
+            store.review_round_integrity("ses_legacy").unwrap(),
+            Some(crate::store::ReviewRoundIntegrity {
+                verified_commit_id: None,
+                integrity_disposition: "legacy_unverified".into(),
+            })
+        );
+
+        let mut verified = round("ses_verified", "approve");
+        verified.verified_commit_id = Some(sha.into());
+        verified.integrity_disposition = "verified".into();
+        store.record_review_round(&verified).unwrap();
+        assert_eq!(
+            store.review_round_integrity("ses_verified").unwrap(),
+            Some(crate::store::ReviewRoundIntegrity {
+                verified_commit_id: Some(sha.into()),
+                integrity_disposition: "verified".into(),
+            })
+        );
     }
 
     #[test]
@@ -2502,13 +2647,25 @@ mod tests {
         }];
         assert_eq!(
             store
-                .record_review_findings("ses_1", "example/repo", 7, Some("deadbeef"), &findings)
+                .record_review_findings(
+                    "ses_1",
+                    "example/repo",
+                    7,
+                    Some("0123456789abcdef0123456789abcdef01234567"),
+                    &findings
+                )
                 .unwrap(),
             1
         );
         assert_eq!(
             store
-                .record_review_findings("ses_1", "example/repo", 7, Some("deadbeef"), &findings)
+                .record_review_findings(
+                    "ses_1",
+                    "example/repo",
+                    7,
+                    Some("0123456789abcdef0123456789abcdef01234567"),
+                    &findings
+                )
                 .unwrap(),
             0,
             "a redelivery must not double the ledger"
