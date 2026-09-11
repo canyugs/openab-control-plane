@@ -2,13 +2,13 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: 4b9ea56f0fd7466685ee57b196f6947c7de713a7 reviewed; release merge e33f77c78c4137abd7104f2e0b6acb667f0c4a5d has identical tree.
-Tests/scenarios: 96 Python tests; Rust/Postgres CI; locked builds; published asset hashes/install; anonymous image pull and CLI/module hashes PASS.
+Current commit: a4017b8 accepted integration scope; isolated implementation active.
+Tests/scenarios: A-006 Rust all-features suite and clippy PASS; baseline fmt differences; bridge tests in progress.
 Configuration: ag.json — schema v7; validated for codex this round.
-Proven: A-005 PR418 merged; evaluation-v0.1.0 and linux/amd64 GHCR image published and independently verified.
-Open: none for A-005; no service deployment performed.
-Next: none within accepted A-005 scope.
-Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-005-release/release-verification-report.md.
+Proven: Published evaluator retained; production read-only findings/audit and complete private source available for pilot.
+Open: A-006 bridge implementation, real evaluation/report journey and independent review; dev observer signature invalid, prod read available.
+Next: Verify/import bridge and run the scoped real-data pilot.
+Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-006-integration.
 Archived eras: none.
 Streams:
 stream: review-commit-integrity — active — .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md
@@ -1472,3 +1472,85 @@ Host gate: PASS
 > 那可以開始接上了
 
 Approved scope: connect the previously proposed read-only OCP review capture, fixed PR/SHA findings/evidence, standalone model evaluation and weekly report flow. Implement and validate the integration; scheduling follows a proven first real-data run. No verdict, GitHub write, service deployment or credential rotation.
+
+## [RUN-001] Event (during round A-006)
+
+* _2026-09-11 17:47:37 (GPT-6/default)_
+
+Dispatch bridge implementation, gpt-5.6-luna/max, external-runner-v1 ata4017b87f6b7357ef9c3cba63ff7052e95ce7532; immutable brief frozen, no remote/production authority.
+
+## [RUN-002] Event (during round A-006)
+
+* _2026-09-11 17:49:54 (GPT-6/default)_
+
+Owner approved the concrete capture/prepare/evaluate/report sequence in the preceding conversation. Higher-priority instruction says preserve that authorization and complete reversible implementation without asking again; exact plan a4017b8 records accepted scope, no new Design Go requested. Route selected_advisors with bounded bridge implementation and final independent cross-check; released core/API/storage unchanged. Worker3373 active. Current production observer GET succeeds; dev GET returns invalid_observation_signature403, optional credential-location question pending but no longer blocks prod read-only pilot. Selected actual private-repository session has2 findings with locations at its immutable recorded head; explicit pull ref fetched after default clone lacked its squashed head. Clean no-remote private clone source packet50 files/238617bytes complete. Raw private source/findings remain outside public checkout; only sanitized verification metadata may enter public records. Base is captured GitHub base/merge-base, not asserted original historical base. Current API lacks product tables; weekly reliability/cost/human coverage must remain unknown until supplied.
+
+## [RUN-003] Event (during round A-006)
+
+* _2026-09-11 17:53:27 (GPT-6/default)_
+
+Live audit22 events use serde omitted next_cursor for terminal None (confirmed crates/controller-protocol/src/audit.rs219-223); parent will reconcile the brief's stricter missing-cursor wording against actual source before accepting implementation. Clippy all-targets/all-features PASS; cargo fmt check reports existing unchanged baseline formatting in Rust files, no adjacent repair. Full Rust suite43354 running. Bridge3373 active in isolated clone, process healthy. Current changed paths are active stream records only, tracker scope unchanged. Production read-only pilot and model/OCI availability established; no model calls yet.
+
+## [WIP-001] Checkpoint (during round A-006)
+
+* _2026-09-11 17:53:46 (GPT-6/default)_
+
+### Finished:
+
+1. Approved scope frozen; private real source/findings/audit available; clippy passed.
+
+### Running now:
+
+1. Bridge implementation3373 and Rust suite43354.
+
+### Still to do:
+
+1. Inspect implementation, verify real journey, independent review, commit/push.
+
+### Next work action:
+
+1. Accept source-compatible pagination and execute bridge journey.
+
+[x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-004] Event (during round A-006)
+
+* _2026-09-11 18:12:22 (GPT-6/default)_
+
+Rust suite43354 terminalPASS. Bridge3373 remains active with declared script/test writes only in isolated clone; source now handles omitted terminal cursor and exact SHA selection. Parent inspected network HMAC/redirect and scope/source verification boundaries; no import or live model call yet. Live checkout changed paths remain active stream records only. Private repository identity in an uncommitted RUN was minimized before public delivery; complete identity and source inventory remain private. Tracker unchanged, no expanded scope.
+
+## [WIP-002] Checkpoint (during round A-006)
+
+* _2026-09-11 18:12:22 (GPT-6/default)_
+
+### Finished:
+
+1. Full Rust suite and clippy passed; real read-only pilot inputs and model/OCI availability verified.
+2. Candidate bridge source exists and key source/credential boundaries inspected.
+
+### Running now:
+
+1. Isolated implementation3373 completing tests and documentation.
+
+### Still to do:
+
+1. Import terminal delivery, run Python suite and real PTY/model/report journey.
+2. Independent acceptance, commit and push.
+
+### Next work action:
+
+1. Execute real capture and prepare immediately after scoped source delivery.
+
+[x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-005] Event (during round A-006)
+
+* _2026-09-11 18:19:58 (GPT-6/default)_
+
+Parent froze candidate bridge plus four unchanged released core modules in a private pilot tool directory to overlap real verification with worker test/doc completion. Real PTY49292 capture0 and85984 prepare0 terminal;2 accepted findings/22 audit events, no exclusions, source complete. Private hashes identify candidate. Candidate vs current worker diff is currently only lazy HTTP status fallback for test responses, not preparation/evaluation logic; final source equivalence and affected real capture will be rechecked before acceptance. PTY87533 real model run active with in-memory Keychain auth only; snapshot written and first invocation complete. No service/GitHub writes or source checkout mutation. Worker3373 still active; declared docs/script/tests only.
+
+## [RUN-006] Event (during round A-006)
+
+* _2026-09-11 18:27:56 (GPT-6/default)_
+
+Worker3373 terminal0; full2787-byte report e34cefa05950a0f5f403a984dc06098e1394efffba2d6e0c97992b1ccff890a4 and exact3 product paths plus report verified/imported. Parent real PTY87533 terminal0 after267.869seconds;2 model-supported/qualified executed_reproduced items, no discovery candidates, differing usefulness judgments, verified weekly output. No credential leak and no source mutation observed. Source contract reopened for cursor family: initial brief's missing-cursor premise was wrong; Rust skips every Option::None terminal cursor, regardless of event count. Later worker conservative nonempty-page rule regresses actual22-event API response. Owner's connect request requires correcting that false partial status; bounded follow-up changes only capture cursor handling/tests and observed report-interpretation docs, not model/preparation/core behavior.
