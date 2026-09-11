@@ -1369,3 +1369,19 @@ Approved action: merge the accepted working branch and publish evaluation-v0.1.0
 * _2026-09-10 18:21:23 (GPT-6/default)_
 
 Route direct release operation on already accepted source. Owner approved merge and evaluation-v0.1.0 publication; no repeat permission or new source review required absent a change/failure. Fresh origin main16aa2d46b0be72a35100e57c8c934bf0835adef4 is ancestor of head90c9d021744dcf91f8b3b3560bbace56502afb27, no incoming divergence; no PR exists. Branch includes previously accepted SHA integrity, model evaluation, package and Linux runtime evidence. Protected main requires openab/council. Merge triggers CI only; evaluation tag is separate from Rust v* release. Plan: create PR, satisfy current checks, merge without deleting user worktree, publish unique tag, independently verify release artifacts and image. Main checkout foreign edits preserved.
+
+## [RUN-002] Event (during round A-005)
+
+* _2026-09-11 09:26:24 (GPT-6/default)_
+
+CI34465635212 PASS all steps. Council round1 changes requested at db4c91f: F1 mutable Docker FROM tags and F2 ranged build dependencies are confirmed in release inputs. Owner approved publishing this version after checks, so accept bounded immutable image references plus hashed release-builder requirements shared by CI/Docker; no full byte-reproducibility or general supply-chain redesign. F3 wording was about packaging phase, but PR-base readers need explicit net-new evaluator scope; clarify description. F4 rejected as source repair: host replay inventory directly proves unchanged hashes/mtimes, not an os.utime feature; clarify evidence provenance in description. Route selected_advisors for one bounded pinning implementation and targeted independent cross-check; no core semantic changes. Current resolved image digests and downloaded wheel hashes frozen. Exact-session read-only diagnosis found council in dev lane closed; prod lookup404, no service mutation. Scope/tracker reconciled; no merge/tag yet.
+
+## [WIP-001] Checkpoint (during round A-005)
+
+* _2026-09-11 09:26:24 (GPT-6/default)_
+
+- **Finished:** PR418 and full Rust/Postgres CI; council report inspected and bounded disposition recorded.
+- **Running now:** Release-input pinning preparation; no remote job pending.
+- **Still to do:** Pin/hash-check build inputs, independent review and council, merge, publish and read back artifacts.
+- **Next work action:** Dispatch bounded implementation from frozen registry identities.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker

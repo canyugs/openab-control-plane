@@ -1,0 +1,20 @@
+{
+  "baseRefOid": "16aa2d46b0be72a35100e57c8c934bf0835adef4",
+  "headRefOid": "db4c91f373a8fa69189a3fdeee3dc99e96891ee9",
+  "mergeStateStatus": "BLOCKED",
+  "number": 418,
+  "state": "OPEN",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-10T10:24:14Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/canyugs/openab-control-plane/actions/runs/34465635212/job/102833434786",
+      "name": "rust",
+      "startedAt": "2026-09-10T10:21:36Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    }
+  ],
+  "url": "https://github.com/canyugs/openab-control-plane/pull/418"
+}
