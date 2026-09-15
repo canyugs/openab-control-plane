@@ -76,6 +76,11 @@ The ledger title is copied literally into both `title` and `claim`, with
 `claim_provenance: ledger_title_only`. Status is not interpreted as accuracy.
 Each accepted finding's evidence is the exact regular UTF-8 whole file from
 the frozen source packet, with its source SHA-256 and actual full-file range.
+Findings at the same frozen path and content hash share one evidence entry;
+identical content at different paths retains separate allowed ranges.
+Preparation format v2 uses these shared evidence identities. Re-run `prepare`
+into a new directory for v1 captures already prepared with the earlier bridge;
+the raw capture format is unchanged.
 Malformed selected rows and conflicting duplicate identities block the
 preparation; exact duplicate rows may be deduplicated but are counted. Zero
 selected findings is also an explicit blocked preparation, never a passing
@@ -140,7 +145,12 @@ available.
 
 ## Current bounds and truth limits
 
-The bridge bounds each HTTP page at 16 MiB and each request at 15 seconds;
+The bridge bounds each HTTP page at 16 MiB. The response-body deadline uses
+what remains of a 15-second budget started before opening the request. Each
+read returns after at most one raw read and uses the remaining socket timeout,
+so trickling bytes cannot keep a body read alive indefinitely. Connection and
+header acquisition also use a 15-second socket timeout (an inactivity timeout,
+not a hard wall-clock deadline for DNS resolution or trickled headers);
 findings use limit 5,000, audit uses limit 500, and audit pagination defaults
 to 100 pages (maximum 10,000). The released source-packet defaults remain:
 

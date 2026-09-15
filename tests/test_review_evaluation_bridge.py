@@ -6,6 +6,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -82,6 +83,7 @@ class CaptureHandler(BaseHTTPRequestHandler):
 
 class FakeResponse:
     def __init__(self, body):
+        self.fp = None
         self.status = 200
         self.headers = {"Content-Length": str(len(body))}
         self._body = body
@@ -90,7 +92,7 @@ class FakeResponse:
     def getcode(self):
         return self.status
 
-    def read(self, _size=-1):
+    def read1(self, _size=-1):
         if self._read:
             return b""
         self._read = True
@@ -227,6 +229,76 @@ def models_fixture(path):
 
 
 class ReviewEvaluationBridgeTests(unittest.TestCase):
+    def test_many_findings_share_large_file_evidence(self):
+        module = load_module()
+        content = "x" * (2 * 1024 * 1024 - 1) + "\n"
+        revision = "a" * 40
+        scope = {"repository": "owner/repo", "pr": 17, "session": "session-1"}
+        row = {"id": 1, "session_id": "session-1", "repo": "owner/repo",
+               "pr_number": 17, "stable_id": "stable", "severity": "red",
+               "status": "open", "title": "claim", "path": "large.txt",
+               "line": 1, "head_sha": revision, "created_at": 1}
+        packet = {"files": [{"path": "large.txt", "utf8": content,
+                             "sha256": hashlib.sha256(content.encode()).hexdigest()}]}
+        capture = {"metadata": {"scope": scope}, "findings_rows": [
+            {"page": 1, "row_index": i, "row": {**row, "id": i + 1}}
+            for i in range(32)]}
+        selection = module._select_findings(capture, packet, revision)
+        findings, evidence = module._core_input_values(selection)
+        module._validate_core_input_values(findings, evidence)
+        self.assertEqual(len(selection["accepted"]), 32)
+        self.assertEqual(len(selection["evidence_entries"]), 1)
+        self.assertEqual(len({item["evidence_id"] for item in selection["accepted"]}), 1)
+        # Identical bytes at another path must retain their own allowed range.
+        packet["files"].append({**packet["files"][0], "path": "other.txt"})
+        capture["findings_rows"].append(
+            {"page": 1, "row_index": 32, "row": {**row, "id": 33, "path": "other.txt"}})
+        selection = module._select_findings(capture, packet, revision)
+        self.assertEqual(len(selection["evidence_entries"]), 2)
+
+    def test_http_deadline_interrupts_trickling_and_stalled_bodies(self):
+        module = load_module()
+        for mode in ("trickle", "stall"):
+            with self.subTest(mode=mode):
+                stopped = threading.Event()
+
+                class Handler(BaseHTTPRequestHandler):
+                    def log_message(self, *_args):
+                        pass
+
+                    def do_GET(self):
+                        self.send_response(200)
+                        self.send_header("Content-Length", "1000")
+                        self.end_headers()
+                        try:
+                            if mode == "stall":
+                                stopped.wait(2)
+                            else:
+                                until = time.monotonic() + 1.2
+                                while not stopped.is_set() and time.monotonic() < until:
+                                    self.wfile.write(b" ")
+                                    self.wfile.flush()
+                                    stopped.wait(0.03)
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+
+                server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+                worker = threading.Thread(target=server.serve_forever, daemon=True)
+                worker.start()
+                try:
+                    with mock.patch.object(module, "MAX_REQUEST_SECONDS", 0.2):
+                        start = time.monotonic()
+                        with self.assertRaises(module.BridgeError):
+                            module._request_json(
+                                f"http://127.0.0.1:{server.server_port}/", SECRET)
+                        elapsed = time.monotonic() - start
+                    self.assertLess(elapsed, 0.8)
+                finally:
+                    stopped.set()
+                    server.shutdown()
+                    server.server_close()
+                    worker.join()
+
     def test_capture_signs_exact_queries_and_follows_opaque_cursor(self):
         module = load_module()
         CaptureHandler.requests = []

@@ -39,7 +39,7 @@ from zoneinfo import ZoneInfo
 
 BRIDGE_VERSION = "review-evaluation-bridge/v1"
 CAPTURE_VERSION = "review-evaluation-capture/v1"
-PREPARATION_VERSION = "review-evaluation-preparation/v1"
+PREPARATION_VERSION = "review-evaluation-preparation/v2"
 FINDINGS_VERSION = "review-model-findings/v1"
 EVIDENCE_VERSION = "review-model-evidence/v1"
 WEEKLY_MANIFEST_VERSION = "review-round-weekly-evidence/v1"
@@ -400,6 +400,7 @@ def _request_json(url: str, secret: str) -> tuple[Any, bytes, str, int]:
         },
     )
     response: Any = None
+    deadline = time.monotonic() + MAX_REQUEST_SECONDS
     try:
         response = _OPENER.open(request, timeout=MAX_REQUEST_SECONDS)
         status_value = getattr(response, "status", None)
@@ -415,13 +416,20 @@ def _request_json(url: str, secret: str) -> tuple[Any, bytes, str, int]:
                     raise BridgeError("HTTP response exceeds the bound")
             except ValueError as exc:
                 raise BridgeError("HTTP response has an invalid length") from exc
-        deadline = time.monotonic() + MAX_REQUEST_SECONDS
         chunks: list[bytes] = []
         total = 0
         while True:
-            if time.monotonic() > deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise BridgeError("HTTP request timed out")
-            chunk = response.read(min(64 * 1024, MAX_PAGE_BYTES + 1 - total))
+            # HTTPResponse.read() can wait for the entire requested size while
+            # a peer trickles bytes. read1() returns after at most one raw read;
+            # cap that read by the remaining budget, including header latency.
+            if response.fp is not None:
+                response.fp.raw._sock.settimeout(remaining)
+            chunk = response.read1(min(64 * 1024, MAX_PAGE_BYTES + 1 - total))
+            if time.monotonic() >= deadline:
+                raise BridgeError("HTTP request timed out")
             if not chunk:
                 break
             chunks.append(chunk)
@@ -986,8 +994,9 @@ def _select_findings(capture_data: Mapping[str, Any], source_packet: Mapping[str
             continue
         seen_exact.add(identity)
         finding_id = f"{identity[0]}:{identity[1]}"
-        evidence_id = f"E-{sha256_bytes(finding_id.encode('utf-8'))[:24]}"
         path = row["path"]
+        evidence_identity = canonical_json([path, source[path]["sha256"]])
+        evidence_id = f"E-{sha256_bytes(evidence_identity.encode('utf-8'))[:24]}"
         line = row["line"]
         normalized = {
             "finding_id": finding_id,
@@ -1014,7 +1023,11 @@ def _select_findings(capture_data: Mapping[str, Any], source_packet: Mapping[str
 
     source_files = _source_entries(source_packet)
     evidence_entries: list[dict[str, Any]] = []
+    seen_evidence: set[str] = set()
     for item in accepted:
+        if item["evidence_id"] in seen_evidence:
+            continue
+        seen_evidence.add(item["evidence_id"])
         path = item["finding"]["location"]["path"]
         entry = source_files[path]
         data = entry.get("utf8")
