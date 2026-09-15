@@ -1,0 +1,14 @@
+{
+  "changed_files": [
+    "scripts/review_evaluation_bridge.py",
+    "tests/test_review_evaluation_bridge.py",
+    "docs/evaluation-integration.md"
+  ],
+  "changed_lines": 2753,
+  "behavior_change": true,
+  "trust_boundary": true,
+  "broad_change": true,
+  "consequential_change": false,
+  "workspace_layout_change": false,
+  "owner_control": "default"
+}

@@ -8,29 +8,29 @@
 
 - **Goal:** Merge the accepted branch and publish verified evaluation-v0.1.0 artifacts without deploying services.
 
-- **Last update:** 2026-09-10 18:23:37 Asia/Taipei.
+- **Last update:** 2026-09-11 10:02:49 Asia/Taipei.
 
-- **Evidence commit:** uncommitted.
+- **Evidence commit:** 4b9ea56f0fd7466685ee57b196f6947c7de713a7.
 
 ## Overall state
 
-- **State:** active.
+- **State:** complete.
 
-- **Reason:** Work remains.
+- **Reason:** Approved merge and publication verified.
 
 - **Total:** 3.
 
-- **Completed:** 0.
+- **Completed:** 3.
 
-- **Remaining:** 3.
+- **Remaining:** 0.
 
 ## Accepted task checklist
 
-- [ ] **T-1:** Merge PR418 at its checked head after required council and CI results; preserve source and user checkout; prove merged commit. Source: A-005.
+- [x] **T-1:** Merge PR418 at its checked head after required council and CI results; preserve source and user checkout; prove merged commit. Source: A-005. Proof: merge-readback.json; pr-ready-to-merge.json; pr-ci-round2.json; council-round2.json; merge e33f77c78c4137abd7104f2e0b6acb667f0c4a5d.
 
-- [ ] **T-2:** Publish only evaluation-v0.1.0 from the merged source; prove tag identity and successful release workflow, no Rust tag or deployment. Source: A-005.
+- [x] **T-2:** Publish only evaluation-v0.1.0 from the merged source; prove tag identity and successful release workflow, no Rust tag or deployment. Source: A-005. Proof: published-tag.txt; release-workflow.json; published-release.json.
 
-- [ ] **T-3:** Independently read back release wheel/sdist and GHCR image, verify installed CLI and image identity, and record actual limits. Source: A-005.
+- [x] **T-3:** Independently read back release wheel/sdist and GHCR image, verify installed CLI and image identity, and record actual limits. Source: A-005. Proof: published-wheel-install.json; published-image-pull.json; published-image-readback.json.
 
 ## Accepted scope changes
 
@@ -38,29 +38,29 @@
 
 ## Current recovery
 
-- **Current item:** T-1.
+- **Current item:** none.
 
-- **Last proven result:** Rust/Postgres CI PASS; council F1/F2 mutable build inputs confirmed, F3 PR wording clarified scope, F4 mtime claim has direct host proof.
+- **Last proven result:** PR418 merged after CI/council/cross-check PASS; merged tree equals checked4b9ea56; evaluation-v0.1.0 tag pushed at e33f77c.
 
-- **Active blocker or running process:** Council changes requested; bounded image/build-lock correction required before merge.
+- **Active blocker or running process:** none.
 
-- **Next safe action:** Pin resolved build inputs, clarify PR description, validate and rerun checks.
+- **Next safe action:** none.
 
 - **Expected changed files:** Dockerfile.evaluation; .github/workflows/evaluation-release.yml; packaging/evaluation/build-requirements.lock; docs/evaluation-package.md; stream records.
 
 ## Completion proof
 
-- **All accepted tasks checked:** no.
+- **All accepted tasks checked:** yes.
 
 - **Blocking accepted decision:** none.
 
-- **Operation running:** yes.
+- **Operation running:** no.
 
-- **Next action remaining:** T-1.
+- **Next action remaining:** none.
 
-- **Evidence status:** current.
+- **Evidence status:** complete.
 
-- **Judgment:** active.
+- **Judgment:** complete.
 
 ## Update meaning
 

@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "docker",
+    "--config",
+    "/private/var/folders/sd/lyvwlbld52j4b4bptd8yfr9w0000gn/T/ocp-published-release-2oh2zwxh/anonymous-docker-config",
+    "--host",
+    "unix:///var/run/docker.sock",
+    "pull",
+    "--platform",
+    "linux/amd64",
+    "ghcr.io/canyugs/ocp-review-eval:0.1.0"
+  ],
+  "exit": 0,
+  "diagnostic": "0.1.0: Pulling from canyugs/ocp-review-eval\nf1773937c4c0: Pulling fs layer\n532a35d358e6: Pulling fs layer\n0fb25fabd1d2: Pulling fs layer\ndc41dc258c78: Pulling fs layer\n4f4fb700ef54: Pulling fs layer\n615cfebb94c8: Pulling fs layer\n4f4fb700ef54: Already exists\n4f4fb700ef54: Pull complete\n615cfebb94c8: Download complete\n0fb25fabd1d2: Download complete\nf1773937c4c0: Download complete\n532a35d358e6: Download complete\ndc41dc258c78: Download complete\ndc41dc258c78: Pull complete\nf1773937c4c0: Pull complete\n0fb25fabd1d2: Pull complete\n532a35d358e6: Pull complete\n615cfebb94c8: Pull complete\nDigest: sha256:b7eaa9fa9b963f26c929db73b216be9dd8ba31bb60c6537ef024f13c51eb2cc3\nStatus: Downloaded newer image for ghcr.io/canyugs/ocp-review-eval:0.1.0\nghcr.io/canyugs/ocp-review-eval:0.1.0\n"
+}

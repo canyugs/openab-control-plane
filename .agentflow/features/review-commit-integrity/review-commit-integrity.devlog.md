@@ -2,13 +2,13 @@
 
 Project: OCP review-service improvement.
 Notebook: .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md — stream.
-Current commit: a46a93845c0f819362b5f08f07345ffa67cbb69f tested source; A-004 adds runtime evidence only.
-Tests/scenarios: Prior96 Python tests; fresh Linux model auth/evaluation, OCI, no-auth replay and weekly PASS.
+Current commit: 043201b141c2bd549c119998b26fc158aec31c0f accepted implementation; final records only follow.
+Tests/scenarios: 110 Python tests/no skips, Rust suite and clippy PASS; unrelated baseline fmt differences retained.
 Configuration: ag.json — schema v7; validated for codex this round.
-Proven: A-003 package accepted; A-004 real Linux evaluation complete; source and old evidence unchanged.
-Open: no A-004 task; exact response model identity unavailable; publication/deployment not performed.
-Next: publication/merge is the subsequent step; await owner direction.
-Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-004-linux-runtime.
+Proven: A-006 single-session capture, private model pilot and verified report complete; independent review PASS; draft PR419 source CI passed.
+Open: No single-session implementation blocker. Future scheduling needs runner identity and complete reporting sources.
+Next: Choose runner and connect complete product tables in subsequent work; no deployment or schedule activated.
+Artifacts: .agentflow/features/review-commit-integrity/artifacts/A-006-integration.
 Archived eras: none.
 Streams:
 stream: review-commit-integrity — active — .agentflow/features/review-commit-integrity/review-commit-integrity.devlog.md
@@ -1397,3 +1397,299 @@ Dispatch release-pins implementation, gpt-5.6-luna/max, external-runner-v1 ataeb
 * _2026-09-11 09:34:42 (GPT-6/default)_
 
 Release-pins91094 terminalexit0; full4322-byte report98542b3ffd827fe1f2f0e0be1185a1248803551dfb4498c8842abd131e27e746 and exact4-file scope verified/imported. Parent pip tamper rejection, final locked clean install, no-isolation wheel/sdist/fresh CLI install,96 tests/no skips, final actual image and UID/module hashes PASS. Nine image input hashes match finalsource. Cross-check plan full (small change but explicit builder trust inputs), frozen facts; no wider source review. Freeze source, update PR description, then independent review and automated council on same head. No merge/tag yet.
+
+## [RUN-005] Event (during round A-005)
+
+* _2026-09-11 09:35:13 (GPT-6/default)_
+
+Dispatch release-crosscheck acceptance, gpt-5.6-terra/high, external-runner-v1 at4b9ea56f0fd7466685ee57b196f6947c7de713a7; immutable brief frozen, no remote/production authority.
+
+## [RUN-006] Event (during round A-005)
+
+* _2026-09-11 09:36:12 (GPT-6/default)_
+
+Source4b9ea56f0fd7466685ee57b196f6947c7de713a7 pushed to PR418; description now explicitly net-new evaluator modules relative to main and host inventory basis for mtime observation. Scope reconciled:4 declared product paths plus stream records only; core/launcher/metadata unchanged. Implementation91094, image64267, builder68915, suite63901 and push93419 terminal. Cross-check88116 active at same source; GitHub CI/council now review this head. Tracker updated; no merge/tag/publication yet.
+
+## [WIP-002] Checkpoint (during round A-005)
+
+* _2026-09-11 09:36:12 (GPT-6/default)_
+
+- **Finished:** Release pins and PR clarification pushed;96 tests, actual locked package/image and negative hash verification PASS.
+- **Running now:** Independent cross-check88116 and PR418 CI/council at4b9ea56.
+- **Still to do:** Current review results, exact-head merge, evaluation tag publication and artifact readback.
+- **Next work action:** Collect required checks while keeping source frozen.
+- **Checks:** [x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-007] Event (during round A-005)
+
+* _2026-09-11 09:40:43 (GPT-6/default)_
+
+Cross-check88116 terminalexit0, full5629-byte report3d9a127c292f2f22f6cf310f754f7d3e47b667b1ff37c870c18df6922feb7c54 verified/read, report-only scope. Outcome/Minimality/Conformance/Overall/Verdict PASS at4b9ea56. Parent independently read corrected PR body and current head, successful CI34551280096 and council round2 LGTM/all F1-F4 resolved; PR CLEAN. F5 no-action wheel-library note already addressed by actual parent+reviewer no-isolation builds; release workflow will provide final hosted proof. Host gate: PASS. All workers terminal. Proceed under owner merge/publication approval with exact-head guard; no admin bypass or unrelated service changes.
+
+## [RUN-008] Event (during round A-005)
+
+* _2026-09-11 09:42:50 (GPT-6/default)_
+
+PR418 merged at e33f77c78c4137abd7104f2e0b6acb667f0c4a5d using exact-head guard4b9ea56, no bypass. Independent GitHub readback MERGED; fetched merge tree equals reviewed head tree. Confirmed no local/remote evaluation-v0.1.0 collision, created annotated tag at exact merged commit and pushed successfully. Main checkout untouched; only evaluation release lane triggered. T-1 complete; T-2/T-3 running publication/readback, no production deployment.
+
+# ← Reply / A-005
+
+* _2026-09-11 10:03:15 (GPT-6/default)_
+
+## [SUMMARY]
+
+- PR418 已合併，evaluation-v0.1.0 已發布 wheel、sdist 與 GHCR image。
+- 發布附件安裝、匿名 image 拉取、CLI 與核心模組雜湊驗證通過。
+- 本輪沒有部署服務；image 平台為 linux/amd64。
+
+## [FINAL REPORT]
+
+# Evaluation v0.1.0 release verification
+
+PR418 merged as e33f77c78c4137abd7104f2e0b6acb667f0c4a5d; its tree equals reviewed source4b9ea56f0fd7466685ee57b196f6947c7de713a7. Required CI/council and independent cross-check passed. Release workflow34551718016 succeeded; annotated evaluation-v0.1.0 resolves to the merge commit.
+
+Release: https://github.com/canyugs/openab-control-plane/releases/tag/evaluation-v0.1.0
+
+Downloaded wheel and sdist SHA256 match GitHub asset digests. Fresh offline wheel installation outside checkout and both CLI help commands passed. Anonymous pull of ghcr.io/canyugs/ocp-review-eval:0.1.0 passed. Registry digest: sha256:b7eaa9fa9b963f26c929db73b216be9dd8ba31bb60c6537ef024f13c51eb2cc3. Actual linux/amd64 image runs as UID65532; both CLI help commands pass with network disabled and all four installed core module hashes match the reviewed source.
+
+96 Python tests, hosted Rust/Postgres CI, locked package/image builds and tampered builder rejection passed before merge. No service deployment or new model evaluation was performed this round. Image supports linux/amd64; apt/npm remain upstream-resolved, so this is not a bit-for-bit reproducibility claim. Prior real model evaluation evidence remains A-004, including unavailable observed response model identity.
+
+Cross-check review: .agentflow/features/review-commit-integrity/artifacts/A-005-release/release-crosscheck-report.md
+Cross-check implementation: 4b9ea56f0fd7466685ee57b196f6947c7de713a7
+Host gate: PASS
+
+## Questions (batched — each with a suggested default)
+
+- None.
+
+---
+
+# → Ask / A-006
+
+使用者原文：
+
+> 下一步
+> 那可以開始接上了
+
+Approved scope: connect the previously proposed read-only OCP review capture, fixed PR/SHA findings/evidence, standalone model evaluation and weekly report flow. Implement and validate the integration; scheduling follows a proven first real-data run. No verdict, GitHub write, service deployment or credential rotation.
+
+## [RUN-001] Event (during round A-006)
+
+* _2026-09-11 17:47:37 (GPT-6/default)_
+
+Dispatch bridge implementation, gpt-5.6-luna/max, external-runner-v1 ata4017b87f6b7357ef9c3cba63ff7052e95ce7532; immutable brief frozen, no remote/production authority.
+
+## [RUN-002] Event (during round A-006)
+
+* _2026-09-11 17:49:54 (GPT-6/default)_
+
+Owner approved the concrete capture/prepare/evaluate/report sequence in the preceding conversation. Higher-priority instruction says preserve that authorization and complete reversible implementation without asking again; exact plan a4017b8 records accepted scope, no new Design Go requested. Route selected_advisors with bounded bridge implementation and final independent cross-check; released core/API/storage unchanged. Worker3373 active. Current production observer GET succeeds; dev GET returns invalid_observation_signature403, optional credential-location question pending but no longer blocks prod read-only pilot. Selected actual private-repository session has2 findings with locations at its immutable recorded head; explicit pull ref fetched after default clone lacked its squashed head. Clean no-remote private clone source packet50 files/238617bytes complete. Raw private source/findings remain outside public checkout; only sanitized verification metadata may enter public records. Base is captured GitHub base/merge-base, not asserted original historical base. Current API lacks product tables; weekly reliability/cost/human coverage must remain unknown until supplied.
+
+## [RUN-003] Event (during round A-006)
+
+* _2026-09-11 17:53:27 (GPT-6/default)_
+
+Live audit22 events use serde omitted next_cursor for terminal None (confirmed crates/controller-protocol/src/audit.rs219-223); parent will reconcile the brief's stricter missing-cursor wording against actual source before accepting implementation. Clippy all-targets/all-features PASS; cargo fmt check reports existing unchanged baseline formatting in Rust files, no adjacent repair. Full Rust suite43354 running. Bridge3373 active in isolated clone, process healthy. Current changed paths are active stream records only, tracker scope unchanged. Production read-only pilot and model/OCI availability established; no model calls yet.
+
+## [WIP-001] Checkpoint (during round A-006)
+
+* _2026-09-11 17:53:46 (GPT-6/default)_
+
+### Finished:
+
+1. Approved scope frozen; private real source/findings/audit available; clippy passed.
+
+### Running now:
+
+1. Bridge implementation3373 and Rust suite43354.
+
+### Still to do:
+
+1. Inspect implementation, verify real journey, independent review, commit/push.
+
+### Next work action:
+
+1. Accept source-compatible pagination and execute bridge journey.
+
+[x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-004] Event (during round A-006)
+
+* _2026-09-11 18:12:22 (GPT-6/default)_
+
+Rust suite43354 terminalPASS. Bridge3373 remains active with declared script/test writes only in isolated clone; source now handles omitted terminal cursor and exact SHA selection. Parent inspected network HMAC/redirect and scope/source verification boundaries; no import or live model call yet. Live checkout changed paths remain active stream records only. Private repository identity in an uncommitted RUN was minimized before public delivery; complete identity and source inventory remain private. Tracker unchanged, no expanded scope.
+
+## [WIP-002] Checkpoint (during round A-006)
+
+* _2026-09-11 18:12:22 (GPT-6/default)_
+
+### Finished:
+
+1. Full Rust suite and clippy passed; real read-only pilot inputs and model/OCI availability verified.
+2. Candidate bridge source exists and key source/credential boundaries inspected.
+
+### Running now:
+
+1. Isolated implementation3373 completing tests and documentation.
+
+### Still to do:
+
+1. Import terminal delivery, run Python suite and real PTY/model/report journey.
+2. Independent acceptance, commit and push.
+
+### Next work action:
+
+1. Execute real capture and prepare immediately after scoped source delivery.
+
+[x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-005] Event (during round A-006)
+
+* _2026-09-11 18:19:58 (GPT-6/default)_
+
+Parent froze candidate bridge plus four unchanged released core modules in a private pilot tool directory to overlap real verification with worker test/doc completion. Real PTY49292 capture0 and85984 prepare0 terminal;2 accepted findings/22 audit events, no exclusions, source complete. Private hashes identify candidate. Candidate vs current worker diff is currently only lazy HTTP status fallback for test responses, not preparation/evaluation logic; final source equivalence and affected real capture will be rechecked before acceptance. PTY87533 real model run active with in-memory Keychain auth only; snapshot written and first invocation complete. No service/GitHub writes or source checkout mutation. Worker3373 still active; declared docs/script/tests only.
+
+## [RUN-006] Event (during round A-006)
+
+* _2026-09-11 18:27:56 (GPT-6/default)_
+
+Worker3373 terminal0; full2787-byte report e34cefa05950a0f5f403a984dc06098e1394efffba2d6e0c97992b1ccff890a4 and exact3 product paths plus report verified/imported. Parent real PTY87533 terminal0 after267.869seconds;2 model-supported/qualified executed_reproduced items, no discovery candidates, differing usefulness judgments, verified weekly output. No credential leak and no source mutation observed. Source contract reopened for cursor family: initial brief's missing-cursor premise was wrong; Rust skips every Option::None terminal cursor, regardless of event count. Later worker conservative nonempty-page rule regresses actual22-event API response. Owner's connect request requires correcting that false partial status; bounded follow-up changes only capture cursor handling/tests and observed report-interpretation docs, not model/preparation/core behavior.
+
+## [RUN-007] Event (during round A-006)
+
+* _2026-09-11 18:27:57 (GPT-6/default)_
+
+Dispatch cursor-fix implementation, gpt-5.6-luna/max, external-runner-v1 at6408b48980863aa1d336c25dc8188e3f1caeb6c9; immutable brief frozen, no remote/production authority.
+
+## [RUN-008] Event (during round A-006)
+
+* _2026-09-11 18:37:52 (GPT-6/default)_
+
+Cursor70735 terminal0; full3411-byte528b9ecc2ca0bc310c5d45d8f08cd235f1c34f91a1945474a57d8323ff81d846 report and exact3-file scope verified/imported. Parent AST comparison found3 capture/HTTP helpers differ from live candidate (including stricter echoed findings limit5000); preparation/run and all4 released core modules are unchanged. Final source accepts original prepared input and verified evaluation. Final actual PTYs30456 capture0 and52894 prepare0: source packet/findings/evidence byte-identical to successful paid evaluation, so no duplicate model call. Final complete Python suite109 tests/no skips PASS (one loopback ResourceWarning retained); diffcheckPASS. Full cross-check selected for network/immutable-data boundary. Freeze source for independent acceptance. Pending optional runner question concerns subsequent scheduling only; this round did not deploy or schedule services.
+
+## [RUN-009] Event (during round A-006)
+
+* _2026-09-11 18:38:41 (GPT-6/default)_
+
+Dispatch integration-crosscheck acceptance, gpt-5.6-terra/high, external-runner-v1 at96f329d33ec82461954d6fee77c63f80a566cf68; immutable brief frozen, no remote/production authority.
+
+## [WIP-003] Checkpoint (during round A-006)
+
+* _2026-09-11 18:39:19 (GPT-6/default)_
+
+### Finished:
+
+1. Read-only bridge and cursor correction implemented;109 Python tests/no skips, Rust suite and clippy passed.
+2. Real private capture/prepare/model/report complete; final model inputs identical; source and credential boundaries verified.
+
+### Running now:
+
+1. Independent full cross-check66970 at96f329d.
+
+### Still to do:
+
+1. Accept review, prepare final report and push reviewable delivery.
+
+### Next work action:
+
+1. Inspect exact-head reviewer findings while retaining private outputs outside public repo.
+
+[x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-010] Event (during round A-006)
+
+* _2026-09-11 18:46:19 (GPT-6/default)_
+
+Cross-check66970 terminal0; full5751-byte4b37da6d5f5aa80c81ccce5709dcc303f3a7ca401fae3e02e2eca754e2725218 report verified/read, report-only scope. Minimality PASS; Outcome/Conformance BLOCKING: unverified failed evaluation still causes an evaluation-less weekly report, contradicting the documented verified-output gate. Parent confirmed run() passesNone after verifier failure and existing test codifies complete weekly status. Adopt bounded repair under owner's connect-to-evaluation/report request and existing verified-artifact boundary: retain failure artifacts/run ledger but block weekly creation unless evaluation artifact verification passes. Verified partial/failed artifacts still produce unscoreable coverage reports. This changes only failure handoff, not prior successful paid model inputs; fix then recheck same review identity attempt2. ResourceWarning/record whitespace are non-blocking observations, not new product scope.
+
+## [RUN-011] Event (during round A-006)
+
+* _2026-09-11 18:46:19 (GPT-6/default)_
+
+Dispatch weekly-gate-fix implementation, gpt-5.6-luna/max, external-runner-v1 at52d0e6d8a4bed6e37118d76e918830b396c53c66; immutable brief frozen, no remote/production authority.
+
+## [RUN-012] Event (during round A-006)
+
+* _2026-09-11 19:07:39 (GPT-6/default)_
+
+Weekly gate repair63907 active in isolated clone; parent inspected bounded run() guard diff and matching tests/docs. No live/private/model operations by worker. Candidate success/failure handoff scope unchanged; only stream records changed in parent checkout. All earlier implementation/review/model/PTY processes terminal. Parent prepared a no-auth real-artifact replay journey and private durable pilot report; final source import/tests/review still pending.
+
+## [WIP-004] Checkpoint (during round A-006)
+
+* _2026-09-11 19:07:39 (GPT-6/default)_
+
+### Finished:
+
+1. Real single-session capture/model/report journey verified and private evidence retained.
+2. Independent review completed; one concrete weekly verification-gate defect adopted for repair.
+
+### Running now:
+
+1. Bounded weekly gate fix63907; candidate diff inspected.
+
+### Still to do:
+
+1. Import finished repair, rerun relevant suite and verified-artifact replay.
+2. Acceptance attempt2 and delivery.
+
+### Next work action:
+
+1. Validate repaired failure gate and unchanged successful report output.
+
+[x] tracker.md | [x] devlog RUN | [x] scope matches tracker
+
+## [RUN-013] Event (during round A-006)
+
+* _2026-09-11 19:09:55 (GPT-6/default)_
+
+Weekly-gate63907 terminal0; full3683-byte0446bf1cf08948daa0b0a3f1dac3fcbc0573aa90ac1cce9718a3179a828f125d report read/verified and exact3-file scope imported. Exception/tamper red tests now block weekly while preserving evidence; verified failed-artifact test stays green. Parent final110-test suite/no skips PASS (same non-blocking loopback ResourceWarning); product diffcheckPASS. Only run() changed versus reviewed96f329d, with capture/preparation and4 released core modules unchanged. Real PTY99387 no-auth replay uses verified actual pilot artifacts, makes0 new model/OCI calls, and produces byte-identical weekly JSON/Markdown. Closeout now rechecks the one adopted failure-gate repair under same acceptance identity attempt2; no unrelated source edits.
+
+## [RUN-014] Event (during round A-006)
+
+* _2026-09-11 19:09:55 (GPT-6/default)_
+
+Dispatch integration-crosscheck-2 acceptance, gpt-5.6-terra/high, external-runner-v1 at043201b141c2bd549c119998b26fc158aec31c0f; immutable brief frozen, no remote/production authority.
+
+## [RUN-015] Event (during round A-006)
+
+* _2026-09-11 19:20:57 (GPT-6/default)_
+
+Acceptance attempt2 worker40183 terminal0; full5945-byte038e5abc200c411234e5ffafbce2958ddabacad44254027172f4513cf4cb6775 report read/hash verified, report-only scope, Outcome/Minimality/Conformance/Overall/Verdict PASS at043201b141c2bd549c119998b26fc158aec31c0f. Parent confirmed adopted gate resolved,110 tests/no skips and actual replay proof; Host gate: PASS. Source pushed and draft PR419 independently read back at043201b; CI34592725486 SUCCESS. All workers and local journeys terminal. Private scope identifiers absent from public changed files. Implementation complete; remaining work is record-only closeout, no repeated source review/test. Scheduled operation awaits runner identity and complete reporting sources; it was not activated.
+
+# ← Reply / A-006
+
+## [SUMMARY]
+
+- Completed the authorized single-session read-only integration and real private pilot. Draft PR #419 is ready for review; 110 Python tests and independent review passed. No deployment or scheduler activation occurred.
+
+## [FINAL REPORT]
+
+# Evaluation integration verification
+
+The owner-approved single-session observation integration is implemented in scripts/review_evaluation_bridge.py and documented in docs/evaluation-integration.md. Capture signs bounded read-only controller requests; prepare binds source rows and evidence to explicit repository/PR/session/full revision/base; run calls the existing evaluator and reports only verified evaluation artifacts. Omitted/null audit cursors follow the controller's terminal-page contract. Missing or tampered evaluation artifacts retain failed evidence and block weekly output; verified partial/failed evaluations still produce unscoreable coverage reports.
+
+Delivery: draft PR https://github.com/canyugs/openab-control-plane/pull/419 at implementation043201b141c2bd549c119998b26fc158aec31c0f. Source was independently read back after push. CI34592725486 succeeded at that implementation. No merge, tag, service deployment or scheduled job was performed.
+
+Parent validation: complete110-test Python suite with no skips; Rust workspace/all-features suite and clippy passed. Product diff whitespace check passed. Existing unrelated Rust formatting differences remain, as does a non-blocking loopback ResourceWarning during parent Python tests. Reviewer sandbox skipped loopback binding and offline wheel building; parent exercised both. These limits are retained in the raw bounded test records.
+
+Real private pilot:2 positive observations,22 audit events,50 files/238617 source bytes,9 successful role invocations in267.869 seconds. Both claims supported and qualified executed_reproduced;0 omission candidates; usefulness split2 useful/2 not_useful judgments. Primary requested/observed IDs match Opus5/Opus4.6. Actual billing unknown; provider list estimate14.1102285 USD. This sample does not establish defect precision, recall or human truth. Provider auxiliary usage remains in private original records.
+
+The paid run used a frozen candidate. Subsequent capture-only corrections were checked with fresh actual PTY capture/prepare and byte-identical model findings/evidence/source packet. The final weekly failure-gate repair changed only run(); a no-auth real PTY replay of the verified actual outputs produced byte-identical weekly JSON/Markdown with0 additional model/OCI calls. Four released evaluator core modules remain byte-identical. Source working files were unchanged; credential readback found no leaked credential. Private inputs, captures and provider output remain outside the public repository; only sanitized attestations are committed here.
+
+Coverage: capture exhausts an exact session API query, not a retained-history or whole-week population. Missing product tables prevent delivery/reliability metrics; zero eligible sessions does not mean zero reviews. Human and actual billing coverage remain unknown; an empty per_currency map is not actual billing even with the existing empty-cohort label. Scheduling awaits a named dedicated runner and complete source capture; no recurring operation was activated. The dev observer returned invalid_observation_signature; the prod read-only route succeeded, so no credential change was needed for this pilot.
+
+Cross-check review: .agentflow/features/review-commit-integrity/artifacts/A-006-integration/integration-crosscheck-2-acceptance.md
+Cross-check implementation: 043201b141c2bd549c119998b26fc158aec31c0f
+Host gate: PASS
+
+## Questions (batched — each with a suggested default)
+
+Which existing dedicated Linux runner should host subsequent scheduled operation? Suggested default: retain manual execution until the runner is identified and complete reporting sources are available.
+
+ans:
+
+---
+
+# → Ask / A-007
+
++

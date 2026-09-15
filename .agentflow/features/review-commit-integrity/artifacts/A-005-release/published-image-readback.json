@@ -1,0 +1,27 @@
+{
+  "image": "ghcr.io/canyugs/ocp-review-eval:0.1.0",
+  "digests": [
+    "ghcr.io/canyugs/ocp-review-eval@sha256:b7eaa9fa9b963f26c929db73b216be9dd8ba31bb60c6537ef024f13c51eb2cc3"
+  ],
+  "architecture": "amd64",
+  "user": "evaluator",
+  "checks": [
+    {
+      "cli": "ocp-review-eval",
+      "exit": 0,
+      "output": "usage: ocp-review-eval [-h] {run} ...\n\nRun immutable offline model evaluation\n\npositional arguments:\n  {run}\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    {
+      "cli": "ocp-review-weekly",
+      "exit": 0,
+      "output": "usage: ocp-review-weekly [-h] --bundle BUNDLE --week WEEK --as-of AS_OF\n                         --output OUTPUT [--evaluation-root EVALUATION_ROOT]\n\nRender the frozen offline review-round weekly report\n\noptions:\n  -h, --help            show this help message and exit\n  --bundle BUNDLE\n  --week WEEK\n  --as-of AS_OF\n  --output OUTPUT\n  --evaluation-root EVALUATION_ROOT\n"
+    }
+  ],
+  "uid": 65532,
+  "hashes": {
+    "review_model_evaluation": "ef6ca77e1466ebbada4d7d8c3c911c18934e673cafa62e8d39dded4d5a3f89bf",
+    "review_model_adapters": "dac5dcebff8438ef49d1b437faf87eb5f6cc09759ef0656dcbf3c5504e8547e7",
+    "review_model_oci_executor": "5fdcfff0a0ffa0714f0681949aba31d7c7b1494b02248fdb51bea798ecd2f73f",
+    "review_round_weekly_report": "1493f337c6afb05921912a0712314859fdefa97f9929e640e650e4b60c453e29"
+  }
+}

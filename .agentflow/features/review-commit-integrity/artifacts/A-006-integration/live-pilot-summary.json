@@ -1,0 +1,51 @@
+{
+  "state": "complete",
+  "completed_invocations": 9,
+  "failed_invocations": 0,
+  "actual_cost_status": "unknown",
+  "identities": {
+    "discovery": {
+      "requested_model_id": "claude-opus-5",
+      "observed_model_id": "claude-opus-5",
+      "capability": "ready"
+    },
+    "judge_a": {
+      "requested_model_id": "claude-opus-5",
+      "observed_model_id": "claude-opus-5",
+      "capability": "ready"
+    },
+    "judge_b": {
+      "requested_model_id": "claude-opus-4-6",
+      "observed_model_id": "claude-opus-4-6",
+      "capability": "ready"
+    },
+    "synthesis": {
+      "requested_model_id": "claude-opus-5",
+      "observed_model_id": "claude-opus-5",
+      "capability": "ready"
+    },
+    "validation": {
+      "requested_model_id": "claude-opus-5",
+      "observed_model_id": "claude-opus-5",
+      "capability": "ready"
+    }
+  },
+  "source_unchanged": true,
+  "credential_leak_found": false,
+  "finding_count": 2,
+  "audit_event_count": 22,
+  "source_file_count": 50,
+  "source_bytes": 238617,
+  "elapsed_seconds": 267.869,
+  "model_assessment_provenance": "model_assessment",
+  "supported": 2,
+  "executed_reproduced": 2,
+  "usefulness_judgments": {
+    "useful": 2,
+    "not_useful": 2
+  },
+  "estimate_usd": 14.1102285,
+  "estimate_basis": "list; not actual billing",
+  "whole_week_metrics_available": false,
+  "private_data_published": false
+}

@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "cargo",
+    "fmt",
+    "--all",
+    "--",
+    "--check"
+  ],
+  "exit": 1,
+  "diagnostic": "Diff in /Users/can/Documents/zeabur/ocp-review-commit-integrity/src/state.rs:643:\n     fn store_heartbeat_freshness_drives_readyz_signal() {\n         let state = AppState::new(Arc::new(SqliteStore::memory().unwrap()));\n         // Fresh state: heartbeat is current, so /readyz would report ready.\n-        assert!(state.store_stalled_secs() <= 2, \"fresh state is not stalled\");\n+        assert!(\n+            state.store_stalled_secs() <= 2,\n+            \"fresh state is not stalled\"\n+        );\n         // Simulate a wedge: no watchdog bump for 300s.\n         state.last_store_ok_ms.store(\n             (crate::store::now_ms() as u64).saturating_sub(300_000),\nDiff in /Users/can/Documents/zeabur/ocp-review-commit-integrity/src/store/postgres.rs:4123:\n         let o = connect_options(None, None);\n         assert!(o.contains(\"-c statement_timeout=15000\"), \"{o}\");\n         assert!(o.contains(\"-c lock_timeout=5000\"), \"{o}\");\n-        assert!(o.contains(\"-c idle_in_transaction_session_timeout=30000\"), \"{o}\");\n+        assert!(\n+            o.contains(\"-c idle_in_transaction_session_timeout=30000\"),\n+            \"{o}\"\n+        );\n         assert!(!o.contains(\"search_path\"), \"{o}\");\n \n         // search_path is appended; timeouts survive.\nDiff in /Users/can/Documents/zeabur/ocp-review-commit-integrity/tests/second_consumer.rs:416:\n     let deadline = tokio::time::Instant::now() + Duration::from_secs(6);\n     loop {\n         let session = get_session(base, session_id).await;\n-        if session[\"messages\"]\n-            .as_array()\n-            .is_some_and(|messages| {\n-                messages\n-                    .iter()\n-                    .any(|m| m[\"content\"].as_str() == Some(content))\n-            })\n-        {\n+        if session[\"messages\"].as_array().is_some_and(|messages| {\n+            messages\n+                .iter()\n+                .any(|m| m[\"content\"].as_str() == Some(content))\n+        }) {\n             return session;\n         }\n         assert!(\n"
+}

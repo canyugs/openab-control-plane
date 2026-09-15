@@ -1,0 +1,17 @@
+# Evaluation integration verification
+
+The owner-approved single-session observation integration is implemented in scripts/review_evaluation_bridge.py and documented in docs/evaluation-integration.md. Capture signs bounded read-only controller requests; prepare binds source rows and evidence to explicit repository/PR/session/full revision/base; run calls the existing evaluator and reports only verified evaluation artifacts. Omitted/null audit cursors follow the controller's terminal-page contract. Missing or tampered evaluation artifacts retain failed evidence and block weekly output; verified partial/failed evaluations still produce unscoreable coverage reports.
+
+Delivery: draft PR https://github.com/canyugs/openab-control-plane/pull/419 at implementation043201b141c2bd549c119998b26fc158aec31c0f. Source was independently read back after push. CI34592725486 succeeded at that implementation. No merge, tag, service deployment or scheduled job was performed.
+
+Parent validation: complete110-test Python suite with no skips; Rust workspace/all-features suite and clippy passed. Product diff whitespace check passed. Existing unrelated Rust formatting differences remain, as does a non-blocking loopback ResourceWarning during parent Python tests. Reviewer sandbox skipped loopback binding and offline wheel building; parent exercised both. These limits are retained in the raw bounded test records.
+
+Real private pilot:2 positive observations,22 audit events,50 files/238617 source bytes,9 successful role invocations in267.869 seconds. Both claims supported and qualified executed_reproduced;0 omission candidates; usefulness split2 useful/2 not_useful judgments. Primary requested/observed IDs match Opus5/Opus4.6. Actual billing unknown; provider list estimate14.1102285 USD. This sample does not establish defect precision, recall or human truth. Provider auxiliary usage remains in private original records.
+
+The paid run used a frozen candidate. Subsequent capture-only corrections were checked with fresh actual PTY capture/prepare and byte-identical model findings/evidence/source packet. The final weekly failure-gate repair changed only run(); a no-auth real PTY replay of the verified actual outputs produced byte-identical weekly JSON/Markdown with0 additional model/OCI calls. Four released evaluator core modules remain byte-identical. Source working files were unchanged; credential readback found no leaked credential. Private inputs, captures and provider output remain outside the public repository; only sanitized attestations are committed here.
+
+Coverage: capture exhausts an exact session API query, not a retained-history or whole-week population. Missing product tables prevent delivery/reliability metrics; zero eligible sessions does not mean zero reviews. Human and actual billing coverage remain unknown; an empty per_currency map is not actual billing even with the existing empty-cohort label. Scheduling awaits a named dedicated runner and complete source capture; no recurring operation was activated. The dev observer returned invalid_observation_signature; the prod read-only route succeeded, so no credential change was needed for this pilot.
+
+Cross-check review: .agentflow/features/review-commit-integrity/artifacts/A-006-integration/integration-crosscheck-2-acceptance.md
+Cross-check implementation: 043201b141c2bd549c119998b26fc158aec31c0f
+Host gate: PASS
